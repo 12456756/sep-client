@@ -17,6 +17,8 @@ import { requireScope, type ScopeSource } from './scope-guard'
 import { resolveArrangementMediaSpec } from '../domain/arrangement-media-spec'
 import type { ArrangementMediaRequirement } from '../domain/arrangement-plan'
 import { mediaSpecsEqual } from '../../src/shared/media-spec-contract'
+import { mediaCapabilitiesSchema } from '../common/platform/media-contract'
+import { mediaToolGenerationInputSchema } from '../../src/shared/media-host'
 
 export interface ArrangementMediaServiceOptions {
   scope: ScopeSource
@@ -96,6 +98,7 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       links.set(link.kind + ':' + link.jobId, link)
     }
     const references = new Map<string, { artifactId: string; sha256: string; sourceNodeId?: string }>()
+    const requirementReferences = new Map<string, string>()
     for (const binding of input.node.inputRefs ?? []) {
       if (binding.kind !== 'attachment' || binding.purpose !== 'media-source') continue
       if (!this.options.assets.attachmentReference) throw new AppError('SERVICE_UNAVAILABLE')
@@ -123,6 +126,7 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       const reference = await this.options.assets.reference(scope, input.taskId, artifactId, input.signal, assert)
       if (expectedHash && expectedHash !== reference.sha256) throw new AppError('INVALID_STATE')
       references.set(reference.artifactId, { artifactId, sha256: reference.sha256, ...(source.nodeId ? { sourceNodeId: source.nodeId } : {}) })
+      requirementReferences.set(requirement.id, reference.artifactId)
     }
     const writes = new WriteChain()
     const save = async (link: ArrangementMediaLink) => {
@@ -227,12 +231,25 @@ export class ArrangementMediaService implements ArrangementMediaPort {
         spec = resolveArrangementMediaSpec(selected, value)
         selectedRequirement = selected
       }
-      const ids = value.localAssetIds === undefined ? [...references.keys()] : idsSchema.parse(value.localAssetIds)
+      const image = operation === 'edit' || operation === 'generate'
+      const legacyRequirement = effectiveRequirements.filter(requirement => requirement.operation === operation &&
+        (value.requirementId === undefined || requirement.id === value.requirementId))
+      const requirementReference = requirementReferences.get((selectedRequirement ?? (legacyRequirement.length === 1 ? legacyRequirement[0] : undefined))?.id ?? '')
+      const ids = value.localAssetIds === undefined
+        ? operation === 'generate' ? [] : image && requirementReference ? [requirementReference] : [...references.keys()]
+        : idsSchema.parse(value.localAssetIds)
       if (ids.some(id => !references.has(id))) throw new AppError('PERMISSION_DENIED', { message: '媒体输入必须来自本节点计划声明的资产。' })
+      if (operation === 'edit' && ids.length !== 1) throw new AppError('INVALID_ARGUMENT', {
+        message: '图生图需要明确选择一张本节点参考图，请通过 localAssetIds 指定；候选来源不明确时先询问用户。',
+      })
+      if (operation === 'edit' && requirementReference && ids[0] !== requirementReference) throw new AppError('SPEC_CONFLICT', {
+        message: '参考图与当前媒体需求指定的输入不一致，请使用该需求绑定的原图片。',
+      })
+      if (operation === 'generate' && ids.length) throw new AppError('INVALID_ARGUMENT', { message: '文生图不应传入参考图；编辑图片请使用 edit 操作。' })
       if (selectedRequirement) submittingRequirements.set(operation, selectedRequirement)
       const { requirementId: _requirementId, parameters: _parameters, ...rest } = value
       return { ...rest, ...(!spec && value.parameters !== undefined ? { parameters: value.parameters } : {}), ...spec,
-        localAssetIds: operation === 'text-to-video' ? [] : ids }
+        ...(image ? { operation } : {}), localAssetIds: operation === 'text-to-video' ? [] : ids }
     }
     const assertJob = async (kind: 'image' | 'video', raw: unknown, optional = false) => {
       await check()
@@ -278,13 +295,31 @@ export class ArrangementMediaService implements ArrangementMediaPort {
         return {
         media: media ? { names: media.names, execute: async (name, raw, signal) => {
           if (name === 'media_generate_image') {
-            const operation = (raw as { operation?: string } | null)?.operation
-            const value = await normalize(raw, operation === 'generate' ? 'generate' : operation === 'edit' || references.size ? 'edit' : 'generate')
+            const parsed = mediaToolGenerationInputSchema.parse(raw)
+            const requirements = effectiveRequirements.filter(requirement => requirement.kind === 'image' &&
+              (parsed.requirementId === undefined || requirement.id === parsed.requirementId))
+            if (parsed.requirementId !== undefined && !requirements.length) throw new AppError('SPEC_CONFLICT')
+            const operations = new Set(requirements.map(requirement => requirement.operation))
+            if (!parsed.operation && operations.size > 1) throw new AppError('INVALID_ARGUMENT', { message: '当前节点同时有新建和编辑图片的需求，请明确 operation 或 requirementId。' })
+            const operation = parsed.operation ?? (operations.has('edit') ? 'edit' : 'generate')
+            if (operations.size && !operations.has(operation)) throw new AppError('SPEC_CONFLICT', { message: '图片操作与当前计划需求不一致，请按计划的新建或编辑操作执行。' })
+            const value = await normalize(parsed, operation)
             if ('recovered' in value) {
               return await inheritedJob('image', String(value.jobId)) ?? media.execute('media_get_job', { jobId: value.jobId }, signal)
             }
-            try { return await media.execute(name, value, signal) } finally {
-              submittingRequirements.delete(operation === 'generate' ? 'generate' : operation === 'edit' || references.size ? 'edit' : 'generate')
+            try {
+              if (operation === 'edit') {
+                const view = z.object({ capabilities: mediaCapabilitiesSchema }).parse(await media.execute('media_get_capabilities', {}, signal))
+                await check()
+                const profile = parsed.profileId ? view.capabilities.profiles.find(profile => profile.profileId === parsed.profileId) :
+                  view.capabilities.profiles.find(profile => profile.profileId === view.capabilities.defaultProfileId) ?? view.capabilities.profiles[0]
+                if (!profile?.operations.includes('edit') || !profile.capabilities.referenceImage) throw new AppError('PERMISSION_DENIED', {
+                  message: '当前节点员工的图片配置未授权参考图编辑，不能改用文生图代替。',
+                })
+              }
+              return await media.execute(name, value, signal)
+            } finally {
+              submittingRequirements.delete(operation)
             }
           }
           if (name === 'media_get_job' || name === 'media_cancel_job') await assertJob('image', raw)

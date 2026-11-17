@@ -748,6 +748,22 @@ describe('trusted media host tools with the real Pi SDK', () => {
     assert.ok(!text.includes('private-key'))
   })
 
+  it('preserves image reference identities and projects out private source fields', async () => {
+    const source = { localAssetId: 'ref-a', source: 'attachment', attachmentId: 'attachment-a', displayName: 'product.png' }
+    const generated = { localAssetId: 'ref-b', source: 'generated', sourceArtifactId: 'output-a', jobId: 'job-a' }
+    const { bodies } = await mediaSession({}, { name: 'media_get_capabilities', input: {} }, {
+      capabilities: { protocolVersion: 1, tools: ['media_get_capabilities'], profiles: [] }, referenceAssets: [],
+      referenceSources: [{ ...source, path: 'C:/private/image.png' }, { ...generated, apiKey: 'private-key' }],
+    })
+    const message = bodies[1].messages.find(message => message.role === 'tool')!
+    const result = JSON.parse(messageText(message.content))
+    assert.deepEqual(result.referenceSources, [source, generated])
+    assert.doesNotMatch(JSON.stringify(result), /private-key|C:\/private/)
+    const description = bodies[0].tools!.find(tool => tool.function.name === 'media_generate_image')!.function.description
+    assert.match(description, /operation.*edit/)
+    assert.match(description, /localAssetIds/)
+  })
+
   it('does not invent media tools when the host has no capabilities', async () => {
     const { bodies, executions } = await mediaSession({ mediaTools: undefined }, { name: 'media_generate_image', input: generationInput })
     assert.ok(!bodies[0].tools?.some(tool => tool.function.name.startsWith('media_')))
