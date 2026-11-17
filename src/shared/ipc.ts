@@ -9,6 +9,7 @@ import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, 
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type { ModelCatalogEntry } from './model-catalog-contracts'
+import type { MultimediaSettings } from './multimedia-settings'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentView } from './attachment-contracts'
 import type {
   ComputeAllowance,
@@ -397,6 +398,7 @@ export interface ElectronAPI {
   forgetAccount: (email: string) => Promise<ForgetAccountResult>
   logout: () => Promise<LogoutResult>
   getSubscriptions: () => Promise<InstanceListResult>
+  getMultimediaSettings: (input: { subscriptionId: string }) => Promise<IpcCommandResult & { data?: MultimediaSettings }>
   getEmployeeStatus: () => Promise<EmployeeStatusResult>
   getEnterpriseOrganization: () => Promise<OrganizationResult>
   getEnabledModels: () => Promise<ModelCatalogResult>

@@ -80,6 +80,7 @@ function registerPasteTarget(input: PasteTarget): () => void {
 }
 
 const electronAPI = {
+  getMultimediaSettings: input => ipcRenderer.invoke(INVOKE_CHANNELS.MULTIMEDIA_GET_SETTINGS, input),
   getSkillImportState: () => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_STATE),
   confirmSkillImportConsent: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_CONSENT, input),
   selectSkillImportRoot: () => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_SELECT_ROOT),
