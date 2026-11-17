@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { unzipSync } from 'fflate'
+import { prepareDevelopmentAssets } from './dev-assets-cache.mjs'
 
 const require = createRequire(import.meta.url)
 const packageRoot = dirname(require.resolve('@larksuite/cli/package.json'))
@@ -64,4 +65,14 @@ export async function afterFeishuPack(context) {
     : join(context.appOutDir, 'resources')
   await prepareFeishu(join(resources, 'feishu'), context.electronPlatformName, arch)
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await prepareFeishu(join(packageRoot, 'bin'))
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const directory = join(packageRoot, 'bin')
+  const { version } = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
+  const os = { win32: 'windows', darwin: 'darwin', linux: 'linux' }[process.platform]
+  const cpu = { x64: 'amd64', arm64: 'arm64' }[process.arch]
+  await prepareDevelopmentAssets({ directory,
+    sources: ['package.json', 'checksums.txt', 'LICENSE', `assets/lark-cli-${version}-${os}-${cpu}.${os === 'windows' ? 'zip' : 'tar.gz'}`].map(path => join(packageRoot, path)),
+    outputs: [process.platform === 'win32' ? 'lark-cli.exe' : 'lark-cli', 'LICENSE'],
+    prepare: () => prepareFeishu(directory),
+  })
+}

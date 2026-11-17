@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { unzipSync } from 'fflate'
 import { pathToFileURL } from 'node:url'
+import { prepareDevelopmentAssets } from './dev-assets-cache.mjs'
 
 const require = createRequire(import.meta.url)
 const packageRoot = dirname(require.resolve('dingtalk-workspace-cli/package.json'))
@@ -55,5 +56,10 @@ export async function afterDingTalkPack(context) {
   await prepareDingTalk(directory, context.electronPlatformName, arch)
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await prepareDingTalk(join(packageRoot, 'vendor'))
+  const directory = join(packageRoot, 'vendor')
+  await prepareDevelopmentAssets({ directory,
+    sources: ['package.json', 'assets/checksums.txt', 'assets/dws-skills.zip', `assets/${archives[`${process.platform}-${process.arch}`]}`].map(path => join(packageRoot, path)),
+    outputs: [process.platform === 'win32' ? 'dws.exe' : 'dws', 'LICENSE', 'NOTICE'],
+    prepare: () => prepareDingTalk(directory),
+  })
 }
