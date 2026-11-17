@@ -20,7 +20,7 @@ import type {
   ComputeUsageQuery,
   ComputeBreakdownDays,
 } from './compute-credit-contracts'
-import type { SaveSkillInput, SaveSkillResult, SkillLibraryItem } from './skill-library'
+import type { SaveSkillInput, SaveSkillResult, SkillLibraryItem, SkillLibraryQuery } from './skill-library'
 import type { SkillRewriteInput, SkillRewriteResult } from './skill-rewrite'
 import type {
   ClientProfile,
@@ -375,11 +375,11 @@ export interface ElectronAPI {
   platform: RuntimePlatform
   windowChrome: WindowChromeRuntime
   setWindowTheme: (theme: WindowTheme) => Promise<IpcCommandResult>
-  listSkillLibrary: () => Promise<IpcCommandResult & { data?: SkillLibraryItem[]; skippedCount?: number }>
+  listSkillLibrary: (input?: SkillLibraryQuery) => Promise<IpcCommandResult & { data?: SkillLibraryItem[]; skippedCount?: number; updatedAt?: number; retryAt?: number }>
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: string }>
   rewriteLibrarySkill: (input: SkillRewriteInput) => Promise<IpcCommandResult & { data?: SkillRewriteResult }>
   cancelSkillRewrite: (input: { requestId: string }) => Promise<IpcCommandResult>
-  selectSkillVersion: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult>
+  selectSkillVersion: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: SkillLibraryItem }>
   savePersonalSkill: (input: SaveSkillInput) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
   retryPersonalSkillUpload: (input: { capabilityId: string; idempotencyKey: string }) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
   beginAttachmentImport: (input: { target: AttachmentImportTarget; idempotencyKey?: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession }>

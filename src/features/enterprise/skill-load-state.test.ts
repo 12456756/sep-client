@@ -28,6 +28,13 @@ test('uses a safe default when retry-after is not provided', () => {
   assert.equal(failure.message, formatSkillRateLimitMessage(30));
 });
 
+test('prefers structured server retry metadata and ignores invalid delays', () => {
+  assert.equal(classifySkillLoadError({ statusCode: 429, retryAfterMs: 65_500, message: '请在 2 秒后重试' }).retryAfterSeconds, 66);
+  for (const retryAfterMs of [NaN, Infinity, -1, 0]) {
+    assert.equal(classifySkillLoadError({ statusCode: 429, retryAfterMs }).retryAfterSeconds, 30);
+  }
+});
+
 test('classifies authentication and permission failures', () => {
   assert.equal(classifySkillLoadError({ statusCode: 401 }).kind, 'auth');
   assert.equal(classifySkillLoadError({ statusCode: 401 }).message, '登录状态已过期，请重新登录。');
