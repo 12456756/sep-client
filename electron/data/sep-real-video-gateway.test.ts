@@ -201,7 +201,7 @@ test('submit parses only a trusted platform rejection into a definitive business
 
   const untrusted = gateway(async () => json({ error: { code: 'INSUFFICIENT_FUNDS', source: 'upstream' } }, 402))
   await assert.rejects(untrusted.submit(request, signal), error => error instanceof SepVideoGatewayError &&
-    error.code === 'INSUFFICIENT_FUNDS' && error.definitelyRejected === false)
+    error.code === 'SERVICE_UNAVAILABLE' && error.definitelyRejected === false)
 })
 
 test('malformed or non-json submit errors remain uncertain and never trust arbitrary codes', async () => {

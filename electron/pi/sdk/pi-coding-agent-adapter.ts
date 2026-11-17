@@ -32,6 +32,7 @@ import { videoBillingStatusSchema, videoOutputSchema, videoRuntimeSchema, videoS
 import { mediaReferenceSourceSchema, mediaToolGenerationInputSchema } from '../../../src/shared/media-host'
 import { imageRequestedSpecSchema, videoRequestedSpecSchema, videoActualSpecSchema, mediaParameterSourcesSchema } from '../../../src/shared/media-spec-contract'
 import { mediaCapabilitiesSchema, mediaId, mediaParametersSchema } from '../../common/platform/media-contract'
+import { mediaUpstreamErrorSchema } from '../../../src/shared/media-upstream-error'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
 import { videoToolFailureDiagnostic, videoToolFailureFrom } from '../../errors/video-tool-error'
 import { AppError } from '../../errors/app-error'
@@ -124,6 +125,7 @@ const videoJobResultSchema = z.object({
   protocolVersion: z.literal(3).optional(), specRevision: z.number().int().positive().optional(),
   requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(),
   actualSpec: videoActualSpecSchema.optional(), parameterSources: mediaParameterSourcesSchema.optional(),
+  upstreamError: mediaUpstreamErrorSchema.optional(),
   acceptance: z.enum(['matched', 'mismatched', 'unknown']).optional(),
   generationStatus: z.enum(['NOT_SUBMITTED', 'SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
@@ -192,11 +194,11 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
       name, label: name, executionMode: 'sequential',
       description: name === 'video_get_job'
         ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs and referenceAssets. When present, referenceSources maps current-turn attachment names and generated image sourceArtifactIds to usable reference localAssetIds. Select the actual requested image; clarify ambiguous multiple inputs rather than picking the first. The host tracks and saves submitted jobs; generation tools return only after terminal status and local save are known. Never poll this tool or use sleep to wait. Image capabilities do not describe video availability.'
-        : `Generate a video using ${operation}. Inspect video_get_job({}) for actual authorization, profiles and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and reference assets, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. Legacy parameters require explicit complete decisions; missing fields are never filled by the host. Never silently change specifications, switch model or substitute script animation. ${name === 'video_from_image' ? 'Supply one SAVED task-local referenceAssets localAssetId; never invent IDs or file paths.' : 'No reference assets are needed.'} The host validates cost and obtains approval before submission. Report the actual generation and local save states and chosen specifications; distinguish submitted, generated and saved. Report tool error codes and their source, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
+        : `Generate a video using ${operation}. Inspect video_get_job({}) for actual authorization, profiles and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and reference assets, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. Legacy parameters require explicit complete decisions; missing fields are never filled by the host. Never silently change specifications, switch model or substitute script animation. ${name === 'video_from_image' ? 'Supply one or more SAVED task-local referenceAssets localAssetIds in the user-specified order; never invent IDs or file paths.' : 'No reference assets are needed.'} The host validates cost and obtains approval before submission. Report the actual generation and local save states and chosen specifications; distinguish submitted, generated and saved. Report tool error codes and their source, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
       parameters: name === 'video_get_job' ? Type.Object({ jobId: Type.Optional(id) }, { additionalProperties: false })
         : Type.Object({
           profileId: Type.Optional(profileId), operation: Type.Optional(Type.Literal(operation)),
-          localAssetIds: name === 'video_from_image' ? Type.Array(id, { minItems: 1, maxItems: 1 }) : Type.Optional(Type.Array(id, { maxItems: 0 })),
+          localAssetIds: name === 'video_from_image' ? Type.Array(id, { minItems: 1, maxItems: 32 }) : Type.Optional(Type.Array(id, { maxItems: 0 })),
           creativeBrief: Type.String({ minLength: 1, maxLength: 4000 }), parameters: Type.Optional(parameters),
           requestedSpec: Type.Optional(parameters), ...mediaDecisionToolProperties(),
         }, { additionalProperties: false }),
@@ -207,8 +209,14 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
           if (!registeredVideoNames(config).includes(name)) return failure('Video tool is not enabled for this run.')
           const parsed = name === 'video_get_job' ? videoToolJobInputSchema.safeParse(input) : videoToolGenerationInputSchema.safeParse(input)
           if (!parsed.success) return failure(JSON.stringify(mediaInputValidationFailure(parsed.error)))
-          if ('creativeBrief' in parsed.data && (parsed.data.operation !== undefined && parsed.data.operation !== operation || parsed.data.localAssetIds.length !== (name === 'video_from_image' ? 1 : 0))) {
-            return failure(JSON.stringify(videoToolFailureFrom(new AppError('INVALID_ARGUMENT'))))
+          if ('creativeBrief' in parsed.data) {
+            const count = parsed.data.localAssetIds.length
+            const invalidReferences = name === 'video_from_image'
+              ? parsed.data.protocolVersion === 3 ? count < 1 : count !== 1
+              : count !== 0
+            if (parsed.data.operation !== undefined && parsed.data.operation !== operation || invalidReferences) {
+              return failure(JSON.stringify(videoToolFailureFrom(new AppError('INVALID_ARGUMENT'))))
+            }
           }
           if (signal?.aborted) return failure('Video tool request cancelled.')
           const result = await config.videoTools!.execute(name, parsed.data, signal)
@@ -260,6 +268,7 @@ const mediaJobResultSchema = z.object({
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
   billingStatus: z.string(), error: z.string().nullable(), createdAt: z.number(), updatedAt: z.number(),
+  upstreamError: mediaUpstreamErrorSchema.optional(),
   assets: z.array(mediaAssetResultSchema), canCancelUpstream: z.boolean(),
 }).refine(job => (job.protocolVersion === 3 ? imageRequestedSpecSchema : mediaParametersSchema).safeParse(job.parameters).success)
 
@@ -327,7 +336,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
     media_generate_image: Type.Object({
       profileId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
       operation: Type.Optional(Type.Union([Type.Literal('generate'), Type.Literal('edit')])),
-      localAssetIds: Type.Optional(Type.Array(id, { maxItems: 16 })),
+      localAssetIds: Type.Optional(Type.Array(id, { maxItems: 32 })),
       creativeBrief: Type.String({ minLength: 1, maxLength: 20_000 }),
       parameters: Type.Optional(spec), requestedSpec: Type.Optional(requestedSpec), ...mediaDecisionToolProperties(),
     }, { additionalProperties: false }),
@@ -340,7 +349,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
   }
   const descriptions = {
     media_get_capabilities: 'Get the currently authorized image capabilities and SAVED task-local referenceAssets. When present, referenceSources maps current-turn attachment names and attachmentIds or generated sourceArtifactIds to reference localAssetIds. Query this before editing; do not invent IDs or paths.',
-    media_generate_image: "Generate or edit an image. Inspect media_get_capabilities for actual authorization and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and selected task reference images, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. A ratio alone does not determine pixel dimensions: decide size or width/height from the intended use. Pricing may also need count; infer it from the brief. The image quality parameter quality has three levels: low, medium, and high. Prefer high when the user does not specify a quality. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. On MISSING_SPEC, use the reported field and submissionState to complete missing routine decisions; clarify only consequential ambiguity. Never automatically repeat a paid submission or one with unknown submission state. Legacy parameters need explicit complete decisions; the host never supplies business defaults. For reference-image editing, set operation=\"edit\" and explicitly select one SAVED referenceAssets localAssetId in localAssetIds. Use referenceSources to identify the requested attachment or generated output. Clarify ambiguous candidates; never choose the first by default or silently fall back to text-to-image. For a new image set operation=\"generate\" and localAssetIds=[]. Attachment presence alone does not imply editing. Never silently alter specifications, switch models or substitute scripted art. The host validates cost and obtains approval before submission. Report the actual generation and local save states, available assets and chosen specifications; distinguish submitted, generated and saved. After success, state completion clearly instead of asking permission to begin.",
+    media_generate_image: "Generate or edit an image. Inspect media_get_capabilities for actual authorization and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and selected task reference images, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. A ratio alone does not determine pixel dimensions: decide size or width/height from the intended use. Pricing may also need count; infer it from the brief. The image quality parameter quality has three levels: low, medium, and high. Prefer high when the user does not specify a quality. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. On MISSING_SPEC, use the reported field and submissionState to complete missing routine decisions; clarify only consequential ambiguity. Never automatically repeat a paid submission or one with unknown submission state. Legacy parameters need explicit complete decisions; the host never supplies business defaults. For reference-image editing, set operation=\"edit\" and explicitly select one or more SAVED referenceAssets localAssetIds in order, within the current profile adapter.referenceSupport limits (maxCount, maxInputBytes and mimeTypes). Use referenceSources to identify the requested attachment or generated output. Clarify ambiguous candidates; never choose the first by default or silently fall back to text-to-image. For a new image set operation=\"generate\" and localAssetIds=[]. Attachment presence alone does not imply editing. Never silently alter specifications, switch models or substitute scripted art. The host validates cost and obtains approval before submission. Report the actual generation and local save states, available assets and chosen specifications; distinguish submitted, generated and saved. After success, state completion clearly instead of asking permission to begin.",
     media_get_job: 'Read cached status and task-local assets of an image job. The host tracks and saves submitted jobs. Never poll this tool or use sleep to wait; end the turn after submission.',
     media_cancel_job: 'Stop tracking an image job, optionally requesting upstream cancellation through the host approval policy.',
   }

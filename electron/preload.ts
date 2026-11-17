@@ -56,7 +56,7 @@ function registerPasteTarget(input: PasteTarget): () => void {
     const notify = (event: { status?: 'started' | 'completed' | 'failed'; error?: string }) => { for (const callback of pasteListeners) callback({ composerId: input.composerId, sessionId: input.sessionId, operationId, text: text || undefined, ...event }); };
     notify({ status: 'started' });
     const entries = files.map(file => ({ file, path: (() => { try { return webUtils.getPathForFile(file as File); } catch { return ''; } })() }));
-    if (entries.length > attachmentImportLimits.maxFiles) { notify({ status: 'failed', error: `一次最多添加 ${attachmentImportLimits.maxFiles} 个附件` }); return; }
+    if (entries.length > attachmentImportLimits.maxImportFiles) { notify({ status: 'failed', error: `一次最多添加 ${attachmentImportLimits.maxImportFiles} 个附件` }); return; }
     void (async () => {
       const paths = entries.flatMap(entry => entry.path ? [entry.path] : []);
       const imageEntries = entries.filter(entry => !entry.path);

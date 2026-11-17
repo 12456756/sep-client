@@ -12,6 +12,7 @@ export interface VideoRequestErrorOptions {
   businessCode?: string | null
   source?: VideoErrorSource
   requestId?: string | null
+  message?: string
 }
 
 function safeId(value: string | null | undefined): string | null {
@@ -32,10 +33,10 @@ export class VideoRequestError extends AppError {
     const expectedStatus = businessCode === 'INSUFFICIENT_FUNDS' || businessCode === 'VIDEO_BUDGET_EXCEEDED' ? 402 : businessCode === 'QUOTE_EXPIRED' || businessCode === 'VIDEO_CONCURRENCY_LIMIT' ? 409 : 0
     const definite = options.stage === 'video-submit' && options.source === 'platform' && safeId(options.requestId) !== null && statusCode === expectedStatus && isVideoSubmissionRejectionCode(businessCode)
     const mapped: ErrorCode = statusCode === 401 ? 'AUTH_REQUIRED' : statusCode === 403 ? 'PERMISSION_DENIED' : statusCode === 404 ? 'NOT_FOUND' : statusCode === 400 ? 'INVALID_ARGUMENT' : statusCode === 409 || statusCode === 410 ? 'INVALID_STATE' : statusCode === 429 ? 'RATE_LIMITED' : options.gatewayCode === 'VIDEO_NETWORK_ERROR' ? 'NETWORK_ERROR' : options.gatewayCode === 'VIDEO_INVALID_REQUEST' ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
-    const code: ErrorCode = businessCode !== null && isErrorCode(businessCode) ? businessCode : mapped
+    const code: ErrorCode = options.source === 'upstream' ? 'SERVICE_UNAVAILABLE' : businessCode !== null && isErrorCode(businessCode) ? businessCode : mapped
     super(code, {
-      message: videoErrorMessage(businessCode) ?? `SEP video request failed (${options.gatewayCode}).`,
-      details: { resource: 'video', ...(options.stage ? { stage: options.stage } : {}), ...(safeId(options.requestId) ? { requestId: safeId(options.requestId)! } : {}), ...(businessCode ? { businessCode } : {}) },
+      message: options.message ?? videoErrorMessage(businessCode) ?? `SEP video request failed (${options.gatewayCode}).`,
+      details: { resource: 'video', ...(options.source === 'upstream' ? { source: options.source, statusCode } : {}), ...(options.stage ? { stage: options.stage } : {}), ...(safeId(options.requestId) ? { requestId: safeId(options.requestId)! } : {}), ...(businessCode ? { businessCode } : {}) },
     })
     this.name = options.gatewayCode === 'VIDEO_ABORTED' ? 'AbortError' : 'VideoRequestError'
     this.businessCode = businessCode

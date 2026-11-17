@@ -227,16 +227,16 @@ test('tool grants restrict otherwise supported operations and read-only runtimes
   assert.match(disabled, /正在生成/)
 })
 
-test('reference selection is a single native radio group, scoped to this task and local references', () => {
+test('reference selection uses checkboxes scoped to this task and local references', () => {
   const html = form({ references: [reference, { ...reference, localAssetId: 'reference-2' },
     { ...reference, localAssetId: 'wrong-task', taskId: 'task-2' }, { ...reference, localAssetId: 'an-output', source: 'output' }, reference] })
-  const radios = Array.from(html.matchAll(/<input type="radio" name="([^"]+)"/g))
+  const radios = Array.from(html.matchAll(/<input type="checkbox" name="([^"]+)"/g))
   assert.equal(radios.length, 2)
   assert.equal(new Set(radios.map(match => match[1])).size, 1)
   assert.match(html, /aria-label="视频参考图 1"/)
-  assert.doesNotMatch(html, /checkbox|<img|<video|(?:src|href)=/)
+  assert.doesNotMatch(html, /type="radio"|<img|<video|(?:src|href)=/)
   const unavailable = form({ references: [{ ...reference, status: 'MISSING' }, { ...reference, localAssetId: 'too-large', size: 4096 }] })
-  assert.equal(Array.from(unavailable.matchAll(/<input type="radio"[^>]*disabled=""/g)).length, 2)
+  assert.equal(Array.from(unavailable.matchAll(/<input type="checkbox"[^>]*disabled=""/g)).length, 2)
   assert.match(unavailable, /本地文件缺失/)
   assert.match(unavailable, /超出当前配置大小限制/)
 })

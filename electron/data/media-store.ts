@@ -12,6 +12,7 @@ import { writeJsonAtomic } from './atomic-file'
 import { inspectMediaImage, MAX_MEDIA_BYTES, MAX_MEDIA_DIMENSION, MAX_MEDIA_PIXELS } from './media-image'
 import { isSafeId, ScopePath, TaskScopeError, type TaskOwnerScope } from './scope-path'
 import { WriteChain } from './write-chain'
+import { mediaUpstreamErrorSchema } from '../../src/shared/media-upstream-error'
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const timestamp = z.number().int().nonnegative()
@@ -21,7 +22,7 @@ const generationSchema = z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_
 const saveSchema = z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING'])
 const requestSchema = z.object({
   clientRequestId: mediaId, requestHash: hashSchema, quoteId: opaqueId, profileId: opaqueId, configVersion: opaqueId,
-  operation: z.enum(['generate', 'edit']), referenceIds: z.array(opaqueId).max(16), referenceHashes: z.array(hashSchema).max(16),
+  operation: z.enum(['generate', 'edit']), referenceIds: z.array(opaqueId).max(32), referenceHashes: z.array(hashSchema).max(32),
   creativeBrief: z.string().min(1).max(20_000), parameters: z.union([mediaParametersSchema, imageRequestedSpecSchema]),
   protocolVersion: z.literal(3).optional(), requestedSpec: imageRequestedSpecSchema.optional(),
   parameterSources: mediaParameterSourcesSchema.optional(), specRevision: z.number().int().positive().optional(),
@@ -35,7 +36,7 @@ const jobSchema = z.object({
   outputs: z.array(mediaOutputSchema), actualSpec: imageRequestedSpecSchema.optional(), billingStatus: z.string().min(1).max(64), nextPollAt: timestamp,
   lastQueriedAt: timestamp.optional(),
   providerWaitMs: timestamp.optional(), downloadMs: timestamp.optional(),
-  recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(),
+  recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(), upstreamError: mediaUpstreamErrorSchema.optional(),
   attempts: z.number().int().nonnegative(), error: z.string().max(20_000).nullable(), createdAt: timestamp, updatedAt: timestamp,
 }).strict().superRefine((job, context) => {
   const { request, input, profile, quote } = job

@@ -30,6 +30,44 @@ import { PiCodingAgentAdapter } from '../pi/sdk/pi-coding-agent-adapter'
 import { PiTaskWorker } from '../pi/sdk/pi-task-worker'
 
 const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+
+it('V3 image references upload in order and share one quote and submission', async context => {
+  const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+  const capabilities = structuredClone(MOCK_MEDIA_CAPABILITIES)
+  capabilities.protocolVersion = 3
+  capabilities.profiles[0]!.adapter = { id: 'image-adapter', version: '3', available: true, operations: ['edit'],
+    referenceSupport: { maxCount: 3, maxInputBytes: 5 * 1024 * 1024, mimeTypes: ['image/png'] }, supportsTaskQuery: true, supportsCancel: false }
+  f.employee.media = capabilities
+  Object.assign(f.gateway, { quoteRequiresUploadedReferences: true })
+  const quote = f.gateway.quote.bind(f.gateway)
+  context.mock.method(f.gateway, 'quote', async (...args: Parameters<typeof quote>) => ({ ...await quote(...args), effectiveSpec: args[1].requestedSpec }))
+  const path = join(f.directory, 'reference.png')
+  const assets = []
+  for (const width of [1, 2, 3]) {
+    await writeFile(path, png(width, 1))
+    assets.push(...await f.service.importReferences('task-a', [path]))
+  }
+  const ordered = assets.map(asset => asset.localAssetId).reverse()
+  let uploads = 0
+  context.mock.method(f.gateway, 'uploadReference', async (...args: Parameters<typeof f.gateway.uploadReference>) => ({ referenceId: `reference-${++uploads}`, sha256: args[1].sha256, expiresAt: Date.now() + 60_000 }))
+  const request = input({ protocolVersion: 3, requestedSpec: { count: 1 }, parameterSources: { count: 'user' }, specRevision: 1,
+    operation: 'edit', localAssetIds: ordered, parameters: { count: 1 } })
+  request.parameters = { count: 1 }
+  const view = await f.service.generateTaskMedia('task-a', request)
+  await f.service.waitForRun('task-a', view.runId)
+  assert.equal(uploads, 3)
+  assert.equal(f.gateway.calls.quote.length, 1)
+  assert.equal(f.gateway.calls.submit.length, 1)
+  assert.deepEqual(f.gateway.calls.quote[0]!.request.referenceIds, ['reference-1', 'reference-2', 'reference-3'])
+  assert.deepEqual(f.gateway.calls.submit[0]!.request.referenceIds, f.gateway.calls.quote[0]!.request.referenceIds)
+  const saved = await new MediaStore(f.root).getJob(owner, 'task-a', view.jobId)
+  assert.deepEqual(saved?.input.localAssetIds, ordered)
+  assert.equal(saved?.saveStatus, 'SAVED')
+  capabilities.profiles[0]!.adapter!.referenceSupport.maxCount = 2
+  f.employee.media = capabilities
+  await assert.rejects(f.service.generateTaskMedia('task-a', request), { code: 'INVALID_ARGUMENT' })
+  assert.equal(uploads, 3)
+})
 const other = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
 const directories: string[] = []
 const services: MediaService[] = []
@@ -422,7 +460,7 @@ function notSentJob(): LocalMediaJob {
 
 describe('media capability and handoff regressions', () => {
   for (const scenario of ['prompt', 'reference-count', 'reference-mime', 'reference-bytes', 'reference-width'] as const) {
-    it(`does not duplicate backend business limits for real ${scenario}`, async context => {
+    it(`${scenario === 'reference-bytes' ? 'validates local reference safety for' : 'does not duplicate backend business limits for'} real ${scenario}`, async context => {
       const f = await realFixture()
       const runtime = f.employee.media as { profiles: { capabilities: { supportsReferenceImage: boolean } }[] }
       runtime.profiles[0].capabilities.supportsReferenceImage = true
@@ -442,11 +480,10 @@ describe('media capability and handoff regressions', () => {
       } else {
         await assert.rejects(f.service.generateTaskMedia('task-a', requested))
       }
-      // The backend remains authoritative for prompt/reference limits. The
-      // client must reach that boundary instead of rejecting these values as
-      // a second business-rule whitelist. File safety checks are covered by
-      // MediaStore/import tests and are intentionally unchanged here.
-      assert.ok(f.calls.length > 0 || f.approvalRequests.length > 0)
+      if (scenario === 'reference-bytes') {
+        assert.equal(f.calls.length, 0)
+        assert.equal(f.approvalRequests.length, 0)
+      } else assert.ok(f.calls.length > 0 || f.approvalRequests.length > 0)
     })
   }
 
@@ -2154,19 +2191,20 @@ describe('V3 image specifications', () => {
   })
 })
 
-describe('V3 image output verification', () => {
-  function png(width: number, height: number): Buffer {
-    const chunk = (kind: string, bytes: Buffer): Buffer => {
-      const data = Buffer.concat([Buffer.from(kind), bytes]); let crc = 0xffffffff
-      for (const byte of data) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0) }
-      const length = Buffer.alloc(4), checksum = Buffer.alloc(4)
-      length.writeUInt32BE(bytes.length); checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0)
-      return Buffer.concat([length, data, checksum])
-    }
-    const header = Buffer.alloc(13); header.writeUInt32BE(width); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 2
-    return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header),
-      chunk('IDAT', deflateSync(Buffer.alloc(height * (1 + width * 3)))), chunk('IEND', Buffer.alloc(0))])
+function png(width: number, height: number): Buffer {
+  const chunk = (kind: string, bytes: Buffer): Buffer => {
+    const data = Buffer.concat([Buffer.from(kind), bytes]); let crc = 0xffffffff
+    for (const byte of data) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0) }
+    const length = Buffer.alloc(4), checksum = Buffer.alloc(4)
+    length.writeUInt32BE(bytes.length); checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0)
+    return Buffer.concat([length, data, checksum])
   }
+  const header = Buffer.alloc(13); header.writeUInt32BE(width); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 2
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header),
+    chunk('IDAT', deflateSync(Buffer.alloc(height * (1 + width * 3)))), chunk('IEND', Buffer.alloc(0))])
+}
+
+describe('V3 image output verification', () => {
   async function outputFixture(spec: MediaGenerationInput['parameters'], options: { count?: number; localSecondWide?: boolean; unknownDimensions?: boolean } = {}) {
     const gateway = new MockMediaGateway({ initialStatus: 'SUCCEEDED' })
     const quote = gateway.quote.bind(gateway)

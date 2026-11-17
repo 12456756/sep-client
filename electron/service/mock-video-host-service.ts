@@ -3,6 +3,8 @@ import type { z } from 'zod'
 import { videoGenerationInputSchema, videoToolGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../src/shared/video-host'
 import { videoAllowedAudioModes, videoBillingPending, videoRuntimeSchema, videoReferenceSchema, videoParametersSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema } from '../../src/shared/media-spec-contract'
+import { mediaReferenceProblem } from '../../src/shared/media-references'
+import { inspectMediaImage } from '../data/media-image'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
 import { videoSubmissionRejected, videoSpecAcceptance, videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
@@ -84,6 +86,7 @@ function jobView(job: LocalVideoJob): VideoJobView {
     ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
       ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
     ...(job.specFailure ? { specFailure: structuredClone(job.specFailure) } : {}),
+    ...(job.receipt?.upstreamError ? { upstreamError: structuredClone(job.receipt.upstreamError) } : {}),
     createdAt: job.createdAt, updatedAt: job.updatedAt, error: job.error === 'OUTPUT_SPEC_MISMATCH' ? null : job.error,
     ...(job.lastQueriedAt === undefined ? {} : { lastQueriedAt: job.lastQueriedAt }),
     ...(job.providerWaitMs === undefined ? {} : { providerWaitMs: job.providerWaitMs }),
@@ -390,7 +393,7 @@ export class MockVideoHostService {
         await validateTask()
         await this.runtime(scope, epoch, signal)
         validate()
-        if (!this.options.references || paths.length > 4) throw new AppError('INVALID_ARGUMENT')
+        if (!this.options.references || paths.length > 10) throw new AppError('INVALID_ARGUMENT', { message: '每次最多导入 10 张参考图。' })
         const result = await this.options.references.import(scope, taskId, paths, signal, validate)
         validate()
         return result
@@ -438,7 +441,7 @@ export class MockVideoHostService {
     if (!parsed.success) throw new AppError('INVALID_ARGUMENT')
     const { requirementId: _requirementId, ...request } = parsed.data
     const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
-    if (request.operation !== undefined && request.operation !== operation || request.localAssetIds.length !== (operation === 'image-to-video' ? 1 : 0)) throw new AppError('INVALID_ARGUMENT')
+    if (request.operation !== undefined && request.operation !== operation || (operation === 'image-to-video' ? request.localAssetIds.length < 1 : request.localAssetIds.length !== 0)) throw new AppError('INVALID_ARGUMENT')
     return this.generateRequest(taskId, runtime => {
       const profiles = runtime.profiles.filter(profile => profile.operations.includes(operation) &&
         (operation === 'image-to-video' ? profile.capabilities.supportsImageToVideo : profile.capabilities.supportsTextToVideo))
@@ -468,7 +471,7 @@ export class MockVideoHostService {
       submissions.add(key)
       try {
         const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
-        const input = resolve(runtime)
+        const input = videoGenerationInputSchema.parse(resolve(runtime))
         const jobs = await context.service.listJobsSnapshot(taskId)
         this.assert(scope, epoch, signal)
         const runId = run?.runId ?? randomUUID()
@@ -502,10 +505,20 @@ export class MockVideoHostService {
         const referenceIds: string[] = []
         if (input.localAssetIds.length) {
           await approve({ operation: 'upload-references', referenceCount: input.localAssetIds.length, mock: this.options.mock })
+          const references = []
           for (const id of input.localAssetIds) {
             const reference = await abortableVideo(this.options.readReference(scope, taskId, id), signal)
             this.assert(scope, epoch, signal)
-            if (reference.bytes.byteLength > profile.capabilities.maxInputBytes || createHash('sha256').update(reference.bytes).digest('hex') !== reference.sha256) throw new AppError('INVALID_ARGUMENT')
+            let inspected: { mime: string }
+            try { inspected = inspectMediaImage(reference.bytes) } catch { throw new AppError('INVALID_ARGUMENT', { message: '参考图无效或格式不支持，请重新导入。' }) }
+            if (createHash('sha256').update(reference.bytes).digest('hex') !== reference.sha256) throw new AppError('INVALID_ARGUMENT')
+            references.push({ ...reference, localAssetId: id, mime: inspected.mime, size: reference.bytes.byteLength, status: 'SAVED' })
+          }
+          const problem = mediaReferenceProblem(references, profile.referenceSupport ?? {
+            maxCount: Math.min(1, profile.capabilities.maxReferenceCount), maxInputBytes: profile.capabilities.maxInputBytes, mimeTypes: ['image/png'],
+          })
+          if (problem) throw new AppError('INVALID_ARGUMENT', { message: problem })
+          for (const reference of references) {
             const uploaded = videoReferenceSchema.parse(await context.uploadReference(taskId, toolName, reference.bytes, signal))
             if (uploaded.mock !== this.options.mock || uploaded.sha256.toLowerCase() !== reference.sha256.toLowerCase() || uploaded.byteLength !== reference.bytes.byteLength || Date.parse(uploaded.expiresAt) <= this.now()) throw new AppError('INVALID_STATE')
             referenceIds.push(uploaded.referenceId)

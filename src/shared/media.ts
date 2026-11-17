@@ -1,4 +1,5 @@
 import type { ImageRequestedSpec, MediaParameterSources } from './media-spec-contract'
+import type { MediaUpstreamError } from './media-upstream-error'
 export type ImageMime = 'image/png' | 'image/jpeg' | 'image/webp'
 export type MediaOperation = 'generate' | 'edit'
 export type MediaToolName = 'media_get_capabilities' | 'media_generate_image' | 'media_get_job' | 'media_cancel_job'
@@ -80,6 +81,7 @@ export interface MediaJobView {
   providerWaitMs?: number
   downloadMs?: number
   error: string | null
+  upstreamError?: MediaUpstreamError
   createdAt: number
   updatedAt: number
   assets: MediaAssetView[]

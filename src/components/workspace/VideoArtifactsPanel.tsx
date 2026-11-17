@@ -8,6 +8,7 @@ import type { VideoJobView, VideoTaskView } from '../../shared/video-host'
 import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoRuntimeSchema, videoSpecFailureSchema } from '../../shared/video-media'
 import { mediaSpecMetadataSchema, videoActualSpecSchema, videoRequestedSpecSchema } from '../../shared/media-spec-contract'
 import { isVideoSubmissionRejectionCode } from '../../shared/video-errors'
+import { mediaUpstreamErrorSchema } from '../../shared/media-upstream-error'
 
 
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
@@ -34,6 +35,7 @@ function queryLabel(value: number | undefined): string | null {
 const jobSchema = z.object({
   jobId: localId, taskId: localId, profileId: localId, operation: videoOperationSchema,
   specFailure: videoSpecFailureSchema.optional(),
+  upstreamError: mediaUpstreamErrorSchema.optional(),
   parameters: videoRequestedSpecSchema, generationStatus: z.string().max(80),
   protocolVersion: z.literal(3).optional(), specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(),
   requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(), actualSpec: videoActualSpecSchema.optional(),

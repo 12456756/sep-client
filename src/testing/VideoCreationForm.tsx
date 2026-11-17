@@ -6,6 +6,7 @@ import { mediaSaveLabels, selectMediaProfile, videoFormParameters } from '../sha
 import { videoGenerationInputSchema, type VideoGenerationInput } from '../shared/video-host'
 import { videoAllowedAudioModes, type VideoRuntime } from '../shared/video-media'
 import { useMediaParameterPreferences } from '../components/workspace/media-preference-scope'
+import { mediaReferenceProblem, type MediaReferenceSupport } from '../shared/media-references'
 
 type Command = 'import' | 'generate' | 'export' | 'resume' | 'retry'
 type Notice = { message: string; tone: 'error' | 'success' }
@@ -53,7 +54,7 @@ export function VideoCreationForm({ taskId, runtime, references, busy, pending =
   const availableOperations = profile ? operations(runtime, profile) : []
   const [chosenOperation, setOperation] = useState<VideoGenerationInput['operation']>('image-to-video')
   const operation = availableOperations.includes(chosenOperation) ? chosenOperation : availableOperations[0]
-  const [selectedId, setSelectedId] = useState('')
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [brief, setBrief] = useState('')
   const preferences = useMediaParameterPreferences('video', profile?.profileId)
   const binding = JSON.stringify([preferences.key, profile, operation, runtime.protocolVersion, runtime.executionMode])
@@ -61,25 +62,28 @@ export function VideoCreationForm({ taskId, runtime, references, busy, pending =
   const caps = profile?.capabilities
   const audioModes = profile ? videoAllowedAudioModes(runtime, profile) : []
   const localReferences = safeReferences(references, taskId)
-  const selected = localReferences.find(asset => asset.localAssetId === selectedId && asset.status === 'SAVED' && caps && asset.size <= caps.maxInputBytes)
-  const parameters = profile ? videoFormParameters(runtime, profile, choices.binding === binding ? choices.parameters : preferences.parameters) : null
+  const selected = selectedIds.flatMap(assetId => localReferences.find(asset => asset.localAssetId === assetId) ?? [])
+  const support: MediaReferenceSupport = profile?.referenceSupport ?? { maxCount: Math.min(1, caps?.maxReferenceCount ?? 0), maxInputBytes: caps?.maxInputBytes ?? 10 * 1024 * 1024, mimeTypes: ['image/png'] }
+  const parameters = runtime.protocolVersion === 3 ? choices.binding === binding ? choices.parameters : {} : profile ? videoFormParameters(runtime, profile, choices.binding === binding ? choices.parameters : preferences.parameters) : null
   useEffect(() => {
-    setSelectedId('')
+    setSelectedIds([])
   }, [binding])
   useEffect(() => {
     if (profile && profileId !== profile.profileId) setProfileId(profile.profileId)
   }, [profile, profileId])
   function changeParameters(patch: Partial<VideoGenerationInput['parameters']>): void {
     if (!profile) return
-    const next = videoFormParameters(runtime, profile, { ...parameters, ...patch })
+    const next = runtime.protocolVersion === 3 ? { ...parameters, ...patch } : videoFormParameters(runtime, profile, { ...parameters, ...patch })
     setChoices({ binding, parameters: next ?? {} })
     if (next) preferences.save(next)
   }
   const input = videoGenerationInputSchema.safeParse({ profileId: profile?.profileId, operation,
-    localAssetIds: operation === 'image-to-video' && selected ? [selected.localAssetId] : [], creativeBrief: brief, parameters })
+    localAssetIds: operation === 'image-to-video' ? selectedIds : [], creativeBrief: brief, parameters,
+    ...(runtime.protocolVersion === 3 ? { protocolVersion: 3, requestedSpec: parameters, specRevision: 1, parameterSources: Object.fromEntries(Object.entries(parameters ?? {}).filter(([, value]) => value !== undefined).map(([key]) => [key, 'user'])) } : {}) })
   const problem = !runtime.executionAvailable || !profile || !operation ? '当前没有可用的视频生成配置'
-    : operation === 'image-to-video' && !selected ? '请选择一张已保存的本地参考图'
-      : !brief.trim() ? '请填写视频创作需求' : !input.success ? '请检查视频参数和创作需求' : null
+    : operation === 'image-to-video' && !selected.length ? '请选择已保存的本地参考图'
+      : operation === 'image-to-video' && (selected.length !== selectedIds.length || mediaReferenceProblem(selected, support)) ? mediaReferenceProblem(selected, support) ?? '所选参考图已不可用'
+        : !brief.trim() ? '请填写视频创作需求' : !input.success ? '请检查视频参数和创作需求' : null
   const disabled = busy || !runtime.executionAvailable || !profile
 
   return <form className="media-creation video-creation" onSubmit={event => {
@@ -87,7 +91,7 @@ export function VideoCreationForm({ taskId, runtime, references, busy, pending =
     if (!disabled && !problem && input.success) onGenerate(input.data)
   }}>
     <label htmlFor={`${id}-profile`}>视频模型</label>
-    <select id={`${id}-profile`} value={profile?.profileId || ''} disabled={disabled} onChange={event => { setProfileId(event.target.value); setSelectedId('') }}>
+    <select id={`${id}-profile`} value={profile?.profileId || ''} disabled={disabled} onChange={event => { setProfileId(event.target.value); setSelectedIds([]) }}>
       {!profile && <option value="">尚未配置</option>}
       {profiles.map(profile => <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>)}
     </select>
@@ -96,15 +100,16 @@ export function VideoCreationForm({ taskId, runtime, references, busy, pending =
       {availableOperations.map(value => <option key={value} value={value}>{value === 'image-to-video' ? '图片生成视频' : '文字生成视频'}</option>)}
     </select>
     {operation === 'image-to-video' && <>
-      <div className="media-subheading"><span>本地参考图 · 单选</span><button type="button" className="media-command" disabled={disabled} onClick={onImport}><ImagePlus size={14} />从系统选择视频参考图</button></div>
-      <fieldset className="video-references" disabled={disabled}><legend className="sr-only">选择一张视频参考图</legend>
+      <div className="media-subheading"><span title={`支持 ${support.mimeTypes.join('、')}，单张最多 ${support.maxInputBytes / 1024 / 1024} MiB`}>本地参考图 · {selected.length}/{Math.min(32, support.maxCount)}</span><button type="button" className="media-command" disabled={disabled} onClick={onImport}><ImagePlus size={14} />从系统选择视频参考图</button></div>
+      <fieldset className="video-references" disabled={disabled}><legend className="sr-only">选择视频参考图</legend>
         {localReferences.length ? localReferences.map((asset, index) => <label className="media-reference-select video-reference" key={asset.localAssetId}>
-          <input type="radio" name={`${id}-reference`} aria-label={`视频参考图 ${index + 1}`} checked={selected?.localAssetId === asset.localAssetId} disabled={asset.status !== 'SAVED' || !caps || asset.size > caps.maxInputBytes} onChange={() => setSelectedId(asset.localAssetId)} />
+          <input type="checkbox" name={`${id}-reference`} aria-label={`视频参考图 ${index + 1}`} checked={selectedIds.includes(asset.localAssetId)} title={mediaReferenceProblem([asset], support) ?? undefined} disabled={!selectedIds.includes(asset.localAssetId) && !!mediaReferenceProblem([...selected, asset], support)} onChange={() => setSelectedIds(value => value.includes(asset.localAssetId) ? value.filter(id => id !== asset.localAssetId) : [...value, asset.localAssetId])} />
           <span>视频参考图 {index + 1}<small>{asset.width} × {asset.height} · {asset.mime} · {mediaSaveLabels[asset.status].label}{caps && asset.size > caps.maxInputBytes ? ' · 超出当前配置大小限制' : ''}</small></span>
         </label>) : <p className="artifact-empty">尚无本地视频参考图</p>}
       </fieldset>
     </>}
-    {caps && parameters && <div className="media-specs">
+    {runtime.protocolVersion === 3 && parameters && <div className="media-specs">{(['durationSeconds', 'aspectRatio', 'resolution'] as const).map(field => <label key={field}>{({ durationSeconds: '时长', aspectRatio: '比例', resolution: '分辨率' })[field]}<input aria-label={`视频${field}`} value={parameters[field] ?? ''} disabled={disabled} type={field === 'durationSeconds' ? 'number' : 'text'} onChange={event => changeParameters({ [field]: event.target.value === '' ? undefined : field === 'durationSeconds' ? Number(event.target.value) : event.target.value })} /></label>)}</div>}
+    {runtime.protocolVersion !== 3 && caps && parameters && <div className="media-specs">
       <label>时长{caps.durationsSeconds.length === 1 ? '（固定）' : ''}<select aria-label="视频时长" value={parameters.durationSeconds} disabled={disabled || caps.durationsSeconds.length === 1} onChange={event => changeParameters({ durationSeconds: Number(event.target.value) })}>{caps.durationsSeconds.map(value => <option key={value} value={value}>{value} 秒</option>)}</select></label>
       <label>比例{caps.aspectRatios.length === 1 ? '（固定）' : ''}<select aria-label="视频比例" value={parameters.aspectRatio} disabled={disabled || caps.aspectRatios.length === 1} onChange={event => changeParameters({ aspectRatio: event.target.value })}>{caps.aspectRatios.map(value => <option key={value}>{value}</option>)}</select></label>
       <label>分辨率{caps.resolutions.length === 1 ? '（固定）' : ''}<select aria-label="视频分辨率" value={parameters.resolution} disabled={disabled || caps.resolutions.length === 1} onChange={event => changeParameters({ resolution: event.target.value as typeof parameters.resolution })}>{caps.resolutions.map(value => <option key={value}>{value}</option>)}</select></label>

@@ -8,6 +8,8 @@ import { AppError } from '../errors/app-error'
 import { isErrorCode, type ErrorCode } from '../errors/error-codes'
 import { inspectMediaImage } from './media-image'
 import { imageEffectiveSpecMatches, imageRequestedSpecSchema } from '../../src/shared/media-spec-contract'
+import { mediaUpstreamErrorSchema } from '../../src/shared/media-upstream-error'
+import { safeMediaUpstreamError, safeMediaUpstreamMessage } from '../common/media-upstream-error'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const v3ProfileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
@@ -41,6 +43,7 @@ const quoteV3Schema = quoteBaseSchema.extend({ protocolVersion: z.literal(3), se
   billingDimensions: z.object({ size: z.string().min(1).max(128), count: z.number().int().positive(), quality: z.string().min(1).max(128) }).strict(),
   normalizationNotes: z.array(z.string().min(1).max(240)).max(16) }).strict()
 const legacyReceiptSchema = z.object({ mock: z.literal(false), receiptId: id, clientRequestId: id, profileId: id, configVersion: id,
+  upstreamError: mediaUpstreamErrorSchema.optional(),
   executionMode: z.literal('sync-response'), status: z.enum(['SUBMITTING','QUEUED','RUNNING','SUBMISSION_UNKNOWN','SUCCEEDED','PARTIAL_SUCCEEDED','FAILED','CANCELLED','RESULT_EXPIRED']),
     pollAfterMs: z.number().int().nonnegative().nullable(), outputs: z.array(z.object({ outputId: id, kind: z.literal('image'), mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
     byteLength: z.number().int().positive().max(25 * 1024 * 1024), width: z.number().int().positive(), height: z.number().int().positive(),
@@ -226,7 +229,8 @@ export class SepRealMediaGateway implements MediaGatewayPort {
     return { receiptId: value.receiptId, clientRequestId: value.clientRequestId, profileId: value.profileId, configVersion: value.configVersion,
       status: value.status, ...('actualSpec' in value && value.actualSpec ? { actualSpec: value.actualSpec } : {}), pollAfterMs: value.pollAfterMs, outputs: value.outputs.map(output => ({ outputId: output.outputId, mime: output.mimeType,
         size: output.byteLength, width: output.width, height: output.height, sha256: output.sha256, expiresAt: output.expiresAt ? Date.parse(output.expiresAt) : null })),
-      billingStatus: value.billingStatus, recovery: value.recovery, errorCode: value.errorCode, outputErrors: value.outputErrors }
+      billingStatus: value.billingStatus, recovery: value.recovery, errorCode: value.errorCode, outputErrors: value.outputErrors,
+      ...(value.upstreamError ? { upstreamError: safeMediaUpstreamError(value.upstreamError) } : {}) }
   }
   private async json<T>(subscriptionId: string, path: string, method: 'GET' | 'POST', body: unknown, schema: ZodType<T>, signal: AbortSignal): Promise<T> {
     const response = await this.request(subscriptionId, path, method, body, signal)
@@ -272,13 +276,15 @@ export class SepRealMediaGateway implements MediaGatewayPort {
     const status = response.status
     let payload: unknown
     const contentType = response.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase()
+    const upstream = response.headers.get('X-SEP-Error-Source') === 'upstream'
     const length = Number(response.headers.get('Content-Length'))
-    if (contentType === 'application/json' && (!Number.isFinite(length) || length <= MAX_JSON) && response.body) {
+    if ((upstream || contentType === 'application/json') && (!Number.isFinite(length) || length <= MAX_JSON) && response.body) {
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
       try {
         reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0
         while (true) { const { done, value } = await reader.read(); if (done) break; size += value.byteLength; if (size > MAX_JSON) throw new Error(); chunks.push(value) }
-        reader.releaseLock(); payload = JSON.parse(Buffer.concat(chunks, size).toString('utf8'))
+        const text = Buffer.concat(chunks, size).toString('utf8')
+        try { payload = JSON.parse(text) } catch { payload = contentType === 'text/html' ? undefined : text }
       } catch { if (reader) await reader.cancel().catch(() => undefined); else await response.body.cancel().catch(() => undefined) }
       finally { reader?.releaseLock() }
     } else await response.body?.cancel().catch(() => undefined)
@@ -289,10 +295,10 @@ export class SepRealMediaGateway implements MediaGatewayPort {
       ? (error as Record<string, unknown>).field as string : undefined
     const recovery = error && typeof error === 'object' && typeof (error as Record<string, unknown>).recovery === 'string' && SAFE_ERROR_RECOVERY.test((error as Record<string, unknown>).recovery as string)
       ? (error as Record<string, unknown>).recovery as string : undefined
-    const mapped: ErrorCode = code && isErrorCode(code) ? code : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED' : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 400 ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
+    const mapped: ErrorCode = upstream ? 'SERVICE_UNAVAILABLE' : code && isErrorCode(code) ? code : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED' : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 400 ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
     const message = mapped === 'AUTH_REQUIRED' ? '图片服务认证已失效，请重新登录。' : mapped === 'PERMISSION_DENIED' ? '图片服务拒绝了当前授权或请求。' : mapped === 'INVALID_ARGUMENT' ? '图片服务拒绝了当前输入或规格。' : mapped === 'NOT_FOUND' ? '未找到对应的图片任务或资源。' : mapped === 'RATE_LIMITED' ? '图片服务请求过于频繁，请稍后重试。' : '图片服务暂时不可用，请查询原请求，不要自动重新生成。'
     const metadata = publicErrorMetadataSchema.safeParse(error)
-    return new AppError(mapped, { message, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}), ...(metadata.success ? metadata.data : {}) } })
+    return new AppError(mapped, { message: upstream ? safeMediaUpstreamMessage(payload) ?? message : message, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}), ...(metadata.success ? metadata.data : {}), ...(upstream ? { source: 'upstream', statusCode: status } : {}) } })
   }
   private async request(subscriptionId: string, path: string, method: 'GET'|'POST', body: unknown, signal: AbortSignal) {
     this.safeId(subscriptionId); signal.throwIfAborted()

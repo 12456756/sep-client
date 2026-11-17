@@ -1,11 +1,13 @@
 import type { MediaGenerationStatus, MediaSaveStatus, MediaTrackingStatus } from './media'
 import { MEDIA_SPEC_ERROR_MESSAGES, imageRequestedSpecSchema, videoRequestedSpecSchema, type MediaSpecFailureContext } from './media-spec-contract'
+import { mediaUpstreamMessage, type MediaUpstreamError } from './media-upstream-error'
 
 export interface MediaIssueState {
   generationStatus: MediaGenerationStatus | string
   trackingStatus: MediaTrackingStatus
   saveStatus: MediaSaveStatus
   error: string | null
+  upstreamError?: MediaUpstreamError
 }
 
 export const MEDIA_BUSINESS_MESSAGES: Readonly<Record<string, string>> = {
@@ -56,6 +58,8 @@ export function mediaIssueMessage(job: MediaIssueState, kind: 'image' | 'video')
   const name = kind === 'image' ? '图片' : '视频'
   // An unconfirmed submission must never be presented as a proven rejection.
   if (job.generationStatus === 'SUBMISSION_UNKNOWN') return `${name}提交结果尚未确认，请查看原任务，勿重复提交`
+  const upstreamMessage = mediaUpstreamMessage(job.upstreamError?.body)
+  if (upstreamMessage && ['FAILED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) return `${name}生成失败：${upstreamMessage}`
   if (job.error && Object.hasOwn(MEDIA_BUSINESS_MESSAGES, job.error)) return MEDIA_BUSINESS_MESSAGES[job.error]
   if (job.error === 'RESULT_EXPIRED') return `${name}结果已过期，无法重新下载`
   if (job.error === 'TRACKING_LIMIT') return `${name}跟踪已达本轮上限，请恢复原任务跟踪`

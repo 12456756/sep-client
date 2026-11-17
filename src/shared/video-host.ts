@@ -2,13 +2,15 @@ import { z } from 'zod'
 import { videoParametersSchema, videoOperationSchema, type VideoOutput, type VideoRuntime, type VideoReceipt, type VideoSpecFailure } from './video-media'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec, type VideoRequestedSpec, type MediaParameterSources } from './media-spec-contract'
 import { mediaReferenceSourceSchema } from './media-host'
+import { MAX_MEDIA_REFERENCES } from './media-references'
+import type { MediaUpstreamError } from './media-upstream-error'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const profileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
 export const videoGenerationInputSchema = z.object({
   profileId,
   operation: videoOperationSchema,
-  localAssetIds: z.array(id).max(4),
+  localAssetIds: z.array(id).max(MAX_MEDIA_REFERENCES),
   creativeBrief: z.string().trim().min(1).max(4000),
   parameters: videoRequestedSpecSchema,
   protocolVersion: z.literal(3).optional(), requestedSpec: videoRequestedSpecSchema.optional(),
@@ -19,7 +21,7 @@ export const videoGenerationInputSchema = z.object({
     context.addIssue({ code: 'custom', path: ['parameters'], message: 'Video specification version is incomplete or contradictory.' })
   }
   if (new Set(value.localAssetIds).size !== value.localAssetIds.length ||
-    (value.operation === 'image-to-video' ? value.localAssetIds.length !== 1 : value.localAssetIds.length !== 0)) {
+    (value.operation === 'image-to-video' ? value.protocolVersion === 3 ? value.localAssetIds.length < 1 : value.localAssetIds.length !== 1 : value.localAssetIds.length !== 0)) {
     context.addIssue({ code: 'custom', path: ['localAssetIds'], message: 'Video reference selection is invalid.' })
   }
 })
@@ -29,7 +31,7 @@ export type VideoGenerationInput = z.infer<typeof videoGenerationInputSchema>
 export const videoToolGenerationInputSchema = z.object({
   requirementId: z.string().trim().min(1).max(128).optional(),
   creativeBrief: z.string().trim().min(1).max(4000),
-  localAssetIds: z.array(id).max(1).default([]),
+  localAssetIds: z.array(id).max(MAX_MEDIA_REFERENCES).default([]),
   parameters: videoRequestedSpecSchema.optional(),
   protocolVersion: z.literal(3).optional(), requestedSpec: videoRequestedSpecSchema.optional(),
   specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(), parameterSources: mediaSpecMetadataSchema.shape.parameterSources.optional(),
@@ -77,6 +79,7 @@ export interface VideoJobView {
   downloadMs?: number
   specFailure?: VideoSpecFailure
   error: string | null
+  upstreamError?: MediaUpstreamError
   outputs: VideoOutput[]
   /** Verified local outputs; supports partial save without hiding existing files. */
   savedOutputIds?: string[]

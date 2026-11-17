@@ -15,6 +15,36 @@ import type { VideoScope } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
+import { MOCK_MEDIA_PNG } from '../data/mock-media-gateway'
+
+test('V3 video uploads all selected references before one quote and one submission', async () => {
+  const f = await realSetup()
+  f.state.runtime = videoRuntimeSchema.parse({ protocolVersion: 3, executionMode: 'real', executionAvailable: true,
+    defaultProfileId: 'video-v3', tools: ['video_from_image', 'video_get_job'], profiles: [{ profileId: 'video-v3', configVersion: 'cfg', kind: 'video', displayName: 'Video', operations: ['image-to-video'], executionMode: 'async-query', authorized: true,
+      adapter: { id: 'video-adapter', version: '3', available: true, operations: ['image-to-video'], referenceSupport: { maxCount: 3, maxInputBytes: 1024, mimeTypes: ['image/png'] }, supportsTaskQuery: true, supportsCancel: false }, capabilityHints: [] }] })
+  const requests: Array<{ stage: string; referenceIds: string[] }> = []
+  const readIds: string[] = []
+  let uploads = 0
+  const options: MockVideoHostOptions = { ...f.options,
+    readReference: async (_scope, _taskId, id) => { readIds.push(id); return { bytes, sha256 } }, gateway: () => ({
+      ...f.options.gateway(scope),
+      uploadReference: async () => ({ mock: false, referenceId: `reference-${++uploads}`, expiresAt: new Date(Date.now() + 60_000).toISOString(), mimeType: 'image/png', byteLength: bytes.length, sha256, width: 1, height: 1 }),
+      quote: async request => { requests.push({ stage: 'quote', referenceIds: request.referenceIds }); return { quoteId: 'quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.100000', currency: 'CNY', protocolVersion: 3, specRevision: 1, effectiveSpec: request.parameters } },
+      submit: async request => { requests.push({ stage: 'submit', referenceIds: request.referenceIds }); return videoReceiptSchema.parse({ ...fixture.receipt, mock: false, protocolVersion: 3, specRevision: request.specRevision, effectiveSpec: request.requestedSpec, billingStatus: 'RESERVED', receiptId: 'receipt', clientRequestId: request.clientRequestId, profileId: request.profileId, configVersion: request.configVersion, operation: request.operation }) },
+    }) }
+  const host = new MockVideoHostService(options)
+  const request: VideoGenerationInput = { ...input(), profileId: 'video-v3', protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 }, parameterSources: { durationSeconds: 'user' }, specRevision: 1, localAssetIds: ['third', 'first', 'second'] }
+  try {
+    const job = await host.generate('task-a', request)
+    assert.equal(uploads, 3)
+    assert.deepEqual(readIds, request.localAssetIds)
+    assert.deepEqual(requests, [{ stage: 'quote', referenceIds: ['reference-1', 'reference-2', 'reference-3'] }, { stage: 'submit', referenceIds: ['reference-1', 'reference-2', 'reference-3'] }])
+    assert.deepEqual((await f.store.getJob(scope, 'task-a', job.jobId))?.request.referenceIds, requests[0]!.referenceIds)
+    f.state.runtime.profiles[0]!.capabilities.maxReferenceCount = 2
+    await assert.rejects(host.generate('task-a', request))
+    assert.equal(uploads, 3)
+  } finally { await host.stopAll(); await f.host.stopAll() }
+})
 
 function realReceipt(receipt: VideoReceipt): VideoReceipt {
   return { ...receipt, mock: false, billingStatus: receipt.status === 'SUCCEEDED' ? 'SETTLED' : 'RESERVED', amountCny: '0.900000', amountUsd: '0.12', ...(receipt.status === 'SUCCEEDED' ? { actualCostCny: '0.800000' } : {}) }
@@ -160,7 +190,7 @@ test('mode revoked during real approval prevents dispatch and leaves frozen unsu
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 const scope: VideoScope = { enterpriseId: 'enterprise-a', memberId: 'member-a', subscriptionId: 'subscription-a' }
-const bytes = Buffer.from('mock reference image')
+const bytes = MOCK_MEDIA_PNG
 const sha256 = createHash('sha256').update(bytes).digest('hex')
 const input = (): VideoGenerationInput => ({
   profileId: 'mock-video-from-image', operation: 'image-to-video', localAssetIds: ['asset-a'],

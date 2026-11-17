@@ -88,8 +88,8 @@ export class ConversationMediaService implements ConversationMediaPort {
           const parsed = mediaToolGenerationInputSchema.parse(raw)
           const selected = parsed.localAssetIds ?? []
           const operation = parsed.operation ?? (selected.length ? 'edit' : 'generate')
-          if (operation === 'edit' && selected.length !== 1) throw new AppError('INVALID_ARGUMENT', {
-            message: '图生图请通过 localAssetIds 明确选择一张参考图片；多张候选来源不明确时先询问用户。',
+          if (operation === 'edit' && selected.length === 0) throw new AppError('INVALID_ARGUMENT', {
+            message: '图生图请通过 localAssetIds 明确选择参考图片并保留顺序；候选来源不明确时先询问用户。',
           })
           if (operation === 'generate' && selected.length) throw new AppError('INVALID_ARGUMENT', {
             message: '使用参考图修改图片请指定 operation=edit；文生图不应传入参考图。',
