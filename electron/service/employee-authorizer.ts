@@ -23,6 +23,8 @@ import type { SkillArtifactAvailable } from '../common/platform/skill-artifact-c
 import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 import type { EmployeeProfile } from '../domain/employee-profile'
 import type { ModelCatalogEntry } from '../../src/shared/model-catalog-contracts'
+import type { MultimediaSettings } from '../../src/shared/multimedia-settings'
+import { parseMediaCapabilities } from '../common/platform/media-contract'
 
 function videoAuthorizationFingerprint(video: EmployeeRuntimeConfig['video']): string {
   // Video arrays enumerate sets of tools, profiles, operations and supported parameters.
@@ -317,6 +319,19 @@ export class EmployeeAuthorizer {
     const current = await this.readRuntime(subscriptionId)
     if (!current?.scope.isCurrent()) return null
     return { subscriptionId, media: current.manifest?.runtime.media, video: current.manifest?.runtime.video }
+  }
+
+  async describeMultimedia(subscriptionId: string): Promise<MultimediaSettings> {
+    const current = await this.readRuntime(subscriptionId)
+    if (!current?.scope.isCurrent()) throw new AppError('PERMISSION_DENIED', { message: '该员工当前不可用，请刷新员工列表后重试。' })
+    const runtime = current.manifest?.runtime
+    let image: MultimediaSettings['image'] = null
+    let imageError: string | null = null
+    if (runtime?.media != null) {
+      try { image = parseMediaCapabilities(runtime.media) }
+      catch { imageError = '图片能力信息格式异常，请刷新重试或联系平台管理员。' }
+    }
+    return { image, imageError, video: runtime?.video ?? null }
   }
 
   /** Full preparation is only for run admission; the queue carries the prepared skills. */

@@ -25,8 +25,10 @@ import { resultFileRoutes } from './result-files'
 import { skillImportRoutes } from './skill-import'
 import { scheduledRoutes } from './scheduled'
 import { connectorRoutes } from './connectors'
+import { multimediaRoutes } from './multimedia'
 
 export const routes: readonly Route[] = [
+  ...multimediaRoutes,
   ...connectorRoutes,
   ...skillImportRoutes,
   ...resultFileRoutes,

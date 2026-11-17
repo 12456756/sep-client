@@ -1,5 +1,5 @@
-export type SettingsPageId = 'general' | 'account' | 'voice'
-export type SettingsSectionId = 'models' | 'workspace' | 'profile' | 'enterprise' | 'speech'
+export type SettingsPageId = 'general' | 'account' | 'voice' | 'multimedia'
+export type SettingsSectionId = 'models' | 'workspace' | 'profile' | 'enterprise' | 'speech' | 'multimedia'
 
 interface SettingsSection {
   id: SettingsSectionId
@@ -24,6 +24,9 @@ const SETTINGS_PAGES: readonly SettingsPage[] = [
   { id: 'account', title: '账号', group: '个人', sections: [
     { id: 'profile', title: '个人资料', keywords: '头像 姓名 邮箱 我的账号 刷新资料 profile' },
     { id: 'enterprise', title: '企业资料', keywords: '企业 名称 标志 Logo', managerOnly: true },
+  ] },
+  { id: 'multimedia', title: '多媒体', group: '个人', sections: [
+    { id: 'multimedia', title: '图片与视频', keywords: '员工 模型 参数 允许值 建议值 默认值 范围 参考图 分辨率 尺寸 质量 时长 格式 multimedia image video' },
   ] },
   { id: 'voice', title: '语音', group: '个人', sections: [
     { id: 'speech', title: '语音输入', keywords: '允许语音输入 麦克风 权限 系统 设置 microphone' },
