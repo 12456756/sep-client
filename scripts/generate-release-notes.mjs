@@ -12,6 +12,13 @@ function requireChannel(channel) {
   return channel
 }
 
+function requireVersion(version) {
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new ReleaseNotesError('package version must be a release version string')
+  }
+  return version
+}
+
 function requireChanges(changes) {
   if (typeof changes !== 'string' || Buffer.byteLength(changes, 'utf8') > MAX_CHANGES_BYTES) {
     throw new ReleaseNotesError('changes must be UTF-8 plain text of at most 64 KiB without binary/control characters')
@@ -51,9 +58,7 @@ export function parseReleaseNotesArguments(args, env = {}) {
 
 export function createReleaseNotes({ version, channel = 'stable', environment = channel === 'stable' ? 'production' : 'integration', generatedAt, changes = '' } = {}) {
   requireChannel(channel)
-  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new ReleaseNotesError('package version must be a release version string')
-  }
+  requireVersion(version)
   if (typeof environment !== 'string' || environment.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(environment)) {
     throw new ReleaseNotesError('release environment must be a short single-line identifier')
   }
@@ -91,7 +96,26 @@ async function readChangesFile(file) {
   }
 }
 
+export async function readVersionReleaseNotes(version, directory = 'release-notes') {
+  requireVersion(version)
+  let changes
+  try {
+    changes = await readChangesFile(join(directory, `${version}.md`))
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new ReleaseNotesError(`Missing version notes: release-notes/${version}.md`)
+    throw error
+  }
+  if (!changes.trim()) throw new ReleaseNotesError(`Version notes are empty: release-notes/${version}.md`)
+  return changes.trim()
+}
+
 async function main(args, env) {
+  if (args.length === 1 && args[0] === '--check-version') {
+    const pkg = JSON.parse(await readFile('package.json', 'utf8'))
+    await readVersionReleaseNotes(pkg.version)
+    console.log(`Version notes verified: release-notes/${pkg.version}.md`)
+    return
+  }
   const { channel, outputDir, changesFile } = parseReleaseNotesArguments(args, env)
   const pkg = JSON.parse(await readFile('package.json', 'utf8'))
   const changes = changesFile === undefined ? '' : await readChangesFile(changesFile)

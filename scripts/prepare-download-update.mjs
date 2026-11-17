@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { pathToFileURL } from 'node:url'
 import yaml from 'js-yaml'
 import { UPDATE_FEEDS } from './generate-builder-config.mjs'
+import { readVersionReleaseNotes } from './generate-release-notes.mjs'
 import { MANIFEST_NAMES, MAX_MANIFEST_BYTES, parseManifest, validateArtifactPath, validateManifestSet, verifyUpdateDirectory } from './verify-update-manifest.mjs'
 
 const MODE = 'unsigned-download-update'
@@ -50,8 +51,9 @@ function versionedPath(version, value) {
   return `${version}/${path}`
 }
 
-function rewriteManifest(manifest, name) {
+function rewriteManifest(manifest, name, releaseNotes) {
   const rewritten = structuredClone(manifest)
+  rewritten.releaseNotes = releaseNotes
   rewritten.files = rewritten.files.map(file => ({ ...file, url: versionedPath(manifest.version, file.url) }))
   if (typeof rewritten.path === 'string') rewritten.path = versionedPath(manifest.version, rewritten.path)
   const text = yaml.dump(rewritten, { lineWidth: -1, noRefs: true, sortKeys: false })
@@ -102,7 +104,7 @@ async function artifactPlan(source, version, feed) {
   return artifacts
 }
 
-export async function prepareDownloadUpdate({ source, output, channel }) {
+export async function prepareDownloadUpdate({ source, output, channel, releaseNotesDir = 'release-notes' }) {
   requireValue(channel === 'beta' || channel === 'stable', 'channel must be beta or stable')
   requireValue(typeof source === 'string' && source.length > 0, 'source directory is required')
   const root = await realpath(resolve(source))
@@ -117,13 +119,14 @@ export async function prepareDownloadUpdate({ source, output, channel }) {
     parsed.push({ name, manifest: parseManifest(bytes, name) })
   }
   validateManifestSet(parsed, { requireAllPlatforms: true })
+  const version = parsed[0].manifest.version
+  const releaseNotes = await readVersionReleaseNotes(version, releaseNotesDir)
   await verifyUpdateDirectory(root, { requireAllPlatforms: true })
   for (const name of MANIFEST_NAMES) {
     requireValue((await readManifest(root, name)).equals(originalBytes.get(name)), 'source manifests changed during verification')
   }
 
-  const version = parsed[0].manifest.version
-  const rewritten = parsed.map(({ name, manifest }) => rewriteManifest(manifest, name))
+  const rewritten = parsed.map(({ name, manifest }) => rewriteManifest(manifest, name, releaseNotes))
   validateManifestSet(rewritten, { requireAllPlatforms: true })
   const feed = UPDATE_FEEDS[channel]
   const artifacts = await artifactPlan(root, version, feed)
