@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { MediaAssetView, MediaTaskView } from '../../shared/media'
+import type { VideoTaskView } from '../../shared/video-host'
+import { savedConversationVideos, type ConversationResult } from './conversation-results'
 
 export function groupSavedConversationImages(taskId: string, view: MediaTaskView): Map<string, MediaAssetView[]> {
   const byRun = new Map<string, MediaAssetView[]>()
@@ -15,51 +17,48 @@ export function groupSavedConversationImages(taskId: string, view: MediaTaskView
   return byRun
 }
 
-export function ConversationMedia({ taskId, visible = true }: { taskId: string; visible?: boolean }) {
-  const [view, setView] = useState<MediaTaskView | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [retry, setRetry] = useState(0)
-  useEffect(() => {
-    let active = true
-    const refresh = async () => {
-      try {
-        const result = await window.electronAPI.getTaskMedia(taskId)
-        if (!active) return
-        if (result.success && result.data) { setView(result.data); setError(null) }
-        else if (result.error) setError(result.error.message)
-      } catch { if (active) setError('图片成果暂时无法读取') }
-    }
-    void refresh()
-    if (!visible) return () => { active = false }
-    const timer = window.setInterval(() => { void refresh() }, 2000)
-    return () => { active = false; window.clearInterval(timer) }
-  }, [taskId, visible, retry])
-  const groups = useMemo<Map<string, MediaAssetView[]>>(() => view ? groupSavedConversationImages(taskId, view) : new Map<string, MediaAssetView[]>(), [taskId, view])
-  if (!groups.size) return error ? <p className="ent-talk-media-status">{error}</p> : null
-  return <div className="ent-talk-media" aria-label="本轮图片成果">
-    {[...groups.entries()].map(([runId, assets]) => <div className="ent-talk-media-run" key={runId}>
-      <small>已生成并保存 · {assets.length} 张</small>
-      <div className="ent-talk-media-grid">{assets.map(asset => <ConversationAsset key={asset.localAssetId} taskId={taskId} asset={asset} onRetry={() => setRetry(value => value + 1)} />)}</div>
-    </div>)}
-  </div>
+export function savedConversationImages(taskId: string, view: MediaTaskView): ConversationResult[] {
+  const groups = groupSavedConversationImages(taskId, view)
+  const seen = new Set<string>()
+  const results: ConversationResult[] = []
+  const append = (asset: MediaAssetView, runId?: string) => {
+    if (asset.taskId !== taskId || asset.source !== 'output' || asset.status !== 'SAVED' || seen.has(asset.localAssetId)) return
+    seen.add(asset.localAssetId)
+    const format = asset.mime.split('/')[1]
+    results.push({ runId, file: { id: asset.localAssetId, name: `图片成果${results.length + 1}.${format}`, format, path: '', note: '',
+      sourceArtifact: { kind: 'image', artifactId: asset.localAssetId, sha256: '' } }, request: { taskId, assetId: asset.localAssetId } })
+  }
+  for (const [runId, assets] of groups) for (const asset of assets) append(asset, runId)
+  for (const asset of [...view.assets, ...view.jobs.filter(job => job.taskId === taskId).flatMap(job => job.assets)]) append(asset)
+  return results
 }
 
-function ConversationAsset({ taskId, asset, onRetry }: { taskId: string; asset: MediaAssetView; onRetry: () => void }) {
-  const [url, setUrl] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
+export function useConversationMedia(taskId: string, scopeKey: string) {
+  const [images, setImages] = useState<MediaTaskView | null>(null)
+  const [videos, setVideos] = useState<VideoTaskView | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let active = true
-    let objectUrl: string | null = null
-    setUrl(null); setFailed(false)
-    void window.electronAPI.previewMediaAsset({ taskId, assetId: asset.localAssetId }).then(result => {
-      if (!active || !result.success || !result.data) { if (active) setFailed(true); return }
-      objectUrl = URL.createObjectURL(new Blob([new Uint8Array(result.data.bytes)], { type: result.data.mime }))
-      setUrl(objectUrl)
-    }).catch(() => { if (active) setFailed(true) })
-    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [taskId, asset.localAssetId])
-  return <figure className="ent-talk-media-asset">
-    {url && !failed ? <img src={url} alt="图片成果" onError={() => setFailed(true)} /> : <button type="button" onClick={onRetry}>{failed ? '重新读取图片' : '读取图片…'}</button>}
-    <figcaption>{asset.width} × {asset.height}</figcaption>
-  </figure>
+    let timer: ReturnType<typeof setTimeout> | undefined
+    setImages(null); setVideos(null); setError(null)
+    const refresh = async () => {
+      const results = await Promise.allSettled([
+        window.electronAPI.getTaskMedia(taskId), window.electronAPI.getTaskVideo(taskId),
+      ])
+      if (!active) return
+      const [imageResult, videoResult] = results
+      if (imageResult.status === 'fulfilled' && imageResult.value.success) setImages(imageResult.value.data ?? null)
+      if (videoResult.status === 'fulfilled' && videoResult.value.success) setVideos(videoResult.value.data ?? null)
+      setError(results.some(result => result.status === 'rejected' || !result.value.success) ? '部分媒体成果暂时无法读取' : null)
+      timer = setTimeout(() => { void refresh() }, 3000)
+    }
+    void refresh()
+    return () => { active = false; if (timer) clearTimeout(timer) }
+  }, [taskId, scopeKey, attempt])
+  const results = useMemo<ConversationResult[]>(() => {
+    const imageResults = images ? savedConversationImages(taskId, images) : []
+    return [...imageResults, ...(videos ? savedConversationVideos(taskId, videos) : [])]
+  }, [taskId, images, videos])
+  return { results, error, retry: () => setAttempt(value => value + 1) }
 }

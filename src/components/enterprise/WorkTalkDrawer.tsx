@@ -15,7 +15,6 @@ import { ConversationSessionsContext, createConversationSessions } from '../../f
 import { GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
 import { KnowledgeSelector } from './KnowledgeSelector';
 import { noKnowledgeSelection } from '../../shared/knowledge-selection';
-import { ConversationMedia } from '../../features/enterprise/conversation-media';
 import { useConversationQueue } from '../../features/enterprise/use-conversation-queue';
 import { ConversationMessages } from './ConversationMessages';
 import { withComposerConnector } from '../../features/enterprise/composer-connectors';
@@ -128,6 +127,18 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
     else setHasNewContent(true);
   }, [latestMessageId, latestContent]);
 
+  useEffect(() => {
+    const node = body.current;
+    const content = node?.querySelector('.ent-talk');
+    if (!node || !content) return;
+    const observer = new ResizeObserver(() => {
+      if (followsLatest.current) node.scrollTop = node.scrollHeight;
+      else setHasNewContent(true);
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [savedSession]);
+
   const send = async () => {
     if (!draft.trim() || workspace.busy || speech.busy || attachmentsBusy || savedSession.sending) return;
     const text = withComposerConnector(draft, savedSession.connectorId);
@@ -169,7 +180,6 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
         }}>
           <div className="ent-talk">
             <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} />
-            <ConversationMedia taskId={work.id} visible />
           </div>
         </div>
 

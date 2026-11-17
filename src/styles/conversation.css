@@ -7,6 +7,16 @@
 .ent-reply-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ent-brand-solid); }
 .ent-new-content { display: flex; margin: 0 auto 8px; }
 .ent-message-time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-conversation-results { width: 100%; margin: 8px 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
+.ent-conversation-results .result-file-card { border-color: var(--ent-line); background: var(--ent-panel); }
+.ent-conversation-results .result-file-preview { background: var(--ent-panel-subtle); }
+.ent-conversation-results .result-file-name { color: var(--ent-ink); font-size: var(--ent-fs-body); }
+.ent-conversation-results .result-file-footer { gap: 8px; padding: 12px; color: var(--ent-ink-2); }
+.ent-conversation-results .result-file-actions { gap: 6px; }
+.ent-conversation-results .result-file-placeholder { color: var(--ent-ink-2); }
+.ent-conversation-results .result-file-error, .ent-conversation-results-error { color: var(--ent-danger); font-size: var(--ent-fs-note); }
+.ent-say .result-file-error { margin: 0; padding: 0 12px 12px; border-radius: 0; background: transparent; color: var(--ent-danger); }
+.ent-conversation-results-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .ent-message-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); }
 .ent-message-copy .ent-btn { min-height: 26px; padding: 3px 8px; font-size: var(--ent-fs-note); }
 .ent-chat-details, .ent-chat-files { margin-top: 14px; }
