@@ -35,7 +35,7 @@ export class AttachmentService {
 
   private currentScope(): TaskOwnerScope {
     const scope = this.scopeProvider?.()
-    if (!scope) throw new Error('AUTH_REQUIRED')
+    if (!scope) throw new AppError('AUTH_REQUIRED')
     return scope
   }
 
