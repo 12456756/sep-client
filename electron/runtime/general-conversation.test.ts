@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TaskRuntime } from './task-runtime'
@@ -14,6 +14,89 @@ import type { VideoHostTools } from '../domain/video-tools'
 import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoRuntimeSchema } from '../../src/shared/video-media'
 import { ConversationContextStore } from '../domain/conversation-context'
+import { ConversationArtifactStore } from '../data/conversation-artifact-store'
+
+for (const kind of ['general', 'employee'] as const) {
+  for (const directoryStatus of ['ready', 'retry-in-prompt'] as const) {
+    test(`${kind} chat delivers saved media independently of a ${directoryStatus} ordinary artifact directory`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sep-conversation-media-delivery-'))
+      const scope = { memberId: 'member', enterpriseId: 'enterprise' }
+      const manager = new TaskManager(root)
+      const runs = new TaskRunStore(root)
+      const plans = new WorkPlanStore(root)
+      const artifacts = new ConversationArtifactStore()
+      const calls: string[] = []
+      let promptSeen = ''
+      let delivered = false
+      const runtime = new TaskRuntime({
+        taskManager: manager, taskRunStore: runs, workPlanStore: plans,
+        resolveEmployee: id => ({ subscriptionId: id, modelId: 'model', gatewayUrl: 'http://unused' }),
+        authorizeModel: async modelId => ({ subscriptionId: 'subscription', modelId, gatewayUrl: 'http://unused' }),
+        getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+        conversationArtifactStore: {
+          async prepare(workspace, taskId) {
+            if (directoryStatus === 'ready') return artifacts.prepare(workspace, taskId)
+            return { status: directoryStatus, relativePath: `成果/${taskId}` }
+          },
+          scan: (workspace, taskId) => artifacts.scan(workspace, taskId),
+        },
+        // The fallback case exposes only a query tool, as when recovering an existing video.
+        video: { async prepareRun() { return { names: ['video_get_job'], async execute(name) { calls.push(name); return { saveStatus: 'SAVED' } } } },
+          async waitForRun() {}, async stopTask() {} },
+        media: { async prepareRun() { if (directoryStatus === 'retry-in-prompt') return undefined; return { names: ['media_generate_image'], async execute(name) {
+          calls.push(name)
+          return { generationStatus: 'SUCCEEDED', saveStatus: 'SAVED', assets: [{ localAssetId: 'saved-output', source: 'output', status: 'SAVED' }] }
+        } } }, async waitForRun() { delivered = true }, async stopTask() {} },
+        createWorker: options => ({
+          async run(prompt) {
+            promptSeen = prompt
+            assert.match(prompt, /通过文件工具创建的普通文件/)
+            assert.match(prompt, /图片和视频工具的成果由客户端独立保存/)
+            assert.match(prompt, /saveStatus="SAVED" 且有已保存成果时/)
+            assert.match(prompt, /普通成果目录为空、创建失败或文件工具不可用，不影响已保存媒体成果的交付/)
+            assert.match(prompt, /不要为核对或归档媒体成果调用 ls、find、bash/)
+            assert.match(prompt, /不要将本地保存路径要求写入 creativeBrief/)
+            assert.match(prompt, /用户明确要求另存指定目录时，仅使用实际可用的导出能力/)
+            assert.match(prompt, /不得重新生成媒体来解决导出问题/)
+            assert.doesNotMatch(prompt, /请将本轮需要保存的成果放入/)
+            if (options.context.mediaTools) {
+              const result = await options.context.mediaTools.execute('media_generate_image', {})
+              assert.equal((result as { saveStatus: string }).saveStatus, 'SAVED')
+            }
+            await options.context.videoTools!.execute('video_get_job', { jobId: 'saved-video' })
+            await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+              sequence: 0, occurredAt: Date.now(), type: 'text_delta', data: { text: 'Generated and saved.' } })
+          }, async abort() {}, async dispose() {},
+        }),
+      })
+      try {
+        await manager.initialize()
+        await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+        const task = await manager.createTask('media', 'generate a product grid', join(root, 'workspace'), 'subscription')
+        await plans.save(scope, {
+          id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1, owner: scope, mode: 'conversation',
+          title: task.title, goal: task.prompt, nodes: [], confirmedInputs: [],
+          conversation: { ...(kind === 'general' ? { kind, modelId: 'model' } : {}),
+            participants: [{ subscriptionId: 'subscription', modelId: 'model' }], activeSubscriptionId: 'subscription' },
+          workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'full-local', approvalMode: 'auto-approve' }),
+          planHash: 'media', createdAt: Date.now(),
+        })
+        await runtime.executeTask(task.id, { conversation: true })
+        for (let i = 0; i < 200 && (await manager.getTask(task.id))?.activeRunId !== null; i++) await new Promise(resolve => setTimeout(resolve, 10))
+        const completed = await manager.getTask(task.id)
+        assert.equal(completed?.activeRunId, null)
+        assert.equal(completed?.status, 'completed')
+        assert.deepEqual(completed?.files, [])
+        assert.ok(promptSeen.length > 0)
+        assert.equal(delivered, true)
+        assert.deepEqual(calls, directoryStatus === 'ready' ? ['media_generate_image', 'video_get_job'] : ['video_get_job'])
+        if (directoryStatus === 'ready') assert.deepEqual(await readdir(join(task.workDir!, '成果', task.id)), [])
+        const messages = await new ConversationContextStore(runs.getTaskDir(scope, task.id)).listMessages()
+        assert.equal(messages.find(message => message.role === 'assistant')?.content, 'Generated and saved.')
+      } finally { await runtime.stopAll(); await rm(root, { recursive: true, force: true }) }
+    })
+  }
+}
 
 test('general chat preserves selected model, permissions and history across turns and restart without employee behavior', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sep-general-chat-'))

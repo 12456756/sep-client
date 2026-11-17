@@ -40,7 +40,13 @@ import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt
 
 const log = logger.child('conversation-executor')
 
-const CONVERSATION_ARTIFACT_OUTPUT_PROMPT = '用户明确指定文档或文件类型时，按指定类型生成，并保存到本任务成果目录。用户未指定类型时，本轮如涉及最近新闻、实时信息、外部检索、多来源调研、资料汇总、竞品比较，或形成了值得留存的方案、分析、总结、清单或说明，必须生成 Markdown（.md）文件并保存到该目录；简单事实问答、闲聊或无需留档的内容不必生成文件。即使最终答复很短，只要本轮进行了新闻或资料检索，也要保存检索结果 Markdown。只报告实际创建并保存成功的文件。'
+const CONVERSATION_ARTIFACT_OUTPUT_PROMPT = '上述目录要求仅适用于通过文件工具创建的普通文件，图片和视频工具的媒体成果由客户端独立保存和交付。用户明确指定文档或文件类型时，按指定类型生成，并保存到本任务成果目录。用户未指定类型时，本轮如涉及最近新闻、实时信息、外部检索、多来源调研、资料汇总、竞品比较，或形成了值得留存的方案、分析、总结、清单或说明，必须生成 Markdown（.md）文件并保存到该目录；简单事实问答、闲聊或无需留档的内容不必生成文件。即使最终答复很短，只要本轮进行了新闻或资料检索，也要保存检索结果 Markdown。只报告实际创建并保存成功的文件。'
+
+const CONVERSATION_MEDIA_DELIVERY_PROMPT = `【媒体成果交付】
+图片和视频工具的成果由客户端独立保存，并通过媒体资产提供预览和导出，不要求出现在工作目录的普通成果目录中。
+以工具返回的生成状态、保存状态和实际资产为准：saveStatus="SAVED" 且有已保存成果时，表示媒体已完成本地保存和交付；生成仍在进行、保存尚未完成或保存失败时，如实说明对应状态，不得提前宣称交付成功。部分成果已保存时，只交付已保存部分并说明未完成部分。
+普通成果目录为空、创建失败或文件工具不可用，不影响已保存媒体成果的交付；不得因此声称图片或视频丢失、未保存或尚未归档。不要为核对或归档媒体成果调用 ls、find、bash 等文件工具搜索或搬运客户端内部资产，也不要将本地保存路径要求写入 creativeBrief 或视频创作提示。
+用户未明确要求另存指定目录时，直接交付已保存媒体成果，无需额外转存或创建说明文件。用户明确要求另存指定目录时，仅使用实际可用的导出能力；无法另存时区分“媒体已保存”和“未另存到指定目录”，不得重新生成媒体来解决导出问题。`
 
 export interface ConversationExecutorOptions {
   taskManager: TaskManager
@@ -274,10 +280,11 @@ export class ConversationExecutor {
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
       if (artifactDirectory?.status === 'ready') {
-        workerPrompt += `\n\n【本任务成果目录】请将本轮需要保存的成果放入工作目录下的“${artifactDirectory.relativePath}”目录。该路径已由客户端创建并验证，请直接使用；不要改用其他目录。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
+        workerPrompt += `\n\n【本任务成果目录】请将本轮通过文件工具创建的普通文件放入工作目录下的“${artifactDirectory.relativePath}”目录。该路径已由客户端创建并验证，请直接使用；不要改用其他目录。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
       } else if (artifactDirectory?.status === 'retry-in-prompt') {
-        workerPrompt += `\n\n【本任务成果目录】客户端未能创建成果目录。请尝试在工作目录下创建“${artifactDirectory.relativePath}”，并将需要保存的成果放入该目录；只能使用这个固定路径，不要改用其他目录。若创建失败，继续完成可在对话中交付的工作，不要反复重试创建目录。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
+        workerPrompt += `\n\n【本任务成果目录】客户端未能创建普通文件的成果目录。本轮需要通过文件工具保存普通文件时，请尝试在工作目录下创建“${artifactDirectory.relativePath}”，并将普通文件放入该目录；只能使用这个固定路径，不要改用其他目录。若创建失败，继续完成可在对话中交付的工作，不要反复重试创建目录。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
       }
+      if (mediaTools?.names.length || videoTools?.names.length) workerPrompt += `\n\n${CONVERSATION_MEDIA_DELIVERY_PROMPT}`
       if (mediaTools?.names.includes('media_generate_image') || videoTools?.names.some(name => name !== 'video_get_job')) workerPrompt += `\n\n${MEDIA_SPEC_EXECUTION_PROMPT}`
       if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
