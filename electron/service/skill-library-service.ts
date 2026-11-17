@@ -65,7 +65,7 @@ export class SkillLibraryService {
 
   private checkScope(scope: TaskOwnerScope): void {
     const current = requireScope(this.options.scope)
-    if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new Error('登录身份已变化，请重新打开技能。')
+    if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('INVALID_STATE', { message: '登录身份已变化，请重新打开技能。' })
   }
 
   async list(): Promise<SkillLibraryItem[]> {
@@ -86,7 +86,7 @@ export class SkillLibraryService {
     const catalogs = await loadBounded(subscriptions, async subscription => {
       this.checkScope(scope)
       const response = libraryCatalogSchema.parse(await this.options.platform.skills(subscription.employeeId, token))
-      if (response.subscriptionId !== subscription.subscriptionId) throw new Error('员工技能与订阅不匹配。')
+      if (response.subscriptionId !== subscription.subscriptionId) throw new AppError('INVALID_STATE', { message: '员工技能与订阅不匹配，请刷新技能列表；持续失败请联系平台管理员。' })
       return { subscription, skills: response.skills }
     })
     this.checkScope(scope)
@@ -150,7 +150,7 @@ export class SkillLibraryService {
   private async authorized(capabilityId: string): Promise<{ item: SkillLibraryItem; scope: TaskOwnerScope; token: string }> {
     const scope = requireScope(this.options.scope)
     const item = (await this.list()).find(value => value.capability.id === capabilityId)
-    if (!item) throw new Error('没有此技能的有效员工授权。')
+    if (!item) throw new AppError('PERMISSION_DENIED', { message: '没有此技能的有效员工授权。' })
     const token = await this.options.token()
     this.checkScope(scope)
     return { item, scope, token }
@@ -163,7 +163,7 @@ export class SkillLibraryService {
     if (local) return local.request.content
     const { scope, token } = await this.authorized(input.capabilityId)
     const versions = await this.options.platform.list({ capabilityId: input.capabilityId }, token)
-    if (!versions.some(version => version.id === input.versionId)) throw new Error('技能版本不可见或已被移除。')
+    if (!versions.some(version => version.id === input.versionId)) throw new AppError('NOT_FOUND', { message: '技能版本不可见或已被移除。' })
     const result = await this.options.platform.preview(input.versionId, token)
     this.checkScope(scope)
     return result.content
@@ -177,7 +177,7 @@ export class SkillLibraryService {
     const items = snapshot && snapshot.scope.memberId === scope.memberId && snapshot.scope.enterpriseId === scope.enterpriseId
       ? snapshot.items : await this.list()
     const item = items.find(value => value.capability.id === capabilityId)
-    if (!item) throw new Error('没有此技能的有效员工授权。')
+    if (!item) throw new AppError('PERMISSION_DENIED', { message: '没有此技能的有效员工授权。' })
     this.checkScope(scope)
     return { scope, item }
   }
@@ -230,7 +230,7 @@ export class SkillLibraryService {
 
   async save(input: SaveSkillInput): Promise<SaveSkillResult> {
     const { scope, item } = await this.authorizeLocalSave(input.request.capabilityId)
-    if (!item.versions.some(version => version.id === input.request.parentVersionId)) throw new Error('来源版本不可见或不属于该技能。')
+    if (!item.versions.some(version => version.id === input.request.parentVersionId)) throw new AppError('INVALID_ARGUMENT', { message: '来源版本不可见或不属于该技能。' })
     this.checkScope(scope)
     const existing = (await this.options.submissions.list(scope, input.request.capabilityId)).find(value => value.idempotencyKey === input.idempotencyKey)
     const record: LocalSkillSubmission = { ...existing, ...input, createdAt: existing?.createdAt ?? new Date().toISOString() }
@@ -241,7 +241,7 @@ export class SkillLibraryService {
   async retry(input: { capabilityId: string; idempotencyKey: string }): Promise<SaveSkillResult> {
     const { scope } = await this.authorizeLocalSave(input.capabilityId)
     const record = (await this.options.submissions.list(scope, input.capabilityId)).find(value => value.idempotencyKey === input.idempotencyKey)
-    if (!record) throw new Error('本地保存记录不存在。')
+    if (!record) throw new AppError('NOT_FOUND', { message: '本地保存记录不存在。' })
     return this.upload(scope, record)
   }
 
@@ -302,7 +302,7 @@ export class SkillLibraryService {
     this.checkScope(owner)
     if (local) {
       const { scope, item } = await this.authorizeLocalSave(input.capabilityId)
-      if (!local.request.content.trim()) throw new Error('技能原文为空，不能启用。')
+      if (!local.request.content.trim()) throw new AppError('INVALID_STATE', { message: '技能原文为空，不能启用。' })
       for (const binding of item.bindings) {
         this.checkScope(scope)
         const saved = await this.options.versions.save(scope, {
@@ -325,9 +325,9 @@ export class SkillLibraryService {
         // approved history selection is still usable in that case; the follow
         // sentinel itself must continue to require a current release.
         const version = binding.currentVersion ?? fallback
-        if (!version || !canUseSkillVersion(version, scope.memberId)) throw new Error('当前没有可用的发布版本。')
+        if (!version || !canUseSkillVersion(version, scope.memberId)) throw new AppError('INVALID_STATE', { message: '当前没有可用的发布版本。' })
         const { content } = await this.options.platform.preview(version.id, token)
-        if (!content.trim()) throw new Error('技能原文为空，不能启用。')
+        if (!content.trim()) throw new AppError('INVALID_STATE', { message: '技能原文为空，不能启用。' })
         this.checkScope(scope)
         const saved = await this.options.versions.savePlatform(scope, { subscriptionId: binding.subscriptionId,
           employeeId: binding.employeeId, capabilityId: input.capabilityId, baseSkillVersionId: version.id,
@@ -342,12 +342,12 @@ export class SkillLibraryService {
     if (input.versionId === FOLLOW_PLATFORM_SKILL_VERSION) return followPlatform()
     const versions = await this.options.platform.list({ capabilityId: input.capabilityId }, token)
     const version = versions.find(value => value.id === input.versionId)
-    if (!version || !canUseSkillVersion(version, scope.memberId)) throw new Error('该技能版本尚未审核通过或不允许使用。')
+    if (!version || !canUseSkillVersion(version, scope.memberId)) throw new AppError('PERMISSION_DENIED', { message: '该技能版本尚未审核通过或不允许使用。' })
     if (version.scope !== 'PERSONAL') {
       return followPlatform(version)
     }
     const { content } = await this.options.platform.preview(version.id, token)
-    if (!content) throw new Error('技能原文为空，不能启用。')
+    if (!content) throw new AppError('INVALID_STATE', { message: '技能原文为空，不能启用。' })
     this.checkScope(scope)
     // Cache source before switching pointers. A running turn is not modified mid-execution.
     for (const binding of item.bindings) {

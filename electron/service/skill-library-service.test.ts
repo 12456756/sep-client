@@ -8,6 +8,7 @@ import { SkillVersionStore } from '../data/skill-version-store'
 import { SkillSubmissionStore } from '../data/skill-submission-store'
 import { AuthApiError, SkillSubmissionResponseError, type SkillVersion } from '../common/platform/platform-api'
 import { AppError } from '../errors/app-error'
+import { toEnvelope } from '../errors/error-mapper'
 import { setLogSink, type LogRecord } from '../common/logger'
 
 let restoreLogSink: (() => void) | undefined
@@ -67,6 +68,22 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW', publicVersion
 }
 
 describe('SkillLibraryService', () => {
+  it('preserves specific business failures through the IPC error mapping', async () => {
+    const f = await fixture()
+    for (const [work, code, message] of [
+      [() => f.service.preview({ capabilityId: 'other', versionId: 'v1' }), 'PERMISSION_DENIED', '没有此技能的有效员工授权。'],
+      [() => f.service.preview({ capabilityId: 'cap', versionId: 'missing' }), 'NOT_FOUND', '技能版本不可见或已被移除。'],
+      [() => f.service.retry({ capabilityId: 'cap', idempotencyKey: 'missing' }), 'NOT_FOUND', '本地保存记录不存在。'],
+      [() => f.service.select({ capabilityId: 'cap', versionId: 'missing' }), 'PERMISSION_DENIED', '该技能版本尚未审核通过或不允许使用。'],
+      [() => f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'missing', content }, idempotencyKey: 'invalid-source-key-01' }), 'INVALID_ARGUMENT', '来源版本不可见或不属于该技能。'],
+    ] as const) {
+      await assert.rejects(work(), error => {
+        assert.equal(toEnvelope(error).code, code)
+        assert.equal(toEnvelope(error).message, message)
+        return true
+      })
+    }
+  })
   it('uses follow mode when returning from personal content or selecting a public history entry', async () => {
     const latest = { ...published, id: 'v2', scope: 'ENTERPRISE', status: 'ENTERPRISE_APPROVED', version: '2.0' }
     const f = await fixture('ENTERPRISE_APPROVED', [latest, published])
@@ -186,7 +203,7 @@ describe('SkillLibraryService', () => {
     }
     await done
     assert.equal(logs.some(record => record.message === 'personal skill upload verification completed'), false)
-    assert.equal(logs.find(record => record.message === 'personal skill upload verification failed')?.fields.errorType, 'Error')
+    assert.equal(logs.find(record => record.message === 'personal skill upload verification failed')?.fields.errorType, 'AppError')
     assert.equal((await f.submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, 'personal-v1')
   })
 
