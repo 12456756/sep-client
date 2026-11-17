@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoActualSpecSchema, videoRequestedSpecSchema, type VideoRequestedSpec } from './media-spec-contract'
 import { MAX_MEDIA_REFERENCES, mediaReferenceSupportSchema, type MediaReferenceSupport } from './media-references'
 import { mediaUpstreamErrorSchema } from './media-upstream-error'
+import { readSepRuntimeV3Metadata, sepRuntimeV3ProfileMetadata, sepRuntimeV3Schema, type SepRuntimeV3ProfileMetadata } from './sep-runtime-v3-contract'
 
 /** Persist only validated public specification diagnostics, never upstream free text. */
 export const videoSpecFailureSchema = z.object({
@@ -144,6 +145,7 @@ const videoCapabilitiesV3Schema = videoCapabilitiesV1Schema.omit({ durationsSeco
   outputFormats: z.array(z.string().regex(/^video\/[a-zA-Z0-9][a-zA-Z0-9.+-]*$/).max(96)).max(32),
   supportsTaskQuery: z.boolean(),
   audioModes: z.array(z.boolean()).max(2).optional(),
+  maxInputBytes: z.number().int().nonnegative().max(100 * 1024 * 1024),
 }).strict()
 const videoRuntimeV3ProfileSchema = videoRuntimeProfileSchema.extend({
   capabilities: videoCapabilitiesV3Schema,
@@ -181,6 +183,7 @@ const normalizedVideoRuntimeV3ProfileSchema = z.object({
   adapterId: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/).optional(),
   adapterVersion: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/).optional(),
   capabilityHints: z.array(mediaV3HintSchema).max(32),
+  ...z.object(sepRuntimeV3ProfileMetadata).partial().shape,
 }).strict()
 const normalizedSepVideoRuntimeV3Schema = z.object({ protocolVersion: z.literal(3), executionMode: z.enum(['mock', 'real', 'disabled']), executionAvailable: z.boolean(), defaultProfileId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/).nullable(), tools: z.array(z.enum(['video_from_image', 'video_generate', 'video_get_job', 'video_cancel_job'])).max(4), profiles: z.array(sepVideoRuntimeV3ProfileSchema).max(64) }).strict().transform(runtime => ({
   ...runtime,
@@ -202,8 +205,44 @@ const normalizedInternalVideoRuntimeV3Schema = z.object({
   tools: z.array(z.enum(['video_from_image', 'video_generate', 'video_get_job', 'video_cancel_job'])).max(4),
   profiles: z.array(normalizedVideoRuntimeV3ProfileSchema).max(64),
 }).strict()
-export const videoRuntimeSchema = z.union([videoRuntimeV1Schema, videoRuntimeV2Schema, videoRuntimeV3Schema, normalizedSepVideoRuntimeV3Schema, normalizedInternalVideoRuntimeV3Schema])
-export type VideoRuntimeProfile = Omit<z.infer<typeof videoRuntimeProfileSchema>, 'capabilities'> & { capabilities: Omit<VideoCapabilities, 'resolutions' | 'outputFormats' | 'supportsTaskQuery'> & { resolutions: string[]; outputFormats: string[]; supportsTaskQuery: boolean }; referenceSupport?: MediaReferenceSupport; adapterId?: string; adapterVersion?: string; capabilityHints?: z.infer<typeof mediaV3HintSchema>[] | z.infer<typeof videoRuntimeV3ProfileSchema>['capabilityHints'] }
+const currentSepVideoRuntimeSchema = sepRuntimeV3Schema('video').transform((runtime): z.input<typeof normalizedInternalVideoRuntimeV3Schema> => {
+  const profiles = runtime.profiles.flatMap(profile => {
+    if (!runtime.executionAvailable || !profile.authorized || !profile.adapter.available
+      || !profile.adapter.supportsTaskQuery || profile.executionMode !== 'async-query') return []
+    const reference = profile.referenceRules.find(rule => rule.operation === 'image-to-video')
+    const operations = profile.operations.filter((op): op is VideoOperation => profile.adapter.operations.includes(op)
+      && (op === 'text-to-video' && runtime.tools.includes('video_generate')
+        || op === 'image-to-video' && runtime.tools.includes('video_from_image')
+          && !!reference && reference.maxCount >= 1 && reference.minCount <= 1 && reference.mimeTypes.includes('image/png')))
+    if (!operations.length) return []
+    const audioModes = [...new Set(profile.parameters.audio?.values?.filter((value): value is boolean => typeof value === 'boolean') ?? [])]
+    return [{ profileId: profile.profileId, configVersion: profile.configVersion, kind: 'video' as const,
+      displayName: profile.displayName, executionMode: 'async-query' as const, operations,
+      capabilities: {
+        supportsTextToVideo: operations.includes('text-to-video'), supportsImageToVideo: operations.includes('image-to-video'),
+        supportsAudio: audioModes.includes(true), audioModes, durationsSeconds: [], aspectRatios: [], resolutions: [],
+        frameRates: [], outputFormats: [], maxInputBytes: Math.min(100 * 1024 * 1024, reference?.maxInputBytes ?? 0),
+        maxReferenceCount: operations.includes('image-to-video') ? 1 : 0, supportsTaskQuery: true,
+        supportsCancel: profile.adapter.supportsCancel, resultRetentionSeconds: 24 * 60 * 60,
+      },
+      adapterId: profile.adapter.id, adapterVersion: profile.adapter.version, capabilityHints: [],
+      ...readSepRuntimeV3Metadata(profile),
+    }]
+  })
+  return {
+    protocolVersion: 3 as const, executionMode: runtime.executionMode,
+    executionAvailable: profiles.length > 0,
+    defaultProfileId: profiles.some(profile => profile.profileId === runtime.defaultProfileId) ? runtime.defaultProfileId : null,
+    profiles,
+    tools: [...new Set(runtime.tools)].filter((tool): tool is VideoRuntime['tools'][number] => profiles.some(profile =>
+      tool === 'video_generate' && profile.capabilities.supportsTextToVideo
+      || tool === 'video_from_image' && profile.capabilities.supportsImageToVideo
+      || tool === 'video_get_job' && profile.capabilities.supportsTaskQuery
+      || tool === 'video_cancel_job' && profile.capabilities.supportsCancel)),
+  }
+}).pipe(normalizedInternalVideoRuntimeV3Schema)
+export const videoRuntimeSchema = z.union([currentSepVideoRuntimeSchema, videoRuntimeV1Schema, videoRuntimeV2Schema, videoRuntimeV3Schema, normalizedSepVideoRuntimeV3Schema, normalizedInternalVideoRuntimeV3Schema])
+export type VideoRuntimeProfile = Omit<z.infer<typeof videoRuntimeProfileSchema>, 'capabilities'> & Partial<SepRuntimeV3ProfileMetadata> & { capabilities: Omit<VideoCapabilities, 'resolutions' | 'outputFormats' | 'supportsTaskQuery'> & { resolutions: string[]; outputFormats: string[]; supportsTaskQuery: boolean }; referenceSupport?: MediaReferenceSupport; adapterId?: string; adapterVersion?: string; capabilityHints?: z.infer<typeof mediaV3HintSchema>[] | z.infer<typeof videoRuntimeV3ProfileSchema>['capabilityHints'] }
 export interface VideoRuntime {
   protocolVersion: 1 | 2 | 3
   executionMode?: 'mock' | 'real' | 'disabled'

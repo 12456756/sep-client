@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { imageRequestedSpecSchema, mediaParameterSourcesSchema, mediaSpecsEqual, omitUndefinedMediaFields } from '../../../src/shared/media-spec-contract'
 import type { MediaCapabilities, MediaGenerationInput } from '../../../src/shared/media'
 import { toLocalMediaCapabilities } from './sep-media-runtime-contract'
+import { sepRuntimeV3ProfileMetadata } from '../../../src/shared/sep-runtime-v3-contract'
 import { AppError } from '../../errors/app-error'
 import { mediaUpstreamErrorSchema } from '../../../src/shared/media-upstream-error'
 
@@ -22,7 +23,7 @@ const mediaV3AdapterSchema = z.object({
   operations: z.array(z.string().trim().min(1).max(128)).max(8),
   referenceSupport: z.object({
     maxCount: z.number().int().nonnegative().safe(),
-    maxInputBytes: z.number().int().positive().safe(),
+    maxInputBytes: z.number().int().nonnegative().safe(),
     mimeTypes: z.array(z.string().trim().min(1).max(128)).max(16),
   }).strict(),
   supportsTaskQuery: z.boolean(),
@@ -71,6 +72,7 @@ export const mediaProfileSchema = z.object({
   authorized: z.boolean().optional(),
   unavailableReason: z.string().trim().min(1).max(128).optional(),
   capabilityHints: z.array(mediaV3HintSchema).max(32).optional(),
+  ...z.object(sepRuntimeV3ProfileMetadata).partial().shape,
 }).strict().superRefine((profile, context) => {
   if (profile.defaultSize !== undefined && !profile.allowedSizes?.includes(profile.defaultSize)) context.addIssue({ code: 'custom', path: ['defaultSize'], message: 'Default size must be allowed.' })
   if (profile.defaultQuality !== undefined && !profile.allowedQualities?.includes(profile.defaultQuality)) context.addIssue({ code: 'custom', path: ['defaultQuality'], message: 'Default quality must be allowed.' })

@@ -6,6 +6,8 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { sepRuntimeV3Fixture } from '../../../src/shared/fixtures/sep-media-runtime-v3'
+import { assertMediaToolsInModelRequest } from '../../pi/sdk/sep-media-model-request.test-helper'
 import { deflateSync } from 'node:zlib'
 
 function image(width: number, height: number): Buffer {
@@ -33,14 +35,9 @@ test('negotiates actual SEP V3 runtime and saves an image through the model tool
   const sources = { aspectRatio: 'model', size: 'model', count: 'model', quality: 'model' }
   const calls: { path: string; body?: Record<string, unknown> }[] = []
   let clientRequestId = ''
-  const runtime = { protocolVersion: 3, executionMode: 'real', executionAvailable: true, defaultProfileId: 'image-http',
-    tools: ['image_generate'], profiles: [{ profileId: 'image-http', configVersion: 'cfg-http', kind: 'image',
-      displayName: 'HTTP image', operations: ['generate'], executionMode: 'sync-response', authorized: true,
-      adapter: { id: 'sub2api-image', version: '1', available: true, operations: ['generate'],
-        referenceSupport: { maxCount: 0, maxInputBytes: 10485760, mimeTypes: ['image/png'] },
-        supportsTaskQuery: true, supportsCancel: false },
-      capabilityHints: [{ field: 'size', values: ['1536x1024'], source: 'adapter', observedAt: null, confidence: 'declared' }],
-    }] }
+  const sample = sepRuntimeV3Fixture('image')
+  const runtime = { ...sample, defaultProfileId: 'image-http',
+    profiles: [{ ...sample.profiles[0], profileId: 'image-http', configVersion: 'cfg-http' }] }
   const receipt = () => ({ mock: false, protocolVersion: 3, semanticHashVersion: 3, specRevision: 1,
     receiptId: 'receipt-http', clientRequestId, profileId: 'image-http', configVersion: 'cfg-http',
     executionMode: 'sync-response', status: 'SUCCEEDED', pollAfterMs: null, billingStatus: 'SETTLED', errorCode: null,
@@ -140,6 +137,9 @@ test('negotiates actual SEP V3 runtime and saves an image through the model tool
   const tools = await service.prepareRun({ taskId: 'task-http', runId: 'run-http', subscriptionId: 'sub-http',
     employee, requestApproval: async () => true })
   assert.ok(tools)
+  await assertMediaToolsInModelRequest(directory, { mediaTools: tools }, ['media_get_capabilities', 'media_generate_image'])
+  const { toLocalMediaCapabilities } = await import('./sep-media-runtime-contract')
+  assert.deepEqual(toLocalMediaCapabilities(manifest.runtime.media).profiles[0].referenceRules, sample.profiles[0].referenceRules)
   const capabilities = await tools.execute('media_get_capabilities', {}, new AbortController().signal) as { capabilities: { protocolVersion: number } }
   assert.equal(capabilities.capabilities.protocolVersion, 3)
   const result = await tools.execute('media_generate_image', { creativeBrief: 'A product photograph', protocolVersion: 3,
