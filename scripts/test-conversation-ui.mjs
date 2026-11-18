@@ -29,15 +29,32 @@ try {
   const usage=page.locator('.context-usage-indicator');
   await usage.filter({hasText:'25%'}).waitFor();
   await usage.hover();
-  await page.getByRole('tooltip').filter({hasText:'32,000 / 128,000 Token'}).waitFor();
-  await page.evaluate(()=>window.emit('context_usage',{tokens:64000,contextWindow:128000,percent:50}));
+  const card=page.locator('.context-usage-card');
+  await card.getByText('暂无分项统计',{exact:true}).waitFor();
+  assert.match(await card.locator('.context-usage-total').innerText(),/32K \/ 128K/);
+  await page.evaluate(()=>window.emit('context_usage',{tokens:64000,contextWindow:128000,percent:50,breakdown:{system:2000,tools:12000,messages:50000}}));
   await usage.filter({hasText:'50%'}).waitFor();
+  await card.getByText('工具定义',{exact:true}).waitFor();
+  assert.equal(await card.locator('.context-usage-track > span').count(),3);
+  assert.deepEqual(await card.locator('dd').allTextContents(),['~2K','~12K','~50K']);
+  const cardBox=await card.boundingBox();
   const usageBox=await usage.boundingBox();
   const sendBox=await page.getByRole('button',{name:'发送',exact:true}).boundingBox();
   assert.ok(usageBox && sendBox && usageBox.x+usageBox.width<=sendBox.x &&
    Math.abs(usageBox.y+usageBox.height/2-sendBox.y-sendBox.height/2)<2,'usage stays beside the send controls');
+  assert.ok(cardBox && cardBox.x>=0 && cardBox.x+cardBox.width<=width && cardBox.y+cardBox.height<=usageBox.y,'card stays above the indicator and inside the viewport');
+  assert.equal(await card.evaluate(el=>{
+   const rect=el.getBoundingClientRect();
+   return el.contains(document.elementsFromPoint(rect.x+rect.width/2,rect.y+rect.height/2)[0]);
+  }),true,'the card must render above the conversation drawer');
+  const lightBackground=await card.evaluate(el=>window.getComputedStyle(el).backgroundColor);
+  await page.locator('.ent-shell').evaluate(el=>el.classList.add('dark'));
+  assert.notEqual(await card.evaluate(el=>window.getComputedStyle(el).backgroundColor),lightBackground);
   await page.evaluate(()=>window.emit('context_usage',{tokens:null,contextWindow:128000,percent:null}));
   await usage.filter({hasText:'--'}).waitFor();
+  await card.getByText('暂无用量数据',{exact:true}).waitFor();
+  await page.keyboard.press('Escape');
+  await card.waitFor({state:'hidden'});
   if(contextUsageOnly) {
    assert.deepEqual(errors,[]);
    log('PASS',width,'context usage: new conversation, initial usage, tooltip, live updates, unknown state and placement');
