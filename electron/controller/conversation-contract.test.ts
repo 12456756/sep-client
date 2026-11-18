@@ -28,6 +28,27 @@ compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => {
 }, loaded.exports, loaded)
 const route = loaded.exports.conversationRoutes!.find(item => item.channel === INVOKE_CHANNELS.TASK_CONTINUE)!
 const queueRoute = loaded.exports.conversationRoutes!.find(item => item.channel === INVOKE_CHANNELS.CONVERSATION_QUEUE)!
+const switchRoute = loaded.exports.conversationRoutes!.find(item => item.channel === INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE)!
+
+test('conversation handoff validates employee and general targets and returns the changed plan', async () => {
+  const targets = [
+    [{ taskId: 'task', subscriptionId: 'employee' }, 'employee'],
+    [{ taskId: 'task', kind: 'general', modelId: 'model' }, { kind: 'general', modelId: 'model' }],
+  ] as const
+  for (const [input, target] of targets) {
+    const plan = { id: 'task' }
+    const context = { conversations: { async switchEmployee(taskId: string, value: unknown) {
+      assert.equal(taskId, 'task'); assert.deepEqual(value, target); return plan
+    } } } as unknown as RequestContext
+    assert.deepEqual(await switchRoute.handle(context, switchRoute.schema.parse(input) as never), { success: true, plan })
+  }
+  for (const input of [
+    { taskId: 'task', kind: 'general' },
+    { taskId: 'task', kind: 'general', modelId: '  ' },
+    { taskId: 'task', kind: 'general', modelId: 'model', subscriptionId: 'employee' },
+    { taskId: 'task', kind: 'unexpected', subscriptionId: 'employee' },
+  ]) assert.equal(switchRoute.schema.safeParse(input).success, false)
+})
 
 test('conversation accepts 128 attachment references and rejects 129', () => {
   const input = { taskId: 'task', prompt: 'Inspect attachments', attachmentRefs: Array.from({ length: 128 }, (_, index) => ({ attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) })) }

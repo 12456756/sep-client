@@ -313,27 +313,6 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 
 .ent-arr-chat { display: flex; width: min(780px, 100%); flex-direction: column; }
 
-/* 员工选择器。白底、一条浅描边，点开是一个搜索 + 列表的浮层。 */
-.ent-chat-who { position: relative; align-self: flex-start; margin: -10px 0 18px; }
-.ent-chat-whobtn { display: inline-flex; max-width: 320px; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border: 1px solid var(--arr-input-line); border-radius: 12px; background: var(--ent-panel); box-shadow: var(--arr-shadow); cursor: pointer; transition: border-color 180ms var(--arr-ease); }
-.ent-chat-whobtn:hover { border-color: var(--arr-card-hover); }
-.ent-chat-whobtn strong { overflow: hidden; color: var(--ent-ink); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.ent-chat-whobtn small { overflow: hidden; color: var(--ent-ink-3); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.ent-chat-whobtn > svg { flex: 0 0 auto; color: var(--ent-ink-3); transition: transform 180ms var(--arr-ease); }
-
-.ent-chat-pop { position: absolute; z-index: 30; bottom: calc(100% + 10px); left: 0; display: flex; box-sizing: border-box; width: min(360px, calc(100vw - 32px)); max-height: min(420px, calc(100vh - 180px)); flex-direction: column; padding: 10px; overflow: hidden; border: 1px solid var(--ent-line); border-radius: 14px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); animation: arr-pop-up 160ms ease-out both; }
-.ent-chat-find { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: 8px; color: var(--ent-ink-3); }
-.ent-chat-find:focus-within { border-color: var(--ent-line-strong); box-shadow: none; }
-.ent-chat-find input { width: 100%; min-height: 32px; border: 0; background: none; color: var(--ent-ink); font-family: inherit; font-size: 13px; outline: none; }
-.ent-chat-find input::placeholder { color: var(--arr-place); }
-.ent-chat-pop ul { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; margin: 6px -2px 0 0; padding: 0 2px 0 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; }
-.ent-chat-pop li > button { display: flex; width: 100%; align-items: center; gap: 9px; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; transition: background 180ms var(--arr-ease); }
-.ent-chat-pop li > button:hover { background: var(--ent-brand-softer); }
-.ent-chat-pop li > button.on { background: var(--ent-brand-soft); }
-.ent-chat-pop strong { overflow: hidden; min-width: 0; color: var(--ent-ink); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.ent-chat-pop small { flex: 0 0 auto; margin-left: auto; color: var(--ent-ink-3); font-size: 12px; }
-.ent-chat-none { padding: 14px 8px; color: var(--ent-ink-3); font-size: 13px; text-align: center; }
-
 /* 对话区域：白底。还没开始说话，所以这里放的是「他是谁、擅长什么」。 */
 .ent-chat-head { margin-bottom: 18px; }
 .ent-chat-step-card { display: flex; min-height: 220px; align-items: center; justify-content: center; flex-direction: column; gap: 8px; padding: 28px 24px; border: 1px solid var(--arr-card-line); border-radius: 16px; color: var(--ent-ink-2); background: var(--ent-panel); text-align: center; }
@@ -483,11 +462,11 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ent-arr-view, .ent-arr-view.leaving, .ent-mn-pick, .ent-chat-pop,
+  .ent-arr-view, .ent-arr-view.leaving, .ent-mn-pick,
   .ent-rs, .ent-rs-back, .ent-aa-think li.in svg { animation: none; }
   .ent-mode, .ent-mode-cta svg, .ent-arr-primary, .ent-arr-second, .ent-arr-ghost, .ent-arr-back,
   .ent-goal, .ent-goal-tool, .ent-mn-goal, .ent-mn-node, .ent-mn-grip, .ent-mn-del, .ent-mn-input,
-  .ent-chat-whobtn, .ent-chat-whobtn > svg, .ent-chat-tips button, .ent-chat-ask,
+  .ent-chat-tips button, .ent-chat-ask,
   .ent-rs-input, .ent-rs-pick, .ent-toggle i, .ent-toggle i::after { transition: none; }
   .ent-mode:hover, .ent-mode:hover .ent-mode-cta svg,
   .ent-mn-item.dragging .ent-mn-node { transform: none; }
@@ -531,10 +510,6 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-chat-ask { width: 100%; padding: 18px 18px 12px; border-radius: 18px; box-shadow: var(--arr-shadow-lift); }
 .ent-chat-input { min-height: 96px; font-size: 15px; }
 .ent-chat-askbar { min-height: 40px; }
-.ent-chat-who { position: relative; margin: 0; }
-.ent-chat-whobtn { min-height: 36px; padding: 0 10px 0 7px; border-radius: 999px; box-shadow: none; }
-.ent-chat-whobtn > svg.up { transform: rotate(180deg); }
-.ent-chat-whobtn strong { font-size: 13px; }
 .ent-chat-send { display: grid; width: 36px; height: 36px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; color: #fff; background: var(--ent-brand); cursor: pointer; transition: background 180ms var(--arr-ease), transform 180ms var(--arr-ease); }
 .ent-chat-send:hover:not(:disabled) { background: var(--ent-brand-hover); transform: translateY(-1px); }
 .ent-chat-send:disabled { color: var(--ent-ink-3); background: var(--ent-line); cursor: not-allowed; }
@@ -669,13 +644,6 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   min-height: 40px;
   gap: 8px;
 }
-.ent-chat-who { margin: 0; }
-.ent-chat-whobtn {
-  min-height: 34px;
-  border-color: transparent;
-  background: transparent;
-}
-.ent-chat-whobtn:hover { border-color: var(--ent-line); background: var(--ent-panel-subtle); }
 .ent-rs-inline {
   position: relative;
   display: inline-flex;

@@ -60,7 +60,7 @@ try {
   await page.evaluate(()=>window.releaseOldHistory());
   await page.waitForTimeout(50);
   assert.equal(await page.getByText('第一段第二段',{exact:true}).count(),1,'stale history must not replace final answer');
-  assert.equal(await page.getByRole('combobox',{name:'换一位员工接手'}).isDisabled(),false);
+  assert.equal(await page.getByRole('button',{name:'换一位员工接手'}).isDisabled(),false);
   await page.getByRole('textbox',{name:'给员工的下一句话'}).fill('继续分析');
   await page.getByRole('textbox',{name:'给员工的下一句话'}).press('Control+Enter');
   await page.waitForFunction(()=>window.continued?.prompt==='继续分析');

@@ -66,9 +66,7 @@
 
 .ent-conversation-foot .ent-ask-bar > .ent-attachment-composer { flex: 0 0 auto; }
 .ent-conversation-foot .ent-composer-attachments:not(:empty) { width: auto; margin: 12px 15px 0; }
-.ent-conversation-foot .ent-ask-who { min-width: 0; max-width: 60%; }
-.ent-conversation-foot .ent-ask-who select { min-width: 0; text-overflow: ellipsis; }
-.ent-conversation-foot .ent-ask-who .ent-face, .ent-conversation-foot .ent-ask-who > svg { flex-shrink: 0; }
+.ent-conversation-foot .ent-chat-who { min-width: 0; max-width: 60%; }
 .ent-chat-panel .ent-drawer-id h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 工作信息卡片区：对话上方左右分栏，左边基本信息，右边进度与动态 */

@@ -10,6 +10,7 @@ import * as icons from 'lucide-react'
 import * as ts from 'typescript'
 import * as sessions from './conversation-sessions'
 import * as composerConnectors from './composer-connectors'
+import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant'
 import type { ConversationQueueView } from '../../shared/conversation-queue'
 import type { WorkItem } from './types'
 import type { EnterpriseWorkspace } from './useEnterpriseWorkspace'
@@ -27,8 +28,9 @@ const dependencies: Record<string, unknown> = {
   './attachments/AttachmentComposer': { AttachmentComposer: empty },
   '../../features/enterprise/conversation-sessions': sessions,
   '../../features/enterprise/composer-connectors': composerConnectors,
-  '../../features/enterprise/general-assistant': { GENERAL_ASSISTANT_ID: 'general' },
+  '../../features/enterprise/general-assistant': { GENERAL_ASSISTANT_ID, generalAssistant },
   './KnowledgeSelector': { KnowledgeSelector: empty },
+  './ConversationEmployeePicker': { ConversationEmployeePicker: ({ label, disabled, employees }: { label: string; disabled: boolean; employees: { id: string }[] }) => React.createElement('button', { 'aria-label': label, disabled, 'data-employees': employees.map(item => item.id).join(',') }) },
   '../../shared/knowledge-selection': { noKnowledgeSelection: () => ({ mode: 'none', knowledgeBaseIds: [] }) },
   '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {}, async prioritize() {} }) },
   './ConversationMessages': { ConversationMessages: empty },
@@ -45,10 +47,11 @@ compileFunction(source, ['require', 'exports', 'module'], { filename })((id: str
 }, componentModule.exports, componentModule)
 const { WorkConversation } = componentModule.exports as typeof import('../../components/enterprise/WorkTalkDrawer')
 
-function render(status: WorkItem['status'] = 'completed') {
+function render(status: WorkItem['status'] = 'completed', employeeId = 'employee') {
   const work = { id: 'task', title: '测试', currentEmployeeId: 'employee', currentEmployeeName: '电商员工',
     kind: 'conversation', status, isActive: status === 'running', messages: [] } as unknown as WorkItem
-  const workspace = { employees: [], myEmployees: [{ id: 'employee', name: '电商员工' }], busy: false, attachmentScopeKey: 'account' } as unknown as EnterpriseWorkspace
+  work.currentEmployeeId = employeeId
+  const workspace = { employees: [], myEmployees: [{ id: 'employee', name: '电商员工', allowedModels: ['model-a', 'model-b'] }], busy: false, attachmentScopeKey: 'account' } as unknown as EnterpriseWorkspace
   return renderToStaticMarkup(React.createElement(WorkConversation, { work, workspace }))
 }
 
@@ -59,9 +62,19 @@ test('conversation shows persisted pending text and attachment names, count and 
   assert.match(html, /等待处理 1\/10/)
   assert.match(html, /分析销量/)
   assert.match(html, /附件：销量.xlsx/)
-  assert.match(html, /<select[^>]+disabled=""/)
+  assert.match(html, /<button aria-label="换一位员工接手" disabled=""/)
   assert.match(html, /补充信息将排队依次处理/)
   assert.doesNotMatch(html, /重试并继续|继续处理<\/button>/)
+})
+
+test('general assistant conversations expose the same employee picker and keep the busy and queue guards', () => {
+  queue = { paused: false, failed: null, items: [] }
+  for (const employeeId of ['employee', GENERAL_ASSISTANT_ID]) {
+    assert.match(render('completed', employeeId), /<button aria-label="换一位员工接手" data-employees="builtin:general-assistant,employee"><\/button>/)
+    assert.match(render('running', employeeId), /<button aria-label="换一位员工接手" disabled=""/)
+  }
+  queue = { paused: true, failed: null, items: [{ id: 'pending', prompt: '等待处理', createdAt: 1, attachmentNames: [] }] }
+  assert.match(render('completed', GENERAL_ASSISTANT_ID), /<button aria-label="换一位员工接手" disabled=""/)
 })
 
 test('paused failed work offers retry first; a restored pending queue offers explicit continuation', () => {

@@ -3,14 +3,14 @@
  * 页面主体保持安静，不用额外说明文字占据首屏。
  */
 
-import { ArrowUp, ChevronDown, MessageSquare, Search } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowUp, MessageSquare } from 'lucide-react';
+import { useCallback, useRef, useState } from 'react';
 import { isSubmitEnter } from '../../../shared/composer-shortcut';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { PromptExamples } from './PromptExamples';
-import { EmployeeFace } from '../EmployeeFace';
+import { ConversationEmployeePicker } from '../ConversationEmployeePicker';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
@@ -33,8 +33,6 @@ interface Props {
 }
 
 export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onStart, settings, models, onSettingsChange, onChooseFolder, attachmentBindingKey }: Props) {
-  const [pickOpen, setPickOpen] = useState(false);
-  const [query, setQuery] = useState('');
   const [text, setText] = useState('');
   const [connectorId, setConnectorId] = useState<ConnectorId>();
   const [submitted, setSubmitted] = useState(false);
@@ -44,7 +42,6 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const [attachmentListContainer, setAttachmentListContainer] = useState<HTMLDivElement | null>(null);
   const [editorVersion, setEditorVersion] = useState(0);
   const composerId = useRef(`chat-${crypto.randomUUID()}`);
-  const pick = useRef<HTMLDivElement>(null);
   const speech = useSpeechInput({ contextKey: `chat:${employeeId}`, value: text, onChange: setText, disabled: busy });
   const input = speech.inputProps.ref;
   const employee = employees.find(item => item.id === employeeId);
@@ -55,32 +52,6 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
     setEditorVersion(version => version + 1);
     return true;
   }, [editorVersion]);
-  const found = employees.filter(item => {
-    const key = query.trim();
-    return !key || item.name.includes(key) || item.intro.includes(key);
-  });
-
-  useEffect(() => {
-    if (!pickOpen) return;
-    const close = (event: MouseEvent) => {
-      if (!pick.current?.contains(event.target as Node)) setPickOpen(false);
-    };
-    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') setPickOpen(false); };
-    document.addEventListener('mousedown', close);
-    document.addEventListener('keydown', key);
-    return () => {
-      document.removeEventListener('mousedown', close);
-      document.removeEventListener('keydown', key);
-    };
-  }, [pickOpen]);
-
-  const choose = (id: string) => {
-    onEmployeeChange(id);
-    setPickOpen(false);
-    setQuery('');
-    input.current?.focus();
-  };
-
   const start = () => {
     if (ready && !busy && !speech.busy) {
       setSubmitted(true);
@@ -119,39 +90,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
         />
         <div className="ent-chat-askbar">
           <AttachmentComposer connectorId={connectorId} onConnectorChange={setConnectorId} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
-          <div className="ent-chat-who" ref={pick}>
-            <button
-              type="button"
-              className="ent-chat-whobtn"
-              onClick={() => setPickOpen(open => !open)}
-              aria-expanded={pickOpen}
-              aria-haspopup="listbox"
-            >
-              <EmployeeFace employee={employee} name="选择同事" size="sm" round />
-              <strong>{employee?.name ?? '选择同事'}</strong>
-              <ChevronDown size={14} aria-hidden className={pickOpen ? 'up' : undefined} />
-            </button>
-            {pickOpen ? (
-              <div className="ent-chat-pop" role="listbox" aria-label="选择员工">
-                <div className="ent-chat-find">
-                  <Search size={13} aria-hidden />
-                  <input value={query} placeholder="搜索员工" aria-label="搜索员工" onChange={event => setQuery(event.target.value)} />
-                </div>
-                <ul>
-                  {found.map(item => (
-                    <li key={item.id}>
-                      <button type="button" role="option" aria-selected={item.id === employeeId} className={item.id === employeeId ? 'on' : undefined} onClick={() => choose(item.id)}>
-                        <EmployeeFace employee={item} size="sm" round />
-                        <strong>{item.name}</strong>
-                        <small>{item.roleName}</small>
-                      </button>
-                    </li>
-                  ))}
-                  {found.length ? null : <li className="ent-chat-none">没有匹配的同事</li>}
-                </ul>
-              </div>
-            ) : null}
-          </div>
+          <ConversationEmployeePicker employees={employees} employeeId={employeeId} onChange={onEmployeeChange} onChoose={() => input.current?.focus()} />
           <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />
           <RunSettingsBar
             settings={settings}

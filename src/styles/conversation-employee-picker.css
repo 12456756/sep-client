@@ -1,0 +1,24 @@
+.ent-chat-who { min-width: 0; max-width: 100%; }
+.ent-chat-whobtn { display: inline-flex; max-width: min(320px, 100%); min-height: 34px; align-items: center; gap: 8px; padding: 0 10px 0 7px; border: 1px solid transparent; border-radius: 999px; background: transparent; cursor: pointer; }
+.ent-chat-whobtn:hover:not(:disabled) { border-color: var(--ent-line); background: var(--ent-panel-subtle); }
+.ent-chat-whobtn:disabled { cursor: default; opacity: .6; }
+.ent-chat-whobtn strong { overflow: hidden; color: var(--ent-ink); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ent-chat-whobtn > svg { flex: 0 0 auto; color: var(--ent-ink-3); }
+.ent-chat-whobtn > svg.up { transform: rotate(180deg); }
+
+.ent-chat-pop { position: fixed; z-index: 1100; display: flex; box-sizing: border-box; width: min(360px, calc(100vw - 32px)); flex-direction: column; padding: 10px; overflow: hidden; border: 1px solid var(--ent-line); border-radius: 14px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); }
+.ent-chat-find { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: 8px; color: var(--ent-ink-3); }
+.ent-chat-find:focus-within { border-color: var(--ent-line-strong); }
+.ent-chat-find input { width: 100%; min-width: 0; min-height: 32px; border: 0; background: none; color: var(--ent-ink); font: inherit; font-size: 13px; outline: none; }
+/* The portaled picker must override the legacy global !important focus ring. */
+.ent-chat-find input:focus-visible { outline: none !important; box-shadow: none !important; }
+.ent-chat-find input::placeholder { color: var(--ent-ink-3); }
+.ent-chat-pop ul { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; margin: 6px -2px 0 0; padding: 0 2px 0 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; }
+.ent-chat-pop li > button { display: flex; width: 100%; align-items: center; gap: 9px; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; transition: background var(--ent-ease); }
+.ent-chat-pop li > button:hover { background: var(--ent-brand-softer); }
+.ent-chat-pop li > button[aria-selected="true"] { background: var(--ent-brand-soft); }
+.ent-chat-whobtn:focus-visible, .ent-chat-pop li > button:focus-visible { outline: 2px solid var(--ent-brand-solid) !important; outline-offset: -2px; box-shadow: none !important; }
+.ent-chat-pop :is(strong, small) { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.ent-chat-pop strong { color: var(--ent-ink); font-size: 13px; font-weight: 600; }
+.ent-chat-pop small { max-width: 45%; margin-left: auto; color: var(--ent-ink-3); font-size: 12px; }
+.ent-chat-none { margin: 0; padding: 14px 8px; color: var(--ent-ink-3); font-size: 13px; text-align: center; }

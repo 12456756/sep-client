@@ -1,4 +1,4 @@
-import { ArrowDown, ChevronDown, Send, StopCircle, X } from 'lucide-react';
+import { ArrowDown, Send, StopCircle, X } from 'lucide-react';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { SetStateAction } from 'react';
 import { isSubmitEnter } from '../../shared/composer-shortcut';
@@ -12,13 +12,14 @@ import { SpeechInputActions } from '../speech/SpeechInputActions';
 import { AttachmentComposer } from './attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
 import { ConversationSessionsContext, createConversationSessions } from '../../features/enterprise/conversation-sessions';
-import { GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
+import { generalAssistant } from '../../features/enterprise/general-assistant';
 import { KnowledgeSelector } from './KnowledgeSelector';
 import { noKnowledgeSelection } from '../../shared/knowledge-selection';
 import { useConversationQueue } from '../../features/enterprise/use-conversation-queue';
 import { ConversationMessages } from './ConversationMessages';
 import { withComposerConnector } from '../../features/enterprise/composer-connectors';
 import { ContextUsageIndicator } from '../workspace/ContextUsageIndicator';
+import { ConversationEmployeePicker } from './ConversationEmployeePicker';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -217,23 +218,16 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 <AttachmentComposer connectorId={savedSession.connectorId} onConnectorChange={savedSession.setConnector} key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                     在这里换掉「当前员工」会和步骤上的安排对不上。 */}
-                {work.currentEmployeeId === GENERAL_ASSISTANT_ID ? (
-                  <span className="ent-ask-who"><EmployeeFace name="通用助手" size="sm" round /><strong>通用助手</strong></span>
-                ) : work.kind === 'conversation' ? (
-                  <label className="ent-ask-who">
-                    <EmployeeFace employee={workspace.employees.find(item => item.id === work.currentEmployeeId)} name={work.currentEmployeeName} size="sm" round />
-                    <select
-                      value={work.currentEmployeeId}
-                      aria-label="换一位员工接手"
-                      disabled={workspace.busy || sending || isReplying || queued.queue.items.length > 0 || !!queued.queue.failed}
-                      onChange={event => void workspace.switchEmployee(work.id, event.target.value)}
-                    >
-                      {workspace.myEmployees.map(item => (
-                        <option key={item.id} value={item.id}>{item.name}{item.id === work.currentEmployeeId ? '（当前）' : ''}</option>
-                      ))}
-                    </select>
-                    <ChevronDown size={13} aria-hidden />
-                  </label>
+                {work.kind === 'conversation' ? (
+                  <ConversationEmployeePicker
+                    employees={[generalAssistant(workspace.myEmployees.filter(item => item.availability !== 'unavailable')), ...workspace.myEmployees]}
+                    employeeId={work.currentEmployeeId}
+                    currentEmployee={workspace.employees.find(item => item.id === work.currentEmployeeId)}
+                    currentName={work.currentEmployeeName}
+                    label="换一位员工接手"
+                    disabled={workspace.busy || sending || queued.busy || isReplying || queued.queue.items.length > 0 || !!queued.queue.failed || !!work.scheduledOrigin}
+                    onChange={employeeId => void workspace.switchEmployee(work.id, employeeId)}
+                  />
                 ) : null}
                 <KnowledgeSelector value={knowledge} onChange={setKnowledge} disabled={workspace.busy || sending} scopeKey={workspace.attachmentScopeKey} />
                 <span className="ent-ask-spacer" />

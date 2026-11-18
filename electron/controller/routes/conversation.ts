@@ -27,10 +27,10 @@ const continueInput = z.object({
   knowledge: knowledgeSelectionSchema.optional(),
 })
 
-const switchEmployeeInput = z.object({
-  taskId: z.string().min(1),
-  subscriptionId: z.string().min(1),
-})
+const switchEmployeeInput = z.union([
+  z.object({ taskId: z.string().min(1), kind: z.literal('general'), modelId: z.string().trim().min(1) }).strict(),
+  z.object({ taskId: z.string().min(1), kind: z.literal('employee').optional(), subscriptionId: z.string().min(1) }).strict(),
+])
 
 export const conversationRoutes = [
   route(INVOKE_CHANNELS.CONVERSATION_CREATE, createTaskInput, async (ctx, input) => ({
@@ -59,8 +59,9 @@ export const conversationRoutes = [
   })),
 
   route(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, switchEmployeeInput, async (ctx, input) => {
-    await ctx.conversations.switchEmployee(input.taskId, input.subscriptionId)
-    return { success: true }
+    const target = input.kind === 'general' ? { kind: input.kind, modelId: input.modelId } : input.subscriptionId
+    const plan = await ctx.conversations.switchEmployee(input.taskId, target)
+    return { success: true, ...(plan ? { plan } : {}) }
   }, { invalidMessage: '需要有效的任务与硅基员工。' }),
 ]
 

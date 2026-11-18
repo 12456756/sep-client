@@ -237,10 +237,9 @@ export interface CreateConversationInput {
   attachmentSessionId?: string
 }
 
-export interface SwitchConversationEmployeeInput {
+export type SwitchConversationEmployeeInput = {
   taskId: string
-  subscriptionId: string
-}
+} & ({ kind: 'general'; modelId: string } | { kind?: 'employee'; subscriptionId: string })
 
 export interface RetryTaskInput {
   taskId: string
@@ -420,7 +419,7 @@ export interface ElectronAPI {
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
   continueTask: (input: ContinueTaskInput) => Promise<IpcCommandResult & { queued?: boolean }>
   conversationQueue: (input: import('./conversation-queue').ConversationQueueInput) => Promise<IpcCommandResult & { queue?: import('./conversation-queue').ConversationQueueView }>
-  switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
+  switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult & { plan?: ArrangementPlanSnapshot }>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
   retryTask: (input: string | RetryTaskInput) => Promise<IpcCommandResult>
   rerunTask: (input: { taskId: string; requestId: string }) => Promise<TaskResult>

@@ -98,13 +98,21 @@ export class ConversationExecutor {
   }
 
   async switchEmployee(taskId: string, subscriptionId: string): Promise<void> {
+    const scope = this.options.taskManager.getCurrentUserScope()
     const task = await this.options.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
-    if (!await this.options.authorizeEmployee(subscriptionId)) {
+    const arrangement = scope && this.options.workPlanStore ? await this.options.workPlanStore.get(scope, taskId) : null
+    const general = arrangement?.mode === 'conversation' && arrangement.conversation?.kind === 'general'
+    const modelId = general ? arrangement.conversation!.modelId : arrangement?.conversation?.participants.find(item => item.subscriptionId === subscriptionId)?.modelId
+    const employee = general
+      ? modelId ? await this.options.authorizeModel?.(modelId, subscriptionId) : null
+      : await this.options.authorizeEmployee(subscriptionId, modelId)
+    if (!employee) {
       throw new Error('The selected employee is no longer available.')
     }
-    await this.options.taskManager.setTaskEmployee(taskId, subscriptionId)
-    const scope = this.options.taskManager.getCurrentUserScope()
+    const current = this.options.taskManager.getCurrentUserScope()
+    if (!scope || current?.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new Error('Conversation scope changed.')
+    await this.options.taskManager.setTaskEmployee(taskId, employee.subscriptionId)
     if (scope) await this.conversationAdapter(scope, taskId).reset()
   }
 
