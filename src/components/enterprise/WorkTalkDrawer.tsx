@@ -215,33 +215,36 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
               />
               <div className="ent-ask-bar">
-                <AttachmentComposer connectorId={savedSession.connectorId} onConnectorChange={savedSession.setConnector} key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
-                {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
-                    在这里换掉「当前员工」会和步骤上的安排对不上。 */}
-                {work.kind === 'conversation' ? (
-                  <ConversationEmployeePicker
-                    employees={[generalAssistant(workspace.myEmployees.filter(item => item.availability !== 'unavailable')), ...workspace.myEmployees]}
-                    employeeId={work.currentEmployeeId}
-                    currentEmployee={workspace.employees.find(item => item.id === work.currentEmployeeId)}
-                    currentName={work.currentEmployeeName}
-                    label="换一位员工接手"
-                    disabled={workspace.busy || sending || queued.busy || isReplying || queued.queue.items.length > 0 || !!queued.queue.failed || !!work.scheduledOrigin}
-                    onChange={employeeId => void workspace.switchEmployee(work.id, employeeId)}
-                  />
-                ) : null}
-                <KnowledgeSelector value={knowledge} onChange={setKnowledge} disabled={workspace.busy || sending} scopeKey={workspace.attachmentScopeKey} />
-                <span className="ent-ask-spacer" />
-                {over ? null : (
-                  <button type="button" className="ent-ask-stop" disabled={workspace.busy} onClick={() => { void workspace.stopWork(work.id, '用户终止了这项工作'); }}>
-                    <StopCircle size={13} aria-hidden />
-                    终止
+                <div className="ent-ask-tools">
+                  <AttachmentComposer connectorId={savedSession.connectorId} onConnectorChange={savedSession.setConnector} key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+                  {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
+                      在这里换掉「当前员工」会和步骤上的安排对不上。 */}
+                  {work.kind === 'conversation' ? (
+                    <ConversationEmployeePicker
+                      employees={[generalAssistant(workspace.myEmployees.filter(item => item.availability !== 'unavailable')), ...workspace.myEmployees]}
+                      employeeId={work.currentEmployeeId}
+                      currentEmployee={workspace.employees.find(item => item.id === work.currentEmployeeId)}
+                      currentName={work.currentEmployeeName}
+                      label="换一位员工接手"
+                      disabled={workspace.busy || sending || queued.busy || isReplying || queued.queue.items.length > 0 || !!queued.queue.failed || !!work.scheduledOrigin}
+                      onChange={employeeId => void workspace.switchEmployee(work.id, employeeId)}
+                    />
+                  ) : null}
+                  <KnowledgeSelector value={knowledge} onChange={setKnowledge} disabled={workspace.busy || sending} scopeKey={workspace.attachmentScopeKey} />
+                </div>
+                <div className="ent-ask-actions">
+                  {over ? null : (
+                    <button type="button" className="ent-ask-stop" disabled={workspace.busy} onClick={() => { void workspace.stopWork(work.id, '用户终止了这项工作'); }}>
+                      <StopCircle size={13} aria-hidden />
+                      终止
+                    </button>
+                  )}
+                  <ContextUsageIndicator taskId={work.id} scopeKey={workspace.attachmentScopeKey} />
+                  <SpeechInputActions speech={speech} disabled={workspace.busy} />
+                  <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || sending || speech.busy || attachmentsBusy} aria-label="发送">
+                    <Send size={15} aria-hidden />
                   </button>
-                )}
-                <ContextUsageIndicator taskId={work.id} scopeKey={workspace.attachmentScopeKey} />
-                <SpeechInputActions speech={speech} disabled={workspace.busy} />
-                <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || sending || speech.busy || attachmentsBusy} aria-label="发送">
-                  <Send size={15} aria-hidden />
-                </button>
+                </div>
               </div>
           </div>
         </div>
