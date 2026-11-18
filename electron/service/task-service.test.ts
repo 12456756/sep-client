@@ -14,6 +14,28 @@ import { ConversationService, type ConversationServiceDependencies } from './con
 const owner: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const workspaceNames = { enterpriseName: 'Acme Studio', memberName: 'Alice' }
 
+describe('task context usage access', () => {
+  it('checks task ownership and rejects results after account switching', async () => {
+    let current = { ...owner }
+    let exists = true
+    let finish!: (value: { tokens: number; contextWindow: number; percent: number }) => void
+    let reads = 0
+    const service = new TaskService({
+      scope: { currentScope: () => current }, taskManager: { getTask: async () => exists ? { id: 'task' } : null },
+      execution: async () => ({ getContextUsage: async () => { reads++; return new Promise(resolve => { finish = resolve }) } }),
+    } as unknown as TaskServiceDependencies)
+    exists = false
+    await assert.rejects(service.contextUsage('task'), { code: 'NOT_FOUND' })
+    assert.equal(reads, 0)
+    exists = true
+    const pending = service.contextUsage('task')
+    while (!finish) await new Promise(resolve => setImmediate(resolve))
+    current = { memberId: 'different-member', enterpriseId: owner.enterpriseId }
+    finish({ tokens: 32000, contextWindow: 128000, percent: 25 })
+    await assert.rejects(pending, { code: 'AUTH_REQUIRED' })
+  })
+})
+
 describe('directory selection starting path', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))) })

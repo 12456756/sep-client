@@ -37,6 +37,7 @@ import type { MediaStore } from '../data/media-store'
  * 类型模块，import 它不会把 SDK 拉进来。
  */
 export interface TaskExecutionPort {
+  getContextUsage?(taskId: string): Promise<import('../../src/shared/context-usage').ContextUsage | null>
   executeTask(taskId: string, options?: { conversation?: boolean; knowledge?: KnowledgeSelection }): Promise<void>
   retryTask(taskId: string, options?: { conversation?: boolean; nodeId?: string; inputReply?: ArrangementInputReply }): Promise<void>
   confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void>
@@ -345,6 +346,15 @@ export class TaskService {
   async listRuns(taskId: string): Promise<TaskRunRecord[]> {
     await this.requireTask(taskId)
     return this.deps.taskRunStore.list(this.scope(), taskId)
+  }
+
+  async contextUsage(taskId: string): Promise<import('../../src/shared/context-usage').ContextUsage | null> {
+    const scope = this.scope()
+    await this.requireTask(taskId)
+    this.assertScope(scope)
+    const usage = await (await this.deps.execution()).getContextUsage?.(taskId) ?? null
+    this.assertScope(scope)
+    return usage
   }
 
   async getRun(taskId: string, runId: string): Promise<TaskRunRecord> {

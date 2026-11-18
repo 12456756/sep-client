@@ -127,6 +127,7 @@ export const INVOKE_CHANNELS = {
   TASK_GET: 'task:get',
   TASK_GET_ALL: 'task:get-all',
   TASK_LIST_RUNS: 'task:list-runs',
+  TASK_CONTEXT_USAGE: 'task:context-usage',
   TASK_GET_RUN: 'task:get-run',
   TASK_GET_TIMELINE: 'task:get-timeline',
   TASK_PAUSE: 'task:pause',

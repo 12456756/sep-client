@@ -83,6 +83,12 @@ export class ConversationExecutor {
 
   constructor(private readonly options: ConversationExecutorOptions) {}
 
+  getContextUsage(taskId: string): import('../../src/shared/context-usage').ContextUsage | null {
+    const scope = this.options.taskManager.getCurrentUserScope()
+    if (!scope) return null
+    return this.conversationAdapters.get(`${scope.enterpriseId}:${scope.memberId}:${taskId}`)?.currentSession?.getContextUsage?.() ?? null
+  }
+
   async continue(
     taskId: string,
     prompt: string,

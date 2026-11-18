@@ -8,6 +8,7 @@ import process from 'node:process';
 import { log } from 'node:console';
 import { chromium } from 'playwright-core';
 const origin = process.env.SEP_PREVIEW_ORIGIN ?? 'http://127.0.0.1:5174';
+const contextUsageOnly = process.argv.includes('--context-usage');
 const main = await (await fetch(origin + '/main.tsx')).text();
 const html = readFileSync(new URL('./fixtures/conversation.html', import.meta.url), 'utf8')
  .replace('__REACT__', main.match(/from "([^"]*react\.js[^"]*)"/)[1])
@@ -21,9 +22,28 @@ try {
   await page.route('**/__conversation-test',r=>r.fulfill({contentType:'text/html',body:html}));
   await page.goto(origin+'/__conversation-test');
   await page.getByRole('button',{name:'开始测试'}).waitFor();
+  assert.equal(await page.locator('.context-usage-indicator').count(),0);
   await page.evaluate(()=>{window.deferMessages=true;});
   await page.getByRole('button',{name:'开始测试'}).click();
   await page.waitForFunction(()=>window.workspace?.busy===false && window.workspace?.works.length===1);
+  const usage=page.locator('.context-usage-indicator');
+  await usage.filter({hasText:'25%'}).waitFor();
+  await usage.hover();
+  await page.getByRole('tooltip').filter({hasText:'32,000 / 128,000 Token'}).waitFor();
+  await page.evaluate(()=>window.emit('context_usage',{tokens:64000,contextWindow:128000,percent:50}));
+  await usage.filter({hasText:'50%'}).waitFor();
+  const usageBox=await usage.boundingBox();
+  const sendBox=await page.getByRole('button',{name:'发送',exact:true}).boundingBox();
+  assert.ok(usageBox && sendBox && usageBox.x+usageBox.width<=sendBox.x &&
+   Math.abs(usageBox.y+usageBox.height/2-sendBox.y-sendBox.height/2)<2,'usage stays beside the send controls');
+  await page.evaluate(()=>window.emit('context_usage',{tokens:null,contextWindow:128000,percent:null}));
+  await usage.filter({hasText:'--'}).waitFor();
+  if(contextUsageOnly) {
+   assert.deepEqual(errors,[]);
+   log('PASS',width,'context usage: new conversation, initial usage, tooltip, live updates, unknown state and placement');
+   await page.close();
+   continue;
+  }
   await page.evaluate(()=>{window.deferMessages=false;window.releaseInitial();});
   await page.waitForTimeout(50);
   assert.equal(await page.evaluate(()=>window.workspace.works.length),1,'stale initial list must not replace task pushes');

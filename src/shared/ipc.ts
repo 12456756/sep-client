@@ -427,6 +427,7 @@ export interface ElectronAPI {
   getTask: (taskId: string) => Promise<TaskResult>
   getAllTasks: () => Promise<TaskListResult>
   listTaskRuns: (taskId: string) => Promise<TaskRunListResult>
+  getTaskContextUsage: (taskId: string) => Promise<IpcCommandResult & { usage?: import('./context-usage').ContextUsage | null }>
   getTaskRun: (taskId: string, runId: string) => Promise<TaskRunResult>
   getTaskTimeline: (taskId: string, runId: string) => Promise<TaskTimelineResult>
   pauseTask: (taskId: string) => Promise<IpcCommandResult>

@@ -28,6 +28,7 @@ test('streams text deltas and important execution events', () => {
     ['arrangement_node_completed', { nodeId: 'node-1' }, 'important'],
     ['arrangement_node_progress', { nodeId: 'node-1', eventType: 'thinking_delta', text: 'Inspecting files' }, 'important'],
     ['agent_end', { willRetry: false }, 'important'],
+    ['context_usage', { tokens: 32000, contextWindow: 128000, percent: 25 }, 'important'],
     ['session_error', { message: 'failed' }, 'important'],
   ]
 

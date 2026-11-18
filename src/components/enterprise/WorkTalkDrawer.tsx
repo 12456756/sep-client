@@ -18,6 +18,7 @@ import { noKnowledgeSelection } from '../../shared/knowledge-selection';
 import { useConversationQueue } from '../../features/enterprise/use-conversation-queue';
 import { ConversationMessages } from './ConversationMessages';
 import { withComposerConnector } from '../../features/enterprise/composer-connectors';
+import { ContextUsageIndicator } from '../workspace/ContextUsageIndicator';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -242,6 +243,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                     终止
                   </button>
                 )}
+                <ContextUsageIndicator taskId={work.id} scopeKey={workspace.attachmentScopeKey} />
                 <SpeechInputActions speech={speech} disabled={workspace.busy} />
                 <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || sending || speech.busy || attachmentsBusy} aria-label="发送">
                   <Send size={15} aria-hidden />

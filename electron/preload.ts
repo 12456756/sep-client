@@ -213,6 +213,7 @@ const electronAPI = {
   redoMediaJob: input => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_REDO, input),
   getAllTasks: () => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_ALL),
   listTaskRuns: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_LIST_RUNS, taskId),
+  getTaskContextUsage: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CONTEXT_USAGE, taskId),
   getTaskRun: (taskId, runId) => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_RUN, { taskId, runId }),
   getTaskTimeline: (taskId, runId) => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_TIMELINE, { taskId, runId }),
   pauseTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_PAUSE, taskId),

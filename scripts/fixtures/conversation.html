@@ -10,9 +10,10 @@ const {useEnterpriseWorkspace}=await import('/features/enterprise/useEnterpriseW
 const subscriptions=['调研员','报告撰写员','候补员工'].map((name,i)=>({id:['sub-a','sub-b','sub-spare'][i],subscriptionId:['sub-a','sub-b','sub-spare'][i],employeeId:'employee-'+i,name,status:'ACTIVE',templateVersion:'1.0.0',template:{id:'employee-'+i,name,avatar:null},department:null,allowedModels:['model'],upgradeAvailable:false}));
 const options={userId:'fixture-user',userName:'测试用户',enterpriseId:'fixture-enterprise',enterpriseName:'隔离测试',instances:subscriptions,employeeStatuses:[]};
 const listeners={};const subscribe=name=>cb=>{listeners[name]=cb;return ()=>{delete listeners[name];};};
+const piListeners=new Set();
 
 let task; let draft; let sequence=0; let messages=[];
-window.emit=(type,data={})=>listeners.pi?.({taskId:'work-1',runId:task?.activeRunId || 'run-1',subscriptionId:'sub-a',sequence:++sequence,type,occurredAt:Date.now(),data});
+window.emit=(type,data={})=>{const event={taskId:'work-1',runId:task?.activeRunId || 'run-1',subscriptionId:'sub-a',sequence:++sequence,type,occurredAt:Date.now(),data};for(const listener of piListeners)listener(event);};
 window.pushDeletedRecord=()=>{listeners.task?.(structuredClone(window.deletedRecordSnapshot));listeners.list?.([structuredClone(window.deletedRecordSnapshot)]);window.emit('text_delta',{text:'late deleted record output'});};
 window.finish=()=>{messages=[...messages,{id:'answer',role:'assistant',content:'第一段第二段',createdAt:Date.now(),runId:'run-1'}];task={...task,status:'completed',activeRunId:null,completedAt:Date.now()};listeners.task?.(task);};
 window.cancelMode='pending';window.runNumber=1;
@@ -24,7 +25,10 @@ window.electronAPI={
  getAllTasks:async()=>new Promise(resolve=>{window.releaseInitial=()=>resolve({success:true,tasks:[]});}),
  getTask:async()=>({success:true,task}),getTaskMessages:async()=>{const snapshot={success:true,messages:structuredClone(messages)};if(window.deferMessages)return new Promise(resolve=>{window.releaseOldHistory=()=>resolve(snapshot);});return snapshot;},
  getArrangementPlan:async()=>({success:true}),getTaskTimeline:async()=>({success:true,events:[]}),
- onTaskListUpdated:subscribe('list'),onTaskUpdated:subscribe('task'),onPiEvent:subscribe('pi'),onArrangementPlanningEvent:subscribe('planning'),
+ listTaskRuns:async()=>({success:true,runs:[]}),getTaskMedia:async()=>({success:true}),getTaskVideo:async()=>({success:true}),
+ conversationQueue:async()=>({success:true,queue:{paused:false,items:[],failed:null}}),onConversationQueueChanged:()=>()=>{},
+ getTaskContextUsage:async()=>({success:true,usage:{tokens:32000,contextWindow:128000,percent:25}}),
+ onTaskListUpdated:subscribe('list'),onTaskUpdated:subscribe('task'),onPiEvent:cb=>{piListeners.add(cb);return ()=>{piListeners.delete(cb);};},onArrangementPlanningEvent:subscribe('planning'),
  createArrangementDraft:async document=>{draft={...document,id:'draft-1',revision:1};window.createdGoal=document.goal;return {success:true,draft};},
  preflightArrangementDraft:async()=>({success:true,preflight:{canStart:true,valid:true,preflightId:'check-1',draftId:draft.id,draftRevision:draft.revision,issues:[],message:null}}),
  confirmAndStartArrangement:async()=>{

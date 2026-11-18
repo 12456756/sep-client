@@ -32,6 +32,7 @@ const dependencies: Record<string, unknown> = {
   '../../shared/knowledge-selection': { noKnowledgeSelection: () => ({ mode: 'none', knowledgeBaseIds: [] }) },
   '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {}, async prioritize() {} }) },
   './ConversationMessages': { ConversationMessages: empty },
+  '../workspace/ContextUsageIndicator': { ContextUsageIndicator: empty },
 }
 const filename = fileURLToPath(new URL('../../components/enterprise/WorkTalkDrawer.tsx', import.meta.url))
 const source = ts.transpileModule(readFileSync(filename, 'utf8'), {

@@ -24,6 +24,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { attachConnectorTools } from './pi-connector-tools'
+import { GATEWAY_CONTEXT_WINDOW } from './pi-context-usage'
 import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
@@ -375,7 +376,6 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
     },
   }))
 }
-const GATEWAY_CONTEXT_WINDOW = 128_000
 const OPENAI_COMPLETIONS_API_MODULE = '@earendil-works/pi-ai/api/openai-completions'
 const HAN_CHARACTER = /\p{Script=Han}/u
 
@@ -850,6 +850,10 @@ class PiCodingAgentSession implements PiAgentSession {
         normalized.failure = retryWait.terminalError
       }
       for (const listener of this.listeners) listener(normalized)
+      if (['turn_end', 'compaction_end', 'agent_settled'].includes(event.type)) {
+        const usage = this.getContextUsage()
+        if (usage) for (const listener of this.listeners) listener({ type: 'context_usage', data: usage })
+      }
     })
   }
 
@@ -873,6 +877,10 @@ class PiCodingAgentSession implements PiAgentSession {
 
   getContextCheckpoint(): string | null {
     return this.session.sessionManager.getLeafId()
+  }
+
+  getContextUsage(): import('../../../src/shared/context-usage').ContextUsage | null {
+    return this.session.getContextUsage() ?? { tokens: null, contextWindow: GATEWAY_CONTEXT_WINDOW, percent: null }
   }
 
   async restoreContextCheckpoint(checkpoint: string | null): Promise<void> {
