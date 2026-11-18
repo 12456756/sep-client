@@ -591,6 +591,9 @@
   outline-offset: 2px;
   box-shadow: 0 0 0 3px rgb(217 75 82 / 18%) !important;
 }
+/* Portaled employee pickers also need to override the legacy global focus ring. */
+.ent-chat-pop .ent-chat-find input:focus-visible { outline: none !important; box-shadow: none !important; }
+.ent-chat-whobtn:focus-visible, .ent-chat-pop li > button:focus-visible { outline: 2px solid var(--ent-brand-solid) !important; outline-offset: -2px; box-shadow: none !important; }
 /* Inputs use a neutral focus state; the brand focus ring remains on buttons. */
 .ent-shell :is(input, textarea, select):focus {
   border-color: var(--ent-line-strong) !important;
