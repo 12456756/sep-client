@@ -17,6 +17,7 @@ import { silentTaskMonitor, type TaskMonitorPort, type MonitorTaskQueuedInput, t
 import type { MonitorParticipation } from '../common/platform/client-monitor-contract'
 import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
 import type { VideoHostTools, VideoRunPort } from '../domain/video-tools'
+import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
 import { DeliveryExecutionError } from '../domain/arrangement-delivery'
 import { AppError } from '../errors/app-error'
 import { ArrangementMediaService, type ArrangementMediaServiceOptions } from '../service/arrangement-media-service'
@@ -68,6 +69,51 @@ class MemoryCheckpointStore implements ArrangementCheckpointStorePort {
 describe('TaskRuntime arrangement integration', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }))) })
+
+  for (const conversation of [true, false]) it(`persists and pushes snapshot skill labels during ${conversation ? 'conversation' : 'arrangement'} execution`, async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sep-run-skill-display-'))
+    directories.push(userDataDir)
+    const manager = new TaskManager(userDataDir)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('skill labels', 'work', undefined, employee.subscriptionId)
+    const installed = { capabilityId: 'cap-a', versionId: 'local', baseSkillVersionId: 'v1', version: '1',
+      source: 'owner-local' as const, name: 'opaque', description: 'Local', content: '# Local', sha256: 'a'.repeat(64),
+      path: join(userDataDir, 'runtime', 'skills-v2', 'a'.repeat(64), 'opaque') }
+    const runtimeSnapshot: EmployeeRuntimeSnapshot = {
+      manifestVersion: 1, ...scope, subscriptionId: employee.subscriptionId, employeeId: 'employee-a',
+      templateVersion: '1', employeeVersion: '1', maxSteps: 10, systemPrompt: '', modelId: employee.modelId,
+      allowedModels: [employee.modelId], skills: [installed], approvedSkills: [
+        { capabilityId: 'cap-a', versionId: 'v1', version: '1', name: 'Promotion design', description: 'Archived description', content: '# Approved' },
+      ],
+    }
+    const configured = { ...employee, runtimeSnapshot, additionalSkillPaths: [installed.path] }
+    const pushed: TaskExecutionEvent[] = []
+    const runStore = new TaskRunStore(userDataDir)
+    const runtime = new TaskRuntime({
+      taskManager: manager, taskRunStore: runStore,
+      ...(!conversation ? { workPlanStore: new MemoryPlanStore(plan(task.id)), arrangementCheckpointStore: new MemoryCheckpointStore() } : {}),
+      getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onApprovalRequest: () => {},
+      onEvent: event => { pushed.push(event) },
+      resolveEmployee: () => configured, authorizeEmployee: async () => configured,
+      createWorker: options => ({
+        async run() {
+          const base = { taskId: task.id, runId: options.context.runId, subscriptionId: employee.subscriptionId, occurredAt: Date.now() }
+          await options.onEvent({ ...base, sequence: 1, type: 'tool_execution_start',
+            data: { toolId: 'read-a', toolName: 'read', input: { path: join(installed.path, 'SKILL.md') } } })
+          await options.onEvent({ ...base, sequence: 2, type: 'tool_execution_end',
+            data: { toolId: 'read-a', toolName: 'read', success: true } })
+        }, async abort() {}, async dispose() {},
+      }),
+    })
+    await runtime.executeTask(task.id, { conversation })
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+    const started = pushed.find(event => event.type === 'tool_execution_start')!
+    assert.deepEqual((started.data as Record<string, unknown>).skillDetails,
+      { name: 'Promotion design', description: 'Archived description' })
+    const persisted = await runStore.events.getTimeline(scope, task.id, started.runId)
+    assert.deepEqual(persisted.find(event => event.type === 'tool_execution_start')?.data, started.data)
+  })
 
   it('passes per-node prompts and media bindings and blocks downstream nodes until image delivery', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-media-'))

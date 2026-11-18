@@ -19,6 +19,7 @@ import type { SharedPiSession } from '../pi/sdk/pi-shared-session'
 import { createDefaultSharedPiSession, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { ConversationRecoveryError } from './conversation-recovery-error'
 import { withApprovedSkillReadPaths } from './run-skill-policy'
+import { runSkillDisplay } from '../common/run-skill-display'
 import { MEDIA_SPEC_EXECUTION_PROMPT } from './media-execution-prompts'
 import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, TaskWorkerPort } from './run-types'
 import type { AttachmentInputPort, ResolvedAttachmentInput } from '../domain/attachment-input'
@@ -201,6 +202,7 @@ export class ConversationExecutor {
         return
       }
       queued.signal?.throwIfAborted()
+      const describeSkillRead = runSkillDisplay(general ? undefined : employee.runtimeSnapshot)
       worker = this.options.createWorker({
         context: {
           taskId,
@@ -228,7 +230,7 @@ export class ConversationExecutor {
         onAuthenticationRequired: this.options.onAuthenticationRequired,
         onApprovalRequest: request => this.options.approvals.request(request),
         onResponseSettled: async () => { await waitForMedia() },
-        onEvent: event => this.options.events.enqueue(event),
+        onEvent: event => this.options.events.enqueue(describeSkillRead(event)),
         onSessionCreated: async session => {
           if (!scope || !this.options.taskRunStore) return
           await this.options.taskRunStore.setSession(scope, taskId, runId, session)

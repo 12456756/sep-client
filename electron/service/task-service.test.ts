@@ -1,12 +1,14 @@
 import { after, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskManager } from '../runtime/task-manager'
 import { ScopePath, type TaskOwnerScope } from '../data/scope-path'
 import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
 import { TaskService, type TaskServiceDependencies } from './task-service'
+import { MediaStore } from '../data/media-store'
+import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
 import { ConversationService, type ConversationServiceDependencies } from './conversation-service'
 
 const owner: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
@@ -140,7 +142,7 @@ describe('directory selection starting path', () => {
 })
 
 import { TaskCreationGate } from './task-creation-gate'
-import type { ClientTask } from '../../src/shared/types'
+import type { ClientTask, TaskExecutionEvent } from '../../src/shared/types'
 
 const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const task: ClientTask = { id: 'task-a', title: 'Task', prompt: 'plain', status: 'pending', workDir: null, createdAt: 1, startedAt: null, completedAt: null, error: null, files: [], logs: [], ownerId: scope.memberId, ownerEnterpriseId: scope.enterpriseId, subscriptionId: 'sub-a', activeRunId: null }
@@ -180,6 +182,60 @@ describe('task timeline admission', () => {
       } },
     })
     assert.deepEqual(await service.timeline(task.id, 'queued-run'), events)
+  })
+
+  it('recovers labels from the exact archived run for compact skill reads without opening a skill file', async t => {
+    const root = await mkdtemp(join(await realpath(tmpdir()), 'sep-skill-display-'))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const path = join(root, 'runtime', 'skills-v2', 'a'.repeat(64), 'opaque', 'nested')
+    const runId = 'read-run'
+    const installed = { capabilityId: 'cap-a', versionId: 'mine', baseSkillVersionId: 'v1', version: 'personal',
+      source: 'owner-local' as const, name: 'opaque', description: 'Local description', content: 'PRIVATE CONTENT',
+      sha256: 'a'.repeat(64), path }
+    const runtimeSnapshot: EmployeeRuntimeSnapshot = {
+      manifestVersion: 1, ...scope, subscriptionId: 'sub-a', employeeId: 'employee-a', templateVersion: '1',
+      employeeVersion: '1', maxSteps: 10, systemPrompt: '', modelId: 'model-a', allowedModels: ['model-a'],
+      skills: [installed], approvedSkills: [
+        { capabilityId: 'cap-a', versionId: 'v1', version: '1', name: '促销机制设计',
+          description: '设计套装优惠', content: 'PRIVATE APPROVED CONTENT' },
+      ],
+    }
+    const media = new MediaStore(root)
+    await media.saveSnapshot(scope, { version: 1, owner: scope, taskId: task.id, runId, subscriptionId: 'sub-a',
+      systemPrompt: '', skills: [installed].map(({ path, sha256, version }) => ({ path, sha256, version })),
+      capabilities: null, runtimeSnapshot, createdAt: 1 })
+    const start = (sequence: number, file: string, subscriptionId = 'sub-a', toolName = 'read'): TaskExecutionEvent => ({
+      taskId: task.id, runId, sequence, subscriptionId, occurredAt: sequence, type: 'tool_execution_start',
+      data: { toolId: `read-${sequence}`, toolName, input: { path: file } },
+    })
+    const events = [start(1, join(path, 'SKILL.md')), start(2, join(root, 'opaque', 'nested', 'SKILL.md')),
+      start(3, join(path, 'SKILL.md'), 'sub-b'), start(4, join(path, 'SKILL.md'), 'write')]
+    const service = harness({ taskRunStore: { async get() { return { subscriptionId: 'sub-a' } },
+      events: { async getTimeline() { return events } } }, runSnapshots: media })
+    const result = await service.timeline(task.id, runId)
+    assert.deepEqual(result[0].data, { ...events[0].data as object,
+      skillDetails: { name: '促销机制设计', description: '设计套装优惠' } })
+    assert.deepEqual(result.slice(1), events.slice(1))
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE CONTENT|PRIVATE APPROVED CONTENT|runtimeSnapshot/)
+    assert.deepEqual(await service.timeline(task.id, 'no-snapshot'), events)
+  })
+
+  it('does not return projected skill details if the account changes while reading the archived run', async () => {
+    const entered = deferred(), resume = deferred()
+    let current = scope
+    const service = harness({
+      scope: { currentScope: () => current },
+      taskRunStore: { async get() { return { subscriptionId: 'sub-a' } }, events: { async getTimeline() {
+        return [{ taskId: task.id, runId: 'read-run', subscriptionId: 'sub-a', type: 'tool_execution_start',
+          data: { toolName: 'read', input: { path: join(tmpdir(), 'skill', 'SKILL.md') } } }]
+      } } },
+      runSnapshots: { async getSnapshot() { entered.resolve(); await resume.promise; return null } },
+    })
+    const result = assert.rejects(service.timeline(task.id, 'read-run'), { code: 'AUTH_REQUIRED' })
+    await entered.promise
+    current = { ...scope, memberId: 'member-b' }
+    resume.resolve()
+    await result
   })
 })
 

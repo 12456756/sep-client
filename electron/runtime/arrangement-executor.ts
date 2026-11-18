@@ -1,4 +1,5 @@
 import { withApprovedSkillReadPaths } from './run-skill-policy'
+import { runSkillDisplay } from '../common/run-skill-display'
 import { MEDIA_SPEC_EXECUTION_PROMPT } from './media-execution-prompts'
 /**
  * 编排式任务的节点执行器。
@@ -721,6 +722,7 @@ export class ArrangementExecutor {
         }
       }
       let mediaHandoffUsed = mediaSession?.readyForTracking() === true
+      const describeSkillRead = runSkillDisplay(employee.runtimeSnapshot)
       worker = this.options.createWorker({
         context: {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
@@ -785,7 +787,7 @@ export class ArrangementExecutor {
             const data = event.data as { text?: unknown }
             if (typeof data.text === 'string') output += data.text
           }
-          await this.options.onEvent(event)
+          await this.options.onEvent(describeSkillRead(event))
           if (['turn_start', 'turn_end', 'text_delta', 'thinking_delta', 'tool_execution_start', 'tool_execution_end',
             'approval_requested', 'approval_resolved', 'auto_retry_start', 'auto_retry_end'].includes(event.type)) {
             const raw = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}

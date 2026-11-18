@@ -27,6 +27,8 @@ import type { AttachmentRef, InputSnapshotRef } from '../../src/shared/attachmen
 import type { AttachmentService } from './attachment-service'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { arrangementInputReplySchema, type ArrangementInputReply } from '../../src/shared/arrangement-input'
+import { needsRunSkillDisplay, runSkillDisplay } from '../common/run-skill-display'
+import type { MediaStore } from '../data/media-store'
 
 /**
  * 服务层用到的执行能力。实现由 `runtime/task-runtime.ts` 提供；
@@ -60,6 +62,7 @@ export interface TaskServiceDependencies {
   /** 惰性取运行时：它必须在异步边界之后才能加载（Electron 33 / undici 边界）。 */
   execution: () => Promise<TaskExecutionPort>
   media?: { archiveIfMedia(taskId: string): Promise<boolean>; isArchived?(taskId: string): Promise<boolean> }
+  runSnapshots?: Pick<MediaStore, 'getSnapshot'>
   attachments?: AttachmentService
   conversationQueue?: import('./conversation-queue-service').ConversationQueueService
 }
@@ -352,14 +355,24 @@ export class TaskService {
   }
 
   async timeline(taskId: string, runId: string): Promise<TaskExecutionEvent[]> {
-    const task = await this.requireTask(taskId)
     const scope = this.scope()
+    const task = await this.requireTask(taskId)
+    this.assertScope(scope)
     // Admission publishes the queued run ID before the executor creates its record.
-    if (!await this.deps.taskRunStore.get(scope, taskId, runId)) {
+    const run = await this.deps.taskRunStore.get(scope, taskId, runId)
+    this.assertScope(scope)
+    if (!run) {
       if (task.status === 'pending' && task.activeRunId === runId) return []
       throw new AppError('NOT_FOUND', { message: '未找到该执行记录。' })
     }
-    return this.deps.taskRunStore.events.getTimeline(scope, taskId, runId)
+    const events = await this.deps.taskRunStore.events.getTimeline(scope, taskId, runId)
+    this.assertScope(scope)
+    if (!this.deps.runSnapshots || !events.some(needsRunSkillDisplay)) return events
+    // Older events only stored the read path; recover display fields without reading the skill file.
+    const snapshot = await this.deps.runSnapshots.getSnapshot(scope, taskId, runId).catch(() => null)
+    this.assertScope(scope)
+    if (snapshot?.subscriptionId !== run.subscriptionId || !snapshot?.runtimeSnapshot) return events
+    return events.map(runSkillDisplay(snapshot.runtimeSnapshot))
   }
 
   // ── 内部 ────────────────────────────────────────────────────────────────────

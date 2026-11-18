@@ -6,10 +6,10 @@ import type { SkillLibraryItem } from '../../shared/skill-library'
 
 it('uses capability identity to display the skill name and description instead of its installation name', () => {
   const library: SkillLibraryItem[] = [{ capability: { id: 'cap-a', name: '市场调研', description: '分析市场需求与竞争情况', type: 'SKILL' }, bindings: [], usableVersionIds: [], versions: [], localVersions: [] }]
-  assert.deepEqual(workSkillDetails('C:/runtime/ent/member/sub/skills/cap-a/version/sep-f264/SKILL.md', library), { name: '市场调研', description: '分析市场需求与竞争情况' })
-  assert.equal(workSkillDetails('C:/runtime/skills/other/version/sep-f264/SKILL.md', library), null)
-  assert.equal(workSkillDetails('C:/runtime/skills/cap-a/SKILL.md', library), null)
-  assert.equal(workSkillDetails('C:/work/市场调研/SKILL.md', library), null)
+  assert.deepEqual(workSkillDetails({ path: 'C:/runtime/ent/member/sub/skills/cap-a/version/sep-f264/skills/SKILL.md' }, library), { name: '市场调研', description: '分析市场需求与竞争情况' })
+  assert.equal(workSkillDetails({ path: 'C:/runtime/skills/other/version/sep-f264/SKILL.md' }, library), null)
+  assert.equal(workSkillDetails({ path: 'C:/runtime/skills/cap-a/SKILL.md' }, library), null)
+  assert.equal(workSkillDetails({ path: 'C:/work/市场调研/SKILL.md' }, library), null)
 })
 
 function event(sequence: number, type: string, data: Record<string, unknown>, runId = 'run'): TaskExecutionEvent {
@@ -21,6 +21,22 @@ const end = (id: string, success: boolean) => ({ toolName: 'read', toolId: id, s
 const project = (events: TaskExecutionEvent[]) => events.flatMap(item => {
   const selected = selectSkillUsageEvent(item)
   return selected ? [selected] : []
+})
+
+it('displays compact skill metadata from its read event without the current skill library', () => {
+  const path = `C:/runtime/skills-v2/${'a'.repeat(64)}/opaque/skills/SKILL.md`
+  const details = { name: '促销机制设计', description: '设计套装优惠' }
+  const events = project([
+    event(1, 'tool_execution_start', { ...start('a', path), skillDetails: { ...details, content: 'PRIVATE CONTENT' } }, 'node-run'),
+    event(2, 'arrangement_node_progress', { ...end('a', true), eventType: 'tool_execution_end', nodeId: 'node', nodeRunId: 'node-run' }),
+    event(3, 'tool_execution_end', end('a', true), 'node-run'),
+  ])
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE CONTENT/)
+  const [skill] = collectWorkSkills(events)
+  assert.equal(skill.completed, 1)
+  assert.deepEqual(skill.nodeIds, ['node'])
+  assert.deepEqual(workSkillDetails(skill, []), details)
+  assert.equal(workSkillDetails({ path }, []), null)
 })
 
 it('selects only skill entry reads and removes unrelated inputs and results', () => {
