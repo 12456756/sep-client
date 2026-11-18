@@ -391,8 +391,8 @@ describe('video tools through the mocked Pi SDK extension API', () => {
   })
   it('registers strict definitions independently of image tools and never advertises cancel', async () => {
     const runtime = await sdk({ mediaTools: { names: ['media_get_job'], execute: async () => null } })
-    assert.deepEqual([...runtime.definitions.keys()], ['bash', 'read', 'media_get_job', ...names])
-    assert.deepEqual(runtime.options.tools, ['read', 'bash', 'edit', 'write', 'media_get_job', ...names])
+    assert.deepEqual([...runtime.definitions.keys()], ['bash', 'read', 'get_current_time', 'media_get_job', ...names])
+    assert.deepEqual(runtime.options.tools, ['read', 'bash', 'edit', 'write', 'get_current_time', 'media_get_job', ...names])
     for (const name of names) {
       const definition = runtime.definitions.get(name)!
       assert.equal(definition.executionMode, 'sequential')
@@ -403,7 +403,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
     assert.deepEqual((runtime.definitions.get('video_generate')!.parameters as Record<string, unknown>).required, ['creativeBrief'])
     const fields = schema.properties as Record<string, Record<string, unknown>>
     assert.equal(fields.operation.const, 'image-to-video')
-    assert.equal(fields.localAssetIds.maxItems, 1)
+    assert.equal(fields.localAssetIds.maxItems, 32)
     assert.equal(fields.parameters.additionalProperties, false)
     assert.equal((runtime.definitions.get('video_get_job')!.parameters as Record<string, unknown>).required, undefined)
     assert.equal(runtime.definitions.has('video_cancel_job'), false)
@@ -413,11 +413,24 @@ describe('video tools through the mocked Pi SDK extension API', () => {
   it('only advertises injected known names, even when policy lists unavailable or cancellation tools', async () => {
     for (const videoTools of [undefined, { names: [] as const, execute: async () => job }]) {
       const runtime = await sdk({ videoTools, toolPolicy: { ...policy, allowedTools: [...names, 'video_cancel_job', 'video_unknown'] } })
-      assert.equal(runtime.definitions.size, 0)
-      assert.deepEqual(runtime.options.tools, [])
+      assert.deepEqual([...runtime.definitions.keys()], ['get_current_time'])
+      assert.deepEqual(runtime.options.tools, ['get_current_time'])
     }
     const runtime = await sdk({ videoTools: { names: ['video_get_job', 'video_cancel_job'] as unknown as VideoToolName[], execute: async () => job } })
-    assert.deepEqual([...runtime.definitions.keys()], ['bash', 'read', 'video_get_job'])
+    assert.deepEqual([...runtime.definitions.keys()], ['bash', 'read', 'get_current_time', 'video_get_job'])
+  })
+
+  it('forwards ordered V3 image references through the actual SDK tool dispatcher', async () => {
+    const runtime = await sdk()
+    const input = { creativeBrief: 'Use all three product views', protocolVersion: 3, specRevision: 1,
+      requestedSpec: { durationSeconds: 4 }, parameterSources: { durationSeconds: 'model' },
+      localAssetIds: ['third', 'first', 'second'] }
+    const result = await runtime.execute('video_from_image', input)
+    assert.deepEqual(result.details, { isError: false })
+    assert.deepEqual(runtime.calls[0]?.input, input)
+    const tooMany = await runtime.execute('video_from_image', { ...input, localAssetIds: Array.from({ length: 33 }, (_, i) => `image-${i}`) })
+    assert.deepEqual(tooMany.details, { isError: true })
+    assert.equal(runtime.calls.length, 1)
   })
 
   it('forwards validated generation, query and AbortSignal without a duplicate Pi approval', async () => {
@@ -497,7 +510,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       const runtime = await sdk({ toolPolicy })
       const expected = toolPolicy.preset === 'full-local' ? names
         : toolPolicy.preset === 'read-only' ? ['video_get_job'] : [...names].filter(name => name === 'video_get_job' || toolPolicy.allowedTools.includes(name))
-      const encodingTools = ['bash', 'read', 'grep'].filter(name => runtime.options.tools?.includes(name))
+      const encodingTools = ['bash', 'read', 'grep', 'get_current_time'].filter(name => runtime.options.tools?.includes(name))
       assert.deepEqual([...runtime.definitions.keys()], [...encodingTools, ...expected])
       for (const name of [...names, 'video_cancel_job', 'video_unknown']) {
         const [decision] = await runtime.emit('tool_call', { toolName: name, input: generation })

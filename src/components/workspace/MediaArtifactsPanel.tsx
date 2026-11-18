@@ -4,6 +4,7 @@ import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaOperation, MediaPreview, MediaProfile, MediaTaskView } from '../../shared/media'
 import { mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile } from '../../shared/media-view'
 import { videoRuntimeSchema } from '../../shared/video-media'
+import { imageReferenceSupport, mediaReferenceProblem } from '../../shared/media-references'
 import { VideoTaskPanel } from './VideoArtifactsPanel'
 import { useMediaParameterPreferences } from './media-preference-scope'
 import { imageRequestedSpecSchema, type ImageRequestedSpec, type MediaParameterSources } from '../../shared/media-spec-contract'
@@ -125,9 +126,10 @@ function AssetImage({ taskId, asset, large = false }: { taskId: string; asset: M
   </div>
 }
 
-export function MediaAssetGrid({ taskId, assets, references = false, selected = [], disabled = false, onSelect, onPreview, onExport, compact = false }: {
+export function MediaAssetGrid({ taskId, assets, references = false, selected = [], disabled = false, onSelect, onPreview, onExport, compact = false, selectionProblem }: {
   taskId: string; assets: MediaAssetView[]; references?: boolean; selected?: string[]; disabled?: boolean
   compact?: boolean
+  selectionProblem?: (asset: MediaAssetView) => string | null
   onSelect?: (id: string) => void; onPreview: (asset: MediaAssetView) => void; onExport?: (asset: MediaAssetView) => void
 }) {
   return <div className="media-grid">{assets.map((asset, index) => <div className="media-asset" key={asset.localAssetId}>
@@ -135,7 +137,7 @@ export function MediaAssetGrid({ taskId, assets, references = false, selected = 
       <AssetImage key={`${taskId}:${asset.localAssetId}:${asset.status}`} taskId={taskId} asset={asset} />
     </button>
     {!compact && <div className="media-asset-caption">
-      {references ? <label className="media-reference-select"><input type="checkbox" checked={selected.includes(asset.localAssetId)} disabled={disabled || asset.status !== 'SAVED'} onChange={() => onSelect?.(asset.localAssetId)} />参考图 {index + 1}</label> : <span>成果 {index + 1}</span>}
+      {references ? <label className="media-reference-select" title={selectionProblem?.(asset) ?? undefined}><input type="checkbox" checked={selected.includes(asset.localAssetId)} disabled={disabled || asset.status !== 'SAVED' || !selected.includes(asset.localAssetId) && !!selectionProblem?.(asset)} onChange={() => onSelect?.(asset.localAssetId)} />参考图 {index + 1}{selected.includes(asset.localAssetId) ? ` · ${selected.indexOf(asset.localAssetId) + 1}` : ''}</label> : <span>成果 {index + 1}</span>}
       {!references && asset.status === 'SAVED' && <button type="button" className="media-icon-button" disabled={disabled} title={`导出成果 ${index + 1}`} aria-label={`导出成果 ${index + 1}`} onClick={() => onExport?.(asset)}><Download size={14} /></button>}
     </div>}
     {compact && asset.status === 'SAVED' && <button type="button" className="media-command" disabled={disabled} onClick={() => onExport?.(asset)}><Download size={13} />导出图片 {index + 1}</button>}
@@ -163,8 +165,11 @@ export function MediaCreationForm({ profiles, protocolVersion, defaultProfileId,
   const [choices, setChoices] = useState<{ binding: string; parameters: Partial<MediaGenerationInput['parameters']> }>({ binding: '', parameters: {} })
   const negotiated = protocolVersion === 3
   const parameters = profile ? choices.binding === binding ? choices.parameters : {} : null
-  const selectedIds = selected.filter(assetId => references.some(asset => asset.localAssetId === assetId && asset.status === 'SAVED'))
-  const problem = archived ? '任务已归档，只可查看已有成果' : profile && !parameters ? '当前配置没有可用的图片规格' : mediaInputProblem(profile, operation, selectedIds.length, brief, negotiated)
+  const selectedIds = selected
+  const selectedAssets = selectedIds.flatMap(assetId => references.find(asset => asset.localAssetId === assetId) ?? [])
+  const support = profile ? imageReferenceSupport(profile, negotiated) : undefined
+  const referenceProblem = selectedAssets.length !== selectedIds.length ? '所选参考图已不可用，请重新选择。' : support ? mediaReferenceProblem(selectedAssets, support) : null
+  const problem = archived ? '任务已归档，只可查看已有成果' : referenceProblem ?? (profile && !parameters ? '当前配置没有可用的图片规格' : mediaInputProblem(profile, operation, selectedIds.length, brief, negotiated))
   useEffect(() => {
     setSelected([])
   }, [binding])
@@ -198,8 +203,8 @@ export function MediaCreationForm({ profiles, protocolVersion, defaultProfileId,
       <button type="button" aria-pressed={operation === 'edit'} disabled={busy || archived || !profile?.operations.includes('edit') || !profile.capabilities.referenceImage} onClick={() => setOperation('edit')}>编辑参考图</button>
     </div>
     {operation === 'edit' && (!profile?.operations.includes('edit') || !profile.capabilities.referenceImage) && <p className="media-notice">当前配置不支持图片编辑</p>}
-    <div className="media-subheading"><span>商品参考图</span><button type="button" className="media-icon-button" title="从系统选择参考图" aria-label="从系统选择参考图" disabled={busy || archived || !profile?.capabilities.referenceImage} onClick={onImport}><ImagePlus size={16} /></button></div>
-    {references.length > 0 ? <MediaAssetGrid taskId={taskId} assets={references} references selected={selectedIds} disabled={busy || archived} onSelect={assetId => setSelected(value => value.includes(assetId) ? value.filter(item => item !== assetId) : [...value, assetId])} onPreview={onPreview} /> : <p className="artifact-empty">尚无参考图</p>}
+    <div className="media-subheading"><span title={support ? `支持 ${support.mimeTypes.join('、')}，单张最多 ${support.maxInputBytes / 1024 / 1024} MiB` : undefined}>商品参考图{support ? ` · ${selectedIds.length}/${Math.min(32, support.maxCount)}` : ''}</span><button type="button" className="media-icon-button" title="从系统选择参考图" aria-label="从系统选择参考图" disabled={busy || archived || !profile?.capabilities.referenceImage} onClick={onImport}><ImagePlus size={16} /></button></div>
+    {references.length > 0 ? <MediaAssetGrid taskId={taskId} assets={references} references selected={selectedIds} disabled={busy || archived} selectionProblem={asset => support ? mediaReferenceProblem(selectedIds.includes(asset.localAssetId) ? [asset] : [...selectedAssets, asset], support) : '请选择图片模型'} onSelect={assetId => setSelected(value => value.includes(assetId) ? value.filter(item => item !== assetId) : [...value, assetId])} onPreview={onPreview} /> : <p className="artifact-empty">尚无参考图</p>}
     <div className="media-specs">
         <p className="media-notice">未填写的规格保持未指定，由模型协商或上游确认。</p>
         <button type="button" disabled={busy || archived} onClick={() => setChoices({ binding, parameters: preferences.parameters })}>复用上次规格</button>

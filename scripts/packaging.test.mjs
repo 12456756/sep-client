@@ -5,13 +5,109 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { test } from 'node:test'
+import { runInNewContext } from 'node:vm'
 import yaml from 'js-yaml'
 import { getConfig, validateConfiguration } from 'app-builder-lib/out/util/config/config.js'
-import { DebugLogger } from 'builder-util'
+import { Arch, DebugLogger } from 'builder-util'
+import { normalizeOptions } from 'electron-builder/out/builder.js'
+import { computeArchToTargetNamesMap } from 'app-builder-lib/out/targets/targetFactory.js'
 import { createBuilderConfig } from './generate-builder-config.mjs'
 import signAdhoc from './mac-adhoc-sign.cjs'
 
 const root = process.cwd()
+
+test('release validates version notes before packaging and uses the same version source for publication', () => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  const steps = workflow.jobs.validate.steps
+  const checkIndex = steps.findIndex(step => step.run === 'npm run release:notes:check')
+  assert.ok(checkIndex >= 0)
+  assert.equal(steps[checkIndex].if, undefined)
+  assert.ok(checkIndex < steps.findIndex(step => step.run === 'npm run test:packaging'))
+  const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
+  assert.equal(pkg.scripts['release:notes:check'], 'node scripts/generate-release-notes.mjs --check-version')
+  assert.ok(readFileSync(resolve(root, 'release-notes', `${pkg.version}.md`), 'utf8').trim())
+})
+
+test('release assembles once and gates production access and upload for each run mode', () => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  assert.equal(workflow.jobs.assemble, undefined)
+  const job = workflow.jobs.publish
+  assert.deepEqual(job.needs, ['validate', 'preflight', 'build-mac', 'build-win'])
+  const steps = job.steps
+  assert.deepEqual(steps.filter(step => step.uses === 'actions/download-artifact@v4').map(step => [step.with.name, step.with.path]), [
+    ['sep-client-mac-arm64', 'release-mac-arm64'], ['sep-client-mac-x64', 'release-mac-x64'], ['sep-client-win', 'release-win'],
+  ])
+  const mergeIndex = steps.findIndex(step => step.run === 'node scripts/merge-mac-update-manifests.mjs release-mac-arm64/latest-mac.yml release-mac-x64/latest-mac.yml release-source/latest-mac.yml')
+  const uploadIndex = steps.findIndex(step => step.name === 'Upload client files and publish manifests last')
+  const prepareIndex = steps.findIndex(step => step.run === 'node scripts/prepare-download-update.mjs release-source stable release-prepared')
+  assert.ok(mergeIndex >= 0 && mergeIndex < prepareIndex)
+  assert.ok(prepareIndex >= 0 && prepareIndex < uploadIndex)
+  for (const command of ['node scripts/verify-connector-assets.mjs release-source', 'node scripts/verify-update-manifest.mjs release-source --require-all-platforms']) {
+    const index = steps.findIndex(step => step.run === command)
+    assert.ok(index > mergeIndex && index < prepareIndex)
+    assert.equal(steps[index].if, undefined)
+  }
+  assert.equal(steps[uploadIndex].run, 'node scripts/upload-download-update.mjs release-source release-prepared stable')
+  const archive = steps.find(step => step.uses === 'actions/upload-artifact@v4')
+  const publicCheck = steps.find(step => step.name === 'Verify the public update feed')
+  assert.ok(steps.indexOf(publicCheck) > uploadIndex)
+  assert.equal(steps.filter(step => step.uses === 'actions/upload-artifact@v4').length, 1)
+  for (const [event, publish, expected, preflight] of [
+    ['push', undefined, true, 'success'], ['workflow_dispatch', true, true, 'success'],
+    ['workflow_dispatch', false, false, 'skipped'],
+  ]) {
+    const context = { github: { event_name: event }, inputs: { publish }, always: () => true,
+      needs: Object.fromEntries(job.needs.map(name => [name, { result: name === 'preflight' ? preflight : 'success' }])) }
+    const evaluate = value => runInNewContext(value.replace(/^\$\{\{\s*|\s*\}\}$/g, ''), context, { timeout: 1000 })
+    assert.equal(evaluate(job.if), true)
+    assert.equal(evaluate(job.environment.name), expected ? 'sep-download-production' : 'sep-download-validation')
+    assert.equal(evaluate(steps[uploadIndex].if), expected)
+    assert.equal(evaluate(publicCheck.if), expected)
+    assert.equal(evaluate(archive.if), !expected)
+    for (const dependency of job.needs) {
+      for (const result of ['failure', 'cancelled']) {
+        const previous = context.needs[dependency].result
+        context.needs[dependency].result = result
+        assert.equal(evaluate(job.if), false, `${event}: ${dependency} ${result} must block release`)
+        context.needs[dependency].result = previous
+      }
+    }
+  }
+})
+
+test('platform artifacts contain only downloadable release files without recompressing installers', () => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  for (const [job, patterns] of [
+    ['build-mac', ['*.dmg', '*.zip', '*.blockmap', 'latest-mac.yml', 'connector-assets/**']],
+    ['build-win', ['*.exe', '*.blockmap', 'latest.yml', 'connector-assets/**']],
+  ]) {
+    const step = workflow.jobs[job].steps.find(step => step.uses === 'actions/upload-artifact@v4')
+    assert.equal(step.with['compression-level'], 0)
+    assert.equal(step.with['if-no-files-found'], 'error')
+    assert.deepEqual(step.with.path.trim().split(/\r?\n/), patterns.map(pattern => `dist/local/stable/${pattern}`))
+  }
+  assert.equal(workflow.jobs.publish.steps.find(step => step.uses === 'actions/upload-artifact@v4').with['compression-level'], 0)
+})
+
+test('Electron download caches restore before npm installation and remain isolated by platform and lockfile', () => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  assert.equal(workflow.env.ELECTRON_CACHE, '${{ github.workspace }}/.cache/electron')
+  assert.equal(workflow.env.electron_config_cache, workflow.env.ELECTRON_CACHE)
+  assert.equal(workflow.env.ELECTRON_BUILDER_CACHE, '${{ github.workspace }}/.cache/electron-builder')
+  for (const job of ['validate', 'build-mac', 'build-win', 'publish']) {
+    const steps = workflow.jobs[job].steps
+    const cacheIndex = steps.findIndex(step => step.uses === 'actions/cache@v4' && step.with.key.startsWith('electron-downloads-'))
+    const installIndex = steps.findIndex(step => step.run?.includes('npm ci'))
+    assert.ok(cacheIndex >= 0 && cacheIndex < installIndex, `${job} must restore downloads before install scripts`)
+    const cache = steps[cacheIndex]
+    const prefix = job === 'build-mac'
+      ? 'electron-downloads-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-'
+      : 'electron-downloads-v1-${{ runner.os }}-${{ runner.arch }}-'
+    assert.equal(cache.with.key, prefix + "${{ hashFiles('package-lock.json') }}")
+    assert.equal(cache.with['restore-keys'].trim(), prefix)
+    assert.deepEqual(cache.with.path.trim().split(/\r?\n/), ['${{ env.ELECTRON_CACHE }}', '${{ env.ELECTRON_BUILDER_CACHE }}'])
+  }
+})
 
 test('Windows dependency installation clears inherited PowerShell modules without disabling install scripts', () => {
   const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
@@ -57,14 +153,29 @@ test('release workflow allows 120 seconds per public artifact verification', () 
   assert.equal(step.run, 'node scripts/test-update-feed.mjs https://sep.longdaoec.com/sep-client/stable/ --require-all-platforms --timeout-ms 120000')
 })
 
-test('release workflow uses an Intel macOS runner while preserving both target architectures', () => {
+test('release workflow builds macOS architectures in parallel without rebuilding the other architecture', () => {
   const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
-  assert.equal(workflow.jobs['build-mac']['runs-on'], 'macos-15-intel')
-  const build = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).build
-  assert.deepEqual(createBuilderConfig(build, 'stable').mac.target, [
-    { target: 'dmg', arch: ['x64', 'arm64'] },
-    { target: 'zip', arch: ['x64', 'arm64'] },
-  ])
+  const job = workflow.jobs['build-mac']
+  assert.equal(job['runs-on'], 'macos-15-intel')
+  assert.deepEqual(job.strategy.matrix.arch, ['arm64', 'x64'])
+  assert.equal(job.strategy['max-parallel'], 2)
+  assert.equal(job.strategy['fail-fast'], false)
+  assert.deepEqual(job.needs, ['validate', 'preflight'])
+  const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
+  const config = createBuilderConfig(pkg.build, 'stable')
+  assert.match(pkg.scripts['package:ci:stable:mac'], /--mac$/)
+  const command = job.steps.find(step => step.run?.startsWith('npm run package:ci:stable:mac'))
+  assert.equal(command.run, 'npm run package:ci:stable:mac -- dmg zip --${{ matrix.arch }}')
+  for (const arch of job.strategy.matrix.arch) {
+    const options = normalizeOptions({ mac: ['dmg', 'zip'], [arch]: true })
+    const [[platform, targets]] = options.targets
+    const effective = computeArchToTargetNamesMap(targets, { platformSpecificBuildOptions: config.mac }, platform)
+    assert.deepEqual([...effective], [[Arch[arch], ['dmg', 'zip']]])
+  }
+  const install = job.steps.find(step => step.run?.startsWith('npm install --no-save'))
+  assert.equal(install.run, 'npm install --no-save --package-lock=false --ignore-scripts --force sherpa-onnx-darwin-${{ matrix.arch }}@1.13.8')
+  const upload = job.steps.find(step => step.uses === 'actions/upload-artifact@v4')
+  assert.equal(upload.with.name, 'sep-client-mac-${{ matrix.arch }}')
 })
 
 test('release workflow restores versioned speech caches before unconditional verification on every build platform', () => {
@@ -88,18 +199,20 @@ test('release workflow restores versioned speech caches before unconditional ver
   }
 })
 
-test('release workflow caches only pinned target OfficeCLI binaries and always prepares both macOS architectures', () => {
+test('release workflow prepares and caches only the target OfficeCLI architecture', () => {
   const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
   for (const [job, paths, commands] of [
-    ['build-mac', ['resources/office/officecli-mac-arm64', 'resources/office/officecli-mac-x64'],
-      ['npm run office:prepare -- darwin arm64', 'npm run office:prepare -- darwin x64']],
+    ['build-mac', ['resources/office/officecli-mac-${{ matrix.arch }}'],
+      ['npm run office:prepare -- darwin ${{ matrix.arch }}']],
     ['build-win', ['resources/office/officecli-win-x64.exe'], ['npm run office:prepare']],
   ]) {
     const steps = workflow.jobs[job].steps
     const caches = steps.filter(step => step.uses === 'actions/cache@v4' && step.with.key.startsWith('officecli-'))
     assert.equal(caches.length, 1, `${job} must have one OfficeCLI cache`)
     const cache = caches[0]
-    assert.equal(cache.with.key, "officecli-v1-${{ runner.os }}-${{ hashFiles('resources/office/manifest.json') }}")
+    assert.equal(cache.with.key, job === 'build-mac'
+      ? "officecli-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('resources/office/manifest.json') }}"
+      : "officecli-v1-${{ runner.os }}-${{ hashFiles('resources/office/manifest.json') }}")
     assert.deepEqual(cache.with.path.trim().split(/\r?\n/), paths)
     assert.equal(cache.with['restore-keys'], undefined)
     assert.equal(cache.if, undefined)

@@ -24,7 +24,7 @@ import { PiTaskWorker } from '../pi/sdk/pi-task-worker'
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 const scope: VideoScope = { enterpriseId: 'enterprise-a', memberId: 'member-a', subscriptionId: 'subscription-a' }
-const bytes = Buffer.from('mock reference')
+const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2S5cAAAAASUVORK5CYII=', 'base64')
 const input = (): VideoGenerationInput => ({
   profileId: 'mock-video-from-image', operation: 'image-to-video', localAssetIds: ['asset-a'], creativeBrief: 'Slow product movement',
   parameters: { ...fixture.quoteRequest.parameters, resolution: '720p', outputFormat: 'video/mp4' },

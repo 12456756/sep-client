@@ -2,7 +2,9 @@ import { z } from 'zod'
 import { imageRequestedSpecSchema, mediaParameterSourcesSchema, mediaSpecsEqual, omitUndefinedMediaFields } from '../../../src/shared/media-spec-contract'
 import type { MediaCapabilities, MediaGenerationInput } from '../../../src/shared/media'
 import { toLocalMediaCapabilities } from './sep-media-runtime-contract'
+import { sepRuntimeV3ProfileMetadata } from '../../../src/shared/sep-runtime-v3-contract'
 import { AppError } from '../../errors/app-error'
+import { mediaUpstreamErrorSchema } from '../../../src/shared/media-upstream-error'
 
 export const mediaId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const opaqueId = z.string().min(1).max(256)
@@ -21,7 +23,7 @@ const mediaV3AdapterSchema = z.object({
   operations: z.array(z.string().trim().min(1).max(128)).max(8),
   referenceSupport: z.object({
     maxCount: z.number().int().nonnegative().safe(),
-    maxInputBytes: z.number().int().positive().safe(),
+    maxInputBytes: z.number().int().nonnegative().safe(),
     mimeTypes: z.array(z.string().trim().min(1).max(128)).max(16),
   }).strict(),
   supportsTaskQuery: z.boolean(),
@@ -34,11 +36,12 @@ export const mediaParametersSchema = z.object({
 }).strict()
 export const mediaGenerationInputSchema = z.object({
   profileId: opaqueId, operation: z.enum(['generate', 'edit']),
-  localAssetIds: z.array(mediaId).max(16), creativeBrief: z.string().trim().min(1).max(20_000),
+  localAssetIds: z.array(mediaId).max(32), creativeBrief: z.string().trim().min(1).max(20_000),
   parameters: z.union([mediaParametersSchema, imageRequestedSpecSchema]),
   protocolVersion: z.literal(3).optional(), requestedSpec: imageRequestedSpecSchema.optional(),
   parameterSources: mediaParameterSourcesSchema.optional(), specRevision: z.number().int().positive().optional(),
 }).strict().superRefine((value, context) => {
+  if (new Set(value.localAssetIds).size !== value.localAssetIds.length || value.protocolVersion !== 3 && value.localAssetIds.length > 16) context.addIssue({ code: 'custom', path: ['localAssetIds'], message: 'Invalid reference selection.' })
   if (value.protocolVersion === 3) {
     if (!value.requestedSpec || !value.parameterSources || !value.specRevision) context.addIssue({ code: 'custom', message: 'V3 specification metadata is required.' })
     else if (!mediaSpecsEqual(value.parameters, value.requestedSpec)) context.addIssue({ code: 'custom', path: ['parameters'], message: 'Parameters conflict with requested specification.' })
@@ -69,6 +72,7 @@ export const mediaProfileSchema = z.object({
   authorized: z.boolean().optional(),
   unavailableReason: z.string().trim().min(1).max(128).optional(),
   capabilityHints: z.array(mediaV3HintSchema).max(32).optional(),
+  ...z.object(sepRuntimeV3ProfileMetadata).partial().shape,
 }).strict().superRefine((profile, context) => {
   if (profile.defaultSize !== undefined && !profile.allowedSizes?.includes(profile.defaultSize)) context.addIssue({ code: 'custom', path: ['defaultSize'], message: 'Default size must be allowed.' })
   if (profile.defaultQuality !== undefined && !profile.allowedQualities?.includes(profile.defaultQuality)) context.addIssue({ code: 'custom', path: ['defaultQuality'], message: 'Default quality must be allowed.' })
@@ -93,7 +97,7 @@ export const mediaReceiptSchema = z.object({
   pollAfterMs: z.number().int().nonnegative().max(86_400_000).nullable(), outputs: z.array(mediaOutputSchema),
   actualSpec: imageRequestedSpecSchema.optional(),
   billingStatus: z.string().min(1).max(64),
-  recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(),
+  recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(), upstreamError: mediaUpstreamErrorSchema.optional(),
 }).strict()
 
 /** Internal port format; HTTP adapters must validate and translate their wire contracts. */

@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowLeft, Camera, CircleUserRound, ImagePlus, Mic, PanelLeft, RefreshCw, Search, Settings, X } from 'lucide-react'
+import { ArrowLeft, Camera, CircleUserRound, Clapperboard, ImagePlus, Mic, PanelLeft, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ClientProfile } from '../../shared/profile-wallet-contracts'
 import type { UploadInput } from '../../shared/ipc'
@@ -7,6 +7,7 @@ import { EmployeeFace } from './EmployeeFace'
 import { SpeechSettings } from '../speech/SpeechSettings'
 import { DefaultModelSettings } from './DefaultModelSettings'
 import { DefaultWorkspaceSettings } from './DefaultWorkspaceSettings'
+import { MultimediaSettings } from './MultimediaSettings'
 import { getSettingsPages, type SettingsPageId, type SettingsSectionId } from '../../features/enterprise/settings-catalog'
 import '../../styles/settings.css'
 
@@ -53,7 +54,7 @@ export function ProfileSettingsDialog({
   const matches = getSettingsPages(canManage, speechSupported, query)
   const currentPage = pages.find(page => page.id === activePage) ?? pages[0]
   const visiblePages = searching ? matches : currentPage ? [currentPage] : []
-  const pageIcons = { general: Settings, account: CircleUserRound, voice: Mic }
+  const pageIcons = { general: Settings, account: CircleUserRound, voice: Mic, multimedia: Clapperboard }
 
   useEffect(() => setLogoFailed(false), [profile?.enterprise?.logo])
   useEffect(() => { content.current?.scrollTo(0, 0) }, [activePage, query])
@@ -82,6 +83,7 @@ export function ProfileSettingsDialog({
   const sections: Record<SettingsSectionId, ReactNode> = {
     models: <DefaultModelSettings models={models} />,
     workspace: <DefaultWorkspaceSettings />,
+    multimedia: <MultimediaSettings />,
     profile: <>
       <div className="ent-settings-profile-row">
         <div className="ent-profile-preview">

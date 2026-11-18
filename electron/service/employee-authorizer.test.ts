@@ -23,6 +23,7 @@ import {
 import { employeeRuntimeSnapshotSchema, type PreparedEmployeeSkill } from '../common/platform/employee-runtime-contract'
 import type { SkillArtifactAvailable } from '../common/platform/skill-artifact-contract'
 import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
+import { sepRuntimeV3Fixture } from '../../src/shared/fixtures/sep-media-runtime-v3'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -325,6 +326,47 @@ function digest(content: string): string {
 }
 
 describe('media runtime authorization without skill preparation', () => {
+  it('describes validated multimedia settings without leaking runtime prompts or credentials', async () => {
+    const skills = fakeSkills()
+    const manifest = runtimeManifest()
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a')]), skills, GATEWAY, {
+      getRuntime: async () => ({ ...manifest, runtime: { ...manifest.runtime, media: sepRuntimeV3Fixture('image'), video: sepRuntimeV3Fixture('video') } }),
+    })
+    const result = await authorizer.describeMultimedia('sub-a')
+    assert.deepEqual(Object.keys(result).sort(), ['image', 'imageError', 'video'])
+    assert.equal(result.image?.profiles[0].parameters?.size.valuesMode, 'suggested')
+    assert.equal(result.video?.profiles[0].parameters?.outputFormat.valuesMode, 'allowed')
+    assert.equal(JSON.stringify(result).includes('Actual employee prompt'), false)
+    assert.equal(JSON.stringify(result).includes('access-token'), false)
+    assert.equal(skills.prepared(), 0)
+  })
+
+  it('keeps video visible when image capabilities are invalid and rejects inactive grants', async () => {
+    const manifest = runtimeManifest()
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a')]), fakeSkills(), GATEWAY, {
+      getRuntime: async () => ({ ...manifest, runtime: { ...manifest.runtime, media: { invalid: true }, video: videoFixture.runtime } }),
+    })
+    const result = await authorizer.describeMultimedia('sub-a')
+    assert.equal(result.image, null)
+    assert.ok(result.imageError)
+    assert.ok(result.video)
+    await assert.rejects(authorizer.describeMultimedia('other'), { code: 'PERMISSION_DENIED' })
+    const inactive = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [{ ...subscription('sub-a'), status: 'PAUSED' }]), fakeSkills(), GATEWAY)
+    await assert.rejects(inactive.describeMultimedia('sub-a'), { code: 'PERMISSION_DENIED' })
+  })
+
+  it('rejects multimedia settings after an account scope change', async () => {
+    const pendingRuntime = deferred<unknown>(), started = deferred<void>()
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a')]), fakeSkills(), GATEWAY, {
+      getRuntime: () => { started.resolve(); return pendingRuntime.promise },
+    })
+    const pending = authorizer.describeMultimedia('sub-a')
+    await started.promise
+    authorizer.clear()
+    pendingRuntime.resolve(runtimeManifest())
+    await assert.rejects(pending, { code: 'PERMISSION_DENIED' })
+  })
+
   it('reads current media capabilities without downloading skills or selecting a chat model', async () => {
     const manifest = runtimeManifest()
     const media = { profileId: 'image-profile' }

@@ -63,6 +63,7 @@ function authFailure(error: AuthApiError): { failure: MediaToolFailure; diagnost
 export function videoToolFailureFrom(error: unknown): MediaToolFailure {
   if (error instanceof AuthApiError) return authFailure(error).failure
   if (!(error instanceof AppError)) return mediaToolFailure('INTERNAL_ERROR', 'Video operation failed. Do not infer a missing profile or automatically resubmit a paid request.')
+  if (error.details?.source === 'upstream') return mediaToolFailure(error.code, error.userMessage, { source: 'upstream' })
   if (['MISSING_SPEC', 'SPEC_CONFLICT', 'UPGRADE_REQUIRED', 'ADAPTER_UNAVAILABLE', 'ADAPTER_FIELD_UNMAPPED', 'PRICE_UNAVAILABLE', 'UPSTREAM_SPEC_UNSUPPORTED', 'OUTPUT_SPEC_MISMATCH'].includes(error.code)) return mediaSpecToolFailureFrom(error)
   const businessMessage = videoErrorMessage(error.code)
   if (businessMessage) return mediaToolFailure(error.code, businessMessage)

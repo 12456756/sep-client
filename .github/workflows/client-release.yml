@@ -22,6 +22,9 @@ concurrency:
 
 env:
   NODE_VERSION: '22'
+  ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+  electron_config_cache: ${{ github.workspace }}/.cache/electron
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
 
 jobs:
   validate:
@@ -32,7 +35,18 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: electron-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-downloads-v1-${{ runner.os }}-${{ runner.arch }}-
       - run: npm ci
+      - name: Check version release notes
+        run: npm run release:notes:check
       - name: Cache pinned speech assets
         uses: actions/cache@v4
         with:
@@ -74,18 +88,33 @@ jobs:
           node scripts/upload-download-update.mjs --preflight "$version"
 
   build-mac:
+    name: Build macOS (${{ matrix.arch }})
     needs: [validate, preflight]
     if: always() && needs.validate.result == 'success' && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
     runs-on: macos-15-intel
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        arch: [arm64, x64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: electron-downloads-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-downloads-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-
       - run: npm ci
-      - name: Install pinned macOS speech runtimes for both architectures
-        run: npm install --no-save --package-lock=false --ignore-scripts --force sherpa-onnx-darwin-arm64@1.13.8 sherpa-onnx-darwin-x64@1.13.8
+      - name: Install pinned target macOS speech runtime
+        run: npm install --no-save --package-lock=false --ignore-scripts --force sherpa-onnx-darwin-${{ matrix.arch }}@1.13.8
       - name: Cache pinned speech assets
         uses: actions/cache@v4
         with:
@@ -98,19 +127,21 @@ jobs:
       - name: Cache pinned OfficeCLI assets
         uses: actions/cache@v4
         with:
-          path: |
-            resources/office/officecli-mac-arm64
-            resources/office/officecli-mac-x64
-          key: officecli-v1-${{ runner.os }}-${{ hashFiles('resources/office/manifest.json') }}
-      - name: Prepare pinned OfficeCLI arm64 asset
-        run: npm run office:prepare -- darwin arm64
-      - name: Prepare pinned OfficeCLI x64 asset
-        run: npm run office:prepare -- darwin x64
-      - run: npm run package:ci:stable:mac
+          path: resources/office/officecli-mac-${{ matrix.arch }}
+          key: officecli-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('resources/office/manifest.json') }}
+      - name: Prepare pinned target OfficeCLI asset
+        run: npm run office:prepare -- darwin ${{ matrix.arch }}
+      - run: npm run package:ci:stable:mac -- dmg zip --${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
-          name: sep-client-mac
-          path: dist/local/stable
+          name: sep-client-mac-${{ matrix.arch }}
+          path: |
+            dist/local/stable/*.dmg
+            dist/local/stable/*.zip
+            dist/local/stable/*.blockmap
+            dist/local/stable/latest-mac.yml
+            dist/local/stable/connector-assets/**
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
 
@@ -124,6 +155,15 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: electron-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-downloads-v1-${{ runner.os }}-${{ runner.arch }}-
       - name: Install dependencies with Windows PowerShell module isolation
         shell: cmd
         # npm postinstall launches powershell.exe through Node/cmd; avoid inherited PS7 modules.
@@ -150,36 +190,68 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sep-client-win
-          path: dist/local/stable
+          path: |
+            dist/local/stable/*.exe
+            dist/local/stable/*.blockmap
+            dist/local/stable/latest.yml
+            dist/local/stable/connector-assets/**
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
 
-  assemble:
-    needs: [build-mac, build-win]
+  publish:
+    needs: [validate, preflight, build-mac, build-win]
+    if: >-
+      always() && needs.validate.result == 'success'
+      && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
+      && needs['build-mac'].result == 'success' && needs['build-win'].result == 'success'
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ (github.event_name == 'push' || inputs.publish == true) && 'sep-download-production' || 'sep-download-validation' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: electron-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-downloads-v1-${{ runner.os }}-${{ runner.arch }}-
       - run: npm ci
       - uses: actions/download-artifact@v4
         with:
-          name: sep-client-mac
-          path: release-source
+          name: sep-client-mac-arm64
+          path: release-mac-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: sep-client-mac-x64
+          path: release-mac-x64
       - uses: actions/download-artifact@v4
         with:
           name: sep-client-win
           path: release-win
       - name: Merge platform artifacts
         shell: bash
-        run: cp -a release-win/. release-source/
+        run: |
+          mkdir release-source
+          cp -a release-mac-arm64/. release-source/
+          cp -a release-mac-x64/. release-source/
+          cp -a release-win/. release-source/
+      - name: Merge macOS update manifests
+        run: node scripts/merge-mac-update-manifests.mjs release-mac-arm64/latest-mac.yml release-mac-x64/latest-mac.yml release-source/latest-mac.yml
       - name: Verify independently downloadable connector components
         run: node scripts/verify-connector-assets.mjs release-source
       - run: node scripts/verify-update-manifest.mjs release-source --require-all-platforms
       - run: node scripts/prepare-download-update.mjs release-source stable release-prepared
-      - uses: actions/upload-artifact@v4
+      - name: Save verified bundle for packaging-only runs
+        if: github.event_name != 'push' && inputs.publish != true
+        uses: actions/upload-artifact@v4
         with:
           name: sep-client-release-${{ github.run_id }}
           path: |
@@ -187,24 +259,9 @@ jobs:
             release-prepared
           if-no-files-found: error
           retention-days: 30
-
-  publish:
-    needs: [assemble, preflight]
-    if: github.event_name == 'push' || inputs.publish == true
-    runs-on: ubuntu-latest
-    environment: sep-download-production
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - uses: actions/download-artifact@v4
-        with:
-          name: sep-client-release-${{ github.run_id }}
-          path: release-bundle
+          compression-level: 0
       - name: Upload client files and publish manifests last
+        if: github.event_name == 'push' || inputs.publish == true
         env:
           SEP_UPLOAD_HOST: ${{ secrets.SEP_UPLOAD_HOST || '121.37.128.126' }}
           SEP_UPLOAD_USER: ${{ secrets.SEP_UPLOAD_USER || 'root' }}
@@ -213,6 +270,7 @@ jobs:
           SEP_UPLOAD_KNOWN_HOSTS: ${{ secrets.SEP_UPLOAD_KNOWN_HOSTS }}
           SEP_UPLOAD_PORT: ${{ secrets.SEP_UPLOAD_PORT || '22' }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-        run: node scripts/upload-download-update.mjs release-bundle/release-source release-bundle/release-prepared stable
+        run: node scripts/upload-download-update.mjs release-source release-prepared stable
       - name: Verify the public update feed
+        if: github.event_name == 'push' || inputs.publish == true
         run: node scripts/test-update-feed.mjs https://sep.longdaoec.com/sep-client/stable/ --require-all-platforms --timeout-ms 120000

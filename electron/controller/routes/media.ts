@@ -14,7 +14,7 @@ const taskInput = z.union([
 
 export const mediaRoutes = [
   route(INVOKE_CHANNELS.MEDIA_GET_TASK, taskInput, async (ctx, input) => ({ success: true, data: await ctx.media.getTaskMedia(input.taskId, { refreshCapabilities: input.refreshCapabilities }) })),
-  route(INVOKE_CHANNELS.MEDIA_SET_REFERENCE_SELECTION, z.object({ taskId: mediaId, assetIds: z.array(mediaId).max(16) }).strict(), async (ctx, input) => {
+  route(INVOKE_CHANNELS.MEDIA_SET_REFERENCE_SELECTION, z.object({ taskId: mediaId, assetIds: z.array(mediaId).max(32) }).strict(), async (ctx, input) => {
     await ctx.media.setReferenceSelection(input.taskId, input.assetIds)
     return { success: true }
   }),
@@ -25,7 +25,7 @@ export const mediaRoutes = [
     if (!window) throw appError('INTERNAL_ERROR')
     const result = await dialog.showOpenDialog(window, { title: '导入商品参考图', properties: ['openFile', 'multiSelections'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] })
     if (result.canceled) return { success: true, data: [] }
-    if (result.filePaths.length > 16) throw appError('INVALID_ARGUMENT', { details: { reason: 'reference-import-limit' } })
+    if (result.filePaths.length > 10) throw appError('INVALID_ARGUMENT', { message: '每次最多导入 10 张参考图。', details: { reason: 'reference-import-limit' } })
     return { success: true, data: await selection.import(result.filePaths) }
   }),
   route(INVOKE_CHANNELS.MEDIA_GENERATE, z.object({ taskId: mediaId, input: mediaGenerationInputSchema }).strict(), async (ctx, input) => ({ success: true, data: await ctx.media.generateTaskMedia(input.taskId, input.input) })),

@@ -2,6 +2,7 @@ import type { ImageRequestedSpec, MediaParameterSources } from '../../src/shared
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaGenerationStatus, MediaProfile, MediaSaveStatus, MediaTrackingStatus } from '../../src/shared/media'
 import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
+import type { MediaUpstreamError } from '../../src/shared/media-upstream-error'
 export type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaJobView, MediaProfile } from '../../src/shared/media'
 
 export interface MediaOutput {
@@ -26,6 +27,7 @@ export interface MediaReceipt {
   billingStatus: string
   recovery?: { canQuery: boolean; canCancel: boolean; canDownload: boolean }
   errorCode?: string | null
+  upstreamError?: MediaUpstreamError
   outputErrors?: { index: number; code: string }[]
 }
 
@@ -106,6 +108,7 @@ export interface LocalMediaJob {
   recovery?: MediaReceipt['recovery']
   errorCode?: MediaReceipt['errorCode']
   outputErrors?: MediaReceipt['outputErrors']
+  upstreamError?: MediaUpstreamError
   /** Last provider status query, retained for recovery diagnostics. */
   lastQueriedAt?: number
   providerWaitMs?: number

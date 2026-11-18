@@ -11,6 +11,7 @@ import { mediaToolGenerationInputSchema } from '../../src/shared/media-host'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
 import { realMediaParameters, realMediaSemanticHash } from '../common/platform/real-media-semantics'
 import { imageAspectRatio } from '../../src/shared/media-spec'
+import { imageReferenceSupport, mediaReferenceProblem, type MediaReferenceInfo } from '../../src/shared/media-references'
 import { imageEffectiveSpecMatches, isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
@@ -135,7 +136,7 @@ export class MediaService {
       ...(job.lastQueriedAt !== undefined ? { lastQueriedAt: job.lastQueriedAt } : {}),
       ...(job.providerWaitMs !== undefined ? { providerWaitMs: job.providerWaitMs } : {}),
       ...(job.downloadMs !== undefined ? { downloadMs: job.downloadMs } : {}),
-      error: this.publicJobError(job.errorCode ?? job.error), createdAt: job.createdAt, updatedAt: job.updatedAt,
+      error: this.publicJobError(job.errorCode ?? job.error), ...(job.upstreamError ? { upstreamError: job.upstreamError } : {}), createdAt: job.createdAt, updatedAt: job.updatedAt,
       assets: jobAssets.map(asset => this.viewAsset(asset)), canRetrySave,
       canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job) : job.recovery?.canQuery !== false,
       canCancelUpstream: job.recovery?.canCancel !== false && job.profile.capabilities.cancel && !!job.receiptId && !terminal.has(job.generationStatus) }
@@ -187,7 +188,7 @@ export class MediaService {
   }
   async setReferenceSelection(taskId: string, assetIds: readonly string[]): Promise<void> {
     const { scope } = await this.task(taskId), epoch = this.epoch
-    if (new Set(assetIds).size !== assetIds.length || assetIds.length > 16) throw new AppError('INVALID_ARGUMENT', { details: { reason: 'reference-selection-limit' } })
+    if (new Set(assetIds).size !== assetIds.length || assetIds.length > 32) throw new AppError('INVALID_ARGUMENT', { details: { reason: 'reference-selection-limit' } })
     if (await this.options.store.isArchived(scope, taskId)) throw new AppError('INVALID_STATE', { details: { reason: 'reference-task-archived' } })
     const assets = await this.options.store.listAssets(scope, taskId)
     this.assert(scope, epoch)
@@ -369,11 +370,15 @@ export class MediaService {
     this.activities.set(activityKey, { taskId, controller, promise: pending })
     try {
       const gateway = this.gateway(), referenceHashes: string[] = [], referenceIds: string[] = []
+      const references: MediaReferenceInfo[] = []
       for (const id of input.localAssetIds) {
         const asset = await this.options.store.getAsset(scope, taskId, id)
         if (!asset || asset.taskId !== taskId) throw new AppError('NOT_FOUND')
+        references.push(asset)
         referenceHashes.push(asset.sha256)
       }
+      const referenceProblem = mediaReferenceProblem(references, imageReferenceSupport(profile, negotiated))
+      if (referenceProblem) throw new AppError('INVALID_ARGUMENT', { message: referenceProblem })
       const semantic = { ...(negotiated ? { protocolVersion: 3 as const, requestedSpec: input.requestedSpec,
         parameterSources: input.parameterSources, specRevision: input.specRevision } : {}), profileId: profile.profileId, configVersion: profile.configVersion, operation: input.operation,
         referenceHashes, creativeBrief: input.creativeBrief, parameters: negotiated ? { ...input.requestedSpec } : { aspectRatio: input.parameters.aspectRatio, count: input.parameters.count,
@@ -505,7 +510,7 @@ export class MediaService {
     job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'; job.generationStatus = receipt.status
     job.outputs = receipt.outputs; job.billingStatus = receipt.billingStatus
     job.actualSpec = receipt.actualSpec
-    job.recovery = receipt.recovery; job.errorCode = receipt.errorCode; job.outputErrors = receipt.outputErrors
+    job.recovery = receipt.recovery; job.errorCode = receipt.errorCode; job.outputErrors = receipt.outputErrors; job.upstreamError = receipt.upstreamError
     if (priorMismatch) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
     if (job.input.protocolVersion === 3 && receipt.actualSpec && job.input.requestedSpec && Object.entries(job.input.requestedSpec).some(([key, requested]) => {
       const actual = receipt.actualSpec![key as keyof typeof receipt.actualSpec]

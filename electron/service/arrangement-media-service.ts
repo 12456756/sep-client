@@ -235,12 +235,15 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       const legacyRequirement = effectiveRequirements.filter(requirement => requirement.operation === operation &&
         (value.requirementId === undefined || requirement.id === value.requirementId))
       const requirementReference = requirementReferences.get((selectedRequirement ?? (legacyRequirement.length === 1 ? legacyRequirement[0] : undefined))?.id ?? '')
+      if (value.localAssetIds === undefined && !requirementReference && references.size > 1 && operation !== 'generate' && operation !== 'text-to-video') {
+        throw new AppError('INVALID_ARGUMENT', { message: '存在多张候选参考图，请通过 localAssetIds 明确选择并保留顺序。' })
+      }
       const ids = value.localAssetIds === undefined
         ? operation === 'generate' ? [] : image && requirementReference ? [requirementReference] : [...references.keys()]
         : idsSchema.parse(value.localAssetIds)
       if (ids.some(id => !references.has(id))) throw new AppError('PERMISSION_DENIED', { message: '媒体输入必须来自本节点计划声明的资产。' })
-      if (operation === 'edit' && ids.length !== 1) throw new AppError('INVALID_ARGUMENT', {
-        message: '图生图需要明确选择一张本节点参考图，请通过 localAssetIds 指定；候选来源不明确时先询问用户。',
+      if (operation === 'edit' && ids.length === 0) throw new AppError('INVALID_ARGUMENT', {
+        message: '图生图需要明确选择本节点参考图，请通过 localAssetIds 按顺序指定；候选来源不明确时先询问用户。',
       })
       if (operation === 'edit' && requirementReference && ids[0] !== requirementReference) throw new AppError('SPEC_CONFLICT', {
         message: '参考图与当前媒体需求指定的输入不一致，请使用该需求绑定的原图片。',

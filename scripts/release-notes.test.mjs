@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -18,6 +18,40 @@ function run(cwd, args = [], extraEnv = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('SEP_')))
   return spawnSync(process.execPath, [script, ...args], { cwd, env: { ...env, ...extraEnv }, encoding: 'utf8' })
 }
+
+test('version notes check reads the exact package version without generating release files', t => {
+  const cwd = fixture(t)
+  mkdirSync(join(cwd, 'release-notes'))
+  writeFileSync(join(cwd, 'release-notes/1.2.3-beta.4.md'), '- Updated reference images.\n')
+  const result = run(cwd, ['--check-version'])
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /1\.2\.3-beta\.4/)
+  assert.equal(existsSync(join(cwd, 'dist')), false)
+})
+
+test('version notes check rejects missing, empty, binary and malformed UTF-8 notes', t => {
+  const cwd = fixture(t)
+  mkdirSync(join(cwd, 'release-notes'))
+  writeFileSync(join(cwd, 'release-notes/1.2.3.md'), '- Notes from another version.\n')
+  const missing = run(cwd, ['--check-version'])
+  assert.equal(missing.status, 1)
+  assert.match(missing.stderr, /release-notes.*1\.2\.3-beta\.4\.md/)
+  for (const contents of ['  \n\t', '\0binary', Buffer.from([0xc3, 0x28]), 'a'.repeat(MAX_CHANGES_BYTES + 1)]) {
+    writeFileSync(join(cwd, 'release-notes/1.2.3-beta.4.md'), contents)
+    const result = run(cwd, ['--check-version'])
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /empty|UTF-8|control|64 KiB/)
+  }
+})
+
+test('version notes check rejects invalid package versions and extra arguments', t => {
+  const cwd = fixture(t)
+  for (const version of ['../private', '', '1.2']) {
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ version }))
+    assert.equal(run(cwd, ['--check-version']).status, 1)
+  }
+  assert.equal(run(cwd, ['--check-version', 'ignored']).status, 1)
+})
 
 test('pure release notes preserve SEP Client title and avoid unverified build/signing/publication claims', () => {
   const options = { version: '1.2.3', channel: 'stable', environment: 'production', generatedAt: '2026-10-09T00:00:00.000Z', changes: '- Fixed cancellation.\n' }

@@ -5,23 +5,21 @@ import { once } from 'node:events'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { sepRuntimeV3Fixture } from '../../../src/shared/fixtures/sep-media-runtime-v3'
+import { assertMediaToolsInModelRequest } from '../../pi/sdk/sep-media-model-request.test-helper'
+import type { VideoRuntime } from '../../../src/shared/video-media'
 import * as fixture from '../../../src/shared/fixtures/media-video-v1.json'
 
 test('negotiates actual SEP V3 video runtime and saves a tool-generated video over HTTP', async t => {
   const bytes = Buffer.from(fixture.mediaFixture.base64, 'base64')
   const scope = { enterpriseId: 'enterprise-http', memberId: 'member-http', subscriptionId: 'sub-video-http' }
-  const spec = { durationSeconds: 5, aspectRatio: '9:16', resolution: '720p', frameRate: 24, audio: false, outputFormat: 'video/mp4' }
+  const spec = { durationSeconds: 5, aspectRatio: '9:16', resolution: '720p', audio: false, outputFormat: 'video/mp4' }
   const sources = Object.fromEntries(Object.keys(spec).map(field => [field, { source: 'model', decisionRef: 'video-brief' }]))
   const calls: { path: string; body?: Record<string, unknown> }[] = []
   let clientRequestId = ''
-  const runtime = { protocolVersion: 3, executionMode: 'real', executionAvailable: true, defaultProfileId: 'video.http',
-    tools: ['video_generate', 'video_get_job'], profiles: [{ profileId: 'video.http', configVersion: 'cfg-http', kind: 'video',
-      displayName: 'HTTP video', operations: ['text-to-video'], executionMode: 'async-query', authorized: true,
-      adapter: { id: 'sub2api-video', version: '1', available: true, operations: ['text-to-video'],
-        referenceSupport: { maxCount: 0, maxInputBytes: 10485760, mimeTypes: ['image/png'] },
-        supportsTaskQuery: true, supportsCancel: false },
-      capabilityHints: [{ field: 'durationSeconds', values: [4], source: 'adapter', observedAt: null, confidence: 'declared' }],
-    }] }
+  const sample = sepRuntimeV3Fixture('video')
+  const runtime = { ...sample, defaultProfileId: 'video.http',
+    profiles: [{ ...sample.profiles[0], profileId: 'video.http', configVersion: 'cfg-http' }] }
   const billingDimensions = { model: 'video-model-http', operation: 'text-to-video', durationSeconds: 5, resolution: '720p' }
   const receipt = () => ({ mock: false, protocolVersion: 3, semanticHashVersion: 3, specRevision: 1,
     receiptId: 'receipt-video-http', clientRequestId, profileId: 'video.http', configVersion: 'cfg-http', operation: 'text-to-video',
@@ -104,8 +102,9 @@ test('negotiates actual SEP V3 video runtime and saves a tool-generated video ov
   const { SepRealVideoGateway } = await import('../../data/sep-video-media-gateway')
   const { VideoRunService } = await import('../../service/video-run-service')
   const manifest = await getEmployeeRuntime(scope.subscriptionId, 'fixture-video-http-not-a-real-token')
-  const video = videoRuntimeSchema.parse(manifest.runtime.video)
+  const video: VideoRuntime = videoRuntimeSchema.parse(manifest.runtime.video)
   assert.equal(video.protocolVersion, 3)
+  assert.deepEqual(video.profiles[0].parameters, sample.profiles[0].parameters)
   const employee = { subscriptionId: scope.subscriptionId, modelId: 'chat-http', gatewayUrl: baseUrl, video }
   const store = new VideoStore(directory)
   const service = new VideoRunService({ mock: false, scope: { currentScope: () => scope }, store,
@@ -119,6 +118,7 @@ test('negotiates actual SEP V3 video runtime and saves a tool-generated video ov
   const tools = await service.prepareRun({ taskId: 'task-video-http', runId: 'run-video-http', subscriptionId: scope.subscriptionId,
     employee, requestApproval: async () => true })
   assert.ok(tools)
+  await assertMediaToolsInModelRequest(directory, { videoTools: tools }, ['video_generate', 'video_from_image', 'video_get_job'])
   const result = await tools.execute('video_generate', { creativeBrief: 'A short vertical product video', protocolVersion: 3,
     requestedSpec: spec, parameterSources: sources, specRevision: 1 }) as { jobId: string }
   await service.waitForRun('task-video-http', 'run-video-http')

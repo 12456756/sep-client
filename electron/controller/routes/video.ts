@@ -36,7 +36,7 @@ export const videoRoutes = [
     const selection = await host(ctx).nativeSelection(id)
     const window = ctx.window()
     if (!window) throw appError('INTERNAL_ERROR')
-    const result = await dialog.showOpenDialog(window, { title: '选择视频参考图', properties: ['openFile'], filters: [{ name: '参考图片', extensions: ['png'] }] })
+    const result = await dialog.showOpenDialog(window, { title: '选择视频参考图', properties: ['openFile', 'multiSelections'], filters: [{ name: '参考图片', extensions: ['png'] }] })
     if (result.canceled) return { success: true, data: [] }
     return { success: true, data: await selection.import(result.filePaths) }
   }, options),

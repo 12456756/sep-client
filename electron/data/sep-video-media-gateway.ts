@@ -17,6 +17,7 @@ import { videoErrorMessage } from '../../src/shared/video-errors'
 import { mediaToolFailureFrom } from '../errors/media-tool-error'
 import type { ErrorCode } from '../errors/error-codes'
 import { isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
+import { safeMediaUpstreamError, safeMediaUpstreamMessage } from '../common/media-upstream-error'
 
 const id = schema.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)
 const JSON_BUDGET = 256 * 1024
@@ -25,7 +26,7 @@ const referenceBytes = Buffer.from(SEP_MEDIA_MOCK_PNG_BASE64, 'base64')
 const videoBytes = Buffer.from(fixture.mediaFixture.base64, 'base64')
 export class SepVideoGatewayError extends VideoRequestError {
   readonly gatewayCode: string
-  constructor(gatewayCode: string, statusCode = 0, stage?: VideoRequestStage, details?: { businessCode?: string | null; source?: VideoErrorSource; requestId?: string | null }) {
+  constructor(gatewayCode: string, statusCode = 0, stage?: VideoRequestStage, details?: { businessCode?: string | null; source?: VideoErrorSource; requestId?: string | null; message?: string }) {
     super({ gatewayCode, statusCode, stage, ...details })
     this.gatewayCode = gatewayCode
     this.name = gatewayCode === 'VIDEO_ABORTED' ? 'AbortError' : 'SepVideoGatewayError'
@@ -148,7 +149,7 @@ class SepVideoGateway implements VideoGatewayPort {
       if (receipt.clientRequestId !== requestId) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
       return receipt
     } catch (error) {
-      if (error instanceof SepVideoGatewayError && error.statusCode === 404) return null
+      if (error instanceof SepVideoGatewayError && error.statusCode === 404 && error.source !== 'upstream') return null
       throw error
     }
   }
@@ -210,7 +211,8 @@ class SepVideoGateway implements VideoGatewayPort {
   }
 
   private async receipt(path: string, method: 'GET' | 'POST', body: unknown, signal: AbortSignal): Promise<VideoReceipt> {
-    const receipt = await this.json(path, method, body, videoReceiptSchema, signal)
+    const raw = await this.json(path, method, body, videoReceiptSchema, signal)
+    const receipt = raw.upstreamError ? { ...raw, upstreamError: safeMediaUpstreamError(raw.upstreamError) } : raw
     return validateV3Receipt(receipt.deliveryStatus && receipt.acceptance === undefined ? { ...receipt, acceptance: receipt.deliveryStatus } : receipt)
   }
 
@@ -290,6 +292,7 @@ class SepVideoGateway implements VideoGatewayPort {
     if (!response.ok) {
       const stage = method === 'POST' ? path === '/quotes' ? 'video-quote' : path === '/requests' ? 'video-submit' : undefined : undefined
       const details = await this.errorDetails(response, signal)
+      if (response.headers.get('X-SEP-Error-Source') === 'upstream') throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status, stage, { ...details, source: 'upstream', message: details.message })
       if (details.businessCode && isMediaSpecError(details.businessCode)) throw new AppError(details.businessCode as ErrorCode, { details: details.specDetails })
       throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status, stage, details)
     }
@@ -334,12 +337,14 @@ class SepVideoGateway implements VideoGatewayPort {
     return (response.headers.get('Content-Type') ?? '').split(';', 1)[0].trim().toLowerCase()
   }
 
-  private async errorDetails(response: Response, signal: AbortSignal): Promise<{ businessCode: string | null; source: VideoErrorSource; requestId: string | null; specDetails?: Record<string, unknown> }> {
+  private async errorDetails(response: Response, signal: AbortSignal): Promise<{ businessCode: string | null; source: VideoErrorSource; requestId: string | null; specDetails?: Record<string, unknown>; message?: string }> {
     const headerRequestId = response.headers.get('x-request-id')
     const requestId = headerRequestId && /^[A-Za-z0-9_-]{1,128}$/.test(headerRequestId) ? headerRequestId : null
-    if (this.mime(response) !== 'application/json') { this.discard(response); return { businessCode: null, source: null, requestId } }
+    const upstream = response.headers.get('X-SEP-Error-Source') === 'upstream'
+    if (!upstream && this.mime(response) !== 'application/json') { this.discard(response); return { businessCode: null, source: null, requestId } }
+    const budget = upstream ? 64 * 1024 : ERROR_JSON_BUDGET
     try {
-      const length = this.length(response, ERROR_JSON_BUDGET)
+      const length = this.length(response, budget)
       const reader = response.body?.getReader()
       if (!reader) return { businessCode: null, source: null, requestId }
       try {
@@ -348,11 +353,14 @@ class SepVideoGateway implements VideoGatewayPort {
           const chunk = await abortable(signal, () => reader.read())
           if (chunk.done) break
           size += chunk.value.byteLength
-          if (size > ERROR_JSON_BUDGET) return { businessCode: null, source: null, requestId }
+          if (size > budget) return { businessCode: null, source: null, requestId }
           chunks.push(chunk.value)
         }
         if (length !== null && length !== size) return { businessCode: null, source: null, requestId }
-        const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))) as unknown
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))
+        let value: unknown
+        try { value = JSON.parse(text) } catch { value = this.mime(response) === 'text/html' ? undefined : text }
+        if (upstream) return { businessCode: null, source: 'upstream', requestId, message: safeMediaUpstreamMessage(value) }
         if (!value || typeof value !== 'object' || Array.isArray(value) || !('error' in value) || !value.error || typeof value.error !== 'object' || Array.isArray(value.error)) {
           return { businessCode: null, source: null, requestId }
         }

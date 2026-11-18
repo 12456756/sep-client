@@ -1,4 +1,6 @@
 import type { ImageRequestedSpec, MediaParameterSources } from './media-spec-contract'
+import type { MediaUpstreamError } from './media-upstream-error'
+import type { SepRuntimeV3ProfileMetadata } from './sep-runtime-v3-contract'
 export type ImageMime = 'image/png' | 'image/jpeg' | 'image/webp'
 export type MediaOperation = 'generate' | 'edit'
 export type MediaToolName = 'media_get_capabilities' | 'media_generate_image' | 'media_get_job' | 'media_cancel_job'
@@ -6,7 +8,7 @@ export type MediaGenerationStatus = 'SUBMITTING' | 'QUEUED' | 'RUNNING' | 'SUBMI
 export type MediaTrackingStatus = 'ACTIVE' | 'INTERRUPTED' | 'AUTH_REQUIRED' | 'STOPPED'
 export type MediaSaveStatus = 'PENDING' | 'SAVING' | 'SAVED' | 'SAVE_FAILED' | 'MISSING'
 
-export interface MediaProfile {
+export interface MediaProfile extends Partial<SepRuntimeV3ProfileMetadata> {
   profileId: string
   kind: 'image'
   displayName: string
@@ -80,6 +82,7 @@ export interface MediaJobView {
   providerWaitMs?: number
   downloadMs?: number
   error: string | null
+  upstreamError?: MediaUpstreamError
   createdAt: number
   updatedAt: number
   assets: MediaAssetView[]

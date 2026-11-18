@@ -105,7 +105,7 @@ const videoInput = (id: string) => ({ creativeBrief: 'Animate this product', loc
 const imageInput = { creativeBrief: 'Keep the product and replace its background', operation: 'edit',
   parameters: { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' } }
 
-test('image-only conversations discover named attachments and edit exactly the selected image', async () => {
+test('image-only conversations discover named attachments and preserve selected reference order', async () => {
   const f = await fixture(), first = await f.attach(png, 'first.png'), second = await f.attach(MOCK_MEDIA_PNG, 'second.png')
   const host = await f.media.prepareRun(f.runInput)
   const tools = (await f.service.prepareRun({ taskId: f.task.id, runId: 'run-a',
@@ -115,14 +115,12 @@ test('image-only conversations discover named attachments and edit exactly the s
   assert.equal((await f.images.listJobs(owner, f.task.id)).length, 0)
   const selected = view.referenceSources[1]!.localAssetId
   await assert.rejects(tools.execute('media_generate_image', imageInput), { code: 'INVALID_ARGUMENT' })
-  await assert.rejects(tools.execute('media_generate_image', { ...imageInput, localAssetIds: view.referenceSources.map(source => source.localAssetId) }), { code: 'INVALID_ARGUMENT' })
-  assert.equal((await f.images.listJobs(owner, f.task.id)).length, 0)
-  await tools.execute('media_generate_image', { ...imageInput, localAssetIds: [selected] })
+  await tools.execute('media_generate_image', { ...imageInput, localAssetIds: [selected, view.referenceSources[0]!.localAssetId] })
   await f.media.waitForRun(f.task.id, 'run-a')
   const jobs = await f.images.listJobs(owner, f.task.id)
   assert.equal(jobs.length, 1)
   assert.equal(jobs[0]!.input.operation, 'edit')
-  assert.deepEqual(jobs[0]!.input.localAssetIds, [selected])
+  assert.deepEqual(jobs[0]!.input.localAssetIds, [selected, view.referenceSources[0]!.localAssetId])
 })
 
 test('image reference discovery converts saved outputs but never makes them implicit next-turn inputs', async () => {

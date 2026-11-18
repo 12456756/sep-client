@@ -12,6 +12,9 @@ async function fixture(t, version = '1.2.3') {
   t.after(() => rm(root, { recursive: true, force: true }))
   const source = join(root, 'source')
   const output = join(root, 'prepared')
+  const releaseNotesDir = join(root, 'release-notes')
+  await mkdir(releaseNotesDir)
+  await writeFile(join(releaseNotesDir, `${version}.md`), '- Reference image updates.\n')
   await mkdir(source)
   const names = [
     `SEP-Client-${version}-win-x64.exe`, `SEP-Client-${version}-win-x64.exe.blockmap`,
@@ -41,17 +44,22 @@ async function fixture(t, version = '1.2.3') {
     version, files: [entry(macArm), entry(macX64)], path: macArm, sha512: entry(macArm).sha512,
     releaseDate: '2026-10-27T00:00:00.000Z',
   }))
-  return { root, source, output, version, names }
+  return { root, source, output, version, names, releaseNotesDir }
 }
 
 test('prepares versioned root manifests and a non-approved upload plan without copying artifacts', async t => {
-  const { source, output, version, names } = await fixture(t)
-  const result = await prepareDownloadUpdate({ source, output, channel: 'stable' })
+  const { source, output, version, names, releaseNotesDir } = await fixture(t)
+  const changes = '- \u56fe\u751f\u56fe\u652f\u6301\u591a\u5f20\u53c2\u8003\u56fe\u3002\n- \u4f18\u5316\u89c6\u9891\u751f\u6210\u3002\n'
+  await writeFile(join(releaseNotesDir, `${version}.md`), changes)
+  const originals = await Promise.all(['latest.yml', 'latest-mac.yml'].map(name => readFile(join(source, name))))
+  const result = await prepareDownloadUpdate({ source, output, channel: 'stable', releaseNotesDir })
   assert.equal(result.version, version)
   for (const manifestName of ['latest.yml', 'latest-mac.yml']) {
     const manifest = yaml.load(await readFile(join(output, manifestName), 'utf8'))
     assert.ok(manifest.files.every(file => file.url === `${version}/${basename(file.url)}`))
     assert.equal(manifest.path, `${version}/${basename(manifest.path)}`)
+    assert.equal(manifest.releaseNotes, changes.trim())
+    assert.deepEqual(await readFile(join(source, manifestName)), originals[['latest.yml', 'latest-mac.yml'].indexOf(manifestName)])
   }
   const plan = JSON.parse(await readFile(join(output, 'upload-plan.json'), 'utf8'))
   assert.deepEqual({ mode: plan.mode, releaseApproved: plan.releaseApproved, signatureVerified: plan.signatureVerified }, {
@@ -66,14 +74,14 @@ test('prepares versioned root manifests and a non-approved upload plan without c
 })
 
 test('rejects a modified artifact before creating output', async t => {
-  const { source, output, version } = await fixture(t)
+  const { source, output, version, releaseNotesDir } = await fixture(t)
   await writeFile(join(source, `SEP-Client-${version}-win-x64.exe`), 'changed bytes')
-  await assert.rejects(prepareDownloadUpdate({ source, output, channel: 'beta' }), /size mismatch|SHA512 hash mismatch/)
+  await assert.rejects(prepareDownloadUpdate({ source, output, channel: 'beta', releaseNotesDir }), /size mismatch|SHA512 hash mismatch/)
   await assert.rejects(readFile(output), error => error.code === 'ENOENT' || error.code === 'EISDIR')
 })
 
 test('upload preparation binds the complete connector set and rejects changed components', async t => {
-  const { source, output } = await fixture(t)
+  const { source, output, releaseNotesDir } = await fixture(t)
   const directory = join(source, 'connector-assets')
   await mkdir(directory)
   let firstArchive
@@ -89,18 +97,18 @@ test('upload preparation binds the complete connector set and rejects changed co
     }
     await writeFile(join(directory, `${platform}-${arch}.json`), JSON.stringify({ schemaVersion: 1, components }))
   }
-  const prepared = await prepareDownloadUpdate({ source, output, channel: 'stable' })
+  const prepared = await prepareDownloadUpdate({ source, output, channel: 'stable', releaseNotesDir })
   assert.equal(prepared.plan.connectorArtifacts.length, 9)
   assert.ok(prepared.plan.connectorArtifacts.every(item => item.size > 0 && item.name.endsWith(`${item.sha256}.zip`)))
   await writeFile(join(directory, firstArchive), 'tampered')
-  await assert.rejects(prepareDownloadUpdate({ source, output: output + '-tampered', channel: 'stable' }), /Connector archive/)
+  await assert.rejects(prepareDownloadUpdate({ source, output: output + '-tampered', channel: 'stable', releaseNotesDir }), /Connector archive/)
 })
 
 test('requires matching platform manifests and a fresh disjoint output directory', async t => {
-  const { root, source, output } = await fixture(t)
+  const { root, source, output, releaseNotesDir } = await fixture(t)
   const other = await fixture(t, '1.2.4')
   await cp(join(other.source, 'latest-mac.yml'), join(source, 'latest-mac.yml'))
-  await assert.rejects(prepareDownloadUpdate({ source, output, channel: 'stable' }), /versions must match/)
+  await assert.rejects(prepareDownloadUpdate({ source, output, channel: 'stable', releaseNotesDir }), /versions must match/)
 
   const fresh = await fixture(t)
   await mkdir(fresh.output)
@@ -110,13 +118,23 @@ test('requires matching platform manifests and a fresh disjoint output directory
 })
 
 test('rejects incomplete local packages and invalid CLI arguments', async t => {
-  const { source, output, version } = await fixture(t)
+  const { source, output, version, releaseNotesDir } = await fixture(t)
   await unlink(join(source, `SEP-Client-${version}-mac-x64.dmg`))
-  await assert.rejects(prepareDownloadUpdate({ source, output, channel: 'stable' }), /required local package artifact is missing/)
+  await assert.rejects(prepareDownloadUpdate({ source, output, channel: 'stable', releaseNotesDir }), /required local package artifact is missing/)
   assert.deepEqual(parseArguments(['dist/local/beta', 'beta', '.release/prepared']), {
     source: 'dist/local/beta', channel: 'beta', output: '.release/prepared',
   })
   for (const args of [[], ['source', 'preview', 'output'], ['source', 'stable'], ['--source', 'stable', 'output']]) {
     assert.throws(() => parseArguments(args), /usage:/)
   }
+})
+
+test('missing and empty version notes fail preparation before any output is created', async t => {
+  const { source, output, version, releaseNotesDir } = await fixture(t)
+  await unlink(join(releaseNotesDir, `${version}.md`))
+  await writeFile(join(releaseNotesDir, '1.2.2.md'), '- Previous release.\n')
+  await assert.rejects(prepareDownloadUpdate({ source, output, channel: 'stable', releaseNotesDir }), /release-notes.*1\.2\.3\.md/)
+  await writeFile(join(releaseNotesDir, `${version}.md`), '\n  \t')
+  await assert.rejects(prepareDownloadUpdate({ source, output, channel: 'stable', releaseNotesDir }), /empty/)
+  await assert.rejects(readFile(output), { code: 'ENOENT' })
 })

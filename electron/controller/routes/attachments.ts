@@ -33,11 +33,11 @@ export const attachmentRoutes = [
     if (!window) throw new AppError('INTERNAL_ERROR')
     const selected = await dialog.showOpenDialog(window, { title: '添加附件', properties: ['openFile', 'multiSelections'] })
     if (selected.canceled) return { success: true, cancelled: true, data: session }
-    if (selected.filePaths.length > attachmentImportLimits.maxFiles) throw new AppError('INVALID_ARGUMENT')
+    if (selected.filePaths.length > attachmentImportLimits.maxImportFiles) throw new AppError('INVALID_ARGUMENT', { message: '每次最多导入 10 个附件。' })
     await ctx.attachments.importFiles(input.sessionId, randomUUID(), selected.filePaths, 'picker')
     return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
   }, trusted),
-  route(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, operationInput.extend({ paths: z.array(z.string().min(1).max(4096)).min(1).max(attachmentImportLimits.maxFiles) }).strict(), async (ctx, input) => {
+  route(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, operationInput.extend({ paths: z.array(z.string().min(1).max(4096)).min(1).max(attachmentImportLimits.maxImportFiles) }).strict(), async (ctx, input) => {
     await ctx.attachments.importFiles(input.sessionId, input.operationId, input.paths, 'paste-file')
     return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
   }, trusted),

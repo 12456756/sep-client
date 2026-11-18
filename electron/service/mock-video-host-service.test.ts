@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
+import { sepRuntimeV3Fixture } from '../../src/shared/fixtures/sep-media-runtime-v3'
 import type { VideoGenerationInput } from '../../src/shared/video-host'
 import { videoReceiptSchema, videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
 import { MockVideoMediaGateway } from '../data/mock-video-media-gateway'
@@ -15,6 +16,92 @@ import type { VideoScope } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
+import { MOCK_MEDIA_PNG } from '../data/mock-media-gateway'
+
+test('V3 video uploads all selected references before one quote and one submission', async () => {
+  const f = await realSetup()
+  f.state.runtime = videoRuntimeSchema.parse({ protocolVersion: 3, executionMode: 'real', executionAvailable: true,
+    defaultProfileId: 'video-v3', tools: ['video_from_image', 'video_get_job'], profiles: [{ profileId: 'video-v3', configVersion: 'cfg', kind: 'video', displayName: 'Video', operations: ['image-to-video'], executionMode: 'async-query', authorized: true,
+      adapter: { id: 'video-adapter', version: '3', available: true, operations: ['image-to-video'], referenceSupport: { maxCount: 3, maxInputBytes: 1024, mimeTypes: ['image/png'] }, supportsTaskQuery: true, supportsCancel: false }, capabilityHints: [] }] })
+  const requests: Array<{ stage: string; referenceIds: string[] }> = []
+  const readIds: string[] = []
+  let uploads = 0
+  const options: MockVideoHostOptions = { ...f.options,
+    readReference: async (_scope, _taskId, id) => { readIds.push(id); return { bytes, sha256 } }, gateway: () => ({
+      ...f.options.gateway(scope),
+      uploadReference: async () => ({ mock: false, referenceId: `reference-${++uploads}`, expiresAt: new Date(Date.now() + 60_000).toISOString(), mimeType: 'image/png', byteLength: bytes.length, sha256, width: 1, height: 1 }),
+      quote: async request => { requests.push({ stage: 'quote', referenceIds: request.referenceIds }); return { quoteId: 'quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.100000', currency: 'CNY', protocolVersion: 3, specRevision: 1, effectiveSpec: request.parameters } },
+      submit: async request => { requests.push({ stage: 'submit', referenceIds: request.referenceIds }); return videoReceiptSchema.parse({ ...fixture.receipt, mock: false, protocolVersion: 3, specRevision: request.specRevision, effectiveSpec: request.requestedSpec, billingStatus: 'RESERVED', receiptId: 'receipt', clientRequestId: request.clientRequestId, profileId: request.profileId, configVersion: request.configVersion, operation: request.operation }) },
+    }) }
+  const host = new MockVideoHostService(options)
+  const request: VideoGenerationInput = { ...input(), profileId: 'video-v3', protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 }, parameterSources: { durationSeconds: 'user' }, specRevision: 1, localAssetIds: ['third', 'first', 'second'] }
+  try {
+    const job = await host.generate('task-a', request)
+    assert.equal(uploads, 3)
+    assert.deepEqual(readIds, request.localAssetIds)
+    assert.deepEqual(requests, [{ stage: 'quote', referenceIds: ['reference-1', 'reference-2', 'reference-3'] }, { stage: 'submit', referenceIds: ['reference-1', 'reference-2', 'reference-3'] }])
+    assert.deepEqual((await f.store.getJob(scope, 'task-a', job.jobId))?.request.referenceIds, requests[0]!.referenceIds)
+    f.state.runtime.profiles[0]!.capabilities.maxReferenceCount = 2
+    await assert.rejects(host.generate('task-a', request))
+    assert.equal(uploads, 3)
+  } finally { await host.stopAll(); await f.host.stopAll() }
+})
+
+for (const count of [9, 30]) for (const fallback of [false, true]) test(`current V3 video submits ${count} references in order (fallback=${fallback})`, async () => {
+  const f = await realSetup()
+  const wire = sepRuntimeV3Fixture('video')
+  wire.profiles[0]!.adapter.referenceSupport.maxCount = count
+  wire.profiles[0]!.referenceRules[1]!.maxCount = count
+  f.state.runtime = videoRuntimeSchema.parse(wire)
+  const profile = f.state.runtime.profiles[0]!
+  assert.ok('referenceSupport' in profile)
+  if (fallback) delete profile.referenceSupport
+  const reads: string[] = [], stages: string[][] = []
+  let uploads = 0
+  const host = new MockVideoHostService({ ...f.options,
+    readReference: async (_scope, _task, id) => { reads.push(id); return { bytes, sha256 } },
+    gateway: () => ({ ...f.options.gateway(scope),
+      uploadReference: async () => ({ mock: false, referenceId: `ref-${++uploads}`, expiresAt: new Date(Date.now() + 60_000).toISOString(), mimeType: 'image/png', byteLength: bytes.length, sha256, width: 1, height: 1 }),
+      quote: async request => { stages.push(request.referenceIds); return { quoteId: 'quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.100000', currency: 'CNY', protocolVersion: 3, specRevision: 1, effectiveSpec: request.parameters } },
+      submit: async request => { stages.push(request.referenceIds); return videoReceiptSchema.parse({ ...fixture.receipt, mock: false, protocolVersion: 3, specRevision: request.specRevision, effectiveSpec: request.requestedSpec, billingStatus: 'RESERVED', receiptId: 'receipt', clientRequestId: request.clientRequestId, profileId: request.profileId, configVersion: request.configVersion, operation: request.operation }) },
+    }) })
+  const request: VideoGenerationInput = { ...input(), profileId: 'video_example', protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 }, parameterSources: { durationSeconds: 'user' }, specRevision: 1, localAssetIds: Array.from({ length: count }, (_, i) => `asset-${count - i}`) }
+  try {
+    await host.generate('task-a', request)
+    assert.deepEqual(reads, request.localAssetIds)
+    const expected = Array.from({ length: count }, (_, i) => `ref-${i + 1}`)
+    assert.deepEqual(stages, [expected, expected])
+    await assert.rejects(host.generate('task-a', { ...request, localAssetIds: [...request.localAssetIds, 'extra'] }))
+    assert.equal(uploads, count)
+  } finally { await host.stopAll(); await f.host.stopAll() }
+})
+
+test('current V3 video checks operation minimum, file size and format before upload or quote', async () => {
+  const f = await realSetup()
+  const wire = sepRuntimeV3Fixture('video')
+  wire.profiles[0]!.adapter.referenceSupport.maxCount = 9
+  const rule = wire.profiles[0]!.referenceRules[1]!
+  rule.maxCount = 9
+  rule.minCount = 2
+  rule.maxInputBytes = bytes.length - 1
+  f.state.runtime = videoRuntimeSchema.parse(wire)
+  const host = new MockVideoHostService({ ...f.options, readReference: async () => ({ bytes, sha256 }) })
+  const request: VideoGenerationInput = { ...input(), profileId: 'video_example', protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 }, parameterSources: { durationSeconds: 'user' }, specRevision: 1, localAssetIds: ['first', 'second'] }
+  try {
+    await assert.rejects(host.generate('task-a', { ...request, localAssetIds: ['first'] }), { code: 'INVALID_ARGUMENT' })
+    assert.equal(f.approvals.length, 0)
+    await assert.rejects(host.generate('task-a', request), { code: 'INVALID_ARGUMENT' })
+    const profile = f.state.runtime.profiles[0]!
+    assert.ok('referenceSupport' in profile && profile.referenceSupport)
+    const support = profile.referenceSupport
+    support.maxInputBytes = bytes.length
+    support.mimeTypes = ['image/jpeg']
+    await assert.rejects(host.generate('task-a', request), { code: 'INVALID_ARGUMENT' })
+    assert.equal(f.state.uploads, 0)
+    assert.equal(f.gateway.calls.quote, 0)
+    assert.equal(f.gateway.calls.submit, 0)
+  } finally { await host.stopAll(); await f.host.stopAll() }
+})
 
 function realReceipt(receipt: VideoReceipt): VideoReceipt {
   return { ...receipt, mock: false, billingStatus: receipt.status === 'SUCCEEDED' ? 'SETTLED' : 'RESERVED', amountCny: '0.900000', amountUsd: '0.12', ...(receipt.status === 'SUCCEEDED' ? { actualCostCny: '0.800000' } : {}) }
@@ -160,7 +247,7 @@ test('mode revoked during real approval prevents dispatch and leaves frozen unsu
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 const scope: VideoScope = { enterpriseId: 'enterprise-a', memberId: 'member-a', subscriptionId: 'subscription-a' }
-const bytes = Buffer.from('mock reference image')
+const bytes = MOCK_MEDIA_PNG
 const sha256 = createHash('sha256').update(bytes).digest('hex')
 const input = (): VideoGenerationInput => ({
   profileId: 'mock-video-from-image', operation: 'image-to-video', localAssetIds: ['asset-a'],

@@ -7,6 +7,7 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  MULTIMEDIA_GET_SETTINGS: 'multimedia:get-settings',
   SKILL_IMPORT_STATE: 'skill-import:state',
   SKILL_IMPORT_CONSENT: 'skill-import:consent',
   SKILL_IMPORT_SELECT_ROOT: 'skill-import:select-root',
@@ -190,6 +191,7 @@ export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS]
 export type IpcChannel = InvokeChannel | SendChannel | EventChannel
 
 export const FEEDBACK_OPERATION_BY_CHANNEL: Partial<Record<InvokeChannel, import('../../src/shared/arrangement-feedback').FeedbackOperation>> = {
+  [INVOKE_CHANNELS.MULTIMEDIA_GET_SETTINGS]: 'read',
   [INVOKE_CHANNELS.TASK_GET_ALL]: 'workList',
   [INVOKE_CHANNELS.TASK_GET]: 'workType',
   [INVOKE_CHANNELS.TASK_GET_MESSAGES]: 'workMessages',

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { MediaCapabilities } from '../../../src/shared/media'
 import { imageAspectRatio } from '../../../src/shared/media-spec'
+import { readSepRuntimeV3Metadata, sepRuntimeV3Schema } from '../../../src/shared/sep-runtime-v3-contract'
 
 
 // Mirrors SEP backend/src/shared/media.dto.ts configuration-stage runtime v1.
@@ -80,11 +81,29 @@ const executableEmployeeMediaRuntimeV3Schema = z.object({ protocolVersion: z.lit
   if (value.executionAvailable && (value.executionMode !== 'real' || !executable)) context.addIssue({ code: 'custom', path: ['executionAvailable'], message: 'Missing executable authorized adapter.' })
 })
 
-export const sepMediaRuntimeSchema = z.union([realMediaRuntimeSchema, executableEmployeeMediaRuntimeSchema, configurationMediaRuntimeSchema, executableEmployeeMediaRuntimeV2Schema, executableEmployeeMediaRuntimeV3Schema, legacyExecutableEmployeeMediaRuntimeV3Schema])
+const currentSepImageRuntimeSchema = sepRuntimeV3Schema('image')
+export const sepMediaRuntimeSchema = z.union([currentSepImageRuntimeSchema, realMediaRuntimeSchema, executableEmployeeMediaRuntimeSchema, configurationMediaRuntimeSchema, executableEmployeeMediaRuntimeV2Schema, executableEmployeeMediaRuntimeV3Schema, legacyExecutableEmployeeMediaRuntimeV3Schema])
 
 export function toLocalMediaCapabilities(value: unknown): MediaCapabilities {
   const runtime = parseSepMediaRuntime(value)
   if (runtime.protocolVersion === 3) {
+    if ('status' in runtime) {
+      const profiles: MediaCapabilities['profiles'] = runtime.profiles.flatMap(profile => {
+        if (!runtime.executionAvailable || !profile.authorized || !profile.adapter.available) return []
+        const operations = profile.operations.filter((op): op is 'generate' | 'edit' =>
+          (op === 'generate' || op === 'edit') && profile.adapter.operations.includes(op)
+          && runtime.tools.includes(op === 'edit' ? 'image_edit' : 'image_generate')
+          && (op !== 'edit' || profile.referenceRules.some(rule => rule.operation === 'edit' && rule.maxCount > 0)))
+        if (!operations.length) return []
+        return [{ profileId: profile.profileId, kind: 'image', displayName: profile.displayName, configVersion: profile.configVersion,
+          operations, executionMode: profile.executionMode, allowedAspectRatios: [], adapter: profile.adapter, authorized: true,
+          capabilities: { referenceImage: operations.includes('edit'), cancel: profile.adapter.supportsCancel,
+            recoverByRequestId: profile.adapter.supportsTaskQuery },
+          ...readSepRuntimeV3Metadata(profile) }]
+      })
+      return { protocolVersion: 3, defaultProfileId: profiles.some(p => p.profileId === runtime.defaultProfileId) ? runtime.defaultProfileId : null,
+        tools: profiles.length ? ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'] : [], profiles }
+    }
     if (runtime.profiles.length === 0 || 'capabilities' in runtime.profiles[0]!) {
       const legacyRuntime = runtime as z.infer<typeof legacyExecutableEmployeeMediaRuntimeV3Schema>
       const profiles: MediaCapabilities['profiles'] = legacyRuntime.profiles.map(profile => ({

@@ -36,7 +36,7 @@ async function setup(scenario: MockVideoScenario = 'success') {
       uploadReference: async bytes => ({ mock: true, referenceId: 'reference-a', mimeType: 'image/png', byteLength: bytes.length,
         sha256: createHash('sha256').update(bytes).digest('hex'), width: 1, height: 1, expiresAt: new Date(Date.now() + 60_000).toISOString() }),
     }),
-    readReference: async () => { const bytes = Buffer.from('mock reference'); return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') } },
+    readReference: async () => { const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2S5cAAAAASUVORK5CYII=', 'base64'); return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') } },
     requestApproval: async () => true, tracker: { floorMs: 1, maxAttempts: 1, budgetMs: 5000 },
   }
   const base = new VideoRunService(options)
