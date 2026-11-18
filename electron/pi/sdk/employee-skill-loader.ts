@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve, toNamespacedPath } from 'node:path'
 import type { PiLoadSkills, PiResourceLoaderOptions, PiSkill } from './pi-coding-agent-adapter'
 import { validatedSkillMarkdown } from './skill-package-parser'
 import { assertSkillPathParents, packageManifestName, verifyPackageCache } from './skill-package-zip'
 import { allocateSkillNames } from './skill-runtime-names'
+import { isCompactSkillPath, verifySkillInstallationIdentity } from './skill-install-layout'
 
 function integrityMismatch(): never {
   throw new Error('Employee runtime skill loader integrity mismatch.')
@@ -31,11 +32,11 @@ export function employeeSkillLoaderOptions(
   const common = new Set(commonPaths.map(path => join(resolve(cwd, path), 'SKILL.md')))
   const expected = new Map(entries.map(path => {
     try {
-      const stat = lstatSync(path)
-      const directory = lstatSync(dirname(path))
+      const stat = lstatSync(toNamespacedPath(path))
+      const directory = lstatSync(toNamespacedPath(dirname(path)))
       if (!stat.isFile() || stat.isSymbolicLink() || !directory.isDirectory() || directory.isSymbolicLink()) integrityMismatch()
       const canonical = canonicalEntry(path)
-      const bytes = readFileSync(path)
+      const bytes = readFileSync(toNamespacedPath(path))
       const fallbackName = basename(dirname(path))
       const parsed = validatedSkillMarkdown(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), {
         name: fallbackName, description: `Instructions for ${fallbackName}`,
@@ -44,18 +45,27 @@ export function employeeSkillLoaderOptions(
       const manifestPath = join(dirname(path), packageManifestName)
       let manifest: Buffer | undefined
       try {
-        const info = lstatSync(manifestPath)
+        const info = lstatSync(toNamespacedPath(manifestPath))
         if (!info.isFile() || info.isSymbolicLink()) integrityMismatch()
-        manifest = readFileSync(manifestPath)
+        manifest = readFileSync(toNamespacedPath(manifestPath))
         verifyPackageCache(path, manifest)
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      let identityManifest: { path: string; bytes: Buffer } | undefined
+      if (isCompactSkillPath(path)) {
+        const identityPath = manifest ? manifestPath : join(dirname(path), 'manifest.json')
+        const identityStat = lstatSync(toNamespacedPath(identityPath))
+        if (!identityStat.isFile() || identityStat.isSymbolicLink() || identityStat.nlink !== 1) integrityMismatch()
+        const identityBytes = manifest ?? readFileSync(toNamespacedPath(identityPath))
+        verifySkillInstallationIdentity(path, identityBytes, bytes)
+        identityManifest = { path: identityPath, bytes: identityBytes }
+      }
       const skill: PiSkill = {
         name, description: parsed.metadata.description,
         disableModelInvocation: parsed.metadata['disable-model-invocation'] === true,
         filePath: path, baseDir: dirname(path),
         sourceInfo: { path, source: 'local', scope: 'temporary', origin: 'top-level', baseDir: dirname(path) },
       }
-      return [path, { skill, canonical, sha256: createHash('sha256').update(bytes).digest('hex'), dev: stat.dev, ino: stat.ino, manifest }] as const
+      return [path, { skill, canonical, sha256: createHash('sha256').update(bytes).digest('hex'), dev: stat.dev, ino: stat.ino, manifest, identityManifest }] as const
     } catch { return integrityMismatch() }
   }))
   const aliases = allocateSkillNames([...expected].map(([path, entry]) => ({
@@ -97,9 +107,15 @@ export function employeeSkillLoaderOptions(
       validateBase(base)
       for (const [path, entry] of expected) {
         try {
-          const stat = lstatSync(path)
+          const stat = lstatSync(toNamespacedPath(path))
           if (!stat.isFile() || stat.isSymbolicLink() || canonicalEntry(path) !== entry.canonical || stat.dev !== entry.dev || stat.ino !== entry.ino ||
-            createHash('sha256').update(readFileSync(path)).digest('hex') !== entry.sha256) integrityMismatch()
+            createHash('sha256').update(readFileSync(toNamespacedPath(path))).digest('hex') !== entry.sha256) integrityMismatch()
+          if (entry.identityManifest) {
+            const info = lstatSync(toNamespacedPath(entry.identityManifest.path))
+            if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1
+              || !readFileSync(toNamespacedPath(entry.identityManifest.path)).equals(entry.identityManifest.bytes)) integrityMismatch()
+            verifySkillInstallationIdentity(path, entry.identityManifest.bytes, readFileSync(toNamespacedPath(path)))
+          }
           if (entry.manifest) verifyPackageCache(path, entry.manifest)
         } catch { integrityMismatch() }
       }

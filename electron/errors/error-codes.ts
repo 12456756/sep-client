@@ -39,6 +39,7 @@ export const ERROR_CODES = {
   PERSISTENCE_ERROR: { status: 500, retryable: true, level: 'error', message: '数据保存失败。' },
   EMPLOYEE_UNAVAILABLE: { status: 404, retryable: false, level: 'warn', message: '所选硅基员工已不可用。' },
   SKILL_CONTENT_MISMATCH: { status: 409, retryable: false, level: 'error', message: '技能加载失败：技能包内容与批准版本不一致，请联系管理员。' },
+  SKILL_PATH_UNSUPPORTED: { status: 422, retryable: false, level: 'warn', message: '技能安装路径过长，请减少技能包内的目录层级，或联系管理员调整缓存位置。' },
   SESSION_UNRECOVERABLE: { status: 409, retryable: false, level: 'warn', message: '会话文件已损坏且无法恢复。' },
   RECOVERY_CONFIRMATION_REQUIRED: { status: 409, retryable: false, level: 'warn', message: '会话文件已损坏，确认后将依据任务历史重建对话。' },
   NETWORK_ERROR: { status: 0, retryable: true, level: 'warn', message: '网络连接失败，请检查网络后重试。' },

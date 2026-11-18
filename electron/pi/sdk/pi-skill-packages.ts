@@ -12,6 +12,8 @@ import { z } from 'zod'
 import { AppError } from '../../errors/app-error'
 import { parseSkillMarkdown, validatedSkillMarkdown, approvedPackageBody, matchesApprovedSkillMarkdown } from './skill-package-parser'
 import { logger } from '../../common/logger'
+import { skillCacheIdentitySchema, skillInstallationKey, skillArtifactCacheKey, type SkillCacheIdentity } from './skill-install-layout'
+import { assertSkillFilePaths } from './skill-file-paths'
 import { readSkillZip, packageCache, packageManifestName, packageSha256, safePackagePath, verifyPackageCache, assertSkillPathParents, type SkillPackageFile } from './skill-package-zip'
 
 export interface SkillStoreRequest {
@@ -55,7 +57,8 @@ function checkCurrent(input: SkillStoreRequest): void {
 
 async function createSkillStagingDirectory(parent: string, prefix = '.staging-'): Promise<string> {
   assertSkillPathParents(parent)
-  await mkdir(parent, { recursive: true, mode: 0o700 })
+  assertSkillFilePaths([parent], [`${prefix}XXXXXX`])
+  await mkdir(toNamespacedPath(parent), { recursive: true, mode: 0o700 })
   assertSkillPathParents(parent)
   // Keep staging outside version directories; mkdtemp needs explicit long-path support on Windows.
   const temporary = await mkdtemp(toNamespacedPath(join(parent, prefix)))
@@ -70,13 +73,13 @@ export async function publishSkillDirectory(
   move: typeof rename = rename,
 ): Promise<void> {
   try {
-    await move(source, target)
+    await move(toNamespacedPath(source), toNamespacedPath(target))
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     let collision = code === 'EEXIST' || code === 'ENOTEMPTY'
     if (code === 'EPERM') {
       try {
-        const destination = await lstat(target)
+        const destination = await lstat(toNamespacedPath(target))
         collision = destination.isDirectory() && !destination.isSymbolicLink()
       } catch {
         collision = false
@@ -110,11 +113,12 @@ function safeSegment(value: string): string {
   return value
 }
 
-function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approvedContent: string): { content: string; name: string; description: string; files: SkillPackageFile[] } {
+function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approvedContent: string, validatePaths: (paths: readonly string[]) => void): { content: string; name: string; description: string; files: SkillPackageFile[] } {
   if (bytes.length !== artifact.byteLength || packageSha256(bytes) !== artifact.artifactSha256) {
     throw new Error('Approved skill artifact integrity mismatch.')
   }
-  const files = artifact.format === 'zip' ? readSkillZip(bytes, artifact) : [{ path: 'SKILL.md', bytes }]
+  validatePaths([artifact.entryPath])
+  const files = artifact.format === 'zip' ? readSkillZip(bytes, artifact, validatePaths) : [{ path: 'SKILL.md', bytes }]
   const entry = files.find(file => file.path === artifact.entryPath)
   if (!entry || packageSha256(entry.bytes) !== artifact.entrySha256 ||
     artifact.format === 'single-file' && (artifact.entryPath !== 'SKILL.md' || artifact.fileCount !== 1)) {
@@ -148,7 +152,7 @@ const preparations = new WriteChain()
 async function reuseTextSkill(target: string, content: Buffer, manifest: Buffer): Promise<boolean> {
   assertSkillPathParents(target)
   let directory: Awaited<ReturnType<typeof lstat>>
-  try { directory = await lstat(target) }
+  try { directory = await lstat(toNamespacedPath(target)) }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
@@ -157,8 +161,8 @@ async function reuseTextSkill(target: string, content: Buffer, manifest: Buffer)
     if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error()
     for (const [name, expected] of [['SKILL.md', content], ['manifest.json', manifest]] as const) {
       const path = join(target, name)
-      const file = await lstat(path)
-      if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || !(await readFile(path)).equals(expected)) throw new Error()
+      const file = await lstat(toNamespacedPath(path))
+      if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || !(await readFile(toNamespacedPath(path))).equals(expected)) throw new Error()
     }
   } catch { throw new Error('Immutable skill entry integrity mismatch.') }
   return true
@@ -167,14 +171,14 @@ async function reuseTextSkill(target: string, content: Buffer, manifest: Buffer)
 async function reusePackage(packageRoot: string, entryPath: string, cache: Buffer): Promise<boolean> {
   assertSkillPathParents(packageRoot)
   let directory: Awaited<ReturnType<typeof lstat>>
-  try { directory = await lstat(packageRoot) }
+  try { directory = await lstat(toNamespacedPath(packageRoot)) }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
   }
   try {
     const entryFile = join(packageRoot, entryPath)
-    if (!directory.isDirectory() || directory.isSymbolicLink() || !(await readFile(join(dirname(entryFile), packageManifestName))).equals(cache)) throw new Error()
+    if (!directory.isDirectory() || directory.isSymbolicLink() || !(await readFile(toNamespacedPath(join(dirname(entryFile), packageManifestName)))).equals(cache)) throw new Error()
     verifyPackageCache(entryFile, cache)
   } catch { throw new Error('Immutable skill entry integrity mismatch.') }
   return true
@@ -198,27 +202,32 @@ export class SkillStore {
     else { this.generation++; this.revisions.clear() }
   }
 
-  private async artifactEntry(input: SkillStoreRequest, skillRoot: string, artifact: SkillArtifactAvailable, content: string): Promise<ReturnType<typeof approvedEntry>> {
-    const parent = join(skillRoot, safeSegment(artifact.capabilityId))
-    const versionKey = createHash('sha256').update(JSON.stringify([artifact.versionId, artifact.artifactSha256])).digest('hex')
-    const path = join(parent, `${versionKey}.artifact`)
+  private async artifactEntry(input: SkillStoreRequest, identity: SkillCacheIdentity, artifact: SkillArtifactAvailable, content: string, version: string): Promise<ReturnType<typeof approvedEntry>> {
+    const parent = resolve(this.rootDir, 'artifacts-v2')
+    const path = join(parent, `${skillArtifactCacheKey(identity, artifact)}.artifact`)
+    assertSkillFilePaths([parent], [basename(path), '.artifact-XXXXXX/package'])
     assertSkillPathParents(path)
     let cached = false
     try {
-      const file = await lstat(path)
+      const file = await lstat(toNamespacedPath(path))
       if (!file.isFile() || file.nlink !== 1 || file.size !== artifact.byteLength) throw new Error('Approved skill artifact integrity mismatch.')
       cached = true
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    const bytes = cached ? await readFile(path) : await downloadSkillArtifact(input.subscriptionId, artifact, input.accessToken, { assertCurrent: () => checkCurrent(input) })
+    const bytes = cached ? await readFile(toNamespacedPath(path)) : await downloadSkillArtifact(input.subscriptionId, artifact, input.accessToken, { assertCurrent: () => checkCurrent(input) })
     checkCurrent(input)
-    const entry = approvedEntry(bytes, artifact, content)
+    const skillRoot = resolve(this.rootDir, 'skills-v2')
+    const installationKey = skillInstallationKey(identity, { capabilityId: artifact.capabilityId,
+      versionId: `platform-${artifact.versionId}`, version, source: 'approved', sha256: artifact.entrySha256, artifact })
+    const roots = [join(skillRoot, installationKey, artifact.installationDirectory), join(skillRoot, '.staging-XXXXXX')]
+    const entry = approvedEntry(bytes, artifact, content, paths => assertSkillFilePaths(roots,
+      [...paths, join(dirname(artifact.entryPath), packageManifestName), 'manifest.json']))
     if (!cached) {
       const temporary = await createSkillStagingDirectory(parent, '.artifact-')
       try {
-        await writeFile(join(temporary, 'package'), bytes, { mode: 0o600, flag: 'wx' })
+        await writeFile(toNamespacedPath(join(temporary, 'package')), bytes, { mode: 0o600, flag: 'wx' })
         checkCurrent(input)
-        await rename(join(temporary, 'package'), path)
-      } finally { await rm(temporary, { recursive: true, force: true }) }
+        await rename(toNamespacedPath(join(temporary, 'package')), toNamespacedPath(path))
+      } finally { await rm(toNamespacedPath(temporary), { recursive: true, force: true }) }
     }
     return entry
   }
@@ -246,17 +255,13 @@ export class SkillStore {
         return { ...metadata, capability: { ...metadata.capability, name: runtime.name, description: runtime.description }, currentVersion: version }
       })
     }
-    const base = resolve(
-      this.rootDir,
-      safeSegment(input.enterpriseId),
-      safeSegment(input.memberId ?? 'anonymous'),
-      safeSegment(input.subscriptionId),
-      'skills',
-    )
-    const skillRoot = base
+    const cacheIdentity = skillCacheIdentitySchema.parse({ layoutVersion: 2,
+      enterpriseId: safeSegment(input.enterpriseId), memberId: input.memberId === undefined ? null : safeSegment(input.memberId),
+      subscriptionId: safeSegment(input.subscriptionId), employeeId: safeSegment(input.employeeId) })
+    const skillRoot = resolve(this.rootDir, 'skills-v2')
     checkCurrent(input)
+    assertSkillFilePaths([skillRoot], ['.staging-XXXXXX'])
     assertSkillPathParents(skillRoot)
-    await mkdir(skillRoot, { recursive: true })
     const paths: string[] = []
     const installed: PreparedEmployeeSkill[] = []
     for (const skill of approvedSkills) {
@@ -295,11 +300,12 @@ export class SkillStore {
           artifact.approvedContentSha256 !== createHash('sha256').update(runtimeSkill.content).digest('hex')) {
           throw new Error('Approved skill artifact identity or content mismatch.')
         }
-        const entry = await this.artifactEntry(input, skillRoot, artifact, runtimeSkill.content)
+        const entry = await this.artifactEntry(input, cacheIdentity, artifact, runtimeSkill.content, runtimeSkill.version)
         checkCurrent(input)
         if (!isPersonalSelection) {
-          const versionKey = createHash('sha256').update(JSON.stringify([artifact.versionId, artifact.artifactSha256])).digest('hex')
-          const parent = join(skillRoot, safeSegment(skill.capability.id), versionKey)
+          const versionKey = skillInstallationKey(cacheIdentity, { capabilityId: skill.capability.id,
+            versionId: platformVersionId, version: runtimeSkill.version, source: 'approved', sha256: artifact.entrySha256, artifact })
+          const parent = join(skillRoot, versionKey)
           const packageRoot = join(parent, entry.name)
           const target = join(packageRoot, dirname(artifact.entryPath))
           const snapshot: PreparedEmployeeSkill = {
@@ -308,30 +314,32 @@ export class SkillStore {
             content: entry.content, sha256: artifact.entrySha256, path: target, artifact,
           }
           checkCurrent(input)
-          assertSkillPathParents(parent)
-          await mkdir(parent, { recursive: true, mode: 0o700 })
-          assertSkillPathParents(parent)
           const installedFiles = artifact.format === 'single-file'
-            ? [...entry.files, { path: 'manifest.json', bytes: Buffer.from(JSON.stringify(snapshot)) }]
+            ? [...entry.files, { path: 'manifest.json', bytes: Buffer.from(JSON.stringify({ ...snapshot, cacheIdentity })) }]
             : entry.files
-          const cache = Buffer.from(JSON.stringify({ ...snapshot, ...packageCache(installedFiles, artifact.entryPath) }))
+          const cache = Buffer.from(JSON.stringify({ ...snapshot, cacheIdentity, ...packageCache(installedFiles, artifact.entryPath) }))
+          assertSkillFilePaths([packageRoot, join(skillRoot, '.staging-XXXXXX')],
+            [...installedFiles.map(file => file.path), join(dirname(artifact.entryPath), packageManifestName)])
           if (!await reusePackage(packageRoot, artifact.entryPath, cache)) {
+            assertSkillPathParents(parent)
+            await mkdir(toNamespacedPath(parent), { recursive: true, mode: 0o700 })
+            assertSkillPathParents(parent)
             const temporary = await createSkillStagingDirectory(dirname(parent))
             try {
               for (const file of installedFiles) {
                 const path = join(temporary, file.path)
-                if (file.directory) { await mkdir(path, { recursive: true, mode: 0o700 }); continue }
-                await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-                await writeFile(path, file.bytes, { mode: 0o600, flag: 'wx' })
+                if (file.directory) { await mkdir(toNamespacedPath(path), { recursive: true, mode: 0o700 }); continue }
+                await mkdir(toNamespacedPath(dirname(path)), { recursive: true, mode: 0o700 })
+                await writeFile(toNamespacedPath(path), file.bytes, { mode: 0o600, flag: 'wx' })
               }
               const stagedEntry = join(temporary, artifact.entryPath)
-              await writeFile(join(dirname(stagedEntry), packageManifestName), cache, { mode: 0o600, flag: 'wx' })
+              await writeFile(toNamespacedPath(join(dirname(stagedEntry), packageManifestName)), cache, { mode: 0o600, flag: 'wx' })
               verifyPackageCache(stagedEntry, cache)
               checkCurrent(input)
               await publishSkillDirectory(temporary, packageRoot, async () => {
                 if (!await reusePackage(packageRoot, artifact.entryPath, cache)) throw new Error('Immutable skill entry integrity mismatch.')
               })
-            } finally { await rm(temporary, { recursive: true, force: true }) }
+            } finally { await rm(toNamespacedPath(temporary), { recursive: true, force: true }) }
           }
           checkCurrent(input)
           if (scope && this.versions) {
@@ -401,8 +409,9 @@ export class SkillStore {
       const versionId = activeVersion?.versionId ?? platform?.versionId ?? `platform-${skill.currentVersion.id}`
       const version = activeVersion?.version ?? platform?.version ?? skill.currentVersion.version
       const sha256 = createHash('sha256').update(entry.content).digest('hex')
-      const versionKey = createHash('sha256').update(JSON.stringify([versionId, version, sha256])).digest('hex')
-      const parent = join(skillRoot, safeSegment(skill.capability.id), versionKey)
+      const versionKey = skillInstallationKey(cacheIdentity, { capabilityId: safeSegment(skill.capability.id),
+        versionId, version, source: isPersonalSelection ? 'owner-local' : 'approved', sha256 })
+      const parent = join(skillRoot, versionKey)
       const target = join(parent, entry.name)
       const snapshot: PreparedEmployeeSkill = {
         capabilityId: skill.capability.id, versionId,
@@ -412,23 +421,24 @@ export class SkillStore {
       }
       checkCurrent(input)
       const contentBytes = Buffer.from(entry.content, 'utf8')
-      const manifest = Buffer.from(JSON.stringify(snapshot), 'utf8')
+      const manifest = Buffer.from(JSON.stringify({ ...snapshot, cacheIdentity }), 'utf8')
+      assertSkillFilePaths([target, join(skillRoot, '.staging-XXXXXX')], ['SKILL.md', 'manifest.json'])
       if (!await reuseTextSkill(target, contentBytes, manifest)) {
         checkCurrent(input)
         assertSkillPathParents(parent)
-        await mkdir(parent, { recursive: true })
+        await mkdir(toNamespacedPath(parent), { recursive: true })
         assertSkillPathParents(parent)
         const temporary = await createSkillStagingDirectory(dirname(parent))
         try {
-          await writeFile(join(temporary, 'SKILL.md'), contentBytes, { mode: 0o600 })
-          await writeFile(join(temporary, 'manifest.json'), manifest, { mode: 0o600 })
+          await writeFile(toNamespacedPath(join(temporary, 'SKILL.md')), contentBytes, { mode: 0o600 })
+          await writeFile(toNamespacedPath(join(temporary, 'manifest.json')), manifest, { mode: 0o600 })
           checkCurrent(input)
           await publishSkillDirectory(temporary, target, async () => {
             if (!await reuseTextSkill(target, contentBytes, manifest)) throw new Error('Immutable skill entry integrity mismatch.')
           })
         } finally {
           // Only this operation's private staging tree can be deleted; published paths stay alive.
-          await rm(temporary, { recursive: true, force: true })
+          await rm(toNamespacedPath(temporary), { recursive: true, force: true })
         }
       }
       checkCurrent(input)

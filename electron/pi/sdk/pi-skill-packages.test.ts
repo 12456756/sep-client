@@ -73,14 +73,14 @@ function skillsPayload(versionId: string, version: string, versions: SkillVersio
   }
 }
 
-function installPlatformMock(state: { versionId: string; version: string; content: string; versions?: SkillVersion[] }): { metadataRequests: () => number; previewRequests: () => number } {
+function installPlatformMock(state: { versionId: string; version: string; content: string; versions?: SkillVersion[]; subscriptionId?: string }): { metadataRequests: () => number; previewRequests: () => number } {
   let metadataRequests = 0
   let previewRequests = 0
   globalThis.fetch = async input => {
     const path = new URL(String(input)).pathname
     if (path.endsWith('/skills')) {
       metadataRequests += 1
-      return jsonResponse(skillsPayload(state.versionId, state.version, state.versions))
+      return jsonResponse({ ...skillsPayload(state.versionId, state.version, state.versions), subscriptionId: state.subscriptionId ?? 'sub-a' })
     }
     if (path.endsWith(`/skill-versions/${state.versionId}/preview`)) {
       previewRequests += 1
@@ -169,11 +169,11 @@ describe('SkillStore', () => {
         downloadPath: '/client/subscriptions/sub-a/skills/cap-a/versions/version-v1/artifact' } }
   }
 
-  function serveArtifact(skill: ReturnType<typeof artifactFixture>, options: { bytes?: Buffer; status?: number } = {}) {
+  function serveArtifact(skill: ReturnType<typeof artifactFixture>, options: { bytes?: Buffer; status?: number; subscriptionId?: string } = {}) {
     let downloads = 0
     globalThis.fetch = async (input, init) => {
       const path = new URL(String(input)).pathname
-      if (path.endsWith('/skills')) return jsonResponse(skillsPayload(skill.versionId, skill.version))
+      if (path.endsWith('/skills')) return jsonResponse({ ...skillsPayload(skill.versionId, skill.version), subscriptionId: options.subscriptionId ?? 'sub-a' })
       if (path.endsWith('/artifact')) {
         downloads++
         assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer access-token')
@@ -184,6 +184,102 @@ describe('SkillStore', () => {
       throw new Error('Negotiated preparation must not preview or downgrade.')
     }
     return () => downloads
+  }
+
+  for (const format of ['text', 'zip'] as const) {
+    it(`isolates every cache identity dimension in the compact ${format} layout`, async t => {
+      const { runtimeRoot } = await createStore()
+      t.after(() => rm(dirname(runtimeRoot), { recursive: true, force: true }))
+      const runtime = artifactFixture()
+      const files = [{ path: 'SKILL.md', bytes: Buffer.from(runtime.content) }]
+      const bytes = zipFixture(files)
+      runtime.artifact = zipDescriptor(bytes, files)
+      const inputs = [request(), { ...request(), enterpriseId: 'enterprise-b' }, { ...request(), memberId: 'member-b' },
+        { ...request(), subscriptionId: 'sub-b' }, { ...request(), employeeId: 'employee-b' },
+        { ...request(), memberId: undefined }, { ...request(), memberId: 'anonymous' }]
+      const paths = new Set<string>()
+      for (const input of inputs) {
+        runtime.artifact.downloadPath = `/client/subscriptions/${input.subscriptionId}/skills/cap-a/versions/version-v1/artifact`
+        if (format === 'text') installPlatformMock({ versionId: runtime.versionId, version: runtime.version,
+          content: runtime.content, subscriptionId: input.subscriptionId })
+        else serveArtifact(runtime, { bytes, subscriptionId: input.subscriptionId })
+        const store = new SkillStore(runtimeRoot)
+        const prepared = await store.prepare({ ...input, ...(format === 'zip' ? { runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 as const } : {}) })
+        const path = prepared.skillPaths[0]!
+        paths.add(path)
+        assert.equal(dirname(dirname(path)), join(runtimeRoot, 'skills-v2'))
+        assert.match(basename(dirname(path)), /^[a-f0-9]{64}$/)
+        const manifest = JSON.parse(await readFile(join(path, format === 'text' ? 'manifest.json' : packageManifestName), 'utf8'))
+        assert.deepEqual(manifest.cacheIdentity, { layoutVersion: 2, enterpriseId: input.enterpriseId,
+          memberId: input.memberId ?? null, subscriptionId: input.subscriptionId, employeeId: input.employeeId })
+        assert.deepEqual(await new SkillStore(runtimeRoot).prepare({ ...input,
+          ...(format === 'zip' ? { runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 as const } : {}) }), prepared)
+      }
+      assert.equal(paths.size, inputs.length)
+      if (format === 'zip') assert.equal((await readdir(join(runtimeRoot, 'artifacts-v2'))).filter(name => name.endsWith('.artifact')).length, inputs.length)
+    })
+  }
+
+  for (const format of ['text', 'single-file', 'zip'] as const) {
+    it(`rejects foreign identity manifests on ${format} cache reuse and loader reload`, async t => {
+      const { runtimeRoot } = await createStore()
+      t.after(() => rm(dirname(runtimeRoot), { recursive: true, force: true }))
+      const runtime = artifactFixture()
+      const files = [{ path: 'orders/SKILL.md', bytes: Buffer.from(runtime.content) }]
+      const bytes = zipFixture(files)
+      if (format === 'zip') runtime.artifact = { ...zipDescriptor(bytes, files, 'orders/SKILL.md'), installationDirectory: 'orders' }
+      if (format === 'text') installPlatformMock({ versionId: runtime.versionId, version: runtime.version, content: runtime.content })
+      else serveArtifact(runtime, format === 'zip' ? { bytes } : {})
+      const input = { ...request(), ...(format === 'text' ? {} : { runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 as const }) }
+      const store = new SkillStore(runtimeRoot)
+      const first = await store.prepare(input)
+      const other = await store.prepare({ ...input, memberId: 'member-b' })
+      const options = employeeSkillLoaderOptions(runtimeRoot, runtimeRoot, other.skillPaths, loadSkills)
+      const base = loadSkills({ cwd: runtimeRoot, agentDir: runtimeRoot, skillPaths: other.skillPaths, includeDefaults: false })
+      assert.equal(options.skillsOverride!(base).skills.length, 1)
+      const name = format === 'text' ? 'manifest.json' : packageManifestName
+      const foreign = JSON.parse(await readFile(join(first.skillPaths[0]!, name), 'utf8'))
+      // Rewriting the public snapshot path must not turn another member's cache into ours.
+      foreign.path = other.skillPaths[0]
+      await writeFile(join(other.skillPaths[0]!, name), JSON.stringify(foreign))
+      await assert.rejects(store.prepare({ ...input, memberId: 'member-b' }), /integrity mismatch/)
+      assert.throws(() => options.skillsOverride!(base), /integrity mismatch/)
+      assert.throws(() => employeeSkillLoaderOptions(runtimeRoot, runtimeRoot, other.skillPaths, loadSkills), /integrity mismatch/)
+      assert.equal((await store.prepare(input)).skillPaths[0], first.skillPaths[0])
+    })
+  }
+
+  it('rejects compact text entry tampering before the loader freezes its expected bytes', async t => {
+    const { runtimeRoot } = await createStore()
+    t.after(() => rm(dirname(runtimeRoot), { recursive: true, force: true }))
+    const runtime = artifactFixture()
+    installPlatformMock({ versionId: runtime.versionId, version: runtime.version, content: runtime.content })
+    const prepared = await new SkillStore(runtimeRoot).prepare(request())
+    await writeFile(join(prepared.skillPaths[0]!, 'SKILL.md'), `${runtime.content}\nChanged`)
+    assert.throws(() => employeeSkillLoaderOptions(runtimeRoot, runtimeRoot, prepared.skillPaths, loadSkills), /integrity mismatch/)
+  })
+
+  for (const format of ['text', 'single-file', 'zip-component', 'zip-depth'] as const) {
+    it(`rejects unsupported ${format} paths before creating cache or staging directories`, async t => {
+      const { runtimeRoot } = await createStore()
+      t.after(() => rm(dirname(runtimeRoot), { recursive: true, force: true }))
+      const content = `---\nname: ${format.startsWith('zip') ? 'orders' : 'a'.repeat(256)}\ndescription: Orders\n---\n# Approved\n`
+      const runtime = artifactFixture(content)
+      runtime.artifact.installationDirectory = format.startsWith('zip') ? 'orders' : 'a'.repeat(256)
+      if (format === 'text') installPlatformMock({ versionId: runtime.versionId, version: runtime.version, content })
+      else if (format === 'single-file') serveArtifact(runtime)
+      else {
+        const attachment = format === 'zip-component' ? `${'a'.repeat(256)}.md`
+          : `${Array.from({ length: 140 }, () => 'd'.repeat(240)).join('/')}/guide.md`
+        const files = [{ path: 'SKILL.md', bytes: Buffer.from(content) }, { path: attachment, bytes: Buffer.from('Guide') }]
+        const bytes = zipFixture(files)
+        runtime.artifact = zipDescriptor(bytes, files)
+        serveArtifact(runtime, { bytes })
+      }
+      await assert.rejects(new SkillStore(runtimeRoot).prepare({ ...request(),
+        ...(format === 'text' ? {} : { runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 as const }) }), { code: 'SKILL_PATH_UNSUPPORTED' })
+      await assert.rejects(lstat(runtimeRoot), { code: 'ENOENT' })
+    })
   }
 
   it('uses a compact directory layout without removing legacy installations', async t => {
@@ -201,19 +297,22 @@ describe('SkillStore', () => {
     await writeFile(join(legacy, 'manifest.json'), 'legacy snapshot')
     let sawStaging = false
     const prepared = await skills.prepare({ ...request(), isCurrent: () => {
-      const staging = readdirSync(capabilityRoot).filter(name => name.startsWith('.staging-'))
-      sawStaging ||= staging.length > 0
+      try { sawStaging ||= readdirSync(join(root, 'skills-v2')).some(name => name.startsWith('.staging-')) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       return true
     } })
     const installed = prepared.skillPaths[0]!
     assert.match(basename(dirname(installed)), /^[a-f0-9]{64}$/)
-    assert.equal(legacy.length - installed.length, 65)
+    assert.equal(dirname(dirname(installed)), join(root, 'skills-v2'))
+    assert.ok(legacy.length - installed.length > 65)
     assert.equal(sawStaging, true)
     assert.equal(await readFile(join(legacy, 'SKILL.md'), 'utf8'), content)
     assert.equal(await readFile(join(legacy, 'manifest.json'), 'utf8'), 'legacy snapshot')
     assert.equal(await readFile(join(installed, 'SKILL.md'), 'utf8'), content)
+    const legacyLoaded = employeeSkillLoaderOptions(root, root, [legacy], loadSkills)
+    assert.equal(legacyLoaded.skillsOverride!(loadSkills({ cwd: root, agentDir: root, skillPaths: [legacy], includeDefaults: false })).skills[0]?.name, 'orders')
     assert.equal((await skills.prepare(request())).skillPaths[0], installed)
-    assert.equal((await readdir(capabilityRoot)).some(name => name.startsWith('.staging-')), false)
+    assert.equal((await readdir(join(root, 'skills-v2'))).some(name => name.startsWith('.staging-')), false)
   })
 
   it('keeps content and version identities distinct in the compact directory layout', async t => {
@@ -321,7 +420,7 @@ describe('SkillStore', () => {
       assert.deepEqual(loaded.diagnostics, [])
       t.diagnostic(`Verified ${format} skill path with ${installed.length} characters.`)
       assert.deepEqual(await new SkillStore(runtimeRoot).prepare(input), prepared)
-      const capabilityRoot = join(runtimeRoot, scope.enterpriseId, scope.memberId, 'sub-a', 'skills', 'cap-a')
+      const capabilityRoot = join(runtimeRoot, 'skills-v2')
       assert.equal((await readdir(capabilityRoot)).some(name => name.startsWith('.')), false)
       if (format === 'zip') assert.equal(await readFile(join(installed, 'references/guide.md'), 'utf8'), 'Approved guide')
     })
@@ -338,7 +437,7 @@ describe('SkillStore', () => {
           if (format === 'zip') runtime.artifact = zipDescriptor(bytes, files)
           serveArtifact(runtime, { bytes })
         }
-        const capabilityRoot = join(root, scope.enterpriseId, scope.memberId, 'sub-a', 'skills', 'cap-a')
+        const capabilityRoot = join(root, prefix === '.artifact-' ? 'artifacts-v2' : 'skills-v2')
         let cancelled = false
         const skills = new SkillStore(root)
         const input = { ...request(), ...(format === 'legacy' ? {} : { runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 as const }) }
@@ -548,12 +647,13 @@ describe('SkillStore', () => {
 
   it('rejects a corrupted raw package without redownloading or silently repairing it', async () => {
     const runtime = artifactFixture(), downloads = serveArtifact(runtime)
-    const { skills } = await createStore()
-    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
-    const key = createHash('sha256').update(JSON.stringify([runtime.versionId, runtime.artifact.artifactSha256])).digest('hex')
+    const { skills, runtimeRoot } = await createStore()
+    await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    const artifactRoot = join(runtimeRoot, 'artifacts-v2')
+    const [artifactFile] = await readdir(artifactRoot)
     const changed = Buffer.from(runtime.content)
     changed[changed.length - 2] ^= 1
-    await writeFile(join(prepared.skillPaths[0]!, '../..', `${key}.artifact`), changed)
+    await writeFile(join(artifactRoot, artifactFile!), changed)
     await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /integrity mismatch/)
     assert.equal(downloads(), 1)
   })
@@ -589,10 +689,11 @@ describe('SkillStore', () => {
 
   it('migrates an old installation without the raw package by downloading it once', async () => {
     const runtime = artifactFixture(), downloads = serveArtifact(runtime)
-    const { skills } = await createStore()
-    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
-    const key = createHash('sha256').update(JSON.stringify([runtime.versionId, runtime.artifact.artifactSha256])).digest('hex')
-    await rm(join(prepared.skillPaths[0]!, '../..', `${key}.artifact`))
+    const { skills, runtimeRoot } = await createStore()
+    await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    const artifactRoot = join(runtimeRoot, 'artifacts-v2')
+    const [artifactFile] = await readdir(artifactRoot)
+    await rm(join(artifactRoot, artifactFile!))
     await skills.prepare({ ...request(), runtimeSkills: [runtime] })
     await skills.prepare({ ...request(), runtimeSkills: [runtime] })
     assert.equal(downloads(), 2)
