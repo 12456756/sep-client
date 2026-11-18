@@ -183,6 +183,7 @@ export interface WorkTimelineEntry {
 }
 
 export interface WorkItem {
+  modelId?: string;
   executionGroup?: { rootTaskId: string; number: number };
   scheduledOrigin?: import('../../shared/scheduled-tasks').ScheduledOrigin;
   knowledge?: KnowledgeSelection;

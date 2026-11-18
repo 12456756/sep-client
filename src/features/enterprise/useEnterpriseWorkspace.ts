@@ -229,6 +229,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<boolean>;
   sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string, knowledge?: KnowledgeSelection, messageId?: string) => Promise<boolean>;
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
+  switchModel: (workId: string, modelId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
   retryWork: (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => Promise<void>;
@@ -881,6 +882,15 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     if (ok && notice.isCurrent()) setActiveEmployeeByWork(current => ({ ...current, [workId]: employeeId }));
   }, [myEmployees, arrangement.plans, run, captureFeedback, acceptPlan]);
 
+  const switchModel = useCallback(async (workId: string, modelId: string) => {
+    const notice = captureFeedback();
+    await run(async () => {
+      const result = await window.electronAPI.switchConversationModel({ taskId: workId, modelId });
+      if (result.success && result.plan && notice.isCurrent()) acceptPlan(result.plan);
+      return result;
+    }, 'workModel');
+  }, [acceptPlan, run, captureFeedback]);
+
   const confirmStep = useCallback(async (workId: string) => {
     const work = works.find(item => item.id === workId);
     const execution = work?.arrangementExecution ?? arrangement.executions[workId];
@@ -1098,7 +1108,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,
     navigate, replaceRoute, retryWorkTypes, workListLoad, goBack,
-    startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
+    startConversation, arrangeWork, sendMessage, switchEmployee, switchModel, confirmStep,
     stopWork, retryWork, rerunWork, requestReplacementAccess: arrangement.requestReplacementAccess, renameWork, setWorkPinned, deleteWork,
     saveFlow, deleteSavedFlow, runSavedFlow,
     setPermission, setPermissionScope, chooseFolder,

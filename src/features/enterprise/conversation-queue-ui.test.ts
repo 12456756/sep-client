@@ -29,6 +29,7 @@ const dependencies: Record<string, unknown> = {
   '../../features/enterprise/conversation-sessions': sessions,
   '../../features/enterprise/composer-connectors': composerConnectors,
   '../../features/enterprise/general-assistant': { GENERAL_ASSISTANT_ID, generalAssistant },
+  './ModelSelector': { ModelSelector: ({ value, disabled, models }: { value: string; disabled: boolean; models: string[] }) => React.createElement('button', { 'aria-label': '模型', disabled, 'data-models': models.join(',') }, value) },
   './KnowledgeSelector': { KnowledgeSelector: empty },
   './ConversationEmployeePicker': { ConversationEmployeePicker: ({ label, disabled, employees }: { label: string; disabled: boolean; employees: { id: string }[] }) => React.createElement('button', { 'aria-label': label, disabled, 'data-employees': employees.map(item => item.id).join(',') }) },
   '../../shared/knowledge-selection': { noKnowledgeSelection: () => ({ mode: 'none', knowledgeBaseIds: [] }) },
@@ -49,7 +50,7 @@ const { WorkConversation } = componentModule.exports as typeof import('../../com
 
 function render(status: WorkItem['status'] = 'completed', employeeId = 'employee') {
   const work = { id: 'task', title: '测试', currentEmployeeId: 'employee', currentEmployeeName: '电商员工',
-    kind: 'conversation', status, isActive: status === 'running', messages: [] } as unknown as WorkItem
+    kind: 'conversation', status, modelId: 'model-a', isActive: status === 'running', messages: [] } as unknown as WorkItem
   work.currentEmployeeId = employeeId
   const workspace = { employees: [], myEmployees: [{ id: 'employee', name: '电商员工', allowedModels: ['model-a', 'model-b'] }], busy: false, attachmentScopeKey: 'account' } as unknown as EnterpriseWorkspace
   return renderToStaticMarkup(React.createElement(WorkConversation, { work, workspace }))
@@ -65,6 +66,15 @@ test('conversation shows persisted pending text and attachment names, count and 
   assert.match(html, /<button aria-label="换一位员工接手" disabled=""/)
   assert.match(html, /补充信息将排队依次处理/)
   assert.doesNotMatch(html, /重试并继续|继续处理<\/button>/)
+})
+
+test('existing employee and general conversations show the saved model and lock changes while busy', () => {
+  queue = { paused: false, failed: null, items: [] }
+  assert.match(render(), /aria-label="模型" data-models="model-a,model-b">model-a/)
+  assert.match(render('completed', GENERAL_ASSISTANT_ID), /aria-label="模型" data-models="model-a,model-b">model-a/)
+  assert.match(render('running'), /aria-label="模型" disabled=""/)
+  queue = { paused: true, failed: null, items: [{ id: 'pending', prompt: '等待处理', createdAt: 1, attachmentNames: [] }] }
+  assert.match(render(), /aria-label="模型" disabled=""/)
 })
 
 test('general assistant conversations expose the same employee picker and keep the busy and queue guards', () => {

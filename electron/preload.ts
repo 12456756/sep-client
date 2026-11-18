@@ -259,6 +259,7 @@ const electronAPI = {
   sendToolApprovalResponse: response => ipcRenderer.send(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, response),
   createConversation: data => ipcRenderer.invoke(INVOKE_CHANNELS.CONVERSATION_CREATE, data),
   switchConversationEmployee: data => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, data),
+  switchConversationModel: data => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_SWITCH_MODEL, data),
   getArrangementContext: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_CONTEXT),
   getArrangementPlan: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_PLAN, taskId),
   getArrangementExecution: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_EXECUTION, taskId),

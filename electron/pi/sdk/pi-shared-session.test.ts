@@ -23,6 +23,23 @@ class FakeSession implements PiAgentSession {
 }
 
 describe('SharedPiSession', () => {
+  it('changes model while resuming the same conversation file', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession(`session-${configs.length}`) } })
+    const config: PiAgentSessionConfig = { runId: 'first', modelId: 'model-a', gatewayUrl: 'g', workspaceDir: 'w', agentDir: 'a', sessionDir: 's', getAccessToken: async () => 'token', authorizeTool: async () => false }
+    try {
+      const first = await adapter.open(config) as FakeSession
+      const second = await adapter.open({ ...config, runId: 'second', modelId: 'model-b' })
+      assert.notEqual(first, second)
+      assert.equal(first.disposed, 1)
+      assert.equal(configs[1].modelId, 'model-b')
+      assert.equal(configs[1].resumeSessionFile, first.sessionFile)
+      assert.equal(await adapter.open({ ...config, modelId: 'model-b' }), second)
+      await adapter.reset()
+      await adapter.open({ ...config, modelId: 'model-b', resumeSessionFile: 'old-file.jsonl' })
+      assert.equal(configs[2].resumeSessionFile, first.sessionFile)
+    } finally { await adapter.dispose() }
+  })
   it('rebuilds tools after connector authorization changes while retaining history', async () => {
     const configs: PiAgentSessionConfig[] = []
     const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession(`session-${configs.length}`) } })

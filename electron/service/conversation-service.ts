@@ -181,6 +181,47 @@ export class ConversationService {
     return updated
   }
 
+  async switchModel(taskId: string, modelId: string): Promise<WorkPlan> {
+    const scope = requireScope(this.deps.scope)
+    let updated: WorkPlan | undefined
+    const change = async (): Promise<void> => {
+      const assertScope = (): void => {
+        const current = requireScope(this.deps.scope)
+        if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+      }
+      assertScope()
+      const task = await this.deps.taskManager.getTask(taskId)
+      if (!task) throw new AppError('NOT_FOUND')
+      if (task.scheduledOrigin) throw new AppError('INVALID_STATE', { message: '定时执行不能中途更换模型，请修改任务配置。' })
+      if (task.activeRunId || task.status === 'running' || task.status === 'waiting_approval') {
+        throw new AppError('INVALID_STATE', { message: '请等待当前回复结束或终止后再切换模型。' })
+      }
+      const plan = await this.deps.workPlans?.get(scope, taskId)
+      if (!plan || plan.mode !== 'conversation' || !plan.conversation || !this.deps.workPlans) throw new AppError('INVALID_STATE', { message: '未找到可修改的会话配置。' })
+      const general = plan.conversation.kind === 'general'
+      if (!task.subscriptionId) throw new AppError('INVALID_STATE')
+      const authorized = general
+        ? await this.deps.employees.authorizeModel(modelId, task.subscriptionId)
+        : await this.deps.employees.authorize(task.subscriptionId, modelId)
+      assertScope()
+      if (!authorized) throw new AppError('MODEL_NOT_ALLOWED')
+      const conversation = general
+        ? { ...plan.conversation, modelId }
+        : { ...plan.conversation, participants: [
+          ...plan.conversation.participants.filter(item => item.subscriptionId !== task.subscriptionId),
+          { subscriptionId: task.subscriptionId, modelId },
+        ] }
+      const next = { ...plan, conversation }
+      await this.deps.workPlans.save(scope, next)
+      assertScope()
+      updated = next
+    }
+    if (this.deps.queue) await this.deps.queue.whenIdle(taskId, change)
+    else await change()
+    if (!updated) throw new AppError('INTERNAL_ERROR')
+    return updated
+  }
+
   async queue(input: ConversationQueueInput): Promise<ConversationQueueView> {
     const { taskId, action } = input
     if (!this.deps.queue) throw new AppError('INTERNAL_ERROR')

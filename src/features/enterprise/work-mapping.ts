@@ -275,6 +275,8 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     lastRunEndedAt: task.lastRunEndedAt ?? null,
     progress,
     currentEmployeeId,
+    modelId: plan?.conversation?.kind === 'general' ? plan.conversation.modelId
+      : plan?.conversation?.participants.find(item => item.subscriptionId === currentEmployeeId)?.modelId,
     currentEmployeeName: nameOf(currentEmployeeId),
     steps,
     nextUserAction: effectiveExecution?.nodes.find(node => node.inputRequest)?.inputRequest?.question ??

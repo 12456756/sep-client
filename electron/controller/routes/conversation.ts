@@ -32,6 +32,11 @@ const switchEmployeeInput = z.union([
   z.object({ taskId: z.string().min(1), kind: z.literal('employee').optional(), subscriptionId: z.string().min(1) }).strict(),
 ])
 
+const switchModelInput = z.object({
+  taskId: z.string().min(1),
+  modelId: z.string().trim().min(1),
+}).strict()
+
 export const conversationRoutes = [
   route(INVOKE_CHANNELS.CONVERSATION_CREATE, createTaskInput, async (ctx, input) => ({
     success: true,
@@ -63,6 +68,11 @@ export const conversationRoutes = [
     const plan = await ctx.conversations.switchEmployee(input.taskId, target)
     return { success: true, ...(plan ? { plan } : {}) }
   }, { invalidMessage: '需要有效的任务与硅基员工。' }),
+
+  route(INVOKE_CHANNELS.TASK_SWITCH_MODEL, switchModelInput, async (ctx, input) => ({
+    success: true,
+    plan: await ctx.conversations.switchModel(input.taskId, input.modelId),
+  }), { invalidMessage: '请选择有效的会话与模型。' }),
 ]
 
 

@@ -12,13 +12,14 @@ import { SpeechInputActions } from '../speech/SpeechInputActions';
 import { AttachmentComposer } from './attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
 import { ConversationSessionsContext, createConversationSessions } from '../../features/enterprise/conversation-sessions';
-import { generalAssistant } from '../../features/enterprise/general-assistant';
+import { generalAssistant, GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
 import { KnowledgeSelector } from './KnowledgeSelector';
 import { noKnowledgeSelection } from '../../shared/knowledge-selection';
 import { useConversationQueue } from '../../features/enterprise/use-conversation-queue';
 import { ConversationMessages } from './ConversationMessages';
 import { withComposerConnector } from '../../features/enterprise/composer-connectors';
 import { ContextUsageIndicator } from '../workspace/ContextUsageIndicator';
+import { ModelSelector } from './ModelSelector';
 import { ConversationEmployeePicker } from './ConversationEmployeePicker';
 
 const FOLLOW_THRESHOLD_PX = 48;
@@ -104,6 +105,10 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
   const preparing = (queued.queue.preparing === true || queued.queue.preparing === undefined && !work.lastRunId) && work.status === 'arranging' && !work.isActive;
   const unstarted = queued.queue.preparing === false && work.status === 'arranging' && !work.isActive && !work.lastRunId;
   const isReplying = work.isActive === true || preparing;
+  const models = work.currentEmployeeId === GENERAL_ASSISTANT_ID
+    ? generalAssistant(workspace.myEmployees.filter(item => item.availability !== 'unavailable')).allowedModels
+    : workspace.myEmployees.find(item => item.id === work.currentEmployeeId)?.allowedModels ?? [];
+  const modelLocked = workspace.busy || sending || queued.busy || isReplying || queued.queue.items.length > 0 || !!queued.queue.failed;
   const hasStreamingReply = work.messages.some(message => message.id === `${work.id}-streaming`);
   const statusText = work.status === 'completed' ? '本轮回复已完成，可继续提问'
     : work.status === 'paused' ? '工作已终止，已收到的内容仍保留'
@@ -231,6 +236,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                     />
                   ) : null}
                   <KnowledgeSelector value={knowledge} onChange={setKnowledge} disabled={workspace.busy || sending} scopeKey={workspace.attachmentScopeKey} />
+                  {work.kind === 'conversation' ? <ModelSelector models={models} value={work.modelId ?? ''} title={modelLocked ? '请等待当前回复和排队消息处理完毕后切换模型' : work.modelId || '选择模型'} allowEmpty={false} disabled={modelLocked || !!work.scheduledOrigin} onChange={modelId => { if (modelId !== work.modelId) void workspace.switchModel(work.id, modelId); }} /> : null}
                 </div>
                 <div className="ent-ask-actions">
                   {over ? null : (
