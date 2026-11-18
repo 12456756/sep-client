@@ -6,6 +6,10 @@ import { buildConversationReplies, buildConversationTranscript, type Conversatio
 import { ConversationProcessView } from './ConversationProcess'
 import { EmployeeFace } from './EmployeeFace'
 import { MessageContent } from './MessageContent'
+import { useConversationMedia } from '../../features/enterprise/conversation-media'
+import { groupConversationResults, type ConversationResult } from '../../features/enterprise/conversation-results'
+import { ResultFileCard } from '../workspace/ResultFileCard'
+import '../workspace/result-file-card.css'
 
 interface Props {
   work: WorkItem
@@ -15,19 +19,27 @@ interface Props {
 }
 
 export const ConversationMessages = React.memo(function ConversationMessages({ work, employees, scopeKey, preparing }: Props) {
-  const transcript = useArrangementTranscript(work.id, scopeKey)
-  const runs = useMemo(() => buildConversationTranscript(transcript.events), [transcript.events])
-  return <ConversationMessagesView key={`${scopeKey}:${work.id}`} work={work} employees={employees} preparing={preparing} runs={runs}
-    loading={transcript.loading} error={transcript.error} onReload={transcript.reload} />
+  return <ConversationMessagesContent key={`${scopeKey}:${work.id}`} work={work} employees={employees} scopeKey={scopeKey} preparing={preparing} />
 })
 
-export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload }: Omit<Props, 'scopeKey'> & {
+function ConversationMessagesContent({ work, employees, scopeKey, preparing }: Props) {
+  const transcript = useArrangementTranscript(work.id, scopeKey)
+  const media = useConversationMedia(work.id, scopeKey)
+  const runs = useMemo(() => buildConversationTranscript(transcript.events), [transcript.events])
+  return <><ConversationMessagesView work={work} employees={employees} preparing={preparing} runs={runs} media={media.results}
+    loading={transcript.loading} error={transcript.error} onReload={transcript.reload} />
+    {media.error ? <div className="ent-conversation-results-error" role="alert"><span>{media.error}</span><button type="button" className="ent-btn sm ghost" onClick={media.retry}><RotateCcw size={14} />重新读取</button></div> : null}</>
+}
+
+export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, media = [] }: Omit<Props, 'scopeKey'> & {
+  media?: ConversationResult[]
   runs: readonly ConversationRunTranscript[]
   loading: boolean
   error: string | null
   onReload: () => void
 }) {
   const items = buildConversationReplies(work, preparing)
+  const results = groupConversationResults(work, items, media)
   const byRun = new Map(runs.map(run => [run.runId, run.entries]))
   const lastReply = [...items].reverse().find(item => item.kind === 'reply')
   return <>{items.map(item => {
@@ -47,18 +59,27 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
     const employeeName = first?.employeeName || work.currentEmployeeName
     const entries = item.runId ? byRun.get(item.runId) ?? [] : []
     const hasContent = item.messages.some(message => message.content.trim())
+    const replyResults = results.get(item.id)
     const processError = item.id === lastReply?.id ? error : null
     return <div className="ent-say ent-conversation-reply" key={item.id} data-conversation-reply={item.id} data-run-id={item.runId}>
       <span className="ent-say-who"><EmployeeFace employee={employees.find(employee => employee.id === employeeId)} name={employeeName} size="sm" round />{employeeName}</span>
       {item.runId && (entries.length > 0 || loading || processError) ? <ConversationProcessView entries={entries} active={item.active} loading={loading} error={processError} onReload={onReload} /> : null}
-      {!hasContent && (!entries.length || !item.active) ? <div className="ent-conversation-reply-status" role="status">
+      {!hasContent && !replyResults?.length && (!entries.length || !item.active) ? <div className="ent-conversation-reply-status" role="status">
         {item.active ? <LoaderCircle size={14} className="ent-spin" aria-hidden /> : null}
         {item.active ? '正在进行…' : '本轮未返回回复'}
       </div> : null}
       {item.messages.filter(message => message.content.trim()).map(message => <MessageContent key={message.id} content={message.content} />)}
+      <ConversationResultCards taskId={work.id} results={replyResults} />
       <MessageTime message={{ createdAt: first?.createdAt ?? item.createdAt }} />
     </div>
-  })}</>
+  })}<ConversationResultCards taskId={work.id} results={results.get('unassigned')} /></>
+}
+
+function ConversationResultCards({ taskId, results }: { taskId: string; results?: ConversationResult[] }) {
+  if (!results?.length) return null
+  return <div className="result-file-list ent-conversation-results" aria-label="生成的文件">
+    {results.map(result => <ResultFileCard key={result.file.id} taskId={taskId} file={result.file} mediaRequest={result.request} />)}
+  </div>
 }
 
 function MessageTime({ message }: { message: Pick<WorkMessage, 'createdAt'> }) {

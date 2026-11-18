@@ -8,6 +8,7 @@ import { _electron } from 'playwright-core'
 import { createServer } from 'vite'
 
 const directory = await realpath(await mkdtemp(join(tmpdir(), 'sep-result-electron-')))
+const screenshotDirectory = process.env.SEP_RESULT_TEST_OUTPUT || 'output/playwright'
 let electron
 let server
 const errors = []
@@ -37,9 +38,11 @@ try {
   const main = await (await fetch(`${origin}/main.tsx`)).text()
   reactUrl = main.match(/from "([^"]*react\.js[^"]*)"/)[1]
   domUrl = main.match(/from "([^"]*react-dom_client[^"]*)"/)[1]
-  electron = await _electron.launch({ args: [join(directory, 'main.cjs')], cwd: process.cwd(), env: { ...process.env,
+  const electronEnvironment = { ...process.env }
+  delete electronEnvironment.ELECTRON_RUN_AS_NODE
+  electron = await _electron.launch({ args: [join(directory, 'main.cjs')], cwd: process.cwd(), env: { ...electronEnvironment,
     SEP_RESULT_TEST_ROOT: directory, SEP_RESULT_TEST_PRELOAD: resolve('scripts/fixtures/result-files-preload.cjs'),
-    SEP_RESULT_TEST_URL: `${origin}/__result-test`, ELECTRON_RUN_AS_NODE: '',
+    SEP_RESULT_TEST_URL: `${origin}/__result-test`,
   } })
   const page = await electron.firstWindow()
   page.on('pageerror', error => errors.push(error.message))
@@ -60,20 +63,21 @@ try {
   await page.waitForFunction(() => document.querySelector('video').currentTime > 0.2)
   await page.locator('video').evaluate(video => { video.pause(); video.currentTime = 2 })
   await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 2) < 0.1 && !document.querySelector('video').seeking)
-  await mkdir('output/playwright', { recursive: true })
-  await page.screenshot({ path: 'output/playwright/result-files-desktop.png', fullPage: true })
+  await mkdir(screenshotDirectory, { recursive: true })
+  await page.screenshot({ path: join(screenshotDirectory, 'result-files-desktop.png'), fullPage: true })
   await page.getByRole('button', { name: '放大查看 product.png', exact: true }).click()
   await page.getByRole('dialog', { name: '图片预览 product.png' }).waitFor()
   await page.keyboard.press('Escape')
   assert.equal(await page.getByRole('dialog', { name: '图片预览 product.png' }).count(), 0)
   assert.equal(await page.locator('.ent-wk-inspector[open]').count(), 1)
   await page.getByRole('button', { name: '打开 product.png 所在文件夹', exact: true }).click()
+  await page.waitForFunction(async () => (await window.resultTest.state()).revealed.length === 1)
   const state = await page.evaluate(() => window.resultTest.state())
   assert.deepEqual(state.revealed, [join(directory, 'workspace', 'product.png')])
   assert.ok(state.requests.some(request => request.range && request.status === 206))
   await page.setViewportSize({ width: 420, height: 800 })
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
-  await page.screenshot({ path: 'output/playwright/result-files-narrow.png', fullPage: true })
+  await page.screenshot({ path: join(screenshotDirectory, 'result-files-narrow.png'), fullPage: true })
   await page.getByRole('button', { name: '关闭详情面板', exact: true }).click()
   assert.equal(await page.locator('video').count(), 0)
   await page.waitForFunction(async url => (await fetch(url)).status === 404, source)
@@ -83,13 +87,49 @@ try {
   assert.notEqual(currentSource, source)
   await page.goto(`${origin}/__result-test?conversation=1`)
   await page.setViewportSize({ width: 1280, height: 900 })
+  const inlineResults = page.locator('.ent-conversation-results')
+  await inlineResults.locator('img').waitFor()
+  await page.waitForFunction(() => document.querySelector('.ent-conversation-results img')?.naturalWidth > 0 && document.querySelector('.ent-conversation-results video')?.readyState >= 2)
+  assert.equal(await inlineResults.locator('.result-file-card').count(), 2)
+  const inlineSource = await inlineResults.locator('video').getAttribute('src')
+  await page.evaluate(() => window.resultTest.secure())
+  await inlineResults.locator('video').hover()
+  // Chromium's native media buttons live in a user-agent shadow root.
+  const cdp = await page.context().newCDPSession(page)
+  const toggleNativeFullscreen = async () => {
+    await inlineResults.locator('video').hover()
+    const tree = await cdp.send('DOM.getDocument', { depth: -1, pierce: true })
+    const fullscreenButtons = []
+    const visit = node => {
+      if (node.attributes?.includes('-webkit-media-controls-fullscreen-button')
+        && !node.attributes.includes('display: none;')) fullscreenButtons.push(node.backendNodeId)
+      for (const child of [...(node.children || []), ...(node.shadowRoots || [])]) visit(child)
+    }
+    visit(tree.root)
+    assert.ok(fullscreenButtons.length > 0, 'native video controls must expose their fullscreen button')
+    const { model } = await cdp.send('DOM.getBoxModel', { backendNodeId: fullscreenButtons[0] })
+    await page.mouse.click((model.border[0] + model.border[4]) / 2, (model.border[1] + model.border[5]) / 2)
+  }
+  await toggleNativeFullscreen()
+  await page.waitForFunction(() => document.fullscreenElement?.tagName === 'VIDEO', null, { timeout: 5000 })
+  await inlineResults.locator('video').evaluate(async video => { video.muted = true; await video.play() })
+  await page.waitForFunction(() => document.fullscreenElement.currentTime > 0.2)
+  await inlineResults.locator('video').evaluate(video => video.pause())
+  await page.screenshot({ path: join(screenshotDirectory, 'conversation-video-fullscreen.png') })
+  await toggleNativeFullscreen()
+  await page.waitForFunction(() => document.fullscreenElement === null)
+  await cdp.detach()
+  await page.screenshot({ path: join(screenshotDirectory, 'conversation-inline-results.png'), fullPage: true })
   await page.getByRole('button', { name: '查看产出结果', exact: true }).click()
-  await page.waitForFunction(() => document.querySelector('.result-file-card img')?.naturalWidth > 0 && document.querySelector('video')?.readyState >= 2)
-  assert.equal(await page.locator('.result-file-card').count(), 2)
-  assert.equal(await page.getByRole('button', { name: /^(预览|导出)(视频|图片)?/ }).count(), 0)
-  assert.equal(await page.locator('video').evaluate(video => video.paused && video.currentTime === 0), true)
-  await page.locator('video').scrollIntoViewIfNeeded()
-  const bounds = await page.locator('video').boundingBox()
+  const resultDialog = page.locator('.ent-wk-inspector')
+  const resultCards = resultDialog.locator('.result-file-card')
+  const resultVideo = resultDialog.locator('video')
+  await page.waitForFunction(() => document.querySelector('.ent-wk-inspector .result-file-card img')?.naturalWidth > 0 && document.querySelector('.ent-wk-inspector video')?.readyState >= 2)
+  assert.equal(await resultCards.count(), 2)
+  assert.equal(await resultDialog.getByRole('button', { name: /^(预览|导出)(视频|图片)?/ }).count(), 0)
+  assert.equal(await resultVideo.evaluate(video => video.paused && video.currentTime === 0), true)
+  await resultVideo.scrollIntoViewIfNeeded()
+  const bounds = await resultVideo.boundingBox()
   assert.ok(bounds)
   const frame = await page.screenshot({ clip: { x: bounds.x + bounds.width / 2 - 4, y: bounds.y + bounds.height / 2 - 4, width: 8, height: 8 } })
   const visibleFrame = await electron.evaluate(({ nativeImage }, base64) => {
@@ -101,14 +141,14 @@ try {
     return colored > pixels.length / 8
   }, frame.toString('base64'))
   assert.equal(visibleFrame, true, 'historical conversation video must paint its first frame before playback')
-  await page.screenshot({ path: 'output/playwright/result-files-conversation.png', fullPage: true })
-  const conversationSource = await page.locator('video').getAttribute('src')
-  await page.locator('video').evaluate(async video => { video.muted = true; await video.play() })
-  await page.waitForFunction(() => document.querySelector('video').currentTime > 0.2)
-  await page.locator('video').evaluate(video => { video.pause(); video.currentTime = 2 })
-  await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 2) < 0.1 && !document.querySelector('video').seeking)
-  assert.equal(await page.locator('.result-file-card').nth(1).locator('video').count(), 1)
-  const videoFolder = page.locator('.result-file-card').nth(1).getByRole('button', { name: /所在文件夹/ })
+  await page.screenshot({ path: join(screenshotDirectory, 'result-files-conversation.png'), fullPage: true })
+  const conversationSource = await resultVideo.getAttribute('src')
+  await resultVideo.evaluate(async video => { video.muted = true; await video.play() })
+  await page.waitForFunction(() => document.querySelector('.ent-wk-inspector video').currentTime > 0.2)
+  await resultVideo.evaluate(video => { video.pause(); video.currentTime = 2 })
+  await page.waitForFunction(() => Math.abs(document.querySelector('.ent-wk-inspector video').currentTime - 2) < 0.1 && !document.querySelector('.ent-wk-inspector video').seeking)
+  assert.equal(await resultCards.nth(1).locator('video').count(), 1)
+  const videoFolder = resultCards.nth(1).getByRole('button', { name: /所在文件夹/ })
   await videoFolder.click()
   await page.waitForFunction(async () => {
     const state = await window.resultTest.state()
@@ -116,23 +156,25 @@ try {
   })
   const conversationState = await page.evaluate(() => window.resultTest.state())
   assert.ok(conversationState.revealCalls.some(input => input.jobId === 'video-job' && input.outputId === 'video-output-1'))
-  await page.locator('.result-file-card').nth(0).getByRole('button', { name: /放大查看/ }).click()
+  await resultCards.nth(0).getByRole('button', { name: /放大查看/ }).click()
   await page.locator('.result-image-dialog[open]').waitFor()
   await page.keyboard.press('Escape')
   assert.equal(await page.locator('.ent-wk-inspector[open]').count(), 1)
   await page.setViewportSize({ width: 420, height: 800 })
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
-  await page.screenshot({ path: 'output/playwright/result-files-conversation-narrow.png', fullPage: true })
+  await page.screenshot({ path: join(screenshotDirectory, 'result-files-conversation-narrow.png'), fullPage: true })
   await page.getByRole('button', { name: '关闭详情面板', exact: true }).click()
-  assert.equal(await page.locator('video').count(), 0)
+  assert.equal(await resultVideo.count(), 0)
+  assert.equal(await inlineResults.locator('video').count(), 1)
+  assert.equal(await page.evaluate(async url => (await fetch(url)).status, inlineSource), 200)
   await page.waitForFunction(async url => (await fetch(url)).status === 404, conversationSource)
   await page.getByRole('button', { name: '查看产出结果', exact: true }).click()
-  await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
-  const finalSource = await page.locator('video').getAttribute('src')
+  await page.waitForFunction(() => document.querySelector('.ent-wk-inspector video')?.readyState >= 2)
+  const finalSource = await resultVideo.getAttribute('src')
   await page.evaluate(() => window.resultTest.logout())
   assert.equal(await page.evaluate(async url => (await fetch(url)).status, finalSource), 404)
   assert.deepEqual(errors, [])
-  console.log('PASS Electron arrangement and historical conversation results: visible first frame, image zoom, video playback/seek, Range, reveal identity, narrow layout, release and logout')
+  console.log('PASS Electron arrangement and historical conversation results: visible first frame, image zoom, native video fullscreen/exit, playback/seek, Range, reveal identity, narrow layout, release and logout')
 } catch (error) {
   console.error(errors)
   const page = electron?.windows()[0]

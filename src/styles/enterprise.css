@@ -143,7 +143,7 @@
 
 /* 深色主题只覆盖语义令牌，页面组件不需要分别维护两套颜色。 */
 .ent-shell.dark,
-:root:has(.ent-shell.dark) :is(.kb-overlay, .kb-dialog, .kb-document-drawer, .skill-dialog-overlay, .skill-save-dialog, .ent-knowledge-popover, .ent-model-popover, .sep-composer-add-menu, .sep-composer-connectors-overlay, .sep-composer-connectors-dialog, .compute-drawer-backdrop) {
+:root:has(.ent-shell.dark) :is(.kb-overlay, .kb-dialog, .kb-document-drawer, .skill-dialog-overlay, .skill-save-dialog, .ent-knowledge-popover, .ent-model-popover, .ent-chat-pop, .sep-composer-add-menu, .sep-composer-connectors-overlay, .sep-composer-connectors-dialog, .compute-drawer-backdrop) {
   --work-canvas: #1a1d26;
   --work-rail: #261f27;
   --work-list: #201f27;
@@ -591,6 +591,9 @@
   outline-offset: 2px;
   box-shadow: 0 0 0 3px rgb(217 75 82 / 18%) !important;
 }
+/* Portaled employee pickers also need to override the legacy global focus ring. */
+.ent-chat-pop .ent-chat-find input:focus-visible { outline: none !important; box-shadow: none !important; }
+.ent-chat-whobtn:focus-visible, .ent-chat-pop li > button:focus-visible { outline: 2px solid var(--ent-brand-solid) !important; outline-offset: -2px; box-shadow: none !important; }
 /* Inputs use a neutral focus state; the brand focus ring remains on buttons. */
 .ent-shell :is(input, textarea, select):focus {
   border-color: var(--ent-line-strong) !important;
@@ -665,9 +668,6 @@
 /* 换员工在这里，因为「换个人做」和「说下一句」是同一件事。 */
 .ent-ask-who { position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 3px 8px 3px 4px; border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); font-size: var(--ent-fs-body); cursor: pointer; transition: background var(--ent-ease); }
 .ent-ask-who:hover { background: var(--ent-panel-subtle); }
-.ent-ask-who select { border: 0; background: none; color: inherit; font-family: inherit; font-size: var(--ent-fs-body); cursor: pointer; appearance: none; outline: none; }
-.ent-ask-who > svg { color: var(--ent-ink-3); transform: rotate(90deg); }
-.ent-ask-who:has(select:disabled) { cursor: default; opacity: .6; }
 .ent-ask-stop { display: inline-flex; align-items: center; gap: 4px; padding: 4px 9px; border: 0; border-radius: var(--ent-radius-pill); color: var(--ent-ink-3); background: none; font-size: var(--ent-fs-body); cursor: pointer; transition: color var(--ent-ease), background var(--ent-ease); }
 .ent-ask-stop:hover { color: var(--ent-danger); background: var(--ent-danger-bg); }
 /* 发送做成圆钮：它是这一页最常按的东西，圆形 + 实心最好瞄准。 */

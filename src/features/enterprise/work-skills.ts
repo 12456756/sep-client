@@ -1,17 +1,27 @@
 import type { TaskExecutionEvent } from '../../shared/types'
 import type { SkillLibraryItem } from '../../shared/skill-library'
 
-export function workSkillDetails(path: string, library: readonly SkillLibraryItem[]): { name: string; description: string } | null {
-  const parts = path.replace(/\\/g, '/').split('/')
-  const index = parts.lastIndexOf('skills')
-  if (index < 0 || parts.length < index + 5) return null
-  const item = library.find(skill => skill.capability.id === parts[index + 1])
-  return item ? { name: item.capability.name, description: item.capability.description } : null
+interface SkillDetails {
+  name: string
+  description: string
+}
+
+export function legacyWorkSkillId(path: string): string | undefined {
+  return /(?:^|\/)runtime\/[^/]+\/[^/]+\/[^/]+\/skills\/([^/]+)\/[^/]+\/[^/]+\/(?:[^/]+\/)*SKILL\.md$/i
+    .exec(path.replace(/\\/g, '/'))?.[1]
+}
+
+export function workSkillDetails(skill: Pick<WorkSkillUsage, 'path' | 'details'>, library: readonly SkillLibraryItem[]): SkillDetails | null {
+  if (skill.details) return skill.details
+  const id = legacyWorkSkillId(skill.path)
+  const capability = library.find(item => item.capability.id === id)?.capability
+  return capability ? { name: capability.name, description: capability.description } : null
 }
 
 export interface WorkSkillUsage {
   path: string
   name: string
+  details?: SkillDetails
   completed: number
   pending: number
   failed: number
@@ -20,6 +30,11 @@ export interface WorkSkillUsage {
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function skillDetails(value: unknown): SkillDetails | undefined {
+  const { name, description } = record(value)
+  return typeof name === 'string' && name.trim() && typeof description === 'string' ? { name, description } : undefined
 }
 
 /** Retain only skill entry reads and their outcomes, never arbitrary tool inputs. */
@@ -33,6 +48,8 @@ export function selectSkillUsageEvent(event: TaskExecutionEvent): TaskExecutionE
     const path = record(data.input).path
     if (typeof path !== 'string' || !/(?:^|[\\/])SKILL\.md$/i.test(path.trim())) return null
     safe.skillPath = path.trim().replace(/\\/g, '/')
+    const details = skillDetails(data.skillDetails)
+    if (details) safe.skillDetails = details
   } else if (typeof data.success === 'boolean') safe.success = data.success
   for (const key of ['nodeId', 'nodeRunId', 'eventType']) {
     if (typeof data[key] === 'string') safe[key] = data[key]
@@ -41,7 +58,7 @@ export function selectSkillUsageEvent(event: TaskExecutionEvent): TaskExecutionE
 }
 
 export function collectWorkSkills(events: readonly TaskExecutionEvent[]): WorkSkillUsage[] {
-  const calls = new Map<string, { path?: string; nodeId?: string; success?: boolean }>()
+  const calls = new Map<string, { path?: string; nodeId?: string; success?: boolean; details?: SkillDetails }>()
   for (const event of events) {
     const data = record(event.data)
     const type = event.type === 'arrangement_node_progress' ? data.eventType : event.type
@@ -49,7 +66,10 @@ export function collectWorkSkills(events: readonly TaskExecutionEvent[]): WorkSk
     // Wrapped parent events and the child's own timeline describe the same call.
     const key = JSON.stringify([data.nodeRunId ?? event.runId, data.toolId])
     const call = calls.get(key) ?? {}
-    if (type === 'tool_execution_start' && typeof data.skillPath === 'string') call.path = data.skillPath
+    if (type === 'tool_execution_start' && typeof data.skillPath === 'string') {
+      call.path = data.skillPath
+      call.details = skillDetails(data.skillDetails) ?? call.details
+    }
     if (type === 'tool_execution_end' && typeof data.success === 'boolean') call.success = data.success
     if (typeof data.nodeId === 'string') call.nodeId = data.nodeId
     calls.set(key, call)
@@ -62,6 +82,7 @@ export function collectWorkSkills(events: readonly TaskExecutionEvent[]): WorkSk
       skill = { path: call.path, name: call.path.split('/').at(-2) || 'SKILL.md', completed: 0, pending: 0, failed: 0, nodeIds: [] }
       skills.set(call.path, skill)
     }
+    if (call.details) skill.details ??= call.details
     if (call.success === true) skill.completed++
     else if (call.success === false) skill.failed++
     else skill.pending++

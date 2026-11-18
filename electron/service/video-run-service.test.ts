@@ -20,6 +20,7 @@ import { EmployeeDirectory } from './employee-directory'
 import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
 import { PiCodingAgentAdapter } from '../pi/sdk/pi-coding-agent-adapter'
 import { PiTaskWorker } from '../pi/sdk/pi-task-worker'
+import { runtimeFeedback } from '../errors/runtime-feedback'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -680,15 +681,34 @@ test('real rejection keeps its business code at run completion and does not pois
   } finally { await service.stopAll() }
 })
 
-test('new run cannot quote or submit again while an original MAYBE_SENT is unresolved', async context => {
+test('new run cannot quote or submit again when the user declines the unresolved-submission risk', async context => {
   const f = await setup('submission-unknown')
   const original = await new MockVideoHostService(f.options).generate('task-a', input())
   assert.equal(original.generationStatus, 'SUBMISSION_UNKNOWN')
   context.mock.method(f.gateway, 'findReceipt', async () => null)
+  const tools = await f.service.prepareRun({ ...f.runInput, autoApproveMedia: true, requestApproval: async request => {
+    f.approvals.push(request)
+    assert.equal((request.input as { operation: string }).operation, 'confirm-new-generation')
+    return false
+  } })
+  assert.ok(tools)
+  try {
+    await assert.rejects(tools.execute('video_from_image', input()), { code: 'PERMISSION_DENIED' })
+    assert.equal(f.gateway.calls.quote, 1)
+    assert.equal(f.gateway.calls.submit, 1)
+    assert.equal(f.state.uploads, 1)
+    assert.equal(f.approvals.length, 3)
+  } finally { await f.service.stopAll() }
+})
+
+test('the same video run cannot turn an uncertain response into another upload, quote or approval', async context => {
+  const f = await setup('submission-unknown')
+  context.mock.method(f.gateway, 'findReceipt', async () => null)
   const tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)
   try {
-    await assert.rejects(tools.execute('video_from_image', input()), { code: 'CONFLICT' })
+    await assert.rejects(tools.execute('video_from_image', input()))
+    await assert.rejects(tools.execute('video_from_image', { ...input(), creativeBrief: 'Changed during an automatic retry' }), { code: 'CONFLICT' })
     assert.equal(f.gateway.calls.quote, 1)
     assert.equal(f.gateway.calls.submit, 1)
     assert.equal(f.state.uploads, 1)
@@ -696,16 +716,16 @@ test('new run cannot quote or submit again while an original MAYBE_SENT is unres
   } finally { await f.service.stopAll() }
 })
 
-test('receipt SUBMISSION_UNKNOWN also blocks generation until explicit original recovery clarifies it', async context => {
+test('declining a new generation retains an unknown receipt for explicit original recovery', async context => {
   const f = await setup('submission-unknown'), ipc = new MockVideoHostService(f.options)
   const original = await ipc.generate('task-a', input())
   await ipc.resume('task-a', original.jobId)
   const receipt = (await f.store.getJob(scope, 'task-a', original.jobId))!.receipt!
   assert.equal(receipt.status, 'SUBMISSION_UNKNOWN')
   const stalled = context.mock.method(f.gateway, 'getReceipt', async () => receipt)
-  const tools = await f.service.prepareRun(f.runInput)
+  const tools = await f.service.prepareRun({ ...f.runInput, requestApproval: async () => false })
   try {
-    await assert.rejects(tools!.execute('video_from_image', input()), { code: 'CONFLICT' })
+    await assert.rejects(tools!.execute('video_from_image', input()), { code: 'PERMISSION_DENIED' })
     assert.equal(f.gateway.calls.quote, 1)
     assert.equal(f.gateway.calls.submit, 1)
     assert.equal(f.state.uploads, 1)
@@ -802,6 +822,40 @@ for (const scenario of ['failed', 'corrupt-download'] as const) {
     await f.service.stopAll()
   })
 }
+
+for (const [scenario, expected] of [
+  ['failed', 'MEDIA_GENERATION_FAILED'], ['expired', 'MEDIA_RESULT_EXPIRED'],
+] as const) test(`${scenario} keeps its video failure stage when recovering the original result`, async () => {
+  const f = await setup(scenario)
+  try {
+    const tools = await f.service.prepareRun(f.runInput)
+    await tools!.execute('video_from_image', input())
+    await assert.rejects(f.service.waitForRun('task-a', 'run-a', { recoverOriginal: true }), error => {
+      assert.equal(runtimeFeedback(error).code, expected)
+      return true
+    })
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally { await f.service.stopAll() }
+})
+
+test('unconfirmed video submission is not reported as a model or download failure', async () => {
+  const f = await setup()
+  let submits = 0
+  const source = f.options.gateway
+  const service = new VideoRunService({ ...f.options, gateway: owner => ({ ...source(owner),
+    submit: async () => { submits++; throw new AppError('NETWORK_ERROR') }, findReceipt: async () => null,
+  }) })
+  try {
+    const tools = await service.prepareRun(f.runInput)
+    await assert.rejects(tools!.execute('video_from_image', input()), { code: 'INVALID_STATE' })
+    await assert.rejects(service.waitForRun('task-a', 'run-a', { recoverOriginal: true }), error => {
+      assert.equal(runtimeFeedback(error).code, 'MEDIA_SUBMISSION_UNKNOWN')
+      return true
+    })
+    assert.equal(submits, 1)
+    assert.equal(f.gateway.calls.content, 0)
+  } finally { await service.stopAll() }
+})
 
 test('stopTask aborts preparation before a delayed task binding can publish a facade', async () => {
   const f = await setup()

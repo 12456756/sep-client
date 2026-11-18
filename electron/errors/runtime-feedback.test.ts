@@ -5,6 +5,24 @@ import { runtimeFeedback, sanitizeRuntimeErrorEvent } from './runtime-feedback'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import { AppError, appError } from './app-error'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
+import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
+
+it('distinguishes media submission, tracking, generation, expiry and download failures', () => {
+  for (const [phase, code] of [
+    ['submission', 'MEDIA_SUBMISSION_UNKNOWN'], ['query', 'MEDIA_QUERY_UNAVAILABLE'],
+    ['generation', 'MEDIA_GENERATION_FAILED'], ['expired', 'MEDIA_RESULT_EXPIRED'],
+    ['download', 'MEDIA_DOWNLOAD_FAILED'], ['copy', 'MEDIA_DELIVERY_FAILED'],
+  ] as const) {
+    const result = runtimeFeedback(new ArrangementMediaRecoveryError(phase, new Error('private platform response')))
+    assert.equal(result.code, code)
+    assert.equal(runtimeFeedback(new Error(result.message)).code, code)
+    assert.doesNotMatch(result.message, /private platform response/)
+    if (phase === 'submission' || phase === 'query') {
+      assert.match(result.message, /原任务.*勿重复生成/)
+      assert.doesNotMatch(result.message, /下载失败|已生成/)
+    }
+  }
+})
 
 it('keeps the vision restriction visible after SDK error flattening', () => {
   const message = '所选模型不支持图片输入，请选择支持图片的模型，或新建不含图片的对话。'

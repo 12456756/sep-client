@@ -2,6 +2,29 @@
 @import "./components/workspace/document-preview.css";
 @import "./components/workspace/result-file-card.css";
 
+.context-usage-indicator { display: inline-flex; flex: 0 0 58px; width: 58px; height: 28px; align-items: center; justify-content: center; gap: 5px; border-radius: 7px; color: var(--ent-ink-3, var(--color-text-secondary)); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: help; }
+.context-usage-indicator:hover, .context-usage-indicator[data-state="delayed-open"], .context-usage-indicator[data-state="instant-open"] { color: var(--ent-ink, var(--color-text-primary)); background: var(--ent-panel-subtle, var(--color-surface-panel)); }
+.context-usage-indicator:focus-visible { outline: 2px solid var(--ent-brand-solid, var(--workspace-accent)); outline-offset: 2px; }
+.context-usage-ring { flex: none; }
+.context-usage-card { --usage-system: #989fa8; --usage-tools: #9673ed; --usage-messages: #4089e8; --usage-track: #e8ebef; z-index: 1100; width: min(320px, calc(100vw - 24px)); padding: 14px 15px 15px; border: 1px solid #e6e8ec; border-radius: 12px; background: #fafbfc; color: #202832; box-shadow: 0 6px 24px rgb(15 23 42 / 12%); font-size: 13px; font-variant-numeric: tabular-nums; }
+body:has(.ent-shell.dark) .context-usage-card { --usage-system: #aab2bd; --usage-tools: #ad94ff; --usage-messages: #63a6ff; --usage-track: #3b4250; border-color: #3b4250; background: #272d38; color: #f4f6fa; box-shadow: 0 6px 24px rgb(0 0 0 / 28%); }
+.context-usage-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 10px; }
+.context-usage-heading > span, .context-usage-note, .context-usage-breakdown dt { color: color-mix(in srgb, currentColor 77%, transparent); }
+.context-usage-heading strong { margin-left: 3px; font-weight: 650; }
+.context-usage-total { white-space: nowrap; }
+.context-usage-total > span { font-size: 11px; font-weight: 400; }
+.context-usage-track { display: flex; height: 5px; margin-top: 11px; overflow: hidden; border-radius: 3px; background: var(--usage-track); }
+.context-usage-track > span { flex: none; }
+.context-usage-card [data-kind="system"] { background: var(--usage-system); }
+.context-usage-card [data-kind="tools"] { background: var(--usage-tools); }
+.context-usage-card [data-kind="messages"], .context-usage-card [data-kind="total"] { background: var(--usage-messages); }
+.context-usage-breakdown { display: grid; gap: 8px; margin: 14px 0 0; }
+.context-usage-breakdown > div { display: flex; justify-content: space-between; gap: 8px; }
+.context-usage-breakdown dt { display: flex; align-items: center; gap: 8px; }
+.context-usage-breakdown dt > span { flex: none; width: 9px; height: 9px; border-radius: 2px; }
+.context-usage-breakdown dd { margin: 0; }
+.context-usage-note { margin: 11px 0 0; font-size: 12px; }
+
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { width: 100%; min-width: 0; min-height: 100%; margin: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; -webkit-font-smoothing: antialiased; background: #f4f4f3; color: #272424; overflow-x: hidden; }

@@ -15,6 +15,7 @@ import type { WorkPlan } from '../../electron/domain/arrangement-plan'
 import type { TaskReadView } from '../../src/shared/types'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { seedConversationResults } from './result-files-conversation'
+import { installSpeechPermissions } from '../../electron/bootstrap/speech-permissions'
 
 registerResultFileScheme()
 const root = process.env.SEP_RESULT_TEST_ROOT!
@@ -87,7 +88,8 @@ void app.whenReady().then(async () => {
   ipcMain.handle('result-test:logout', () => { scope = null; service.clear() })
   ipcMain.handle('result-test:replace', async () => writeFile(join(workspace, 'product.png'), 'changed'))
   const window = new BrowserWindow({ width: 1280, height: 900, show: false,
-    webPreferences: { preload: process.env.SEP_RESULT_TEST_PRELOAD!, contextIsolation: true, nodeIntegration: false } })
+    webPreferences: { preload: process.env.SEP_RESULT_TEST_PRELOAD!, contextIsolation: true, nodeIntegration: false, offscreen: true } })
+  ipcMain.handle('result-test:secure', () => installSpeechPermissions(window, window.webContents.getURL()))
   await window.loadURL(process.env.SEP_RESULT_TEST_URL!)
 })
 app.on('window-all-closed', () => app.quit())

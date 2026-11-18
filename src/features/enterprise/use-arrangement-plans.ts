@@ -157,5 +157,9 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
       setExecutions(previous => ({ ...previous, [taskId]: result.execution ?? null }))
     } catch (cause) { if (notice.isCurrent()) notice.fail(cause, 'request') }
   }, [capture])
-  return { plans: loadedScope === scopeKey ? plans : {}, events: loadedScope === scopeKey ? events : {}, executions: loadedScope === scopeKey ? executions : {}, recordEvent, requestReplacementAccess };
+  const acceptPlan = useCallback((plan: ArrangementPlanSnapshot): void => {
+    requested.current.delete(plan.id);
+    setPlans(previous => ({ ...previous, [plan.id]: plan }));
+  }, []);
+  return { plans: loadedScope === scopeKey ? plans : {}, events: loadedScope === scopeKey ? events : {}, executions: loadedScope === scopeKey ? executions : {}, recordEvent, requestReplacementAccess, acceptPlan };
 }

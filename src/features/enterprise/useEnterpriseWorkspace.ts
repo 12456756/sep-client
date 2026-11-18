@@ -229,6 +229,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<boolean>;
   sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string, knowledge?: KnowledgeSelection, messageId?: string) => Promise<boolean>;
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
+  switchModel: (workId: string, modelId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
   retryWork: (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => Promise<void>;
@@ -862,12 +863,33 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     } catch (error) { if (notice.isCurrent()) notice.fail(error, 'workSend'); return false; }
   }, [captureFeedback]);
 
+  const acceptPlan = arrangement.acceptPlan;
   const switchEmployee = useCallback(async (workId: string, employeeId: string) => {
     const notice = captureFeedback();
-    if (!myEmployees.some(item => item.id === employeeId)) { notice.show('所选员工当前不可用，请重新选择员工'); return; }
-    const ok = await run(() => window.electronAPI.switchConversationEmployee({ taskId: workId, subscriptionId: employeeId }), 'workSwitch');
+    const general = employeeId === GENERAL_ASSISTANT_ID ? generalAssistant(myEmployees.filter(item => item.availability !== 'unavailable')) : undefined;
+    if (!general && !myEmployees.some(item => item.id === employeeId)) { notice.show('所选员工当前不可用，请重新选择员工'); return; }
+    const conversation = arrangement.plans[workId]?.conversation;
+    const currentModel = conversation?.kind === 'general' ? conversation.modelId : conversation?.participants.find(item => item.subscriptionId === conversation.activeSubscriptionId)?.modelId;
+    const modelId = general?.allowedModels.find(model => model === currentModel) ?? general?.allowedModels[0];
+    if (general && !modelId) { notice.show('通用助手没有可用的模型授权，请更换员工或联系平台管理员配置模型。'); return; }
+    const ok = await run(async () => {
+      const result = await window.electronAPI.switchConversationEmployee(general
+        ? { taskId: workId, kind: 'general', modelId: modelId! }
+        : { taskId: workId, subscriptionId: employeeId });
+      if (result.success && result.plan && notice.isCurrent()) acceptPlan(result.plan);
+      return result;
+    }, 'workSwitch');
     if (ok && notice.isCurrent()) setActiveEmployeeByWork(current => ({ ...current, [workId]: employeeId }));
-  }, [myEmployees, run, captureFeedback]);
+  }, [myEmployees, arrangement.plans, run, captureFeedback, acceptPlan]);
+
+  const switchModel = useCallback(async (workId: string, modelId: string) => {
+    const notice = captureFeedback();
+    await run(async () => {
+      const result = await window.electronAPI.switchConversationModel({ taskId: workId, modelId });
+      if (result.success && result.plan && notice.isCurrent()) acceptPlan(result.plan);
+      return result;
+    }, 'workModel');
+  }, [acceptPlan, run, captureFeedback]);
 
   const confirmStep = useCallback(async (workId: string) => {
     const work = works.find(item => item.id === workId);
@@ -1086,7 +1108,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,
     navigate, replaceRoute, retryWorkTypes, workListLoad, goBack,
-    startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
+    startConversation, arrangeWork, sendMessage, switchEmployee, switchModel, confirmStep,
     stopWork, retryWork, rerunWork, requestReplacementAccess: arrangement.requestReplacementAccess, renameWork, setWorkPinned, deleteWork,
     saveFlow, deleteSavedFlow, runSavedFlow,
     setPermission, setPermissionScope, chooseFolder,

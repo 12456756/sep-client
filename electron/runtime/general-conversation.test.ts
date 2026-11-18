@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TaskRuntime } from './task-runtime'
@@ -14,6 +14,89 @@ import type { VideoHostTools } from '../domain/video-tools'
 import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoRuntimeSchema } from '../../src/shared/video-media'
 import { ConversationContextStore } from '../domain/conversation-context'
+import { ConversationArtifactStore } from '../data/conversation-artifact-store'
+
+for (const kind of ['general', 'employee'] as const) {
+  for (const directoryStatus of ['ready', 'retry-in-prompt'] as const) {
+    test(`${kind} chat delivers saved media independently of a ${directoryStatus} ordinary artifact directory`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sep-conversation-media-delivery-'))
+      const scope = { memberId: 'member', enterpriseId: 'enterprise' }
+      const manager = new TaskManager(root)
+      const runs = new TaskRunStore(root)
+      const plans = new WorkPlanStore(root)
+      const artifacts = new ConversationArtifactStore()
+      const calls: string[] = []
+      let promptSeen = ''
+      let delivered = false
+      const runtime = new TaskRuntime({
+        taskManager: manager, taskRunStore: runs, workPlanStore: plans,
+        resolveEmployee: id => ({ subscriptionId: id, modelId: 'model', gatewayUrl: 'http://unused' }),
+        authorizeModel: async modelId => ({ subscriptionId: 'subscription', modelId, gatewayUrl: 'http://unused' }),
+        getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+        conversationArtifactStore: {
+          async prepare(workspace, taskId) {
+            if (directoryStatus === 'ready') return artifacts.prepare(workspace, taskId)
+            return { status: directoryStatus, relativePath: `成果/${taskId}` }
+          },
+          scan: (workspace, taskId) => artifacts.scan(workspace, taskId),
+        },
+        // The fallback case exposes only a query tool, as when recovering an existing video.
+        video: { async prepareRun() { return { names: ['video_get_job'], async execute(name) { calls.push(name); return { saveStatus: 'SAVED' } } } },
+          async waitForRun() {}, async stopTask() {} },
+        media: { async prepareRun() { if (directoryStatus === 'retry-in-prompt') return undefined; return { names: ['media_generate_image'], async execute(name) {
+          calls.push(name)
+          return { generationStatus: 'SUCCEEDED', saveStatus: 'SAVED', assets: [{ localAssetId: 'saved-output', source: 'output', status: 'SAVED' }] }
+        } } }, async waitForRun() { delivered = true }, async stopTask() {} },
+        createWorker: options => ({
+          async run(prompt) {
+            promptSeen = prompt
+            assert.match(prompt, /通过文件工具创建的普通文件/)
+            assert.match(prompt, /图片和视频工具的成果由客户端独立保存/)
+            assert.match(prompt, /saveStatus="SAVED" 且有已保存成果时/)
+            assert.match(prompt, /普通成果目录为空、创建失败或文件工具不可用，不影响已保存媒体成果的交付/)
+            assert.match(prompt, /不要为核对或归档媒体成果调用 ls、find、bash/)
+            assert.match(prompt, /不要将本地保存路径要求写入 creativeBrief/)
+            assert.match(prompt, /用户明确要求另存指定目录时，仅使用实际可用的导出能力/)
+            assert.match(prompt, /不得重新生成媒体来解决导出问题/)
+            assert.doesNotMatch(prompt, /请将本轮需要保存的成果放入/)
+            if (options.context.mediaTools) {
+              const result = await options.context.mediaTools.execute('media_generate_image', {})
+              assert.equal((result as { saveStatus: string }).saveStatus, 'SAVED')
+            }
+            await options.context.videoTools!.execute('video_get_job', { jobId: 'saved-video' })
+            await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+              sequence: 0, occurredAt: Date.now(), type: 'text_delta', data: { text: 'Generated and saved.' } })
+          }, async abort() {}, async dispose() {},
+        }),
+      })
+      try {
+        await manager.initialize()
+        await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+        const task = await manager.createTask('media', 'generate a product grid', join(root, 'workspace'), 'subscription')
+        await plans.save(scope, {
+          id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1, owner: scope, mode: 'conversation',
+          title: task.title, goal: task.prompt, nodes: [], confirmedInputs: [],
+          conversation: { ...(kind === 'general' ? { kind, modelId: 'model' } : {}),
+            participants: [{ subscriptionId: 'subscription', modelId: 'model' }], activeSubscriptionId: 'subscription' },
+          workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'full-local', approvalMode: 'auto-approve' }),
+          planHash: 'media', createdAt: Date.now(),
+        })
+        await runtime.executeTask(task.id, { conversation: true })
+        for (let i = 0; i < 200 && (await manager.getTask(task.id))?.activeRunId !== null; i++) await new Promise(resolve => setTimeout(resolve, 10))
+        const completed = await manager.getTask(task.id)
+        assert.equal(completed?.activeRunId, null)
+        assert.equal(completed?.status, 'completed')
+        assert.deepEqual(completed?.files, [])
+        assert.ok(promptSeen.length > 0)
+        assert.equal(delivered, true)
+        assert.deepEqual(calls, directoryStatus === 'ready' ? ['media_generate_image', 'video_get_job'] : ['video_get_job'])
+        if (directoryStatus === 'ready') assert.deepEqual(await readdir(join(task.workDir!, '成果', task.id)), [])
+        const messages = await new ConversationContextStore(runs.getTaskDir(scope, task.id)).listMessages()
+        assert.equal(messages.find(message => message.role === 'assistant')?.content, 'Generated and saved.')
+      } finally { await runtime.stopAll(); await rm(root, { recursive: true, force: true }) }
+    })
+  }
+}
 
 test('general chat preserves selected model, permissions and history across turns and restart without employee behavior', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sep-general-chat-'))
@@ -66,18 +149,27 @@ test('general chat preserves selected model, permissions and history across turn
       async run(prompt) {
         contexts.push(options.context)
         assert.match(prompt, new RegExp(`成果/${options.context.taskId}`))
-        assert.match(prompt, /用户明确指定文档或文件类型时，按指定类型生成/)
-        assert.match(prompt, /最近新闻、实时信息、外部检索、多来源调研、资料汇总、竞品比较，或形成了值得留存/)
-        assert.match(prompt, /形成了值得留存的方案、分析、总结、清单或说明，必须生成 Markdown（\.md）文件/)
-        assert.match(prompt, /即使最终答复很短，只要本轮进行了新闻或资料检索，也要保存检索结果 Markdown/)
-        assert.match(prompt, /简单事实问答、闲聊或无需留档的内容不必生成文件/)
-        assert.match(prompt, /只报告实际创建并保存成功的文件/)
+        assert.match(prompt, /遵从用户指定的交付形式/)
+        assert.match(prompt, /用户明确只需对话回复时不生成文件/)
+        assert.match(prompt, /本轮形成包含多项建议、对比、测算或执行步骤的方案、分析、报告、清单等成体系内容时，必须保存为文件，无需用户另行要求/)
+        assert.match(prompt, /草案或信息待补充也应保存并注明/)
+        assert.match(prompt, /未指定格式的文本成果默认使用 Markdown/)
+        assert.match(prompt, /先将完整内容保存到本任务成果目录，最终答复只给大致摘要和文件链接/)
+        assert.match(prompt, /简单问答、零散建议和状态反馈直接在对话中回答/)
+        assert.match(prompt, /检索或工具调用本身不触发文档生成/)
+        assert.match(prompt, /已有图片、视频或其他文件成果时直接交付，除非用户要求，不额外生成过程记录或说明文件/)
+        assert.match(prompt, /只报告实际保存成功的文件/)
+        assert.match(prompt, /保存失败时如实说明/)
+        assert.doesNotMatch(prompt, /只要本轮进行了新闻或资料检索，也要保存检索结果 Markdown|形成了值得留存的方案、分析、总结、清单或说明/)
         assert.ok(['first', 'second', 'third'].some(text => prompt.startsWith(`${text}\n\n`)))
         assert.doesNotMatch(prompt, /当前通用助手没有账号主体的图片\/视频生成授权/)
         assert.match(prompt, /优先使用当前会话已提供的图片\/视频工具/)
         assert.match(prompt, /不能静默以脚本合成替代/)
         assert.match(prompt, /未指定的常规规格由模型.*本轮直接执行/)
         assert.match(prompt, /不要仅为确认.*追加一轮对话/)
+        assert.match(prompt, /用户在后续消息明确要求.*当前会话调用生成工具创建独立的新任务，无需新开会话/)
+        assert.match(prompt, /客户端会.*重复生成、重复计费的确认.*用户取消或未确认时不得继续尝试/)
+        assert.match(prompt, /同一轮提交异常后不得自行再次生成/)
         assert.equal(options.context.mediaTools, mediaTools)
         assert.equal(options.context.videoTools, videoTools)
         await options.context.mediaTools.execute('media_generate_image', {})
@@ -175,12 +267,18 @@ test('general chat asks the model to create the fixed artifact path after prepar
         promptSeen = prompt
         assert.ok(prompt.includes('\u8bf7\u5c1d\u8bd5'))
         assert.ok(prompt.includes(`成果/${options.context.taskId}`))
-        assert.match(prompt, /用户明确指定文档或文件类型时，按指定类型生成/)
-        assert.match(prompt, /最近新闻、实时信息、外部检索、多来源调研、资料汇总、竞品比较，或形成了值得留存/)
-        assert.match(prompt, /形成了值得留存的方案、分析、总结、清单或说明，必须生成 Markdown（\.md）文件/)
-        assert.match(prompt, /即使最终答复很短，只要本轮进行了新闻或资料检索，也要保存检索结果 Markdown/)
-        assert.match(prompt, /简单事实问答、闲聊或无需留档的内容不必生成文件/)
-        assert.match(prompt, /只报告实际创建并保存成功的文件/)
+        assert.match(prompt, /遵从用户指定的交付形式/)
+        assert.match(prompt, /用户明确只需对话回复时不生成文件/)
+        assert.match(prompt, /本轮形成包含多项建议、对比、测算或执行步骤的方案、分析、报告、清单等成体系内容时，必须保存为文件，无需用户另行要求/)
+        assert.match(prompt, /草案或信息待补充也应保存并注明/)
+        assert.match(prompt, /未指定格式的文本成果默认使用 Markdown/)
+        assert.match(prompt, /先将完整内容保存到本任务成果目录，最终答复只给大致摘要和文件链接/)
+        assert.match(prompt, /简单问答、零散建议和状态反馈直接在对话中回答/)
+        assert.match(prompt, /检索或工具调用本身不触发文档生成/)
+        assert.match(prompt, /已有图片、视频或其他文件成果时直接交付，除非用户要求，不额外生成过程记录或说明文件/)
+        assert.match(prompt, /只报告实际保存成功的文件/)
+        assert.match(prompt, /保存失败时如实说明/)
+        assert.doesNotMatch(prompt, /只要本轮进行了新闻或资料检索，也要保存检索结果 Markdown|形成了值得留存的方案、分析、总结、清单或说明/)
         await mkdir(options.context.sessionDir, { recursive: true })
         const sessionFile = join(options.context.sessionDir, 'session.jsonl')
         await writeFile(sessionFile, '{}\n', 'utf8')

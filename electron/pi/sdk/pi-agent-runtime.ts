@@ -10,6 +10,7 @@ export interface PiAgentEvent {
 }
 
 export interface PiAgentSession {
+  getContextUsage?(): import('../../../src/shared/context-usage').ContextUsage | null
   setDiagnostics?(config: Pick<PiAgentSessionConfig, 'runId' | 'taskTitle' | 'tracePhase' | 'nodeTitle' | 'modelTrace'>): void
   setRequestPurpose?(purpose: string): void
   readonly sessionId: string

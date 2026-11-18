@@ -2,7 +2,7 @@
  * electron/runtime/run-approvals.ts — 工具授权，按 requestId 寻址（C5）
  *
  * `bash` / `write` / `edit` 必须经用户明确批准；未知工具默认拒绝；等待上限 60 秒，
- * 超时自动拒绝。
+ * 浏览器人工接管等待上限 3 分钟；超时自动拒绝。
  *
  * C5 是一个严重缺陷：`respond()` 原来有个"只有一个 pending 时可以省略 requestId"的
  * 回退。它能批准**错的**调用——A 超时被自动拒绝、B 随后进入 pending，用户点的是 A 的
@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { ToolApprovalResponse } from '../../src/shared/ipc'
+import { toolApprovalTimeoutMs } from '../../src/shared/tool-approval'
 import { logger } from '../common/logger'
 
 const log = logger.child('run-approvals')
@@ -30,27 +31,29 @@ export interface ToolApprovalsOptions {
 
 export class ToolApprovals {
   private readonly pending = new Map<string, PendingApproval>()
-  private readonly timeoutMs: number
+  private readonly timeoutMs: number | undefined
   private readonly onRequest: ToolApprovalsOptions['onRequest']
   private readonly onResolved: ToolApprovalsOptions['onResolved']
 
   constructor(options: ToolApprovalsOptions) {
-    this.timeoutMs = options.timeoutMs ?? 60_000
+    this.timeoutMs = options.timeoutMs
     this.onRequest = options.onRequest
     this.onResolved = options.onResolved
   }
 
   request(input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>): Promise<boolean> {
+    const timeoutMs = this.timeoutMs ?? toolApprovalTimeoutMs(input)
+    const timestamp = Date.now()
     const request: ToolAuthorizationRequest = {
       ...input,
       requestId: randomUUID(),
-      timestamp: Date.now(),
-      expiresAt: Date.now() + this.timeoutMs,
+      timestamp,
+      expiresAt: timestamp + timeoutMs,
     }
     return new Promise(resolve => {
       const timer = setTimeout(() => {
         this.resolve(request.requestId, false, 'timeout')
-      }, this.timeoutMs)
+      }, timeoutMs)
       this.pending.set(request.requestId, { request, resolve, timer })
       void Promise.resolve(this.onRequest(request)).catch(() => {
         this.resolve(request.requestId, false, 'request_delivery_failed')

@@ -9,6 +9,8 @@ export interface MediaJobCreated {
   jobId: string
   operation: 'generate' | 'edit' | 'image-to-video' | 'text-to-video'
   localAssetIds: readonly string[]
+  /** Stop waiting on these older jobs after the user approves an independent new request; keep their durable state. */
+  previousUnconfirmedJobIds?: readonly string[]
 }
 
 /** Trusted task-scoped facade; generation approval happens after quote validation. */

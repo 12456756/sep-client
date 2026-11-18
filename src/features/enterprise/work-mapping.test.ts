@@ -14,6 +14,15 @@ const task: ClientTask = {
 }
 
 describe('arrangement retry display regressions', () => {
+  it('shows the persisted model of the current conversation participant or general assistant', () => {
+    const employeePlan = { mode: 'conversation', conversation: {
+      participants: [{ subscriptionId: 'employee-a', modelId: 'model-a' }, { subscriptionId: 'employee-b', modelId: 'model-b' }],
+    } } as ArrangementPlanSnapshot
+    assert.equal(buildWorkItem({ task, employees: [], plan: employeePlan }).modelId, 'model-a')
+    assert.equal(buildWorkItem({ task, employees: [], plan: employeePlan, activeEmployeeId: 'employee-b' }).modelId, 'model-b')
+    const generalPlan = { ...employeePlan, conversation: { ...employeePlan.conversation!, kind: 'general' as const, modelId: 'general-model' } }
+    assert.equal(buildWorkItem({ task, employees: [], plan: generalPlan }).modelId, 'general-model')
+  })
   it('includes document formats and task file identities for conversation preview', () => {
     const work = buildWorkItem({ task: { ...task, files: ['C:\\work\\report.DOCX', 'deliverables/sheet.xlsx', 'notes.md'] }, employees: [] })
     assert.equal(work.kind, 'conversation')

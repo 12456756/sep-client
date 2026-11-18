@@ -8,6 +8,7 @@ import process from 'node:process';
 import { log } from 'node:console';
 import { chromium } from 'playwright-core';
 const origin = process.env.SEP_PREVIEW_ORIGIN ?? 'http://127.0.0.1:5174';
+const contextUsageOnly = process.argv.includes('--context-usage');
 const main = await (await fetch(origin + '/main.tsx')).text();
 const html = readFileSync(new URL('./fixtures/conversation.html', import.meta.url), 'utf8')
  .replace('__REACT__', main.match(/from "([^"]*react\.js[^"]*)"/)[1])
@@ -21,9 +22,45 @@ try {
   await page.route('**/__conversation-test',r=>r.fulfill({contentType:'text/html',body:html}));
   await page.goto(origin+'/__conversation-test');
   await page.getByRole('button',{name:'开始测试'}).waitFor();
+  assert.equal(await page.locator('.context-usage-indicator').count(),0);
   await page.evaluate(()=>{window.deferMessages=true;});
   await page.getByRole('button',{name:'开始测试'}).click();
   await page.waitForFunction(()=>window.workspace?.busy===false && window.workspace?.works.length===1);
+  const usage=page.locator('.context-usage-indicator');
+  await usage.filter({hasText:'25%'}).waitFor();
+  await usage.hover();
+  const card=page.locator('.context-usage-card');
+  await card.getByText('暂无分项统计',{exact:true}).waitFor();
+  assert.match(await card.locator('.context-usage-total').innerText(),/32K \/ 128K/);
+  await page.evaluate(()=>window.emit('context_usage',{tokens:64000,contextWindow:128000,percent:50,breakdown:{system:2000,tools:12000,messages:50000}}));
+  await usage.filter({hasText:'50%'}).waitFor();
+  await card.getByText('工具定义',{exact:true}).waitFor();
+  assert.equal(await card.locator('.context-usage-track > span').count(),3);
+  assert.deepEqual(await card.locator('dd').allTextContents(),['~2K','~12K','~50K']);
+  const cardBox=await card.boundingBox();
+  const usageBox=await usage.boundingBox();
+  const sendBox=await page.getByRole('button',{name:'发送',exact:true}).boundingBox();
+  assert.ok(usageBox && sendBox && usageBox.x+usageBox.width<=sendBox.x &&
+   Math.abs(usageBox.y+usageBox.height/2-sendBox.y-sendBox.height/2)<2,'usage stays beside the send controls');
+  assert.ok(cardBox && cardBox.x>=0 && cardBox.x+cardBox.width<=width && cardBox.y+cardBox.height<=usageBox.y,'card stays above the indicator and inside the viewport');
+  assert.equal(await card.evaluate(el=>{
+   const rect=el.getBoundingClientRect();
+   return el.contains(document.elementsFromPoint(rect.x+rect.width/2,rect.y+rect.height/2)[0]);
+  }),true,'the card must render above the conversation drawer');
+  const lightBackground=await card.evaluate(el=>window.getComputedStyle(el).backgroundColor);
+  await page.locator('.ent-shell').evaluate(el=>el.classList.add('dark'));
+  assert.notEqual(await card.evaluate(el=>window.getComputedStyle(el).backgroundColor),lightBackground);
+  await page.evaluate(()=>window.emit('context_usage',{tokens:null,contextWindow:128000,percent:null}));
+  await usage.filter({hasText:'--'}).waitFor();
+  await card.getByText('暂无用量数据',{exact:true}).waitFor();
+  await page.keyboard.press('Escape');
+  await card.waitFor({state:'hidden'});
+  if(contextUsageOnly) {
+   assert.deepEqual(errors,[]);
+   log('PASS',width,'context usage: new conversation, initial usage, tooltip, live updates, unknown state and placement');
+   await page.close();
+   continue;
+  }
   await page.evaluate(()=>{window.deferMessages=false;window.releaseInitial();});
   await page.waitForTimeout(50);
   assert.equal(await page.evaluate(()=>window.workspace.works.length),1,'stale initial list must not replace task pushes');
@@ -40,7 +77,7 @@ try {
   await page.evaluate(()=>window.releaseOldHistory());
   await page.waitForTimeout(50);
   assert.equal(await page.getByText('第一段第二段',{exact:true}).count(),1,'stale history must not replace final answer');
-  assert.equal(await page.getByRole('combobox',{name:'换一位员工接手'}).isDisabled(),false);
+  assert.equal(await page.getByRole('button',{name:'换一位员工接手'}).isDisabled(),false);
   await page.getByRole('textbox',{name:'给员工的下一句话'}).fill('继续分析');
   await page.getByRole('textbox',{name:'给员工的下一句话'}).press('Control+Enter');
   await page.waitForFunction(()=>window.continued?.prompt==='继续分析');

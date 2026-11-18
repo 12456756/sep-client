@@ -28,8 +28,31 @@ import { EmployeeAuthorizer } from './employee-authorizer'
 import { EmployeeDirectory } from './employee-directory'
 import { PiCodingAgentAdapter } from '../pi/sdk/pi-coding-agent-adapter'
 import { PiTaskWorker } from '../pi/sdk/pi-task-worker'
+import { runtimeFeedback } from '../errors/runtime-feedback'
 
 const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+
+for (const [status, expected] of [
+  ['SUBMISSION_UNKNOWN', 'MEDIA_SUBMISSION_UNKNOWN'], ['RUNNING', 'MEDIA_QUERY_UNAVAILABLE'],
+  ['FAILED', 'MEDIA_GENERATION_FAILED'], ['RESULT_EXPIRED', 'MEDIA_RESULT_EXPIRED'],
+] as const) it(`reports ${status} without misclassifying it as an image download failure`, async () => {
+  const f = await fixture()
+  const job = notSentJob()
+  job.generationStatus = status
+  job.trackingStatus = 'STOPPED'
+  job.submission = 'MAYBE_SENT'
+  job.recovery = { canQuery: false, canDownload: false, canCancel: false }
+  await f.store.saveJob(owner, job)
+  await assert.rejects(f.service.waitForRun(job.taskId, job.runId, { recoverOriginal: true }), error => {
+    const feedback = runtimeFeedback(error)
+    assert.equal(feedback.code, expected)
+    assert.doesNotMatch(feedback.message, /下载失败/)
+    return true
+  })
+  assert.equal(f.gateway.calls.submit.length, 0)
+  assert.equal(f.gateway.calls.quote.length, 0)
+  assert.equal(f.gateway.calls.content.length, 0)
+})
 
 it('V3 image references upload in order and share one quote and submission', async context => {
   const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
@@ -457,6 +480,107 @@ function notSentJob(): LocalMediaJob {
     outputs: [], billingStatus: 'UNKNOWN', nextPollAt: 0, attempts: 0, error: null, createdAt: 1, updatedAt: 1,
   }
 }
+
+it('disables recovery for an unconfirmed submission when the channel cannot find the original request', async context => {
+  const f = await fixture()
+  const job = notSentJob()
+  job.submission = 'MAYBE_SENT'
+  job.generationStatus = 'SUBMISSION_UNKNOWN'
+  job.trackingStatus = 'STOPPED'
+  job.profile.capabilities.recoverByRequestId = false
+  job.failure = { code: 'SERVICE_UNAVAILABLE', stage: 'image-submit', source: 'upstream', httpStatus: 502,
+    message: 'Upstream service temporarily unavailable' }
+  await f.store.saveJob(owner, job)
+  context.mock.method(f.gateway, 'submit', async () => assert.fail('An uncertain submission must never be resubmitted.'))
+
+  assert.equal((await f.service.getTaskMedia(job.taskId)).jobs[0].canResumeTracking, false)
+  await assert.rejects(f.service.waitForRun(job.taskId, job.runId, { recoverOriginal: true }), error => {
+    assert.equal(runtimeFeedback(error).code, 'MEDIA_SUBMISSION_UNKNOWN')
+    return true
+  })
+  const saved = (await f.store.getJob(owner, job.taskId, job.jobId))!
+  assert.equal(saved.generationStatus, 'SUBMISSION_UNKNOWN')
+  assert.deepEqual(saved.failure, job.failure)
+  assert.equal(f.gateway.calls.findReceipt.length, 0)
+  assert.equal(f.gateway.calls.getReceipt.length, 0)
+
+  job.receiptId = 'known-receipt'
+  job.submission = 'RECEIPTED'
+  job.generationStatus = 'RUNNING'
+  job.failure = undefined
+  await f.store.saveJob(owner, job)
+  assert.equal((await f.service.getTaskMedia(job.taskId)).jobs[0].canResumeTracking, true)
+  job.recovery = { canQuery: false, canDownload: false, canCancel: false }
+  await f.store.saveJob(owner, job)
+  assert.equal((await f.service.getTaskMedia(job.taskId)).jobs[0].canResumeTracking, false)
+})
+
+for (const accepted of [false, true]) it(`requires a risk decision before creating another image in the same task (accepted=${accepted})`, async () => {
+  const requests: Parameters<MediaServiceOptions['requestApproval']>[0][] = []
+  const f = await fixture({ policy: async () => policy('full-local', 'auto-approve'), requestApproval: async request => {
+    assert.equal(f.gateway.calls.quote.length, 0)
+    assert.equal(f.gateway.calls.submit.length, 0)
+    requests.push(request)
+    return accepted
+  } })
+  const original = notSentJob()
+  original.submission = 'MAYBE_SENT'
+  original.generationStatus = 'SUBMISSION_UNKNOWN'
+  original.trackingStatus = 'STOPPED'
+  original.profile.capabilities.recoverByRequestId = false
+  original.failure = { code: 'SERVICE_UNAVAILABLE', stage: 'image-submit', source: 'upstream', message: 'Upstream service temporarily unavailable' }
+  await f.store.saveJob(owner, original)
+
+  const generating = f.service.generateTaskMedia('task-a', input({ creativeBrief: 'New requested product photograph' }))
+  if (accepted) {
+    const next = await generating
+    await f.service.waitForRun('task-a', next.runId, { recoverOriginal: true })
+    assert.notEqual(next.jobId, original.jobId)
+    const saved = (await f.store.getJob(owner, 'task-a', next.jobId))!
+    assert.notEqual(saved.clientRequestId, original.clientRequestId)
+    assert.equal(saved.input.creativeBrief, 'New requested product photograph')
+    assert.equal(saved.saveStatus, 'SAVED')
+  } else await assert.rejects(generating, code('PERMISSION_DENIED'))
+  assert.equal(requests.length, 1)
+  assert.deepEqual(requests[0].input, { operation: 'confirm-new-generation', unconfirmedJobCount: 1 })
+  assert.equal(f.gateway.calls.quote.length, accepted ? 1 : 0)
+  assert.equal(f.gateway.calls.submit.length, accepted ? 1 : 0)
+  assert.deepEqual(await f.store.getJob(owner, 'task-a', original.jobId), original)
+})
+
+it('blocks automatic image resubmission within the same run without showing a new risk confirmation', async () => {
+  const f = await fixture()
+  const original = notSentJob()
+  original.submission = 'MAYBE_SENT'
+  original.generationStatus = 'SUBMISSION_UNKNOWN'
+  original.trackingStatus = 'STOPPED'
+  await f.store.saveJob(owner, original)
+  const tools = await f.service.prepareRun({ taskId: 'task-a', runId: original.runId,
+    subscriptionId: f.employee.subscriptionId, employee: f.employee, requestApproval: f.options.requestApproval })
+  assert.ok(tools)
+  await assert.rejects(tools.execute('media_generate_image', input()), code('CONFLICT'))
+  assert.equal(f.approvalRequests.length, 0)
+  assert.equal(f.gateway.calls.quote.length, 0)
+  assert.equal(f.gateway.calls.submit.length, 0)
+})
+
+it('cannot accept a late image risk confirmation after stopping the task', async () => {
+  const entered = deferred<void>(), decision = deferred<boolean>()
+  const f = await fixture({ requestApproval: async () => { entered.resolve(); return decision.promise } })
+  const original = notSentJob()
+  original.submission = 'MAYBE_SENT'
+  original.generationStatus = 'SUBMISSION_UNKNOWN'
+  original.trackingStatus = 'STOPPED'
+  await f.store.saveJob(owner, original)
+  const generating = f.service.generateTaskMedia('task-a', input())
+  const rejected = assert.rejects(generating)
+  await entered.promise
+  await f.service.stopTask('task-a')
+  decision.resolve(true)
+  await rejected
+  assert.equal(f.gateway.calls.quote.length, 0)
+  assert.equal(f.gateway.calls.submit.length, 0)
+})
 
 describe('media capability and handoff regressions', () => {
   for (const scenario of ['prompt', 'reference-count', 'reference-mime', 'reference-bytes', 'reference-width'] as const) {
@@ -1233,6 +1357,31 @@ describe('MediaService local delivery and original-request recovery', () => {
     await assert.rejects(f.service.waitForRun('task-a', view.runId))
     assert.equal(f.gateway.calls.submit.length, 1)
     assert.ok(f.gateway.calls.findReceipt.every(call => call.clientRequestId === job?.clientRequestId))
+  })
+
+  it('preserves image submit diagnostics on disk and public views during missing-receipt recovery', async context => {
+    const f = await fixture({}, new MockMediaGateway({ missingFinds: 100 }))
+    let posts = 0
+    context.mock.method(f.gateway, 'submit', async () => {
+      posts++
+      throw new AppError('SERVICE_UNAVAILABLE', { details: { businessCode: 'PROVIDER_OVERLOADED', stage: 'image-submit',
+        requestId: 'req-image-persisted', statusCode: 503, source: 'upstream', upstreamMessage: 'Supplier account disabled', rawResponse: 'private raw body' } })
+    })
+    const first = await f.service.generateTaskMedia('task-a', input())
+    assert.equal(first.error, 'SERVICE_UNAVAILABLE')
+    assert.equal(first.failure?.businessCode, 'PROVIDER_OVERLOADED')
+    await assert.rejects(f.service.waitForRun('task-a', first.runId))
+    const restored = await new MediaStore(f.root).getJob(owner, 'task-a', first.jobId)
+    assert.deepEqual(restored?.failure, first.failure)
+    const view = (await f.service.getTaskMedia('task-a')).jobs.find(job => job.jobId === first.jobId)!
+    assert.equal(view.generationStatus, 'SUBMISSION_UNKNOWN')
+    assert.equal(view.failure?.requestId, 'req-image-persisted')
+    assert.equal(view.failure?.httpStatus, 503)
+    assert.equal(view.failure?.message, 'Supplier account disabled')
+    assert.doesNotMatch(JSON.stringify(view), /private raw body|rawResponse/)
+    await f.service.resume('task-a', first.jobId)
+    await assert.rejects(f.service.waitForRun('task-a', first.runId))
+    assert.equal(posts, 1)
   })
 
   it('recovers NOT_SENT jobs as not submitted and never automatically generates them', async () => {

@@ -31,6 +31,49 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR
 const pngHeaders = { 'Content-Type': 'image/png', 'Content-Length': String(png.length),
   'X-SHA256': createHash('sha256').update(png).digest('hex'), 'X-SEP-Media-Mock': 'false' }
 
+it('keeps token authorization errors distinct from network failures before fetch', async () => {
+  let calls = 0
+  const gateway = new SepRealMediaGateway({ baseUrl: 'https://sep.example/api', token: async () => { throw new AppError('AUTH_REQUIRED') },
+    fetch: async () => { calls++; throw new Error('must not fetch') } })
+  await assert.rejects(gateway.getReceipt('sub-1', 'receipt-1', signal()), (error: unknown) => {
+    assert.ok(error instanceof AppError)
+    assert.equal(error.code, 'AUTH_REQUIRED')
+    assert.equal(error.details?.stage, 'image-authorization')
+    return true
+  })
+  assert.equal(calls, 0)
+})
+
+it('retains unregistered image business codes, request ID and HTTP status', async () => {
+  const { gateway } = create(async () => json({ error: { code: 'UPSTREAM_TIMEOUT', requestId: 'req-image', source: 'upstream', message: privateDetail } }, 503))
+  await assert.rejects(gateway.submit('sub-1', { ...request, quoteId: 'quote-1', clientRequestId: 'request-1' }, signal()), (error: unknown) => {
+    assert.ok(error instanceof AppError)
+    assert.equal(error.details?.businessCode, 'UPSTREAM_TIMEOUT')
+    assert.equal(error.details?.requestId, 'req-image')
+    assert.equal(error.details?.statusCode, 503)
+    assert.equal(error.details?.stage, 'image-submit')
+    assert.doesNotMatch(JSON.stringify(error), /private-secret/)
+    return true
+  })
+})
+
+it('distinguishes invalid image responses and blocked redirects from network failures', async () => {
+  for (const [response, gatewayCode] of [
+    [json({ unexpected: 'private response' }), 'IMAGE_INVALID_RESPONSE'],
+    [new Response(null, { status: 302, headers: { Location: 'https://private.invalid' } }), 'IMAGE_REDIRECT_BLOCKED'],
+  ] as const) {
+    const { gateway } = create(async () => response)
+    await assert.rejects(gateway.getReceipt('sub-1', 'receipt-1', signal()), (error: unknown) => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.code, 'SERVICE_UNAVAILABLE')
+      assert.equal(error.details?.gatewayCode, gatewayCode)
+      assert.equal(error.details?.statusCode, response.status)
+      assert.doesNotMatch(JSON.stringify(error), /private response|private.invalid/)
+      return true
+    })
+  }
+})
+
 function safeError(expected: string) {
   return (error: unknown) => {
     assert.ok(error instanceof AppError)
@@ -203,7 +246,7 @@ describe('SepRealMediaGateway', () => {
       assert.ok(error instanceof AppError)
       assert.equal(error.code, 'MISSING_SPEC')
       assert.deepEqual(error.details, {
-        resource: 'image', stage: 'image-quote', businessCode: 'MISSING_SPEC', field: 'requestedSpec.size',
+        resource: 'image', stage: 'image-quote', statusCode: 422, businessCode: 'MISSING_SPEC', field: 'requestedSpec.size',
         source: 'request', recovery: 'revise_request', submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false,
       })
       assert.doesNotMatch(JSON.stringify(error), /private-secret|private\.example|fixture-employment-token/)

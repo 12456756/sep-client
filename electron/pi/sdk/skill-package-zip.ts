@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { inflateRawSync } from 'node:zlib'
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, toNamespacedPath } from 'node:path'
 import { z } from 'zod'
 import { isSafeSkillPathComponent, skillNameComparisonKey, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 
@@ -11,7 +11,8 @@ export interface SkillPackageFile { path: string; bytes: Buffer; directory?: tru
 export function assertSkillPathParents(path: string): void {
   for (let current = resolve(path); ; current = dirname(current)) {
     try {
-      if (lstatSync(current).isSymbolicLink()
+      // Node treats a namespaced drive root as a file; only namespace its descendants.
+      if (lstatSync(dirname(current) === current ? current : toNamespacedPath(current)).isSymbolicLink()
         && (!['/var', '/tmp', '/etc'].includes(current) || realpathSync(current) !== `/private${current}`)) invalid()
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     if (dirname(current) === current) break
@@ -72,7 +73,7 @@ function zip64Extra(bytes: Buffer, fields: readonly boolean[]): number[] {
 }
 
 /** Authenticated in-memory ZIP reader. No extraction library, process, or dependency is needed. */
-export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): SkillPackageFile[] {
+export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable, validatePaths?: (paths: readonly string[]) => void): SkillPackageFile[] {
   if (bytes.length !== artifact.byteLength || packageSha256(bytes) !== artifact.artifactSha256) invalid()
   let end = -1
   for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 65557); offset--) {
@@ -101,6 +102,24 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
     count = fullCount; centralSize = fullSize; centralStart = fullStart; centralEnd = record
   } else if (centralSize === 0xffffffff || centralStart === 0xffffffff) invalid()
   if (!count || count > centralSize / 46 || centralStart + centralSize !== centralEnd) invalid()
+  if (validatePaths) {
+    const names: string[] = []
+    let offset = centralStart
+    for (let index = 0; index < count; index++) {
+      if (offset + 46 > centralEnd || bytes.readUInt32LE(offset) !== 0x02014b50) invalid()
+      const nameLength = bytes.readUInt16LE(offset + 28)
+      const next = offset + 46 + nameLength + bytes.readUInt16LE(offset + 30) + bytes.readUInt16LE(offset + 32)
+      if (next > centralEnd) invalid()
+      let name: string
+      try { name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(offset + 46, offset + 46 + nameLength)) } catch { invalid() }
+      const path = name.endsWith('/') ? name.slice(0, -1) : name
+      if (!safePackagePath(path)) invalid()
+      names.push(path)
+      offset = next
+    }
+    if (offset !== centralEnd) invalid()
+    validatePaths(names)
+  }
   const files: SkillPackageFile[] = []
   const paths = new Map<string, boolean>()
   const directorySpellings: string[] = []
@@ -231,12 +250,12 @@ export function verifyPackageCache(entryFile: string, manifestBytes: Buffer): vo
   if (expected.size !== cache.files.length || !expected.has(cache.entryPath)) invalid()
   const manifestPath = join(dirname(entryFile), packageManifestName)
   function walk(path: string, prefix: string): void {
-    const stat = lstatSync(path)
+    const stat = lstatSync(toNamespacedPath(path))
     if (!stat.isDirectory() || stat.isSymbolicLink()) invalid()
-    for (const name of readdirSync(path)) {
+    for (const name of readdirSync(toNamespacedPath(path))) {
       const fullPath = join(path, name)
       const relative = prefix ? `${prefix}/${name}` : name
-      const info = lstatSync(fullPath)
+      const info = lstatSync(toNamespacedPath(fullPath))
       if (info.isSymbolicLink()) invalid()
       if (info.isDirectory()) {
         if (!directories.has(relative) && !cache.files.some(file => file.path.startsWith(`${relative}/`))
@@ -245,9 +264,9 @@ export function verifyPackageCache(entryFile: string, manifestBytes: Buffer): vo
         walk(fullPath, relative); continue
       }
       if (!info.isFile()) invalid()
-      if (fullPath === manifestPath) { if (!readFileSync(fullPath).equals(manifestBytes)) invalid(); continue }
+      if (fullPath === manifestPath) { if (!readFileSync(toNamespacedPath(fullPath)).equals(manifestBytes)) invalid(); continue }
       const file = expected.get(relative)
-      if (!file || info.size !== file.byteLength || packageSha256(readFileSync(fullPath)) !== file.sha256) invalid()
+      if (!file || info.size !== file.byteLength || packageSha256(readFileSync(toNamespacedPath(fullPath))) !== file.sha256) invalid()
       expected.delete(relative)
     }
   }

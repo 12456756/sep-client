@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { VideoRunPort, VideoHostTools } from '../domain/video-tools'
 import type { VideoScope } from '../domain/video-media'
+import { videoDefaultRecoveryExclusions } from '../domain/video-media'
 import { abortableVideo } from '../data/video-files'
 import { AppError } from '../errors/app-error'
 import { isErrorCode } from '../errors/error-codes'
@@ -48,6 +49,7 @@ export class ConversationVideoRunService implements VideoRunPort {
     const jobs = new Set<string>()
     const raw = await this.base.prepareRun({ ...input, onJobCreated: async job => {
       await input.onJobCreated?.(job)
+      for (const id of job.previousUnconfirmedJobIds ?? []) jobs.delete(id)
       jobs.add(job.jobId)
     } })
     if (!raw) return undefined
@@ -66,11 +68,12 @@ export class ConversationVideoRunService implements VideoRunPort {
     }
     this.runs.set(this.key(input.taskId, input.runId), run)
     try {
-      const existing = await this.options.store.listJobs(scope)
+      const existing = (await this.options.store.listJobs(scope)).filter(job => job.taskId === input.taskId &&
+        (job.executionMode ?? 'mock') === (this.options.mock ? 'mock' : 'real'))
       this.validate(run)
+      const excluded = videoDefaultRecoveryExclusions(existing)
       for (const job of existing) {
-        if (job.taskId !== input.taskId || input.recoverJobIds && !input.recoverJobIds.includes(job.jobId)) continue
-        if ((job.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real')) continue
+        if (input.recoverJobIds ? !input.recoverJobIds.includes(job.jobId) : excluded.has(job.jobId)) continue
         if (job.submission !== 'NOT_SENT' && (generating.has(job.receipt?.status ?? 'SUBMISSION_UNKNOWN') ||
           ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.receipt?.status ?? '') && job.saveStatus !== 'SAVED')) jobs.add(job.jobId)
       }

@@ -13,7 +13,7 @@ import { AppError } from '../errors/app-error'
 import { inspectMediaImage } from './media-image'
 import { config } from '../common/config'
 import { platformSourceHeaders } from '../common/platform/platform-source-headers'
-import { videoErrorMessage } from '../../src/shared/video-errors'
+import { mediaFailureCodeSchema } from '../../src/shared/media-failure'
 import { mediaToolFailureFrom } from '../errors/media-tool-error'
 import type { ErrorCode } from '../errors/error-codes'
 import { isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
@@ -293,7 +293,8 @@ class SepVideoGateway implements VideoGatewayPort {
       const stage = method === 'POST' ? path === '/quotes' ? 'video-quote' : path === '/requests' ? 'video-submit' : undefined : undefined
       const details = await this.errorDetails(response, signal)
       if (response.headers.get('X-SEP-Error-Source') === 'upstream') throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status, stage, { ...details, source: 'upstream', message: details.message })
-      if (details.businessCode && isMediaSpecError(details.businessCode)) throw new AppError(details.businessCode as ErrorCode, { details: details.specDetails })
+      if (details.businessCode && isMediaSpecError(details.businessCode)) throw new AppError(details.businessCode as ErrorCode, { details: { ...details.specDetails,
+        stage, statusCode: response.status, ...(details.requestId ? { requestId: details.requestId } : {}), ...(details.source ? { source: details.source } : {}), businessCode: details.businessCode } })
       throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status, stage, details)
     }
     return response
@@ -360,14 +361,13 @@ class SepVideoGateway implements VideoGatewayPort {
         const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))
         let value: unknown
         try { value = JSON.parse(text) } catch { value = this.mime(response) === 'text/html' ? undefined : text }
-        if (upstream) return { businessCode: null, source: 'upstream', requestId, message: safeMediaUpstreamMessage(value) }
         if (!value || typeof value !== 'object' || Array.isArray(value) || !('error' in value) || !value.error || typeof value.error !== 'object' || Array.isArray(value.error)) {
-          return { businessCode: null, source: null, requestId }
+          return { businessCode: null, source: upstream ? 'upstream' : null, requestId, ...(upstream ? { message: safeMediaUpstreamMessage(value) } : {}) }
         }
         const error = value.error as Record<string, unknown>
         const rawCode = typeof error.code === 'string' ? error.code : null
-        const businessCode = rawCode && videoErrorMessage(rawCode) !== null ? rawCode : null
-        const source = error.source === 'platform' || error.source === 'upstream' ? error.source : null
+        const businessCode = mediaFailureCodeSchema.safeParse(rawCode).success ? rawCode : null
+        const source = upstream ? 'upstream' : error.source === 'platform' || error.source === 'upstream' ? error.source : null
         if (error.requestId !== undefined && (typeof error.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(error.requestId))) {
           return { businessCode: null, source: null, requestId }
         }
@@ -378,7 +378,7 @@ class SepVideoGateway implements VideoGatewayPort {
         }
         const safe = businessCode && isMediaSpecError(businessCode) ? mediaToolFailureFrom(new AppError(businessCode as ErrorCode, { details: error })).error : undefined
         const specDetails = safe ? Object.fromEntries(Object.entries(safe).filter(([key]) => key !== 'code' && key !== 'message')) : undefined
-        return { businessCode, source, requestId: safeBodyRequestId ?? requestId, specDetails }
+        return { businessCode, source, requestId: safeBodyRequestId ?? requestId, specDetails, ...(upstream ? { message: safeMediaUpstreamMessage(value) } : {}) }
       } finally {
         void reader.cancel().catch(() => undefined)
         reader.releaseLock()

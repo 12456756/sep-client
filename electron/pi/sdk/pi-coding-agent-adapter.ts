@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { lazyStream, type AssistantMessage, type AssistantMessageEvent, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
 import {
+  calculateContextTokens,
   createAgentSession,
   createBashToolDefinition,
   createGrepToolDefinition,
@@ -24,6 +25,8 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { attachConnectorTools } from './pi-connector-tools'
+import { estimateRequestOverhead, GATEWAY_CONTEXT_WINDOW } from './pi-context-usage'
+import type { ContextUsage } from '../../../src/shared/context-usage'
 import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
@@ -33,6 +36,8 @@ import { mediaReferenceSourceSchema, mediaToolGenerationInputSchema } from '../.
 import { imageRequestedSpecSchema, videoRequestedSpecSchema, videoActualSpecSchema, mediaParameterSourcesSchema } from '../../../src/shared/media-spec-contract'
 import { mediaCapabilitiesSchema, mediaId, mediaParametersSchema } from '../../common/platform/media-contract'
 import { mediaUpstreamErrorSchema } from '../../../src/shared/media-upstream-error'
+import { mediaFailureCodeSchema, mediaFailureSchema } from '../../../src/shared/media-failure'
+import { mediaIssueMessage, type MediaIssueState } from '../../../src/shared/media-feedback'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
 import { videoToolFailureDiagnostic, videoToolFailureFrom } from '../../errors/video-tool-error'
 import { AppError } from '../../errors/app-error'
@@ -62,7 +67,6 @@ import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnaps
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { encodingToolDefinitions } from './pi-text-tools'
 import { CURRENT_TIME_TOOL_NAME, currentTimeToolDefinition } from './pi-current-time'
-import { videoErrorMessage } from '../../../src/shared/video-errors'
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
@@ -118,6 +122,16 @@ function registeredVideoNames(config: PiAgentSessionConfig): VideoToolName[] {
 }
 
 const videoId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+function modelMediaJobFeedback<T extends MediaIssueState>(job: T, kind: 'image' | 'video') {
+  const issue = mediaIssueMessage(job, kind)
+  return { ...job, ...(issue ? { issue } : {}),
+    ...(job.failure ? { failure: {
+      code: job.failure.code, stage: job.failure.stage, source: job.failure.source,
+      businessCode: job.failure.businessCode, gatewayCode: job.failure.gatewayCode, reasonCode: job.failure.reasonCode,
+    } } : {}),
+  }
+}
+
 const videoJobResultSchema = z.object({
   jobId: videoId, taskId: videoId, profileId: videoId,
   operation: z.enum(['image-to-video', 'text-to-video']),
@@ -127,6 +141,7 @@ const videoJobResultSchema = z.object({
   requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(),
   actualSpec: videoActualSpecSchema.optional(), parameterSources: mediaParameterSourcesSchema.optional(),
   upstreamError: mediaUpstreamErrorSchema.optional(),
+  failure: mediaFailureSchema.optional(),
   acceptance: z.enum(['matched', 'mismatched', 'unknown']).optional(),
   generationStatus: z.enum(['NOT_SUBMITTED', 'SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
@@ -136,7 +151,7 @@ const videoJobResultSchema = z.object({
   actualCostCny: z.string().regex(/^\d+\.\d{6}$/).max(128).optional(),
   amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).max(128).optional(),
   // Free-form upstream messages can echo prompts, paths or credentials. Never forward them.
-  error: z.string().max(8192).nullable().transform(value => value === null ? null : videoErrorMessage(value) ? value : 'Video job reported an error.'),
+  error: z.string().max(8192).nullable().transform(value => value === null ? null : mediaFailureCodeSchema.safeParse(value).success ? value : 'MEDIA_FAILED'),
   createdAt: z.number().nonnegative().finite(), updatedAt: z.number().nonnegative().finite(),
   outputs: z.array(videoOutputSchema.strip()).max(4),
   artifacts: z.array(z.object({
@@ -145,6 +160,7 @@ const videoJobResultSchema = z.object({
     status: z.enum(['pending', 'saving', 'saved', 'save-failed', 'missing', 'expired']),
   })).max(4).optional(),
 }).refine(job => job.billingStatus !== 'MOCK_NOT_CHARGED' || job.amountCny === undefined && job.actualCostCny === undefined && job.amountUsd === undefined)
+  .transform(job => modelMediaJobFeedback(job, 'video'))
 const videoTaskResultSchema = z.object({
   mock: z.boolean(), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&
     runtime.profiles.every(profile => profile.capabilities.aspectRatios.every(ratio => ratio.length <= 32))),
@@ -268,10 +284,14 @@ const mediaJobResultSchema = z.object({
   generationStatus: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
-  billingStatus: z.string(), error: z.string().nullable(), createdAt: z.number(), updatedAt: z.number(),
+  billingStatus: z.string(), error: mediaFailureCodeSchema.nullable(), createdAt: z.number(), updatedAt: z.number(),
   upstreamError: mediaUpstreamErrorSchema.optional(),
+  failure: mediaFailureSchema.optional(),
+  outputErrors: z.array(z.object({ index: z.number().int().nonnegative(), code: mediaFailureCodeSchema })).optional(),
+  canRetrySave: z.boolean().optional(), canResumeTracking: z.boolean().optional(),
   assets: z.array(mediaAssetResultSchema), canCancelUpstream: z.boolean(),
 }).refine(job => (job.protocolVersion === 3 ? imageRequestedSpecSchema : mediaParametersSchema).safeParse(job.parameters).success)
+  .transform(job => modelMediaJobFeedback(job, 'image'))
 
 function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown; isError: boolean } {
   // Project business views only: quotes, provider credentials, URLs and transport DTOs never reach Pi.
@@ -375,7 +395,6 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
     },
   }))
 }
-const GATEWAY_CONTEXT_WINDOW = 128_000
 const OPENAI_COMPLETIONS_API_MODULE = '@earendil-works/pi-ai/api/openai-completions'
 const HAN_CHARACTER = /\p{Script=Han}/u
 
@@ -805,6 +824,7 @@ class PiCodingAgentSession implements PiAgentSession {
       purpose: (purpose: string) => void
       observe: (event: AgentSessionEvent) => void
       startPrompt: () => void
+      contextOverhead: (timestamp: number) => ReturnType<typeof estimateRequestOverhead>
     },
   ) {
     const toolStarts = new Map<string, number>()
@@ -850,6 +870,10 @@ class PiCodingAgentSession implements PiAgentSession {
         normalized.failure = retryWait.terminalError
       }
       for (const listener of this.listeners) listener(normalized)
+      if (['turn_end', 'compaction_end', 'agent_settled'].includes(event.type)) {
+        const usage = this.getContextUsage()
+        if (usage) for (const listener of this.listeners) listener({ type: 'context_usage', data: usage })
+      }
     })
   }
 
@@ -873,6 +897,20 @@ class PiCodingAgentSession implements PiAgentSession {
 
   getContextCheckpoint(): string | null {
     return this.session.sessionManager.getLeafId()
+  }
+
+  getContextUsage(): ContextUsage {
+    const usage = this.session.getContextUsage() ?? { tokens: null, contextWindow: GATEWAY_CONTEXT_WINDOW, percent: null }
+    if (usage.tokens === null || !this.diagnostics) return usage
+    const messages = this.session.messages
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index]
+      if (message.role !== 'assistant' || message.stopReason === 'aborted' || message.stopReason === 'error' || calculateContextTokens(message.usage) <= 0) continue
+      const overhead = this.diagnostics.contextOverhead(message.timestamp)
+      if (!overhead || overhead.system + overhead.tools > usage.tokens) break
+      return { ...usage, breakdown: { ...overhead, messages: usage.tokens - overhead.system - overhead.tools } }
+    }
+    return usage
   }
 
   async restoreContextCheckpoint(checkpoint: string | null): Promise<void> {
@@ -960,6 +998,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       retry: { enabled: true, maxRetries: MAX_RUN_AUTO_RETRIES, baseDelayMs: 0, provider: { maxRetries: 0 } },
     })
     const requestTracker = config.onModelRequest ? new ModelRequestTracker(config.onModelRequest) : null
+    let latestOverhead: { timestamp: number; value: ReturnType<typeof estimateRequestOverhead> } | undefined
     // The exported subpath is loaded dynamically under the project's legacy Node resolution.
     const { streamSimple }: { streamSimple: StreamFunction<'openai-completions', SimpleStreamOptions> } =
       await import(OPENAI_COMPLETIONS_API_MODULE)
@@ -1008,6 +1047,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         let providerStatus: number | undefined
         let sent = false
         let overview: Record<string, unknown> = {}
+        let requestOverhead: ReturnType<typeof estimateRequestOverhead>
         const fields = { runId: config.runId, taskTitle: config.taskTitle, nodeTitle: config.nodeTitle, phase: config.tracePhase, requestNumber: number, model: config.modelId }
         const requestRecord: typeof record = entry => record({ ...entry, requestId, requestNumber: number })
         void requestRecord({ phase: '', kind: 'status', text: `第 ${number} 次请求；用途：${purpose}；类型：${requestKind}；运行标识：${config.runId}`, metrics: { 模型: config.modelId, 请求用途: purpose, 请求类型: requestKind } })
@@ -1018,6 +1058,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
             const replacement = await options?.onPayload?.(payload, requestModel)
             // Standalone summaries omit the Agent hooks; normalize once after any caller hook.
             const normalized = normalizeGatewayPayload(replacement === undefined ? payload : replacement)
+            if (requestKind !== 'compaction') requestOverhead = estimateRequestOverhead(normalized)
             overview = buildGatewayRequestLogFields(normalized && typeof normalized === 'object' ? normalized as Record<string, unknown> : {}, number)
             void requestRecord({ phase: '', kind: 'input', text: modelPayloadText(normalized) })
             return normalized
@@ -1054,6 +1095,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
           },
         })
         return traceModelStream(source, requestRecord, async (response, timings) => {
+          if (requestOverhead && response.stopReason !== 'error' && response.stopReason !== 'aborted') {
+            latestOverhead = { timestamp: response.timestamp, value: requestOverhead }
+          }
           const elapsedMs = Date.now() - startedAt
           const usage = { input: response.usage.input, output: response.usage.output, cacheRead: response.usage.cacheRead, cacheWrite: response.usage.cacheWrite, total: response.usage.totalTokens }
           log.info('model response completed', { ...fields, requestId: number, traceRequestId: requestId, platformRequestId, providerStatus, elapsedMs, ...timings,
@@ -1196,6 +1240,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         update: next => { originalRecorder = next.modelTrace; config = { ...config, ...next, modelTrace: next.modelTrace ? record : undefined } },
         purpose: value => { requestPurpose = value },
         startPrompt: () => { requestsInPrompt = 0; observedKind = 'execution' },
+        contextOverhead: timestamp => latestOverhead?.timestamp === timestamp ? latestOverhead?.value : undefined,
         observe: event => {
           if (event.type === 'compaction_start') observedKind = 'compaction'
           else if (event.type === 'auto_retry_start') observedKind = 'retry'

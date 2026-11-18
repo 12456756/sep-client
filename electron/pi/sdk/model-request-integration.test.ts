@@ -1,7 +1,7 @@
 import { afterEach, describe, it, type TestContext } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { createServer, type ServerResponse } from 'node:http'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -14,6 +14,8 @@ import { redactModelTraceText } from '../../common/redact'
 import { AppError } from '../../errors/app-error'
 
 import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
+import { sessionContextUsage } from './pi-context-usage'
+import type { ContextUsage } from '../../../src/shared/context-usage'
 
 let restoreLog: (() => void) | undefined
 afterEach(() => { restoreLog?.(); restoreLog = undefined; setLogLevel('debug') })
@@ -111,6 +113,22 @@ async function fixture(t: TestContext, handle: (body: RequestBody, response: Ser
 }
 
 describe('real SDK model request awareness', () => {
+  it('reports the latest context rather than cumulative billing and restores it without a provider request', async t => {
+    const f = await fixture(t, (_body, response) => answer(response, 'Result', 32000))
+    await f.session.prompt('First question')
+    await f.session.prompt('Second question')
+    const usage = f.session.getContextUsage?.()
+    assert.ok(usage && usage.tokens !== null && usage.tokens >= 32000 && usage.tokens < 64000)
+    const { breakdown, ...total } = usage
+    assert.ok(breakdown && breakdown.system > 0 && breakdown.tools > 0)
+    assert.equal(breakdown.system + breakdown.tools + breakdown.messages, total.tokens)
+    assert.deepEqual(sessionContextUsage(await readFile(f.session.sessionFile!, 'utf8'), f.session.sessionId), total)
+    assert.equal(sessionContextUsage(await readFile(f.session.sessionFile!, 'utf8'), 'other-session'), null)
+    const count = f.requests.length
+    await f.reopen()
+    assert.deepEqual(f.session.getContextUsage?.(), total)
+    assert.equal(f.requests.length, count)
+  })
   it('retains the native Chinese system and node contract on start, tool continuation, retry, correction and resume', { timeout: 30_000 }, async t => {
     let calls = 0
     const f = await fixture(t, (_body, response) => {
@@ -190,6 +208,7 @@ describe('real SDK model request awareness', () => {
       let executionRequests = 0
       let summaryRequests = 0
       const compactions: Array<{ errorMessage?: string; result?: { summary: string } }> = []
+      const usages: ContextUsage[] = []
       const f = await fixture(t, (body, response) => {
         const isExecution = body.messages.some(message => message.role === 'system' && message.content.includes('Fixed node contract'))
         if (!isExecution) {
@@ -204,10 +223,15 @@ describe('real SDK model request awareness', () => {
       })
       f.session.subscribe(event => {
         if (event.type === 'compaction_end') compactions.push(event.data as typeof compactions[number])
+        if (event.type === 'context_usage') usages.push(event.data as ContextUsage)
       })
       await f.session.prompt('Gather useful findings.')
       await f.session.prompt('Complete the required document.')
+      assert.equal(sessionContextUsage(await readFile(f.session.sessionFile!, 'utf8'), f.session.sessionId)?.tokens, f.session.getContextUsage?.()?.tokens)
       if (!overflow) await f.session.prompt('Continue after compaction.')
+      assert.ok(usages.some(usage => usage.tokens === null), 'Compacted context stays unknown until fresh usage arrives')
+      assert.deepEqual(usages.at(-1), f.session.getContextUsage?.())
+      assert.equal(sessionContextUsage(await readFile(f.session.sessionFile!, 'utf8'), f.session.sessionId)?.tokens, f.session.getContextUsage?.()?.tokens)
       assert.deepEqual(f.payloadErrors, [], 'Every ordinary and compaction request must satisfy the gateway contract')
       assert.ok(summaryRequests > 0)
       assert.ok(compactions.length > 0)

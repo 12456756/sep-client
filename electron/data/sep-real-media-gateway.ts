@@ -234,16 +234,17 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
   private async json<T>(subscriptionId: string, path: string, method: 'GET' | 'POST', body: unknown, schema: ZodType<T>, signal: AbortSignal): Promise<T> {
     const response = await this.request(subscriptionId, path, method, body, signal)
-    if (response.status === 404) throw await this.httpError(response, 'image-query')
+    const stage = method === 'POST' ? path === '/quotes' ? 'image-quote' : 'image-submit' : 'image-query'
+    const details = { stage, statusCode: response.status, gatewayCode: 'IMAGE_INVALID_RESPONSE' }
     if (!response.ok) {
-      throw await this.httpError(response, method === 'POST' ? path === '/quotes' ? 'image-quote' : 'image-submit' : 'image-query')
+      throw await this.httpError(response, stage)
     }
     const length = Number(response.headers.get('Content-Length'))
     const responseBody = response.body
     if (response.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json'
       || (Number.isFinite(length) && length > MAX_JSON) || !responseBody) {
       await responseBody?.cancel().catch(() => undefined)
-      throw new AppError('SERVICE_UNAVAILABLE', { message: 'Media service returned an invalid response.' })
+      throw new AppError('SERVICE_UNAVAILABLE', { message: 'Media service returned an invalid response.', details })
     }
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
     let verified = false
@@ -264,7 +265,10 @@ export class SepRealMediaGateway implements MediaGatewayPort {
       verified = true
       return parsed.data
     }
-    catch { throw new AppError('SERVICE_UNAVAILABLE', { message: 'Media service returned an invalid response.' }) }
+    catch (error) {
+      signal.throwIfAborted()
+      throw new AppError('SERVICE_UNAVAILABLE', { message: 'Media service returned an invalid response.', cause: error, details })
+    }
     finally {
       if (reader) {
         if (!verified) await reader.cancel().catch(() => undefined)
@@ -298,19 +302,38 @@ export class SepRealMediaGateway implements MediaGatewayPort {
     const mapped: ErrorCode = upstream ? 'SERVICE_UNAVAILABLE' : code && isErrorCode(code) ? code : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED' : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 400 ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
     const message = mapped === 'AUTH_REQUIRED' ? '图片服务认证已失效，请重新登录。' : mapped === 'PERMISSION_DENIED' ? '图片服务拒绝了当前授权或请求。' : mapped === 'INVALID_ARGUMENT' ? '图片服务拒绝了当前输入或规格。' : mapped === 'NOT_FOUND' ? '未找到对应的图片任务或资源。' : mapped === 'RATE_LIMITED' ? '图片服务请求过于频繁，请稍后重试。' : '图片服务暂时不可用，请查询原请求，不要自动重新生成。'
     const metadata = publicErrorMetadataSchema.safeParse(error)
-    return new AppError(mapped, { message: upstream ? safeMediaUpstreamMessage(payload) ?? message : message, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}), ...(metadata.success ? metadata.data : {}), ...(upstream ? { source: 'upstream', statusCode: status } : {}) } })
+    const bodyId = error && typeof error === 'object' && 'requestId' in error ? error.requestId : undefined
+    const headerId = response.headers.get('x-request-id')
+    const requestId = headerId ?? bodyId
+    const validId = typeof requestId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(requestId) && (bodyId === undefined || bodyId === requestId)
+    const upstreamMessage = upstream ? safeMediaUpstreamMessage(payload) : undefined
+    return new AppError(mapped, { message: upstreamMessage ?? message, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', statusCode: status, ...(validId ? { requestId } : {}), ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}), ...(metadata.success ? metadata.data : {}), ...(upstream ? { source: 'upstream', ...(upstreamMessage ? { upstreamMessage } : {}) } : {}) } })
   }
   private async request(subscriptionId: string, path: string, method: 'GET'|'POST', body: unknown, signal: AbortSignal) {
     this.safeId(subscriptionId); signal.throwIfAborted()
+    let token: string
     try {
-      const token = await this.options.token(subscriptionId, signal)
-      if (!/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new Error()
+      token = await this.options.token(subscriptionId, signal)
+    } catch (error) {
+      if (error instanceof AppError) throw new AppError(error.code, { message: error.userMessage, cause: error,
+        details: { ...error.details, stage: 'image-authorization', source: 'authorization' } })
+      throw new AppError(signal.aborted ? 'INVALID_STATE' : 'AUTH_REQUIRED', { cause: error, details: { stage: 'image-authorization', source: 'authorization' } })
+    }
+    if (typeof token !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new AppError('AUTH_REQUIRED', { details: { stage: 'image-authorization', source: 'authorization' } })
+    try {
       const multipart = body instanceof FormData
       const response = await this.fetcher(`${this.root}${path}`, { method, signal, redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer',
         headers: { ...this.sourceHeaders, Authorization: `Bearer ${token}`, Accept: 'application/json, image/png', ...(body !== undefined && !multipart ? { 'Content-Type': 'application/json' } : {}) },
         body: body === undefined ? undefined : multipart ? body : JSON.stringify(body) })
-      if (response.redirected || (response.status >= 300 && response.status < 400)) { await response.body?.cancel(); throw new Error() }
+      if (response.redirected || (response.status >= 300 && response.status < 400)) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new AppError('SERVICE_UNAVAILABLE', { details: { gatewayCode: 'IMAGE_REDIRECT_BLOCKED', statusCode: response.status } })
+      }
       return response
-    } catch { if (signal.aborted) throw new AppError('INVALID_STATE', { message: 'Media request was cancelled.' }); throw new AppError('NETWORK_ERROR') }
+    } catch (error) {
+      if (signal.aborted) throw new AppError('INVALID_STATE', { message: 'Media request was cancelled.', cause: error })
+      if (error instanceof AppError) throw error
+      throw new AppError('NETWORK_ERROR', { cause: error })
+    }
   }
 }

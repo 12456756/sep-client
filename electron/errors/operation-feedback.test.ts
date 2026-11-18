@@ -5,6 +5,26 @@ import { appError } from './app-error'
 import { toEnvelope } from './error-mapper'
 import { operationFeedback } from './operation-feedback'
 import { planningFailure, planningContractFailure } from './planning-diagnostics'
+import { VideoRequestError } from './video-request-error'
+
+it('keeps concrete media causes in Chinese through the operation envelope without exposing diagnostics', () => {
+  for (const kind of ['image', 'video'] as const) {
+    const error = appError('SERVICE_UNAVAILABLE', { message: 'Supplier account disabled', details: {
+      source: 'upstream', stage: `${kind}-submit`, upstreamMessage: 'Supplier account disabled',
+      requestId: 'req-secret', statusCode: 503, businessCode: 'PROVIDER_ACCOUNT_DISABLED',
+    } })
+    const result = toEnvelope(error, { feedbackOperation: kind === 'image' ? 'imageGenerate' : 'videoGenerate' })
+    assert.match(result.message, /提交结果尚未确认.*供应商账号已停用.*勿重复提交/)
+    assert.doesNotMatch(result.message, /Supplier|PROVIDER_|req-secret|503|重新登录|未扣费|重新发起/)
+  }
+  const response = toEnvelope(appError('SERVICE_UNAVAILABLE', { details: { gatewayCode: 'IMAGE_INVALID_RESPONSE', stage: 'image-query' } }), { feedbackOperation: 'imageRead' })
+  assert.match(response.message, /图片查询.*数据不完整/)
+  const rejected = toEnvelope(new VideoRequestError({ gatewayCode: 'VIDEO_HTTP_ERROR', statusCode: 402, stage: 'video-submit',
+    businessCode: 'VIDEO_BUDGET_EXCEEDED', source: 'platform', requestId: 'req-rejected' }), { feedbackOperation: 'videoGenerate' })
+  assert.match(rejected.message, /企业视频预算已达上限/)
+  assert.doesNotMatch(rejected.message, /尚未确认|HTTP|req-rejected/)
+  assert.match(toEnvelope(appError('SERVICE_UNAVAILABLE'), { feedbackOperation: 'imageGenerate' }).message, /图片提交.*生成服务暂时不可用/)
+})
 
 it('keeps actionable task, document and speech causes through the IPC envelope', () => {
   const cases = [

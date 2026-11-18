@@ -12,10 +12,12 @@ export function installSpeechPermissions(window: BrowserWindow, trustedUrl: stri
     && contents === window.webContents && contents.getURL() === trustedUrl
   session.setPermissionCheckHandler((contents, permission, _origin, details) => trusted(contents) && details.isMainFrame && (
     permission === 'clipboard-sanitized-write'
+    || permission === 'fullscreen'
     || (Boolean(gate?.canUseMicrophone()) && permission === 'media' && details.mediaType === 'audio')
   ))
   session.setPermissionRequestHandler((contents, permission, callback, details) => callback(trusted(contents) && details.isMainFrame === true && (
     permission === 'clipboard-sanitized-write'
+    || permission === 'fullscreen'
     || (Boolean(gate?.canUseMicrophone()) && permission === 'media'
       && 'mediaTypes' in details && details.mediaTypes?.length === 1 && details.mediaTypes[0] === 'audio')
   )))

@@ -3,6 +3,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaGenerationStatus, MediaProfile, MediaSaveStatus, MediaTrackingStatus } from '../../src/shared/media'
 import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
 import type { MediaUpstreamError } from '../../src/shared/media-upstream-error'
+import type { MediaFailure } from '../../src/shared/media-failure'
 export type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaJobView, MediaProfile } from '../../src/shared/media'
 
 export interface MediaOutput {
@@ -107,6 +108,7 @@ export interface LocalMediaJob {
   billingStatus: string
   recovery?: MediaReceipt['recovery']
   errorCode?: MediaReceipt['errorCode']
+  failure?: MediaFailure
   outputErrors?: MediaReceipt['outputErrors']
   upstreamError?: MediaUpstreamError
   /** Last provider status query, retained for recovery diagnostics. */

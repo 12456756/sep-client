@@ -7,6 +7,16 @@
 .ent-reply-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ent-brand-solid); }
 .ent-new-content { display: flex; margin: 0 auto 8px; }
 .ent-message-time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-conversation-results { width: 100%; margin: 8px 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
+.ent-conversation-results .result-file-card { border-color: var(--ent-line); background: var(--ent-panel); }
+.ent-conversation-results .result-file-preview { background: var(--ent-panel-subtle); }
+.ent-conversation-results .result-file-name { color: var(--ent-ink); font-size: var(--ent-fs-body); }
+.ent-conversation-results .result-file-footer { gap: 8px; padding: 12px; color: var(--ent-ink-2); }
+.ent-conversation-results .result-file-actions { gap: 6px; }
+.ent-conversation-results .result-file-placeholder { color: var(--ent-ink-2); }
+.ent-conversation-results .result-file-error, .ent-conversation-results-error { color: var(--ent-danger); font-size: var(--ent-fs-note); }
+.ent-say .result-file-error { margin: 0; padding: 0 12px 12px; border-radius: 0; background: transparent; color: var(--ent-danger); }
+.ent-conversation-results-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .ent-message-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); }
 .ent-message-copy .ent-btn { min-height: 26px; padding: 3px 8px; font-size: var(--ent-fs-note); }
 .ent-chat-details, .ent-chat-files { margin-top: 14px; }
@@ -54,11 +64,18 @@
 .ent-work-process .ent-wk-activity-copy strong { white-space: normal; overflow-wrap: anywhere; }
 .ent-work-process .ent-wk-activity-list:focus-visible { outline: 2px solid var(--ent-brand-solid); outline-offset: 2px; }
 
-.ent-conversation-foot .ent-ask-bar > .ent-attachment-composer { flex: 0 0 auto; }
 .ent-conversation-foot .ent-composer-attachments:not(:empty) { width: auto; margin: 12px 15px 0; }
-.ent-conversation-foot .ent-ask-who { min-width: 0; max-width: 60%; }
-.ent-conversation-foot .ent-ask-who select { min-width: 0; text-overflow: ellipsis; }
-.ent-conversation-foot .ent-ask-who .ent-face, .ent-conversation-foot .ent-ask-who > svg { flex-shrink: 0; }
+.ent-conversation-foot .ent-ask-bar { flex-wrap: wrap; gap: 4px 8px; }
+.ent-conversation-foot .ent-ask-tools { display: flex; flex: 1 1 350px; align-items: center; gap: 4px; min-width: 0; }
+.ent-conversation-foot .ent-ask-tools:not(:has(.ent-model-picker)) { flex-basis: 240px; }
+.ent-conversation-foot .ent-ask-tools > .ent-attachment-composer { flex: none; }
+.ent-conversation-foot .ent-chat-who { flex: 0 2 auto; }
+.ent-conversation-foot .ent-model-picker { min-width: 100px; max-width: 168px; }
+.ent-conversation-foot .ent-model-trigger { gap: 5px; text-align: left; }
+.ent-conversation-foot .ent-model-trigger > span { flex: 0 1 auto; }
+.ent-conversation-foot .ent-model-trigger > small { flex: 0 0 auto; }
+.ent-conversation-foot .ent-ask-actions { display: flex; flex: none; align-items: center; gap: 6px; margin-inline-start: auto; }
+.ent-conversation-foot .ent-ask-stop { white-space: nowrap; }
 .ent-chat-panel .ent-drawer-id h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 工作信息卡片区：对话上方左右分栏，左边基本信息，右边进度与动态 */

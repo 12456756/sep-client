@@ -5,13 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
-import { videoRuntimeSchema } from '../../src/shared/video-media'
+import { videoRuntimeSchema, type VideoRequest } from '../../src/shared/video-media'
 import type { VideoJobView } from '../../src/shared/video-host'
 import { VideoStore } from '../data/video-store'
 import { MockVideoMediaGateway, type MockVideoScenario } from '../data/mock-video-media-gateway'
 import type { VideoRunPort } from '../domain/video-tools'
 import { AppError } from '../errors/app-error'
-import type { MockVideoHostOptions } from './mock-video-host-service'
+import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { VideoRunService } from './video-run-service'
 import { ConversationVideoRunService } from './conversation-video-run-service'
 
@@ -48,7 +48,7 @@ async function setup(scenario: MockVideoScenario = 'success') {
     employee: { subscriptionId: owner.subscriptionId, modelId: 'model-a', gatewayUrl: 'http://unused', video: runtime },
     requestApproval: async () => true,
   }
-  return { store, gateway, state, options, base, video, run }
+  return { root, store, gateway, state, options, base, video, run }
 }
 
 test('conversation continues the original video after a bounded tracker exits while it is running', { timeout: 10_000 }, async () => {
@@ -62,6 +62,71 @@ test('conversation continues the original video after a bounded tracker exits wh
   assert.equal(f.gateway.calls.quote, 1)
   assert.equal(f.gateway.calls.submit, 1)
   await f.video.finishRun('task-a', 'run-a')
+})
+
+for (const stopped of [false, true]) test(`conversation confirms a fresh video and keeps later turns usable (old tracking stopped=${stopped})`, { timeout: 10_000 }, async context => {
+  const f = await setup()
+  const requests: VideoRequest[] = []
+  const submit = f.gateway.submit.bind(f.gateway)
+  context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+    requests.push(args[0])
+    const receipt = await submit(...args)
+    if (requests.length === 1) throw new Error('Lost first submission response')
+    return receipt
+  })
+  const missing = context.mock.method(f.gateway, 'findReceipt', async () => null)
+  const ipc = new MockVideoHostService(f.options)
+  const original = await ipc.generate('task-a', { ...input, profileId: 'mock-video-from-image', operation: 'image-to-video' })
+  await ipc.stopAll()
+  assert.equal(original.generationStatus, 'SUBMISSION_UNKNOWN')
+  const savedOriginal = (await f.store.getJob(owner, 'task-a', original.jobId))!
+  if (stopped) await f.store.updateJob(owner, 'task-a', original.jobId, job => ({ ...job, trackingStatus: 'STOPPED' }))
+  f.options.policy = async () => ({ preset: 'full-local', approvalMode: 'auto-approve', allowedTools: [],
+    allowedPaths: [], deniedPaths: [], commandPolicy: 'restricted', workspaceDir: '/unused' })
+  let decisions = 0
+  const tools = await f.video.prepareRun({ ...f.run, autoApproveMedia: true, requestApproval: async request => {
+    decisions++
+    assert.deepEqual(request.input, { operation: 'confirm-new-generation', unconfirmedJobCount: 1 })
+    assert.equal(f.gateway.calls.quote, 1)
+    assert.equal(f.gateway.calls.submit, 1)
+    return true
+  } })
+  assert.ok(tools)
+  const result = await tools.execute('video_from_image', { ...input, creativeBrief: 'User explicitly requests a new product video' }) as VideoJobView
+  await f.video.waitForRun('task-a', f.run.runId)
+  assert.equal(decisions, 1)
+  assert.notEqual(result.jobId, original.jobId)
+  assert.equal(result.saveStatus, 'SAVED')
+  assert.equal(f.gateway.calls.submit, 2)
+  assert.equal(f.gateway.calls.quote, 2)
+  assert.notEqual(requests[0].clientRequestId, requests[1].clientRequestId)
+  assert.equal(requests[1].creativeBrief, 'User explicitly requests a new product video')
+  const retained = (await f.store.getJob(owner, 'task-a', original.jobId))!
+  assert.equal(retained.submission, 'MAYBE_SENT')
+  assert.equal(retained.receipt, null)
+  assert.equal(retained.request.clientRequestId, savedOriginal.request.clientRequestId)
+  assert.equal(retained.failure?.stage, savedOriginal.failure?.stage)
+  assert.deepEqual((await f.store.getJob(owner, 'task-a', result.jobId))?.previousUnconfirmedJobIds, [original.jobId])
+  await f.video.finishRun('task-a', f.run.runId)
+  const reloadedOptions = { ...f.options, store: new VideoStore(f.root) }
+  const reloadedBase = new VideoRunService(reloadedOptions)
+  const reloaded = new ConversationVideoRunService(reloadedBase, reloadedOptions)
+  cleanup.push(() => reloadedBase.stopAll())
+  cleanup.push(() => reloaded.stopTask('task-a'))
+  const later = await reloaded.prepareRun({ ...f.run, runId: 'later-run' })
+  assert.ok(later)
+  await reloaded.waitForRun('task-a', 'later-run')
+  assert.equal(f.gateway.calls.submit, 2)
+  assert.equal((await f.store.getJob(owner, 'task-a', original.jobId))?.submission, 'MAYBE_SENT')
+  const history = await later.execute('video_get_job', { jobId: original.jobId }) as VideoJobView
+  assert.equal(history.generationStatus, 'SUBMISSION_UNKNOWN')
+  await reloaded.finishRun('task-a', 'later-run')
+  missing.mock.restore()
+  assert.ok(await reloaded.prepareRun({ ...f.run, runId: 'recover-original', recoverJobIds: [original.jobId] }))
+  await reloaded.waitForRun('task-a', 'recover-original')
+  assert.equal((await f.store.getJob(owner, 'task-a', original.jobId))?.saveStatus, 'SAVED')
+  assert.equal(f.gateway.calls.submit, 2)
+  assert.equal(f.gateway.calls.quote, 2)
 })
 
 test('conversation restores original pending video before completing a recovered turn', { timeout: 10_000 }, async () => {

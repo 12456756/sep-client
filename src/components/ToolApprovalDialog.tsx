@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { z } from 'zod'
 import { useFeedback } from './feedback/FeedbackProvider'
+import { isBrowserHandoffRequest, isMediaResubmissionRequest, toolApprovalTimeoutMs } from '../shared/tool-approval'
 
 interface ToolApprovalRequest {
   requestId?: string
@@ -41,7 +42,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     let active = true
     const approval = new AbortController()
     const revision = feedback.getRevision()
-    const deadline = request.expiresAt ?? (request.timestamp ?? Date.now()) + 60_000
+    const deadline = request.expiresAt ?? (request.timestamp ?? Date.now()) + toolApprovalTimeoutMs(request)
     const remaining = deadline - Date.now()
     let settled = false
     const settle = (accepted: boolean) => {
@@ -55,21 +56,23 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     const isVideo = request.toolName === 'video_generate' || request.toolName === 'video_from_image'
     const raw = z.object({ mock: z.boolean().optional() }).safeParse(request.input)
     const input = z.record(z.string(), z.unknown()).safeParse(request.input)
-    const browserHandoff = request.toolName === 'mcp__playwright__browser_set_mode' && input.success && input.data.operation === 'manual-handoff'
+    const browserHandoff = isBrowserHandoffRequest(request)
+    const resubmission = isMediaResubmissionRequest(request)
     const transmission = (isVideo || request.toolName === 'media_generate_image') && input.success && input.data.operation === 'upload-references'
-    if (!Number.isFinite(deadline) || remaining <= 0 || isVideo && !transmission && (!raw.success || raw.data.mock !== true && !quote.success)) {
+    if (!Number.isFinite(deadline) || remaining <= 0 || isVideo && !transmission && !resubmission && (!raw.success || raw.data.mock !== true && !quote.success)) {
       settle(false)
       return
     }
     const price = request.toolName === 'media_generate_image' ? imageQuote.safeParse(request.input) : null
     // The trusted host validates media quotes and spending before asking the renderer to proceed.
-    if (!transmission && (isVideo || price?.success)) {
+    if (!transmission && !resubmission && (isVideo || price?.success)) {
       settle(true)
       return
     }
     let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
-    if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。请在 60 秒内完成；取消或超时会关闭此浏览器会话。'
+    if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
     if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
+    if (resubmission) message = `原任务是否受理及计费尚未确认，可能仍在生成。仍要创建新的${isVideo ? '视频' : '图片'}任务？新旧任务可能分别生成并计费，原任务状态仍会保留。`
     if (price?.success) message += ` 本次报价 ${price.data.quote.amount} ${price.data.quote.currency}。`
     if (input.success && ['bash', 'write', 'edit'].includes(request.toolName)) {
       const target = request.toolName === 'bash' ? input.data.command : input.data.path
@@ -80,7 +83,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     void feedback.ask({
       key: `approval:${request.requestId ?? request.timestamp ?? deadline}`,
       message: isVideo && quote.success ? `${message} 本次报价 ¥${quote.data.quote.amount}。` : message,
-      actionLabel: browserHandoff ? '已完成，继续' : isVideo && quote.success ? '同意并生成' : '允许',
+      actionLabel: browserHandoff ? '已完成，继续' : resubmission ? '仍然生成' : isVideo && quote.success ? '同意并生成' : '允许',
       signal: approval.signal,
     }).then(settle)
     return () => {

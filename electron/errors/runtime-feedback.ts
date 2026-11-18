@@ -34,7 +34,13 @@ const unrecoverableSessionMessages = new Set([
 
 export function runtimeFeedback(error: unknown): RuntimeFailure {
   if (error instanceof Error) {
-    if (error instanceof ArrangementMediaRecoveryError) return failure(error.phase === 'download' ? 'MEDIA_DOWNLOAD_FAILED' : 'MEDIA_DELIVERY_FAILED')
+    if (error instanceof ArrangementMediaRecoveryError) {
+      const codes: Record<ArrangementMediaRecoveryError['phase'], RuntimeFailureCode> = {
+        submission: 'MEDIA_SUBMISSION_UNKNOWN', query: 'MEDIA_QUERY_UNAVAILABLE', generation: 'MEDIA_GENERATION_FAILED',
+        expired: 'MEDIA_RESULT_EXPIRED', download: 'MEDIA_DOWNLOAD_FAILED', copy: 'MEDIA_DELIVERY_FAILED',
+      }
+      return failure(codes[error.phase])
+    }
     const known = (Object.keys(RUNTIME_FAILURE_MESSAGES) as RuntimeFailureCode[]).find(code => RUNTIME_FAILURE_MESSAGES[code] === error.message)
     if (known) return failure(known)
     if (Object.hasOwn(legacyFailures, error.message)) return failure(legacyFailures[error.message])

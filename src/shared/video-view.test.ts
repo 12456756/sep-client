@@ -517,6 +517,17 @@ test('persisted submit diagnostics explain unsupported specifications without hi
       alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved' } })
   const issue = videoTaskIssue([pending])
   assert.match(issue, /8k/); assert.match(issue, /1080p/); assert.match(issue, /上游模型/)
+  assert.match(issue, /提交结果尚未确认/)
   const html = render(React.createElement(VideoTaskContent, { taskId: 'task-1', view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [pending] }, busy: false, pending: null, onAction: noop, onPreview: noop, onExport: noop }))
   assert.match(html, /8k/); assert.match(html, /1080p/); assert.match(html, /提交结果不明/)
+})
+
+test('video panel validation preserves request diagnostics and shows them in the task and summary', () => {
+  const pending = job({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED', error: 'SERVICE_UNAVAILABLE',
+    failure: { code: 'SERVICE_UNAVAILABLE', businessCode: 'UPSTREAM_TIMEOUT', stage: 'video-submit', requestId: 'req-ui-video', httpStatus: 503 } })
+  const html = panel({ view: { mock: true, runtime, jobs: [pending] } })
+  assert.match(html, /生成供应商响应超时/)
+  assert.match(videoTaskIssue([pending])!, /提交结果尚未确认.*生成供应商响应超时.*勿重复提交/)
+  assert.doesNotMatch(html, /UPSTREAM_TIMEOUT|HTTP 503|req-ui-video/)
+  assert.doesNotMatch(html, /尚无视频任务|未扣费|提交被拒绝/)
 })

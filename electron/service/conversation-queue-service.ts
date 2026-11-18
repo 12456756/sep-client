@@ -300,7 +300,7 @@ export class ConversationQueueService {
   whenIdle(taskId: string, operation: () => Promise<void>): Promise<void> {
     return this.access(taskId, async (record, task, assert) => {
       if (task.activeRunId || this.initialStarts.has(task.id) || this.options.isBusy?.(task.id) || record.entries.some(entry => ['waiting', 'active', 'failed'].includes(entry.status))) {
-        throw new AppError('INVALID_STATE', { message: '还有等待处理的信息，请先处理或终止后再切换员工。' })
+        throw new AppError('INVALID_STATE', { message: '还有等待处理的信息，请先处理或终止后再切换员工或模型。' })
       }
       await operation()
       assert()

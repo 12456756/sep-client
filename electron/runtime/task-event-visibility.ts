@@ -15,6 +15,7 @@ const INTERNAL_EVENT_TYPES = new Set([
 ])
 
 const IMPORTANT_EVENT_TYPES = new Set([
+  'context_usage',
   'tool_execution_start',
   'tool_execution_end',
   'approval_requested',

@@ -96,6 +96,22 @@ function value(result: Awaited<ReturnType<Awaited<ReturnType<typeof sdk>>['execu
 }
 
 describe('video tools through the mocked Pi SDK extension API', () => {
+  it('preserves new video failure codes and supplies Chinese reasons in job and task queries', async () => {
+    const failed = { ...job, generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'STOPPED', error: 'NEW_PROVIDER_FAILURE',
+      failure: { code: 'SERVICE_UNAVAILABLE', stage: 'video-submit', source: 'upstream', message: 'Supplier account disabled',
+        businessCode: 'NEW_PROVIDER_FAILURE', requestId: 'private-request-id', httpStatus: 503 } }
+    for (const payload of [failed, { mock: true, runtime: videoFixture.runtime, jobs: [failed] }]) {
+      const runtime = await sdk({}, payload)
+      const text = value(await runtime.execute('video_get_job', 'jobs' in payload ? {} : { jobId: 'job-a' }))
+      const parsed = JSON.parse(text)
+      const projected = parsed.jobs?.[0] ?? parsed
+      assert.equal(projected.error, 'NEW_PROVIDER_FAILURE')
+      assert.equal(projected.failure.stage, 'video-submit')
+      assert.match(projected.issue, /提交结果尚未确认.*视频提交.*供应商.*停用/)
+      assert.doesNotMatch(text, /Supplier account disabled|private-request-id|httpStatus/)
+    }
+  })
+
   it('preserves safe conversation reference identities and strips internal paths from source metadata', async () => {
     const source = { localAssetId: 'reference-a', source: 'attachment', attachmentId: 'attachment-a', displayName: 'product.png' }
     const generated = { localAssetId: 'reference-b', source: 'generated', sourceArtifactId: 'output-b', jobId: 'image-job', outputId: 'image-output' }
@@ -205,7 +221,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
       const error = JSON.parse(value(result)).error
       assert.equal(error.code, 'RATE_LIMITED')
-      assert.match(error.message, /Skill preparation is rate limited/)
+      assert.match(error.message, /能力包.*请求过于频繁/)
       assert.ok(!value(result).includes('secret token body'))
       assert.deepEqual(records.at(-1), {
         runId: 'run-a', tool: 'video_generate', toolCallId: 'call-a', exceptionType: 'AuthApiError', code: 'RATE_LIMITED',
@@ -240,7 +256,9 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       const runtime = await sdk({}, error)
       const result = await runtime.execute('video_generate', generation)
       assert.deepEqual(result.details, { isError: true })
-      assert.deepEqual(JSON.parse(value(result)).error, { code: 'VIDEO_BUDGET_EXCEEDED', message: '已超过企业视频预算。' })
+      assert.deepEqual(JSON.parse(value(result)).error, { code: 'VIDEO_BUDGET_EXCEEDED', message: '已超过企业视频预算。',
+        businessCode: 'VIDEO_BUDGET_EXCEEDED', gatewayCode: 'VIDEO_HTTP_ERROR', httpStatus: 402,
+        requestId: 'req-safe-1', source: 'platform', stage: 'video-submit' })
       assert.deepEqual(records.at(-1), { runId: 'run-a', tool: 'video_generate', toolCallId: 'call-a',
         exceptionType: 'SepVideoGatewayError', code: 'VIDEO_BUDGET_EXCEEDED', httpStatus: 402,
         resource: 'video', stage: 'video-submit', requestId: 'req-safe-1' })
@@ -299,10 +317,12 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
       const error = JSON.parse(value(result)).error
       assert.equal(error.code, 'PERMISSION_DENIED')
-      assert.match(error.message, /quote request was denied by SEP before local approval/)
+      assert.match(error.message, /平台拒绝了视频报价请求.*尚未进入本地审批/)
       assert.deepEqual(records.at(-1), { runId: 'run-a', tool: 'video_generate', toolCallId: 'call-a',
         exceptionType: 'SepVideoGatewayError', code: 'PERMISSION_DENIED', httpStatus: 403, resource: 'video', stage: 'video-quote' })
-      assert.doesNotMatch(value(result), /VIDEO_HTTP_ERROR|Bearer|private/)
+      assert.equal(error.gatewayCode, 'VIDEO_HTTP_ERROR')
+      assert.doesNotMatch(error.message, /VIDEO_HTTP_ERROR|Bearer|private/)
+      assert.doesNotMatch(value(result), /Bearer|private/)
       const local = await sdk({}, new AppError('PERMISSION_DENIED'))
       assert.doesNotMatch(JSON.parse(value(await local.execute('video_generate', { creativeBrief: 'A product video' }))).error.message, /quote request/)
     } finally { restore() }
@@ -541,7 +561,10 @@ describe('video tools through the mocked Pi SDK extension API', () => {
     const runtime = await sdk({}, { ...job, ...secrets, error: sensitiveText, outputs: [{ ...output, ...secrets }] })
     const result = await runtime.execute('video_get_job', { jobId: 'job-a' })
     assert.deepEqual(result.details, { isError: false })
-    assert.deepEqual(JSON.parse(value(result)), { ...job, error: 'Video job reported an error.', outputs: [output] })
+    const projected = JSON.parse(value(result))
+    assert.deepEqual(projected, { ...job, error: 'MEDIA_FAILED', issue: projected.issue, outputs: [output] })
+    assert.match(projected.issue, /尚未取得具体原因/)
+    assert.doesNotMatch(value(result), /private-key|private\.example|private\/video|secret Pi prompt/)
     assert.equal(await runtime.emit('tool_result', { toolName: 'video_get_job', details: result.details }).then(values => values[0]), undefined)
   })
 

@@ -237,9 +237,13 @@ export interface CreateConversationInput {
   attachmentSessionId?: string
 }
 
-export interface SwitchConversationEmployeeInput {
+export type SwitchConversationEmployeeInput = {
   taskId: string
-  subscriptionId: string
+} & ({ kind: 'general'; modelId: string } | { kind?: 'employee'; subscriptionId: string })
+
+export interface SwitchConversationModelInput {
+  taskId: string
+  modelId: string
 }
 
 export interface RetryTaskInput {
@@ -420,13 +424,15 @@ export interface ElectronAPI {
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
   continueTask: (input: ContinueTaskInput) => Promise<IpcCommandResult & { queued?: boolean }>
   conversationQueue: (input: import('./conversation-queue').ConversationQueueInput) => Promise<IpcCommandResult & { queue?: import('./conversation-queue').ConversationQueueView }>
-  switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
+  switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult & { plan?: ArrangementPlanSnapshot }>
+  switchConversationModel: (input: SwitchConversationModelInput) => Promise<IpcCommandResult & { plan?: ArrangementPlanSnapshot }>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
   retryTask: (input: string | RetryTaskInput) => Promise<IpcCommandResult>
   rerunTask: (input: { taskId: string; requestId: string }) => Promise<TaskResult>
   getTask: (taskId: string) => Promise<TaskResult>
   getAllTasks: () => Promise<TaskListResult>
   listTaskRuns: (taskId: string) => Promise<TaskRunListResult>
+  getTaskContextUsage: (taskId: string) => Promise<IpcCommandResult & { usage?: import('./context-usage').ContextUsage | null }>
   getTaskRun: (taskId: string, runId: string) => Promise<TaskRunResult>
   getTaskTimeline: (taskId: string, runId: string) => Promise<TaskTimelineResult>
   pauseTask: (taskId: string) => Promise<IpcCommandResult>

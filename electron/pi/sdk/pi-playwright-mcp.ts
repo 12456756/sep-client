@@ -13,7 +13,7 @@ export const PLAYWRIGHT_GUIDELINES = [
 ]
 
 export const PLAYWRIGHT_HANDOFF_GUIDELINES = [
-  '内置浏览器默认在后台运行。登录、扫码、验证码或人工接管使用 mcp__playwright__browser_set_mode({mode:"visible",purpose:"handoff"})；工具等待客户端“已完成，继续”后自动恢复后台，取消或 60 秒超时会关闭会话。仅当用户要求观看自动操作时使用 purpose:"observe"，可继续操作，观看结束后调用 mode:"background"。',
+  '内置浏览器默认在后台运行。登录、扫码、验证码或人工接管使用 mcp__playwright__browser_set_mode({mode:"visible",purpose:"handoff"})；工具等待客户端“已完成，继续”后自动恢复后台，取消或 3 分钟超时会关闭会话。仅当用户要求观看自动操作时使用 purpose:"observe"，可继续操作，观看结束后调用 mode:"background"。',
   '模式切换会重载标签页，保留 Cookie 和站点存储，但不保留未提交表单、历史或验证码；重新读取快照并核实登录状态，不重放业务提交。窗口可见和人工接管完成不代表新增业务授权。',
 ]
 

@@ -24,6 +24,7 @@ import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpris
 import * as workProcess from '../../features/enterprise/work-process';
 import * as vocabulary from '../../features/enterprise/vocabulary';
 import * as generalAssistant from '../../features/enterprise/general-assistant';
+import * as workSkillModel from '../../features/enterprise/work-skills';
 
 const cardFilename = fileURLToPath(new URL('../../components/workspace/ResultFileCard.tsx', import.meta.url));
 const cardSource = ts.transpileModule(readFileSync(cardFilename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
@@ -80,6 +81,42 @@ const work: WorkItem = {
   sharedContext: { goal: '制作商品图片', confirmedInputs: [], previousResults: [], userNotes: [] },
   stopReason: null, workDir: null,
 };
+
+it('renders archived compact skill labels while leaving current-library loading disabled', () => {
+  const skillFilename = fileURLToPath(new URL('../../components/enterprise/WorkSkills.tsx', import.meta.url));
+  const skillSource = ts.transpileModule(readFileSync(skillFilename, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  let libraryEnabled: boolean | undefined;
+  const skillDependencies: Record<string, unknown> = {
+    react: React, 'react/jsx-runtime': jsxRuntime, 'lucide-react': icons,
+    '../../features/enterprise/work-skills': workSkillModel,
+    '../../features/enterprise/use-arrangement-transcript': { useArrangementTranscript: () => ({
+      events: [
+        { taskId: work.id, runId: 'run', sequence: 1, type: 'tool_execution_start', occurredAt: 1,
+          data: { toolId: 'read-a', toolName: 'read', skillPath: '/runtime/skills-v2/hash/opaque/SKILL.md',
+            skillDetails: { name: '促销机制设计', description: '设计套装优惠' } } },
+        { taskId: work.id, runId: 'run', sequence: 2, type: 'tool_execution_end', occurredAt: 2,
+          data: { toolId: 'read-a', toolName: 'read', success: true } },
+      ], loading: false, error: null, reload: () => {},
+    }) },
+    '../../features/enterprise/use-skill-library': { useSkillLibrary: (_key: string, enabled: boolean) => {
+      libraryEnabled = enabled;
+      return { skills: [], skillsLoading: true, skillsError: 'Stale library error', skillsRetrySeconds: 30 };
+    } },
+  };
+  const skillModule = { exports: {} };
+  compileFunction(skillSource, ['require', 'exports', 'module'], { filename: skillFilename })((id: string) => {
+    assert.ok(Object.hasOwn(skillDependencies, id)); return skillDependencies[id];
+  }, skillModule.exports, skillModule);
+  const { WorkSkills } = skillModule.exports as typeof import('../../components/enterprise/WorkSkills');
+  const markup = renderToStaticMarkup(React.createElement(WorkSkills, { work, scopeKey: 'scope', visible: true }));
+  assert.equal(libraryEnabled, false);
+  assert.match(markup, /促销机制设计/);
+  assert.match(markup, /设计套装优惠/);
+  assert.match(markup, /已读取 1 次/);
+  assert.doesNotMatch(markup, /暂不可用|正在读取技能|Stale library error|disabled/);
+});
 
 function renderDetail(item: WorkItem, overrides: Partial<EnterpriseWorkspace> = {}): string {
   const workspace = { works: [item], employees: [], myEmployees: [], busy: false, canGoBack: false, ...overrides } as unknown as EnterpriseWorkspace;

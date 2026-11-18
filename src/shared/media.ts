@@ -1,5 +1,6 @@
 import type { ImageRequestedSpec, MediaParameterSources } from './media-spec-contract'
 import type { MediaUpstreamError } from './media-upstream-error'
+import type { MediaFailure } from './media-failure'
 import type { SepRuntimeV3ProfileMetadata } from './sep-runtime-v3-contract'
 export type ImageMime = 'image/png' | 'image/jpeg' | 'image/webp'
 export type MediaOperation = 'generate' | 'edit'
@@ -83,6 +84,8 @@ export interface MediaJobView {
   downloadMs?: number
   error: string | null
   upstreamError?: MediaUpstreamError
+  failure?: MediaFailure
+  outputErrors?: { index: number; code: string }[]
   createdAt: number
   updatedAt: number
   assets: MediaAssetView[]

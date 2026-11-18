@@ -16,10 +16,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onAttachmentPaste: () => () => {},
   getTaskTimeline: async () => ({ success: true, data: [] }),
   listTaskRuns: async () => ({ success: true, runs: [] }),
+  conversationQueue: async () => ({ success: true, queue: { paused: false, items: [], failed: null } }),
   onTaskUpdated: () => () => {},
   onPiEvent: () => () => {},
 })
 contextBridge.exposeInMainWorld('resultTest', {
+  secure: () => ipcRenderer.invoke('result-test:secure'),
   state: () => ipcRenderer.invoke('result-test:state'),
   logout: () => ipcRenderer.invoke('result-test:logout'),
   replace: () => ipcRenderer.invoke('result-test:replace'),

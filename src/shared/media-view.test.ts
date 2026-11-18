@@ -204,6 +204,15 @@ test('SSR results never duplicate command errors handled by shared dialogs', () 
   assert.doesNotMatch(html, /private error|role="alert"|<script>/)
 })
 
+test('image task and summary preserve specific submission diagnostics without enabling redo', () => {
+  const pending = job({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED', error: 'NETWORK_TIMEOUT',
+    failure: { code: 'NETWORK_TIMEOUT', stage: 'image-submit', requestId: 'req-ui-image' } })
+  assert.match(jobs(pending), /请求超时/)
+  assert.doesNotMatch(jobs(pending), /req-ui-image|NETWORK_TIMEOUT/)
+  assert.match(mediaTaskIssue([pending])!, /提交结果尚未确认.*请求超时.*勿重复提交/)
+  assert.equal(mediaJobActions(pending, false).redo, false)
+})
+
 test('SSR pending feedback stays beside submit for every media command without changing controls', () => {
   for (const pending of ['generate', 'import', 'export', 'retry', 'cancel', 'resume', 'redo']) {
     const html = render(React.createElement(MediaCreationForm, { profiles: [profile], references: [], archived: false, busy: true,

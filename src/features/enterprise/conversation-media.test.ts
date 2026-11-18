@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import type { MediaAssetView, MediaJobView, MediaTaskView } from '../../shared/media'
-import { groupSavedConversationImages } from './conversation-media'
+import { groupSavedConversationImages, savedConversationImages } from './conversation-media'
 
 const asset = (id: string, jobId: string, status: MediaAssetView['status'] = 'SAVED'): MediaAssetView => ({
   localAssetId: id, taskId: 'task-a', jobId, outputId: id, source: 'output', mime: 'image/png',
@@ -35,5 +35,15 @@ describe('conversation image grouping', () => {
     const view: MediaTaskView = { capabilities: null, unavailableReason: null, selectedReferenceIds: [], archived: false,
       assets: [], jobs: [{ ...job('job-other', 'run-other', [other]), taskId: 'task-other' }] }
     assert.equal(groupSavedConversationImages('task-a', view).size, 0)
+  })
+
+  it('keeps historical saved images without job records and does not duplicate known outputs', () => {
+    const saved = asset('saved', 'job')
+    const orphan = asset('orphan', 'old-job')
+    const view: MediaTaskView = { capabilities: null, unavailableReason: null, selectedReferenceIds: [], archived: false,
+      assets: [saved, orphan, asset('pending', 'job', 'SAVING')], jobs: [job('job', 'run', [saved])] }
+    const results = savedConversationImages('task-a', view)
+    assert.deepEqual(results.map(result => [result.file.id, result.runId]), [['saved', 'run'], ['orphan', undefined]])
+    assert.deepEqual(results[1]?.request, { taskId: 'task-a', assetId: 'orphan' })
   })
 })

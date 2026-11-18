@@ -4,6 +4,7 @@ import { isSubmitEnter } from '../../shared/composer-shortcut';
 import { formatDirectoryPath } from '../../shared/path-display';
 import type { AvailableEmployee, AvailableSkill, AvailableWorkflow, ConversationDraft, LocalWorkspaceBinding, Task } from '../../features/workspace/useWorkspaceDemo';
 import { WorkspaceEmployeeAvatar } from './WorkspaceEmployeeAvatar';
+import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { ComposerAddMenuLoader } from '../enterprise/attachments/ComposerAddMenuLoader';
 import { ComposerConnectorChip } from '../enterprise/attachments/ComposerConnectorChip';
 import { withComposerConnector } from '../../features/enterprise/composer-connectors';
@@ -193,6 +194,6 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
       </div>}
       {mode === 'conversation' && <label className="composer-model-control"><Sparkles size={14} /><span>模型</span><select value={draft.modelId} disabled={!employee} onChange={event => onDraftChange({ modelId: event.target.value })} title="选择模型"><option value="">默认</option>{employee?.modelOptions.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></label>}
       {(mode === 'workflow' || mode === 'conversation') && <div className={`composer-workspace-group ${workspaceLocked ? 'locked' : ''}`} aria-label="工作目录设置"><button className="workspace-tool-button workspace-directory-button" type="button" onClick={() => void chooseDirectory()} disabled={workspaceLocked} title={workspaceLocked ? '已创建的对话不能修改工作目录' : (visibleWorkspacePath || '选择工作目录')}><FolderOpen size={15} /><span>{visibleWorkspacePath ? formatDirectoryPath(visibleWorkspacePath) : '选择工作目录'}</span></button><label className="composer-permission-control"><ShieldCheck size={14} /><span>权限</span><select value={workspace.accessMode} onChange={event => updateWorkspace({ ...workspace, accessMode: event.target.value as LocalWorkspaceBinding['accessMode'] })} title="设置工作目录权限"><option value="read-write">读写</option><option value="read-only">只读</option></select></label></div>}
-    </div><button className="workspace-submit" onClick={submit} disabled={!canSubmit} aria-label="安排工作" title={busy ? '正在安排工作' : '安排工作'}>{busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>
+    </div>{mode === 'conversation' && currentTask?.type === 'conversation' ? <ContextUsageIndicator taskId={currentTask.id} /> : null}<button className="workspace-submit" onClick={submit} disabled={!canSubmit} aria-label="安排工作" title={busy ? '正在安排工作' : '安排工作'}>{busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>
   </section>;
 }

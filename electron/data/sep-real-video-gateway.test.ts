@@ -168,7 +168,7 @@ test('quote rejection is identified before approval and never exposes or retries
   const adapter = gateway(async () => { calls++; return json({ message: 'private-response-body' }, 403) })
   await assert.rejects(adapter.quote(videoRequestSchema.parse(fixture.quoteRequest), signal), {
     gatewayCode: 'VIDEO_HTTP_ERROR', code: 'PERMISSION_DENIED', statusCode: 403,
-    details: { resource: 'video', stage: 'video-quote' },
+    details: { resource: 'video', stage: 'video-quote', gatewayCode: 'VIDEO_HTTP_ERROR', statusCode: 403 },
   })
   assert.equal(calls, 1)
 })
@@ -204,11 +204,11 @@ test('submit parses only a trusted platform rejection into a definitive business
     error.code === 'SERVICE_UNAVAILABLE' && error.definitelyRejected === false)
 })
 
-test('malformed or non-json submit errors remain uncertain and never trust arbitrary codes', async () => {
+test('unknown, malformed or non-json submit errors remain uncertain while retaining safe codes', async () => {
   const request = videoRequestWithIdentitySchema.parse(fixture.request)
   const cases = [
     { response: json({ error: { code: 'INSUFFICIENT_FUNDS', source: 'platform' } }, 400), businessCode: 'INSUFFICIENT_FUNDS' },
-    { response: json({ error: { code: 'UNKNOWN_INTERNAL', source: 'platform' } }, 402), businessCode: null },
+    { response: json({ error: { code: 'UNKNOWN_INTERNAL', source: 'platform' } }, 402), businessCode: 'UNKNOWN_INTERNAL' },
     { response: new Response('<html>gateway failure</html>', { status: 402, headers: { 'Content-Type': 'text/html' } }), businessCode: null },
   ] as const
   for (const { response, businessCode } of cases) {
@@ -314,7 +314,8 @@ test('video specification errors retain safe diagnostics and discard raw upstrea
   await assert.rejects(adapter.quote(videoRequestSchema.parse(fixture.quoteRequest), signal), (error: unknown) => {
     assert.ok(error instanceof AppError)
     assert.equal(error.code, 'UPSTREAM_SPEC_UNSUPPORTED')
-    assert.deepEqual(error.details, { source: 'provider', field: 'resolution', requestedValue: '8k', reasonCode: 'UNSUPPORTED_RESOLUTION', alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false })
+    assert.deepEqual(error.details, { source: 'provider', field: 'resolution', requestedValue: '8k', reasonCode: 'UNSUPPORTED_RESOLUTION', alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false,
+      stage: 'video-quote', statusCode: 422, businessCode: 'UPSTREAM_SPEC_UNSUPPORTED' })
     assert.doesNotMatch(JSON.stringify(error), /secret|private\.invalid|apiKey/)
     return true
   })
@@ -326,7 +327,7 @@ test('malformed specification diagnostic types cannot crash error parsing or ref
   await assert.rejects(adapter.quote(videoRequestSchema.parse(fixture.quoteRequest), signal), (error: unknown) => {
     assert.ok(error instanceof AppError)
     assert.equal(error.code, 'UPSTREAM_SPEC_UNSUPPORTED')
-    assert.deepEqual(error.details, { alternatives: [{ resolution: '1080p' }] })
+    assert.deepEqual(error.details, { alternatives: [{ resolution: '1080p' }], stage: 'video-quote', statusCode: 422, businessCode: 'UPSTREAM_SPEC_UNSUPPORTED' })
     assert.doesNotMatch(JSON.stringify(error), /private-secret|private\.invalid/)
     return true
   })

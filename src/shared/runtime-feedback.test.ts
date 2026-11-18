@@ -34,6 +34,14 @@ it('displays the safe response interruption reason from a final failure notice',
   assert.equal(feedback.getSnapshot()?.tone, 'error')
 })
 
+it('shows unconfirmed media submission without claiming a download failure', () => {
+  const feedback = new FeedbackController()
+  const listener = createRuntimeFailureListener(feedback, owner)
+  listener.receive({ ...event(), data: { owner, code: 'MEDIA_SUBMISSION_UNKNOWN' } })
+  assert.match(feedback.getSnapshot()!.message, /提交结果尚未确认.*勿重复生成/)
+  assert.doesNotMatch(feedback.getSnapshot()!.message, /下载失败|已生成/)
+})
+
 it('rejects wrong owners, cleared sessions, disposed listeners and arbitrary error content', () => {
   const feedback = new FeedbackController()
   const listener = createRuntimeFailureListener(feedback, owner)

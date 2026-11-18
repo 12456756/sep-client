@@ -6,6 +6,10 @@ import type { ErrorCode } from './error-codes'
 import { workFeedbackMessage } from './work-feedback'
 import { DOCUMENT_PREVIEW_FAILURES } from './document-preview-error'
 import { transportKind } from '../common/transport-error'
+import { mediaJobFailure } from './media-job-error'
+import { mediaIssueMessage } from '../../src/shared/media-feedback'
+import { VideoRequestError } from './video-request-error'
+import { mediaErrorReason, mediaRecoveryAdvice } from '../../src/shared/media-error-messages'
 export { transportKind } from '../common/transport-error'
 
 interface PublicError { code: ErrorCode; message: string; statusCode: number }
@@ -185,6 +189,21 @@ export function operationFeedback(error: unknown, operation: FeedbackOperation, 
     const reason = error.details?.reason
     const reasons = operationReasons[operation]
     if (typeof reason === 'string' && reasons && Object.hasOwn(reasons, reason)) return { ...base, message: reasons[reason] }
+    if ((operation.startsWith('image') || operation.startsWith('video')) &&
+      (error.details?.businessCode || error.details?.gatewayCode || error.details?.source === 'upstream')) {
+      const kind = operation.startsWith('video') ? 'video' : 'image'
+      const failure = mediaJobFailure(error, `${kind}-${operation.endsWith('Generate') ? 'submit' : operation.endsWith('Save') ? 'save' : 'query'}`)
+      const message = mediaIssueMessage({ failure, error: error.code,
+        generationStatus: failure.stage.endsWith('-submit') && !(error instanceof VideoRequestError && error.definitelyRejected) ? 'SUBMISSION_UNKNOWN' : 'FAILED',
+        trackingStatus: 'STOPPED', saveStatus: failure.stage.endsWith('-save') ? 'SAVE_FAILED' : 'PENDING' }, kind)
+      if (message) return { ...base, message }
+    }
+    if ((operation.startsWith('image') || operation.startsWith('video')) &&
+      ['SERVICE_UNAVAILABLE', 'INTERNAL_ERROR'].includes(error.code)) {
+      const name = operation.startsWith('video') ? '视频' : '图片'
+      const reason = mediaErrorReason(error.code)
+      if (reason) return { ...base, message: `${name}${operation.endsWith('Generate') ? '提交' : '处理'}：${reason}；${mediaRecoveryAdvice(error.code)}。` }
+    }
     const workMessage = workFeedbackMessage(error, operation, error.code)
     if (workMessage) return { ...base, message: workMessage }
     if (error.userMessage === '自动编排无法读取已要求使用的附件。') return { ...base, message: '自动编排无法读取所需附件，请确认附件仍存在，重新添加附件后重试。' }

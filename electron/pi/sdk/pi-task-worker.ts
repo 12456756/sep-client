@@ -268,6 +268,8 @@ export class PiTaskWorker {
     try {
       stage = 'session-persist'
       await this.duringSetup(Promise.resolve(this.onSessionCreated?.({ sessionId: session.sessionId, sessionFile: session.sessionFile })))
+      const usage = session.getContextUsage?.()
+      if (usage) await this.emit('context_usage', usage)
       this.checkCancellation()
       let nextPrompt = prompt
       let requestPurpose = this.context.resumeSessionFile ? '恢复执行' : '首次执行'

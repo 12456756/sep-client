@@ -99,6 +99,27 @@ describe('TaskRunStore', () => {
     assert.equal((await store.list(owner, 'task-a')).length, 1)
   })
 
+  it('keeps numeric context usage in the push event and on disk without exposing credentials', async () => {
+    const store = new TaskRunStore(await makeUserDataDir())
+    const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const ids = { taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a' }
+    await store.create(owner, { ...ids, modelId: 'model-a', runtimeKey: 'runtime-a', workspaceDir: 'C:/workspace/task-a', prompt: 'test' })
+    const usage = { tokens: 32000, contextWindow: 128000, percent: 25, breakdown: { system: 2000, tools: 5000, messages: 25000 } }
+    const push = await store.events.appendEvent(owner, { ...ids, type: 'context_usage', sequence: 1, occurredAt: 1, data: usage })
+    assert.deepEqual(push.data, usage)
+
+    const invalid = await store.events.appendEvent(owner, {
+      ...ids, type: 'context_usage', sequence: 2, occurredAt: 2, data: { ...usage, accessToken: 'private-value' },
+    })
+    assert.deepEqual(invalid.data, { ...usage, tokens: '[redacted]', accessToken: '[redacted]' })
+
+    const timeline = await store.events.getTimeline(owner, ids.taskId, ids.runId)
+    assert.deepEqual(timeline, [push, invalid])
+    const paths = store.getPaths(owner, ids.taskId, ids.runId)
+    const disk = (await readFile(join(paths.taskDir, 'events.jsonl'), 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line))
+    assert.deepEqual(disk, [push, invalid])
+  })
+
   it('reconstructs persisted multi-turn conversation messages', async () => {
     const store = new TaskRunStore(await makeUserDataDir())
     const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }

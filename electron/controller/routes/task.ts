@@ -143,6 +143,11 @@ export const taskRoutes = [
     runs: (await ctx.tasks.listRuns(id)).map(toClientTaskRun),
   }), { invalidMessage: TASK_ID_INVALID }),
 
+  route(INVOKE_CHANNELS.TASK_CONTEXT_USAGE, taskId, async (ctx, id) => ({
+    success: true,
+    usage: await ctx.tasks.contextUsage(id),
+  }), { invalidMessage: TASK_ID_INVALID }),
+
   route(INVOKE_CHANNELS.TASK_GET_RUN, runIds, async (ctx, input) => ({
     success: true,
     run: toClientTaskRun(await ctx.tasks.getRun(input.taskId, input.runId)),

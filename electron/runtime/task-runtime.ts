@@ -50,6 +50,8 @@ import type { KnowledgeSearchPort } from '../common/knowledge-context'
 import type { AttachmentInputPort } from '../domain/attachment-input'
 import type { TaskLifecycleRuntimeEvidence } from '../domain/task-lifecycle'
 import type { ModelTraceFactory } from '../domain/model-trace'
+import { readTaskSessionHistory } from '../data/task-session-history'
+import { sessionContextUsage } from '../pi/sdk/pi-context-usage'
 
 const log = logger.child('task-runtime')
 
@@ -438,6 +440,22 @@ export class TaskRuntime {
       participation: { executionId: runId, subscriptionId, title: task.title, modelId: employee.modelId } })
     this.reportMonitorInput({ taskId, runId, content: task.prompt })
     void this.pump()
+  }
+
+  async getContextUsage(taskId: string): Promise<import('../../src/shared/context-usage').ContextUsage | null> {
+    const scope = this.taskManager.getCurrentUserScope()
+    if (!scope || !this.taskRunStore) return null
+    const live = this.conversationExecutor.getContextUsage(taskId)
+    if (live) return live
+    const history = await readTaskSessionHistory(this.taskRunStore, scope, taskId)
+    const current = this.taskManager.getCurrentUserScope()
+    if (!current || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) return null
+    if (!history) return null
+    try {
+      const usage = sessionContextUsage(history.content, history.sessionId)
+      if (usage && history.usage?.tokens === usage.tokens && history.usage.contextWindow === usage.contextWindow) return history.usage
+      return usage
+    } catch { return null }
   }
 
   async continueConversation(
