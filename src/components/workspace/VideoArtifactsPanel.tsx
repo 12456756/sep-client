@@ -9,6 +9,7 @@ import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, vi
 import { mediaSpecMetadataSchema, videoActualSpecSchema, videoRequestedSpecSchema } from '../../shared/media-spec-contract'
 import { isVideoSubmissionRejectionCode } from '../../shared/video-errors'
 import { mediaUpstreamErrorSchema } from '../../shared/media-upstream-error'
+import { mediaFailureSchema } from '../../shared/media-failure'
 
 
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
@@ -36,6 +37,7 @@ const jobSchema = z.object({
   jobId: localId, taskId: localId, profileId: localId, operation: videoOperationSchema,
   specFailure: videoSpecFailureSchema.optional(),
   upstreamError: mediaUpstreamErrorSchema.optional(),
+  failure: mediaFailureSchema.optional(),
   parameters: videoRequestedSpecSchema, generationStatus: z.string().max(80),
   protocolVersion: z.literal(3).optional(), specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(),
   requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(), actualSpec: videoActualSpecSchema.optional(),
@@ -68,7 +70,9 @@ export function videoTaskIssue(jobs: VideoJobView[], context: 'summary' | 'notic
   for (const job of jobs) {
     if (job.error === 'OUTPUT_SPEC_MISMATCH' ||
       context === 'notice' && job.generationStatus === 'SUBMISSION_UNKNOWN') continue
-    const message = job.specFailure ? mediaSpecFailureMessage(job.specFailure) ?? mediaIssueMessage(job, 'video') : mediaIssueMessage(job, 'video')
+    const issue = mediaIssueMessage(job, 'video')
+    const spec = job.specFailure ? mediaSpecFailureMessage(job.specFailure) : null
+    const message = spec && job.generationStatus === 'SUBMISSION_UNKNOWN' ? `${issue}；${spec}` : spec ?? issue
     if (message) return message
   }
   return null
@@ -98,7 +102,7 @@ function videoBillingLabel(job: VideoJobView): string {
   const actual = job.billingStatus === 'SETTLED' ? validVideoAmount(job.actualCostCny) : undefined
   const quote = validVideoAmount(job.amountCny)
   const status = job.billingStatus === 'SETTLED' && actual === undefined ? '结算金额待核对'
-    : job.billingStatus === 'NOT_RESERVED' && job.generationStatus === 'SUBMISSION_UNKNOWN' ? '账务待确认'
+    : ['NOT_RESERVED', 'RECONCILING'].includes(job.billingStatus) && job.generationStatus === 'SUBMISSION_UNKNOWN' ? '账务待确认'
       : { NOT_RESERVED: '尚未预占', RESERVED: '费用已预占', SETTLED: '已结算', RELEASED: '预占已释放', RECONCILING: '账务核对中' }[job.billingStatus]
   return `${status}${actual !== undefined ? ` · 实付 ¥${actual}` : quote !== undefined ? ` · 报价 ¥${quote}` : ''}`
 }
@@ -118,6 +122,7 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
   compact?: boolean
 }) {
   return <div className="media-jobs video-jobs">{jobs.map(job => {
+    const issue = videoTaskIssue([job])
     const explicitlyRejected = job.generationStatus === 'FAILED' && job.trackingStatus === 'STOPPED' && isVideoSubmissionRejectionCode(job.error)
     const generation = explicitlyRejected ? { label: '提交被拒绝', tone: 'error' }
       : Object.hasOwn(mediaGenerationLabels, job.generationStatus)
@@ -129,7 +134,6 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
     const retry = generated && downloadable && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)
     const resume = !explicitlyRejected && job.trackingStatus !== 'ACTIVE' && (videoBillingPending(job.billingStatus) || unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
     if (compact) {
-      const issue = videoTaskIssue([job])
       const savedOutputs = job.outputs.filter(output => videoOutputIsSaved(job, output.outputId))
       const status = issue || (unfinished ? generation.label
           : videoBillingPending(job.billingStatus) ? '生成完成，费用核对中'
@@ -152,7 +156,6 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
       <small className="media-job-id">配置 {job.profileId} · {job.parameters.resolution ?? '分辨率未指定'} · {job.parameters.frameRate === undefined ? '帧率未指定' : `${job.parameters.frameRate} fps`} · {job.parameters.audio === undefined ? '音频未指定' : job.parameters.audio ? '含音频' : '无音频'}</small>
       {job.protocolVersion === 3 && <small>规格来源：{Object.entries(job.parameterSources ?? {}).map(([field, source]) => `${field}（${source === 'user' ? '用户要求' : source === 'model' ? '模型建议' : '上游决定'}）`).join('、') || '未指定字段由上游决定'} · 需求版本 {job.specRevision}</small>}
       {job.actualSpec && <small>实际生成：{job.actualSpec.durationSeconds === undefined ? '时长待核验' : `${job.actualSpec.durationSeconds} 秒`} · {job.actualSpec.width && job.actualSpec.height ? `${job.actualSpec.width}×${job.actualSpec.height}` : job.actualSpec.resolution ?? '尺寸待核验'} · {job.actualSpec.frameRate === undefined ? '帧率待核验' : `${job.actualSpec.frameRate} fps`}</small>}
-      {job.specFailure && <p className="media-notice" role="alert">{mediaSpecFailureMessage(job.specFailure)}</p>}
       <small className="media-job-id">任务 {job.jobId}</small>
       <div className="media-job-states" aria-live="polite">{[generation, mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
       <small>{videoBillingLabel(job)}</small>
@@ -161,7 +164,7 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
         {elapsedLabel(job.providerWaitMs) && <small>供应商等待：{elapsedLabel(job.providerWaitMs)}</small>}
         {elapsedLabel(job.downloadMs) && <small>下载保存：{elapsedLabel(job.downloadMs)}</small>}
       </div>
-      {job.generationStatus === 'SUBMISSION_UNKNOWN' && <p className="media-notice">提交结果不明{['NOT_RESERVED', 'RECONCILING'].includes(job.billingStatus) ? '，账务待确认' : ''}，请恢复跟踪原任务，不会自动重新生成。</p>}
+      {issue && <p className="media-notice">{issue}{job.generationStatus === 'SUBMISSION_UNKNOWN' && '；不会自动重新生成。'}</p>}
       {job.trackingStatus === 'AUTH_REQUIRED' && <p className="media-notice">认证恢复后，请手动恢复跟踪。</p>}
       <div className="media-job-actions">
         {resume && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />恢复跟踪</button>}

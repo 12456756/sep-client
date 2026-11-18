@@ -1,6 +1,6 @@
 import { AppError } from './app-error'
 import { AuthApiError } from '../common/platform/platform-api'
-import { mediaSpecToolFailureFrom, mediaToolFailure, type MediaToolFailure } from './media-tool-error'
+import { mediaSpecToolFailureFrom, mediaToolFailure, mediaToolFailureFrom, type MediaToolFailure } from './media-tool-error'
 import { videoErrorMessage } from '../../src/shared/video-errors'
 
 /** Fixed diagnostics: never forward arbitrary exception messages, causes or provider responses. */
@@ -30,15 +30,15 @@ function safeRequestId(value: unknown): string | undefined {
 }
 
 const VIDEO_MESSAGES: Partial<Record<AppError['code'], string>> = {
-  AUTH_REQUIRED: 'Video authentication expired. Sign in again before continuing.',
-  PERMISSION_DENIED: 'Video authorization or approval was denied. Do not infer that no video model is configured.',
-  INVALID_ARGUMENT: 'Video input or specifications are invalid. Call video_get_job with {} to inspect authorized profiles and referenceAssets. Preserve user requirements, propose missing specifications from the task context or ask the user. Do not substitute defaults. This is not a permission denial.',
-  NOT_FOUND: 'The requested video resource was not found.',
-  CONFLICT: 'A video operation is pending. Query the original job; do not automatically submit another paid request.',
-  INVALID_STATE: 'The video state could not be confirmed. Query the original job; do not automatically submit another paid request.',
-  RATE_LIMITED: 'The video service is rate limited. Do not automatically resubmit a paid request.',
-  NETWORK_ERROR: 'The video service could not be reached. This does not mean a video profile is missing.',
-  SERVICE_UNAVAILABLE: 'The video service is unavailable or returned an invalid response. Do not infer a missing profile.',
+  AUTH_REQUIRED: '视频访问授权已失效，请重新登录后查询原任务，勿重复生成。',
+  PERMISSION_DENIED: '视频操作权限不足或未获批准，请检查工作权限和审批结果，不能据此判断视频模型未配置。',
+  INVALID_ARGUMENT: '视频输入或生成规格无效，请先查询已授权的视频模型和参考图，保留用户要求并补充规格或向用户确认；不要擅自使用默认规格，不能据此判断没有权限。',
+  NOT_FOUND: '未找到所请求的视频任务或资源，请查看原任务，勿重复生成。',
+  CONFLICT: '视频操作正在处理，请查询原任务，勿自动提交另一笔付费生成请求。',
+  INVALID_STATE: '视频任务状态尚未确认，请查询原任务，勿自动提交另一笔付费生成请求。',
+  RATE_LIMITED: '视频服务请求过于频繁，请稍后查询原任务，勿自动重新生成。',
+  NETWORK_ERROR: '无法连接视频服务，请检查网络后查询原任务，不能据此判断视频模型未配置。',
+  SERVICE_UNAVAILABLE: '视频服务暂时不可用或响应异常，请查询原任务；持续失败请联系平台管理员，不能据此判断视频模型未配置。',
 }
 
 function authFailure(error: AuthApiError): { failure: MediaToolFailure; diagnostic: VideoToolFailureDiagnostic } {
@@ -50,8 +50,8 @@ function authFailure(error: AuthApiError): { failure: MediaToolFailure; diagnost
           : status === 0 ? 'NETWORK_ERROR'
             : status >= 500 ? 'SERVICE_UNAVAILABLE' : 'INTERNAL_ERROR'
   const message = error.resource === 'skills' && status === 429
-    ? 'Skill preparation is rate limited. Do not automatically retry a video request.'
-    : VIDEO_MESSAGES[code as AppError['code']] ?? 'Video operation failed. Do not infer a missing profile or automatically resubmit a paid request.'
+    ? '视频所需能力包的准备请求过于频繁，请稍后再试，勿自动重发视频生成请求。'
+    : VIDEO_MESSAGES[code as AppError['code']] ?? '视频操作失败，尚未取得具体原因，请联系平台管理员；勿推断模型缺失或自动重新生成。'
   return {
     failure: mediaToolFailure(code, message),
     diagnostic: { code, exceptionType: safeExceptionType(error.name), ...(safeStatus(status) === undefined ? {} : { httpStatus: safeStatus(status) }),
@@ -62,18 +62,20 @@ function authFailure(error: AuthApiError): { failure: MediaToolFailure; diagnost
 
 export function videoToolFailureFrom(error: unknown): MediaToolFailure {
   if (error instanceof AuthApiError) return authFailure(error).failure
-  if (!(error instanceof AppError)) return mediaToolFailure('INTERNAL_ERROR', 'Video operation failed. Do not infer a missing profile or automatically resubmit a paid request.')
-  if (error.details?.source === 'upstream') return mediaToolFailure(error.code, error.userMessage, { source: 'upstream' })
+  if (!(error instanceof AppError)) return mediaToolFailure('INTERNAL_ERROR', '视频操作失败，尚未取得具体原因，请联系平台管理员；勿推断模型缺失或自动重新生成。')
+  const meta = mediaToolFailureFrom(error).error
+  if (error.details?.source === 'upstream') return mediaToolFailure(error.code, meta.message, meta)
   if (['MISSING_SPEC', 'SPEC_CONFLICT', 'UPGRADE_REQUIRED', 'ADAPTER_UNAVAILABLE', 'ADAPTER_FIELD_UNMAPPED', 'PRICE_UNAVAILABLE', 'UPSTREAM_SPEC_UNSUPPORTED', 'OUTPUT_SPEC_MISMATCH'].includes(error.code)) return mediaSpecToolFailureFrom(error)
   const businessMessage = videoErrorMessage(error.code)
-  if (businessMessage) return mediaToolFailure(error.code, businessMessage)
+  if (businessMessage) return mediaToolFailure(error.code, businessMessage, meta)
   if (error.code === 'PERMISSION_DENIED' && error.details?.stage === 'video-quote') {
-    return mediaToolFailure(error.code, 'The video quote request was denied by SEP before local approval or video submission. This is not a local approval rejection. Do not infer a missing video model or automatically retry a paid request.')
+    return mediaToolFailure(error.code, '平台拒绝了视频报价请求，尚未进入本地审批或视频提交；这不是本地审批拒绝，请联系平台管理员检查授权，勿推断模型缺失或自动重新生成。', meta)
   }
   if (error.code === 'PERMISSION_DENIED' && error.details?.stage === 'video-authorization') {
-    return mediaToolFailure(error.code, 'Video authentication token acquisition was denied before the gateway request or local approval. Do not automatically retry a paid request.')
+    return mediaToolFailure(error.code, '视频访问凭据获取被拒绝，尚未发起生成服务请求或进入本地审批，请联系平台管理员检查授权，勿自动重新生成。', meta)
   }
-  return mediaToolFailure(error.code, VIDEO_MESSAGES[error.code] ?? 'Video operation failed. Do not infer a missing profile or automatically resubmit a paid request.')
+  if (error.details?.businessCode || error.details?.gatewayCode) return mediaToolFailure(error.code, meta.message, meta)
+  return mediaToolFailure(error.code, VIDEO_MESSAGES[error.code] ?? '视频操作失败，尚未取得具体原因，请联系平台管理员；勿推断模型缺失或自动重新生成。', meta)
 }
 
 export function videoToolFailureDiagnostic(error: unknown): VideoToolFailureDiagnostic {

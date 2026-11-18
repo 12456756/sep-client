@@ -29,7 +29,8 @@ for (const kind of ['image', 'video'] as const) {
         assert.notEqual(error.code, 'AUTH_REQUIRED')
         assert.equal(error.details?.source, 'upstream')
         const failure = kind === 'image' ? mediaToolFailureFrom(error) : videoToolFailureFrom(error)
-        assert.match(failure.error.message, /Supplier account disabled/)
+        assert.match(failure.error.message, /生成供应商账号已停用/)
+        assert.doesNotMatch(failure.error.message, /Supplier account disabled|重新登录|余额不足/)
       }
       assert.equal(calls, 1)
     })
@@ -39,5 +40,5 @@ test('asynchronous upstream errors survive receipt validation and become visible
   const upstreamError = { status: 200, body: { error: { code: 'supplier_failed', message: 'Reference subject rejected' } } }
   const receipt = videoReceiptSchema.parse({ ...fixture.receipts.failed, upstreamError })
   assert.deepEqual(receipt.upstreamError, upstreamError)
-  assert.match(mediaIssueMessage({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: null, upstreamError }, 'video')!, /Reference subject rejected/)
+  assert.match(mediaIssueMessage({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: null, upstreamError }, 'video')!, /参考内容被生成服务拒绝/)
 })

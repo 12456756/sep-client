@@ -9,6 +9,19 @@ import { AppError } from '../errors/app-error'
 const signal = new AbortController().signal
 const video = Buffer.from(fixture.mediaFixture.base64, 'base64')
 const request = videoRequestWithIdentitySchema.parse(fixture.request)
+
+test('keeps unregistered video business codes without treating them as proven rejections', async () => {
+  const adapter = gateway(async () => json({ error: { code: 'UPSTREAM_TIMEOUT', source: 'upstream', requestId: 'req-video', message: 'private raw body' } }, 503))
+  await assert.rejects(adapter.submit(request, signal), (error: unknown) => {
+    assert.ok(error instanceof SepVideoGatewayError)
+    assert.equal(error.code, 'SERVICE_UNAVAILABLE')
+    assert.equal(error.businessCode, 'UPSTREAM_TIMEOUT')
+    assert.equal(error.requestId, 'req-video')
+    assert.equal(error.definitelyRejected, false)
+    assert.doesNotMatch(JSON.stringify(error), /private raw body/)
+    return true
+  })
+})
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
 }

@@ -15,6 +15,8 @@ import { imageReferenceSupport, mediaReferenceProblem, type MediaReferenceInfo }
 import { imageEffectiveSpecMatches, isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
+import { mediaJobFailure } from '../errors/media-job-error'
+import { mediaFailureCodeSchema, mediaFailureSchema } from '../../src/shared/media-failure'
 import { transportKind } from '../errors/operation-feedback'
 import { requireScope, type ScopeSource } from './scope-guard'
 import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
@@ -137,8 +139,11 @@ export class MediaService {
       ...(job.providerWaitMs !== undefined ? { providerWaitMs: job.providerWaitMs } : {}),
       ...(job.downloadMs !== undefined ? { downloadMs: job.downloadMs } : {}),
       error: this.publicJobError(job.errorCode ?? job.error), ...(job.upstreamError ? { upstreamError: job.upstreamError } : {}), createdAt: job.createdAt, updatedAt: job.updatedAt,
+      ...(job.failure ? { failure: mediaFailureSchema.parse(job.failure) } : {}),
+      ...(job.outputErrors?.length ? { outputErrors: job.outputErrors.filter(item => mediaFailureCodeSchema.safeParse(item.code).success) } : {}),
       assets: jobAssets.map(asset => this.viewAsset(asset)), canRetrySave,
-      canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job) : job.recovery?.canQuery !== false,
+      canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job)
+        : job.recovery?.canQuery !== false && (!!job.receiptId || job.profile.capabilities.recoverByRequestId),
       canCancelUpstream: job.recovery?.canCancel !== false && job.profile.capabilities.cancel && !!job.receiptId && !terminal.has(job.generationStatus) }
   }
   private publicJobError(error: string | null): string | null {
@@ -149,7 +154,7 @@ export class MediaService {
     if (error === '原结果当前不可下载，不会重新生成。') return 'DOWNLOAD_UNAVAILABLE'
     if (error === '本轮跟踪已达时长或查询上限，可手动恢复原请求。' || error === '查询重试已达上限，可继续跟踪原请求。') return 'TRACKING_LIMIT'
     if (error === '服务端无法继续查询原请求，不会再次生成。' || error === '该通道不支持按原请求找回，不能自动恢复。') return 'QUERY_UNAVAILABLE'
-    return ['AUTH_REQUIRED', 'NETWORK_ERROR', 'NETWORK_TIMEOUT', 'RATE_LIMITED', 'INSUFFICIENT_FUNDS', 'QUOTE_EXPIRED', 'MEDIA_FORBIDDEN', 'PERMISSION_DENIED'].includes(error) ? error : 'MEDIA_FAILED'
+    return mediaFailureCodeSchema.safeParse(error).success ? error : 'MEDIA_FAILED'
   }
   private async loadCapabilities(scope: TaskOwnerScope, taskId: string, subscriptionId: string, refresh: boolean, epoch: number): Promise<void> {
     const key = this.key(scope, taskId)
@@ -460,7 +465,8 @@ export class MediaService {
       } catch (error) {
         this.invalidateCapabilities(scope, taskId, epoch, error)
         job.generationStatus = 'SUBMISSION_UNKNOWN'
-        job.error = '提交结果尚未确认，仅查询原请求，不会再次生成。'
+        job.failure = mediaJobFailure(error, 'image-submit')
+        job.error = job.failure.code
       }
       // Persistence failure must not rewrite a confirmed receipt into an unknown submission.
       await this.options.store.saveJob(scope, job)
@@ -511,6 +517,7 @@ export class MediaService {
     job.outputs = receipt.outputs; job.billingStatus = receipt.billingStatus
     job.actualSpec = receipt.actualSpec
     job.recovery = receipt.recovery; job.errorCode = receipt.errorCode; job.outputErrors = receipt.outputErrors; job.upstreamError = receipt.upstreamError
+    job.failure = undefined
     if (priorMismatch) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
     if (job.input.protocolVersion === 3 && receipt.actualSpec && job.input.requestedSpec && Object.entries(job.input.requestedSpec).some(([key, requested]) => {
       const actual = receipt.actualSpec![key as keyof typeof receipt.actualSpec]
@@ -558,6 +565,7 @@ export class MediaService {
     for (const output of job.outputs) if (!await this.outputSaved(scope, job, output.outputId)) missing.push(output)
     if (!missing.length) {
       this.recordOutputMismatch(job, await this.options.store.listAssets(scope, job.taskId))
+      if (job.failure?.stage === 'image-save') job.failure = undefined
       job.saveStatus = 'SAVED'; await this.options.store.saveJob(scope, job)
       return
     }
@@ -574,13 +582,15 @@ export class MediaService {
         downloaded++
       } catch (error) {
         if (parent.aborted) throw parent.reason
+        job.failure = mediaJobFailure(error, 'image-save')
         if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) throw error
         log.warn('original image download failed', { taskId: job.taskId, jobId: job.jobId, outputId: output.outputId,
-          error: error instanceof Error ? error.name + ': ' + error.message : String(error) })
+          ...job.failure })
         failed++
       }
     }
     job.saveStatus = failed ? 'SAVE_FAILED' : 'SAVED'
+    if (!failed && job.failure?.stage === 'image-save') job.failure = undefined
     job.error = !failed ? null : expired === failed ? '未保存的原结果已过期，无法再次下载；已保存的图片仍可使用。'
       : job.recovery?.canDownload === false ? '原结果当前不可下载，不会重新生成。' : '部分图片未保存，可以重试保存原结果。'
     if (downloaded > 0) job.downloadMs = (job.downloadMs ?? 0) + (Date.now() - downloadStartedAt)
@@ -633,6 +643,9 @@ export class MediaService {
           await this.save(scope, job, parent, options.repair === true)
         } catch (error) {
           if (parent.aborted) throw parent.reason
+          if (!(error instanceof AppError && error.code === 'NOT_FOUND' && !job.receiptId && job.failure)) {
+            job.failure = mediaJobFailure(error, job.saveStatus === 'SAVING' ? 'image-save' : 'image-query')
+          }
           if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) {
             job.trackingStatus = 'AUTH_REQUIRED'; job.error = '请恢复图片任务的读取授权。'; break
           }
@@ -651,6 +664,7 @@ export class MediaService {
         job.trackingStatus = 'STOPPED'
       }
     } catch (error) {
+      if (!parent.aborted && !job.failure) job.failure = mediaJobFailure(error, job.saveStatus === 'SAVING' ? 'image-save' : 'image-query')
       const interrupted = epoch !== this.epoch && parent.reason !== explicitStop
       const authRequired = !interrupted && parent.reason !== explicitStop && error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
       job.trackingStatus = authRequired ? 'AUTH_REQUIRED' : interrupted ? 'INTERRUPTED' : 'STOPPED'
@@ -787,7 +801,10 @@ export class MediaService {
       }
       if (!pending.length) return
       if (pending.some(job => ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus))) {
-        if (options.recoverOriginal && pending.some(job => job.generationStatus === 'RESULT_EXPIRED')) throw new ArrangementMediaRecoveryError('download', new Error('Original image output expired.'))
+        if (options.recoverOriginal) {
+          const phase = pending.some(job => job.generationStatus === 'RESULT_EXPIRED') ? 'expired' : 'generation'
+          throw new ArrangementMediaRecoveryError(phase, new Error('Original image generation did not deliver an available result.'))
+        }
         throw new AppError('INVALID_STATE', { message: '图片尚未完整交付，请查看图片任务状态。' })
       }
       const activity = pending.map(job => this.activities.get(this.key(scope, job.jobId))?.promise).find(Boolean)
@@ -799,6 +816,12 @@ export class MediaService {
       }
       if (options.recoverOriginal) {
         if (pending.some(job => job.trackingStatus === 'AUTH_REQUIRED')) throw new AppError('AUTH_REQUIRED')
+        if (pending.some(job => job.generationStatus === 'SUBMISSION_UNKNOWN')) {
+          throw new ArrangementMediaRecoveryError('submission', new Error('Original image submission is unconfirmed.'))
+        }
+        if (pending.some(job => !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus))) {
+          throw new ArrangementMediaRecoveryError('query', new Error('Original image tracking ended before a generation result was confirmed.'))
+        }
         const recoverable = pending.find(job => (recoveries.get(job.jobId) ?? 0) < 3 && job.receiptId &&
           job.recovery?.canDownload !== false && job.outputs.some(output => output.expiresAt === null || output.expiresAt > Date.now()))
         if (recoverable) {

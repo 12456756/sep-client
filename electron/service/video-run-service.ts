@@ -197,7 +197,12 @@ export class VideoRunService implements VideoRunPort {
           if (failed || trackingDone && !run.host.hasActiveTracker(taskId, id)) {
             const error = trackingError instanceof AppError ? trackingError : new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
             await this.notifyTerminalFailure(run, error)
-            if (recoverOriginal && job?.generationStatus === 'RESULT_EXPIRED' && !terminalVideoFailure(error)) throw new ArrangementMediaRecoveryError('download', error)
+            if (recoverOriginal && job && !terminalVideoFailure(error)) {
+              if (job.generationStatus === 'SUBMISSION_UNKNOWN') throw new ArrangementMediaRecoveryError('submission', error)
+              if (job.generationStatus === 'RESULT_EXPIRED') throw new ArrangementMediaRecoveryError('expired', error)
+              if (['FAILED', 'CANCELLED', 'NOT_SUBMITTED'].includes(job.generationStatus)) throw new ArrangementMediaRecoveryError('generation', error)
+              if (!['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) throw new ArrangementMediaRecoveryError('query', error)
+            }
             if (recoverOriginal && !terminalVideoFailure(error) && job && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
               if ((recoveries.get(id) ?? 0) < 3) {
                 recoveries.set(id, (recoveries.get(id) ?? 0) + 1)

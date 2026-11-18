@@ -221,8 +221,8 @@ export function MediaCreationForm({ profiles, protocolVersion, defaultProfileId,
 export function MediaJobList({ jobs, archived, busy, onAction, compact = false }: { jobs: MediaJobView[]; archived: boolean; busy: boolean; onAction: (job: MediaJobView, action: JobAction, cancelUpstream?: boolean) => void; compact?: boolean }) {
   return <div className="media-jobs">{jobs.map(job => {
     const actions = mediaJobActions(job, archived)
+    const issue = mediaIssueMessage(job, 'image')
     if (compact) {
-      const issue = mediaIssueMessage(job, 'image')
       const pending = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
       if (!issue && !pending && !actions.retrySave && !actions.resumeTracking) return null
       const label = issue || (pending ? mediaGenerationLabels[job.generationStatus as keyof typeof mediaGenerationLabels]?.label || '正在生成图片' : mediaSaveLabels[job.saveStatus].label)
@@ -249,7 +249,7 @@ export function MediaJobList({ jobs, archived, busy, onAction, compact = false }
         {elapsedLabel(job.providerWaitMs) && <small>供应商等待：{elapsedLabel(job.providerWaitMs)}</small>}
         {elapsedLabel(job.downloadMs) && <small>下载保存：{elapsedLabel(job.downloadMs)}</small>}
       </div>
-      {job.generationStatus === 'SUBMISSION_UNKNOWN' && <p className="media-notice">尚不能确认上游是否接单，不会自动重新生成。</p>}
+      {issue && <p className="media-notice">{issue}</p>}
       {job.trackingStatus === 'AUTH_REQUIRED' && <p className="media-notice">认证恢复后可继续跟踪原任务。</p>}
       {job.trackingStatus === 'STOPPED' && <p className="media-notice">仅停止本地跟踪，上游可能继续生成和计费。</p>}
       <div className="media-job-actions">

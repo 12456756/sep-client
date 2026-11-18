@@ -13,6 +13,7 @@ import { inspectMediaImage, MAX_MEDIA_BYTES, MAX_MEDIA_DIMENSION, MAX_MEDIA_PIXE
 import { isSafeId, ScopePath, TaskScopeError, type TaskOwnerScope } from './scope-path'
 import { WriteChain } from './write-chain'
 import { mediaUpstreamErrorSchema } from '../../src/shared/media-upstream-error'
+import { mediaFailureSchema } from '../../src/shared/media-failure'
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const timestamp = z.number().int().nonnegative()
@@ -37,6 +38,7 @@ const jobSchema = z.object({
   lastQueriedAt: timestamp.optional(),
   providerWaitMs: timestamp.optional(), downloadMs: timestamp.optional(),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(), upstreamError: mediaUpstreamErrorSchema.optional(),
+  failure: mediaFailureSchema.optional(),
   attempts: z.number().int().nonnegative(), error: z.string().max(20_000).nullable(), createdAt: timestamp, updatedAt: timestamp,
 }).strict().superRefine((job, context) => {
   const { request, input, profile, quote } = job

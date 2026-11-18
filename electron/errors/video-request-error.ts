@@ -36,7 +36,7 @@ export class VideoRequestError extends AppError {
     const code: ErrorCode = options.source === 'upstream' ? 'SERVICE_UNAVAILABLE' : businessCode !== null && isErrorCode(businessCode) ? businessCode : mapped
     super(code, {
       message: options.message ?? videoErrorMessage(businessCode) ?? `SEP video request failed (${options.gatewayCode}).`,
-      details: { resource: 'video', ...(options.source === 'upstream' ? { source: options.source, statusCode } : {}), ...(options.stage ? { stage: options.stage } : {}), ...(safeId(options.requestId) ? { requestId: safeId(options.requestId)! } : {}), ...(businessCode ? { businessCode } : {}) },
+      details: { resource: 'video', gatewayCode: options.gatewayCode, statusCode, ...(options.source ? { source: options.source } : {}), ...(options.source === 'upstream' && options.message ? { upstreamMessage: options.message } : {}), ...(options.stage ? { stage: options.stage } : {}), ...(safeId(options.requestId) ? { requestId: safeId(options.requestId)! } : {}), ...(businessCode ? { businessCode } : {}) },
     })
     this.name = options.gatewayCode === 'VIDEO_ABORTED' ? 'AbortError' : 'VideoRequestError'
     this.businessCode = businessCode

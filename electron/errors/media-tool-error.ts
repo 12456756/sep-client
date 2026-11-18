@@ -1,6 +1,8 @@
 import { redactText } from '../common/redact'
 import { AppError } from './app-error'
 import { ERROR_CODES } from './error-codes'
+import { mediaFailureSchema } from '../../src/shared/media-failure'
+import { mediaErrorReason, mediaRecoveryAdvice, mediaUpstreamReason } from '../../src/shared/media-error-messages'
 import { imageRequestedSpecSchema, videoRequestedSpecSchema, isMediaSpecError, type MediaSpecFailureContext } from '../../src/shared/media-spec-contract'
 
 export interface MediaToolFailure {
@@ -8,7 +10,7 @@ export interface MediaToolFailure {
   error: { code: string; message: string } & MediaToolFailureMeta
 }
 
-export type MediaToolFailureMeta = MediaSpecFailureContext
+export type MediaToolFailureMeta = MediaSpecFailureContext & { requestId?: string; httpStatus?: number; gatewayCode?: string }
 
 function safeText(value: string): string {
   return redactText(value).replace(/https?:\/\/[^\s<>"']+/gi, '[redacted-url]')
@@ -46,14 +48,25 @@ export function mediaToolFailure(code: string, message: string, meta?: MediaTool
     ...(alternatives?.length ? { alternatives } : {}),
     ...(meta?.submissionState && SUBMISSION_STATES.has(meta.submissionState) ? { submissionState: meta.submissionState } : {}),
     ...(meta?.billingState && BILLING_STATES.has(meta.billingState) ? { billingState: meta.billingState } : {}),
-    ...(typeof meta?.retryable === 'boolean' ? { retryable: meta.retryable } : {}) }
+    ...(typeof meta?.retryable === 'boolean' ? { retryable: meta.retryable } : {}),
+    ...(mediaFailureSchema.shape.requestId.safeParse(meta?.requestId).success && meta?.requestId !== undefined ? { requestId: meta.requestId } : {}),
+    ...(mediaFailureSchema.shape.httpStatus.safeParse(meta?.httpStatus).success && meta?.httpStatus !== undefined ? { httpStatus: meta.httpStatus } : {}),
+    ...(mediaFailureSchema.shape.gatewayCode.safeParse(meta?.gatewayCode).success && meta?.gatewayCode !== undefined ? { gatewayCode: meta.gatewayCode } : {}) }
   return { ok: false, error }
 }
 
 export function mediaToolFailureFrom(error: unknown, cancelled = false): MediaToolFailure {
   if (error instanceof AppError) {
     const details = error.details ?? {}
-    return mediaToolFailure(error.code, isMediaSpecError(error.code) ? ERROR_CODES[error.code].message : error.userMessage, {
+    const reason = details.source === 'upstream'
+      ? mediaUpstreamReason({ code: details.businessCode, message: details.upstreamMessage }) ?? '生成供应商返回异常，尚未提供可识别的具体原因'
+      : mediaErrorReason(details.reasonCode) ?? mediaErrorReason(details.businessCode)
+        ?? (!['VIDEO_HTTP_ERROR', 'MEDIA_HTTP_ERROR'].includes(String(details.gatewayCode)) ? mediaErrorReason(details.gatewayCode) : null)
+        ?? mediaErrorReason(error.code)
+    const message = details.source === 'upstream' || reason
+      ? `${reason}；${mediaRecoveryAdvice(details.source === 'upstream' ? undefined : typeof details.businessCode === 'string' ? details.businessCode : error.code)}，勿重复生成。`
+      : error.userMessage
+    return mediaToolFailure(error.code, isMediaSpecError(error.code) ? ERROR_CODES[error.code].message : message, {
       businessCode: typeof details.businessCode === 'string' ? details.businessCode : undefined,
       field: typeof details.field === 'string' ? details.field : undefined,
       stage: typeof details.stage === 'string' ? details.stage : undefined,
@@ -65,6 +78,9 @@ export function mediaToolFailureFrom(error: unknown, cancelled = false): MediaTo
       submissionState: typeof details.submissionState === 'string' ? details.submissionState : undefined,
       billingState: typeof details.billingState === 'string' ? details.billingState : undefined,
       retryable: typeof details.retryable === 'boolean' ? details.retryable : undefined,
+      requestId: typeof details.requestId === 'string' ? details.requestId : undefined,
+      httpStatus: typeof details.statusCode === 'number' ? details.statusCode : undefined,
+      gatewayCode: typeof details.gatewayCode === 'string' ? details.gatewayCode : undefined,
     })
   }
   return cancelled

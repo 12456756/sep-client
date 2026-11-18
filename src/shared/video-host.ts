@@ -4,6 +4,7 @@ import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, typ
 import { mediaReferenceSourceSchema } from './media-host'
 import { MAX_MEDIA_REFERENCES } from './media-references'
 import type { MediaUpstreamError } from './media-upstream-error'
+import type { MediaFailure } from './media-failure'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const profileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
@@ -80,6 +81,7 @@ export interface VideoJobView {
   specFailure?: VideoSpecFailure
   error: string | null
   upstreamError?: MediaUpstreamError
+  failure?: MediaFailure
   outputs: VideoOutput[]
   /** Verified local outputs; supports partial save without hiding existing files. */
   savedOutputIds?: string[]

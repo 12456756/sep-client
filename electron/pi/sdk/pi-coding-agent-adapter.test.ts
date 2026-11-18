@@ -592,6 +592,32 @@ describe('trusted media host tools with the real Pi SDK', () => {
     assert.equal(result.jobId, 'job-a')
     assert.deepEqual(result.parameters, parameters)
   })
+
+  it('passes the Chinese submission cause to the model without request diagnostics', async () => {
+    const { bodies } = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, {
+      ...jobView, generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'STOPPED', error: 'QUERY_UNAVAILABLE',
+      failure: { code: 'SERVICE_UNAVAILABLE', stage: 'image-submit', source: 'upstream', businessCode: 'PROVIDER_OVERLOADED',
+        message: 'Supplier account disabled', requestId: 'private-request-id', httpStatus: 503 },
+      canRetrySave: false, canResumeTracking: false,
+    })
+    const text = messageText(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content)
+    const result = JSON.parse(text)
+    assert.match(result.issue, /提交结果尚未确认.*图片提交.*供应商.*停用/)
+    assert.match(result.issue, /勿重复提交/)
+    assert.equal(result.failure.stage, 'image-submit')
+    assert.equal(result.canResumeTracking, false)
+    assert.doesNotMatch(text, /Supplier account disabled|private-request-id|httpStatus/)
+  })
+
+  it('keeps indexed image output failures and gives the model a Chinese explanation', async () => {
+    const { bodies } = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, {
+      ...jobView, generationStatus: 'PARTIAL_SUCCEEDED', error: null,
+      outputErrors: [{ index: 1, code: 'CONTENT_POLICY_VIOLATION' }],
+    })
+    const result = JSON.parse(messageText(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content))
+    assert.deepEqual(result.outputErrors, [{ index: 1, code: 'CONTENT_POLICY_VIOLATION' }])
+    assert.match(result.issue, /第 2 项.*内容.*已生成的成果可继续使用/)
+  })
   it('accepts SEP named image sizes as V3 job specifications', async () => {
     const { bodies } = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, {
       ...jobView, protocolVersion: 3, parameters: { ...generationInput.parameters, size: 'small' },

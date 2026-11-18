@@ -42,6 +42,34 @@ async function finish(service: VideoService, job: LocalVideoJob): Promise<LocalV
 }
 
 describe('VideoService mock submission, disk recovery and original delivery', () => {
+  it('persists unregistered submit diagnostics across missing-receipt recovery and clears them on confirmation', async context => {
+    const f = await fixture()
+    const submit = f.gateway.submit.bind(f.gateway)
+    let posts = 0
+    context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+      posts++
+      await submit(...args)
+      throw new AppError('SERVICE_UNAVAILABLE', { details: { stage: 'video-submit', businessCode: 'UPSTREAM_TIMEOUT',
+        statusCode: 503, requestId: 'req-persisted', source: 'upstream', upstreamMessage: 'Supplier account disabled', rawResponse: 'private raw body' } })
+    })
+    const missing = context.mock.method(f.gateway, 'findReceipt', async () => null)
+    const job = await f.service.generate('task-a', input())
+    const reopened = f.rebuilt()
+    const [restored] = await reopened.recover()
+    assert.equal(restored.error, 'SERVICE_UNAVAILABLE')
+    assert.deepEqual(restored.failure, job.failure)
+    assert.equal(restored.failure?.businessCode, 'UPSTREAM_TIMEOUT')
+    assert.equal(restored.failure?.requestId, 'req-persisted')
+    assert.equal(restored.failure?.httpStatus, 503)
+    assert.equal(restored.failure?.message, 'Supplier account disabled')
+    assert.doesNotMatch(JSON.stringify(restored.failure), /private|rawResponse/)
+    await assert.rejects(reopened.submit('task-a', job.jobId), /already/)
+    missing.mock.restore()
+    const confirmed = await reopened.resume('task-a', job.jobId)
+    assert.equal(confirmed.submission, 'RECEIPTED')
+    assert.equal(confirmed.failure, undefined)
+    assert.equal(posts, 1)
+  })
   for (const [code, status] of [['INSUFFICIENT_FUNDS', 402], ['VIDEO_BUDGET_EXCEEDED', 402], ['QUOTE_EXPIRED', 409], ['VIDEO_CONCURRENCY_LIMIT', 409]] as const) {
     it(`persists definitive ${code} across restarts without querying or resubmitting`, async () => {
       const f = await fixture()

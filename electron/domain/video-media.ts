@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { videoOutputSchema, videoReceiptSchema, videoSpecFailureSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 import type { VideoOutput, VideoReceipt } from '../../src/shared/video-media'
 import { isVideoSubmissionRejectionCode } from '../../src/shared/video-errors'
+import { mediaFailureSchema } from '../../src/shared/media-failure'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec } from '../../src/shared/media-spec-contract'
 
 export const videoLocalIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
@@ -35,6 +36,7 @@ export const localVideoJobSchema = z.object({
   /** Duration of the most recent complete save round across all outputs. */
   downloadMs: z.number().int().nonnegative().optional(),
   specFailure: videoSpecFailureSchema.optional(),
+  failure: mediaFailureSchema.optional(),
   error: z.string().max(256).nullable(), createdAt: z.number().int().nonnegative(), updatedAt: z.number().int().nonnegative(),
 }).strict().superRefine((job, context) => {
   if (job.request.quoteId !== job.quote.quoteId || job.quote.status !== 'quoted' || job.updatedAt < job.createdAt ||

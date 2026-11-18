@@ -36,6 +36,8 @@ import { mediaReferenceSourceSchema, mediaToolGenerationInputSchema } from '../.
 import { imageRequestedSpecSchema, videoRequestedSpecSchema, videoActualSpecSchema, mediaParameterSourcesSchema } from '../../../src/shared/media-spec-contract'
 import { mediaCapabilitiesSchema, mediaId, mediaParametersSchema } from '../../common/platform/media-contract'
 import { mediaUpstreamErrorSchema } from '../../../src/shared/media-upstream-error'
+import { mediaFailureCodeSchema, mediaFailureSchema } from '../../../src/shared/media-failure'
+import { mediaIssueMessage, type MediaIssueState } from '../../../src/shared/media-feedback'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
 import { videoToolFailureDiagnostic, videoToolFailureFrom } from '../../errors/video-tool-error'
 import { AppError } from '../../errors/app-error'
@@ -65,7 +67,6 @@ import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnaps
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { encodingToolDefinitions } from './pi-text-tools'
 import { CURRENT_TIME_TOOL_NAME, currentTimeToolDefinition } from './pi-current-time'
-import { videoErrorMessage } from '../../../src/shared/video-errors'
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
@@ -121,6 +122,16 @@ function registeredVideoNames(config: PiAgentSessionConfig): VideoToolName[] {
 }
 
 const videoId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+function modelMediaJobFeedback<T extends MediaIssueState>(job: T, kind: 'image' | 'video') {
+  const issue = mediaIssueMessage(job, kind)
+  return { ...job, ...(issue ? { issue } : {}),
+    ...(job.failure ? { failure: {
+      code: job.failure.code, stage: job.failure.stage, source: job.failure.source,
+      businessCode: job.failure.businessCode, gatewayCode: job.failure.gatewayCode, reasonCode: job.failure.reasonCode,
+    } } : {}),
+  }
+}
+
 const videoJobResultSchema = z.object({
   jobId: videoId, taskId: videoId, profileId: videoId,
   operation: z.enum(['image-to-video', 'text-to-video']),
@@ -130,6 +141,7 @@ const videoJobResultSchema = z.object({
   requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(),
   actualSpec: videoActualSpecSchema.optional(), parameterSources: mediaParameterSourcesSchema.optional(),
   upstreamError: mediaUpstreamErrorSchema.optional(),
+  failure: mediaFailureSchema.optional(),
   acceptance: z.enum(['matched', 'mismatched', 'unknown']).optional(),
   generationStatus: z.enum(['NOT_SUBMITTED', 'SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
@@ -139,7 +151,7 @@ const videoJobResultSchema = z.object({
   actualCostCny: z.string().regex(/^\d+\.\d{6}$/).max(128).optional(),
   amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).max(128).optional(),
   // Free-form upstream messages can echo prompts, paths or credentials. Never forward them.
-  error: z.string().max(8192).nullable().transform(value => value === null ? null : videoErrorMessage(value) ? value : 'Video job reported an error.'),
+  error: z.string().max(8192).nullable().transform(value => value === null ? null : mediaFailureCodeSchema.safeParse(value).success ? value : 'MEDIA_FAILED'),
   createdAt: z.number().nonnegative().finite(), updatedAt: z.number().nonnegative().finite(),
   outputs: z.array(videoOutputSchema.strip()).max(4),
   artifacts: z.array(z.object({
@@ -148,6 +160,7 @@ const videoJobResultSchema = z.object({
     status: z.enum(['pending', 'saving', 'saved', 'save-failed', 'missing', 'expired']),
   })).max(4).optional(),
 }).refine(job => job.billingStatus !== 'MOCK_NOT_CHARGED' || job.amountCny === undefined && job.actualCostCny === undefined && job.amountUsd === undefined)
+  .transform(job => modelMediaJobFeedback(job, 'video'))
 const videoTaskResultSchema = z.object({
   mock: z.boolean(), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&
     runtime.profiles.every(profile => profile.capabilities.aspectRatios.every(ratio => ratio.length <= 32))),
@@ -271,10 +284,14 @@ const mediaJobResultSchema = z.object({
   generationStatus: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
-  billingStatus: z.string(), error: z.string().nullable(), createdAt: z.number(), updatedAt: z.number(),
+  billingStatus: z.string(), error: mediaFailureCodeSchema.nullable(), createdAt: z.number(), updatedAt: z.number(),
   upstreamError: mediaUpstreamErrorSchema.optional(),
+  failure: mediaFailureSchema.optional(),
+  outputErrors: z.array(z.object({ index: z.number().int().nonnegative(), code: mediaFailureCodeSchema })).optional(),
+  canRetrySave: z.boolean().optional(), canResumeTracking: z.boolean().optional(),
   assets: z.array(mediaAssetResultSchema), canCancelUpstream: z.boolean(),
 }).refine(job => (job.protocolVersion === 3 ? imageRequestedSpecSchema : mediaParametersSchema).safeParse(job.parameters).success)
+  .transform(job => modelMediaJobFeedback(job, 'image'))
 
 function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown; isError: boolean } {
   // Project business views only: quotes, provider credentials, URLs and transport DTOs never reach Pi.

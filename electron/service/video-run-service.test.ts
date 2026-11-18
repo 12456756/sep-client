@@ -20,6 +20,7 @@ import { EmployeeDirectory } from './employee-directory'
 import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
 import { PiCodingAgentAdapter } from '../pi/sdk/pi-coding-agent-adapter'
 import { PiTaskWorker } from '../pi/sdk/pi-task-worker'
+import { runtimeFeedback } from '../errors/runtime-feedback'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -802,6 +803,40 @@ for (const scenario of ['failed', 'corrupt-download'] as const) {
     await f.service.stopAll()
   })
 }
+
+for (const [scenario, expected] of [
+  ['failed', 'MEDIA_GENERATION_FAILED'], ['expired', 'MEDIA_RESULT_EXPIRED'],
+] as const) test(`${scenario} keeps its video failure stage when recovering the original result`, async () => {
+  const f = await setup(scenario)
+  try {
+    const tools = await f.service.prepareRun(f.runInput)
+    await tools!.execute('video_from_image', input())
+    await assert.rejects(f.service.waitForRun('task-a', 'run-a', { recoverOriginal: true }), error => {
+      assert.equal(runtimeFeedback(error).code, expected)
+      return true
+    })
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally { await f.service.stopAll() }
+})
+
+test('unconfirmed video submission is not reported as a model or download failure', async () => {
+  const f = await setup()
+  let submits = 0
+  const source = f.options.gateway
+  const service = new VideoRunService({ ...f.options, gateway: owner => ({ ...source(owner),
+    submit: async () => { submits++; throw new AppError('NETWORK_ERROR') }, findReceipt: async () => null,
+  }) })
+  try {
+    const tools = await service.prepareRun(f.runInput)
+    await assert.rejects(tools!.execute('video_from_image', input()), { code: 'INVALID_STATE' })
+    await assert.rejects(service.waitForRun('task-a', 'run-a', { recoverOriginal: true }), error => {
+      assert.equal(runtimeFeedback(error).code, 'MEDIA_SUBMISSION_UNKNOWN')
+      return true
+    })
+    assert.equal(submits, 1)
+    assert.equal(f.gateway.calls.content, 0)
+  } finally { await service.stopAll() }
+})
 
 test('stopTask aborts preparation before a delayed task binding can publish a facade', async () => {
   const f = await setup()
