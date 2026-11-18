@@ -15,6 +15,7 @@ import { appendFile, mkdir, open, readFile } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { TaskExecutionEvent } from '../../src/shared/types'
+import { contextUsageSchema } from '../../src/shared/context-usage'
 import { redactValue } from '../common/redact'
 import { ScopePath, TaskScopeError, type TaskOwnerScope } from './scope-path'
 import { WriteChain } from './write-chain'
@@ -23,6 +24,11 @@ import { WriteChain } from './write-chain'
 const SEQUENCE_TAIL_BYTES = 64 * 1024
 
 function sanitizeEvent(event: TaskExecutionEvent): TaskExecutionEvent {
+  if (event.type === 'context_usage') {
+    const usage = contextUsageSchema.safeParse(event.data)
+    // Only the strictly validated numeric payload can bypass credential redaction.
+    if (usage.success) return { ...event, data: usage.data }
+  }
   return { ...event, data: redactValue(event.data) }
 }
 

@@ -450,7 +450,12 @@ export class TaskRuntime {
     const history = await readTaskSessionHistory(this.taskRunStore, scope, taskId)
     const current = this.taskManager.getCurrentUserScope()
     if (!current || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) return null
-    try { return history ? sessionContextUsage(history.content, history.sessionId) : null } catch { return null }
+    if (!history) return null
+    try {
+      const usage = sessionContextUsage(history.content, history.sessionId)
+      if (usage && history.usage?.tokens === usage.tokens && history.usage.contextWindow === usage.contextWindow) return history.usage
+      return usage
+    } catch { return null }
   }
 
   async continueConversation(

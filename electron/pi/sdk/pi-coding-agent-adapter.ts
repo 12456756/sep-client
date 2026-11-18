@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { lazyStream, type AssistantMessage, type AssistantMessageEvent, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
 import {
+  calculateContextTokens,
   createAgentSession,
   createBashToolDefinition,
   createGrepToolDefinition,
@@ -24,7 +25,8 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { attachConnectorTools } from './pi-connector-tools'
-import { GATEWAY_CONTEXT_WINDOW } from './pi-context-usage'
+import { estimateRequestOverhead, GATEWAY_CONTEXT_WINDOW } from './pi-context-usage'
+import type { ContextUsage } from '../../../src/shared/context-usage'
 import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
@@ -805,6 +807,7 @@ class PiCodingAgentSession implements PiAgentSession {
       purpose: (purpose: string) => void
       observe: (event: AgentSessionEvent) => void
       startPrompt: () => void
+      contextOverhead: (timestamp: number) => ReturnType<typeof estimateRequestOverhead>
     },
   ) {
     const toolStarts = new Map<string, number>()
@@ -879,8 +882,18 @@ class PiCodingAgentSession implements PiAgentSession {
     return this.session.sessionManager.getLeafId()
   }
 
-  getContextUsage(): import('../../../src/shared/context-usage').ContextUsage | null {
-    return this.session.getContextUsage() ?? { tokens: null, contextWindow: GATEWAY_CONTEXT_WINDOW, percent: null }
+  getContextUsage(): ContextUsage {
+    const usage = this.session.getContextUsage() ?? { tokens: null, contextWindow: GATEWAY_CONTEXT_WINDOW, percent: null }
+    if (usage.tokens === null || !this.diagnostics) return usage
+    const messages = this.session.messages
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index]
+      if (message.role !== 'assistant' || message.stopReason === 'aborted' || message.stopReason === 'error' || calculateContextTokens(message.usage) <= 0) continue
+      const overhead = this.diagnostics.contextOverhead(message.timestamp)
+      if (!overhead || overhead.system + overhead.tools > usage.tokens) break
+      return { ...usage, breakdown: { ...overhead, messages: usage.tokens - overhead.system - overhead.tools } }
+    }
+    return usage
   }
 
   async restoreContextCheckpoint(checkpoint: string | null): Promise<void> {
@@ -968,6 +981,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       retry: { enabled: true, maxRetries: MAX_RUN_AUTO_RETRIES, baseDelayMs: 0, provider: { maxRetries: 0 } },
     })
     const requestTracker = config.onModelRequest ? new ModelRequestTracker(config.onModelRequest) : null
+    let latestOverhead: { timestamp: number; value: ReturnType<typeof estimateRequestOverhead> } | undefined
     // The exported subpath is loaded dynamically under the project's legacy Node resolution.
     const { streamSimple }: { streamSimple: StreamFunction<'openai-completions', SimpleStreamOptions> } =
       await import(OPENAI_COMPLETIONS_API_MODULE)
@@ -1016,6 +1030,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         let providerStatus: number | undefined
         let sent = false
         let overview: Record<string, unknown> = {}
+        let requestOverhead: ReturnType<typeof estimateRequestOverhead>
         const fields = { runId: config.runId, taskTitle: config.taskTitle, nodeTitle: config.nodeTitle, phase: config.tracePhase, requestNumber: number, model: config.modelId }
         const requestRecord: typeof record = entry => record({ ...entry, requestId, requestNumber: number })
         void requestRecord({ phase: '', kind: 'status', text: `第 ${number} 次请求；用途：${purpose}；类型：${requestKind}；运行标识：${config.runId}`, metrics: { 模型: config.modelId, 请求用途: purpose, 请求类型: requestKind } })
@@ -1026,6 +1041,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
             const replacement = await options?.onPayload?.(payload, requestModel)
             // Standalone summaries omit the Agent hooks; normalize once after any caller hook.
             const normalized = normalizeGatewayPayload(replacement === undefined ? payload : replacement)
+            if (requestKind !== 'compaction') requestOverhead = estimateRequestOverhead(normalized)
             overview = buildGatewayRequestLogFields(normalized && typeof normalized === 'object' ? normalized as Record<string, unknown> : {}, number)
             void requestRecord({ phase: '', kind: 'input', text: modelPayloadText(normalized) })
             return normalized
@@ -1062,6 +1078,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
           },
         })
         return traceModelStream(source, requestRecord, async (response, timings) => {
+          if (requestOverhead && response.stopReason !== 'error' && response.stopReason !== 'aborted') {
+            latestOverhead = { timestamp: response.timestamp, value: requestOverhead }
+          }
           const elapsedMs = Date.now() - startedAt
           const usage = { input: response.usage.input, output: response.usage.output, cacheRead: response.usage.cacheRead, cacheWrite: response.usage.cacheWrite, total: response.usage.totalTokens }
           log.info('model response completed', { ...fields, requestId: number, traceRequestId: requestId, platformRequestId, providerStatus, elapsedMs, ...timings,
@@ -1204,6 +1223,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         update: next => { originalRecorder = next.modelTrace; config = { ...config, ...next, modelTrace: next.modelTrace ? record : undefined } },
         purpose: value => { requestPurpose = value },
         startPrompt: () => { requestsInPrompt = 0; observedKind = 'execution' },
+        contextOverhead: timestamp => latestOverhead?.timestamp === timestamp ? latestOverhead?.value : undefined,
         observe: event => {
           if (event.type === 'compaction_start') observedKind = 'compaction'
           else if (event.type === 'auto_retry_start') observedKind = 'retry'

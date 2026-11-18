@@ -3,6 +3,14 @@ import type { ContextUsage } from '../../../src/shared/context-usage'
 
 export const GATEWAY_CONTEXT_WINDOW = 128_000
 
+export function estimateRequestOverhead(payload: unknown): Pick<NonNullable<ContextUsage['breakdown']>, 'system' | 'tools'> | undefined {
+  if (!payload || typeof payload !== 'object' || !('messages' in payload) || !Array.isArray(payload.messages)) return
+  const system = payload.messages.filter(message => message?.role === 'system' || message?.role === 'developer')
+    .reduce<number>((sum, message) => sum + (typeof message.content === 'string' ? message.content.length : JSON.stringify(message.content ?? '').length), 0)
+  const tools = 'tools' in payload && Array.isArray(payload.tools) && payload.tools.length ? JSON.stringify(payload.tools).length : 0
+  return { system: Math.ceil(system / 4), tools: Math.ceil(tools / 4) }
+}
+
 /** Match the SDK estimate without opening a writable session or starting tools. */
 export function sessionContextUsage(content: string, sessionId: string): ContextUsage | null {
   const fileEntries = parseSessionEntries(content)
