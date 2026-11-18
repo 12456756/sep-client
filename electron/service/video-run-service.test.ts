@@ -681,15 +681,34 @@ test('real rejection keeps its business code at run completion and does not pois
   } finally { await service.stopAll() }
 })
 
-test('new run cannot quote or submit again while an original MAYBE_SENT is unresolved', async context => {
+test('new run cannot quote or submit again when the user declines the unresolved-submission risk', async context => {
   const f = await setup('submission-unknown')
   const original = await new MockVideoHostService(f.options).generate('task-a', input())
   assert.equal(original.generationStatus, 'SUBMISSION_UNKNOWN')
   context.mock.method(f.gateway, 'findReceipt', async () => null)
+  const tools = await f.service.prepareRun({ ...f.runInput, autoApproveMedia: true, requestApproval: async request => {
+    f.approvals.push(request)
+    assert.equal((request.input as { operation: string }).operation, 'confirm-new-generation')
+    return false
+  } })
+  assert.ok(tools)
+  try {
+    await assert.rejects(tools.execute('video_from_image', input()), { code: 'PERMISSION_DENIED' })
+    assert.equal(f.gateway.calls.quote, 1)
+    assert.equal(f.gateway.calls.submit, 1)
+    assert.equal(f.state.uploads, 1)
+    assert.equal(f.approvals.length, 3)
+  } finally { await f.service.stopAll() }
+})
+
+test('the same video run cannot turn an uncertain response into another upload, quote or approval', async context => {
+  const f = await setup('submission-unknown')
+  context.mock.method(f.gateway, 'findReceipt', async () => null)
   const tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)
   try {
-    await assert.rejects(tools.execute('video_from_image', input()), { code: 'CONFLICT' })
+    await assert.rejects(tools.execute('video_from_image', input()))
+    await assert.rejects(tools.execute('video_from_image', { ...input(), creativeBrief: 'Changed during an automatic retry' }), { code: 'CONFLICT' })
     assert.equal(f.gateway.calls.quote, 1)
     assert.equal(f.gateway.calls.submit, 1)
     assert.equal(f.state.uploads, 1)
@@ -697,16 +716,16 @@ test('new run cannot quote or submit again while an original MAYBE_SENT is unres
   } finally { await f.service.stopAll() }
 })
 
-test('receipt SUBMISSION_UNKNOWN also blocks generation until explicit original recovery clarifies it', async context => {
+test('declining a new generation retains an unknown receipt for explicit original recovery', async context => {
   const f = await setup('submission-unknown'), ipc = new MockVideoHostService(f.options)
   const original = await ipc.generate('task-a', input())
   await ipc.resume('task-a', original.jobId)
   const receipt = (await f.store.getJob(scope, 'task-a', original.jobId))!.receipt!
   assert.equal(receipt.status, 'SUBMISSION_UNKNOWN')
   const stalled = context.mock.method(f.gateway, 'getReceipt', async () => receipt)
-  const tools = await f.service.prepareRun(f.runInput)
+  const tools = await f.service.prepareRun({ ...f.runInput, requestApproval: async () => false })
   try {
-    await assert.rejects(tools!.execute('video_from_image', input()), { code: 'CONFLICT' })
+    await assert.rejects(tools!.execute('video_from_image', input()), { code: 'PERMISSION_DENIED' })
     assert.equal(f.gateway.calls.quote, 1)
     assert.equal(f.gateway.calls.submit, 1)
     assert.equal(f.state.uploads, 1)

@@ -69,6 +69,41 @@ test('expired approvals and invalid paid video quotes are denied without a dialo
   }
 })
 
+test('new generation after an unknown submission always requires an explicit risk decision', async () => {
+  for (const toolName of ['media_generate_image', 'video_generate', 'video_from_image']) {
+    for (const accepted of [true, false]) {
+      const ui = mount(toolName, { operation: 'confirm-new-generation', unconfirmedJobCount: 1,
+        mock: false, quote: { amount: '1.000000', currency: 'CNY' } })
+      try {
+        const dialog = ui.feedback.getSnapshot()!
+        assert.equal(dialog.tone, 'confirm')
+        assert.match(dialog.message, /是否受理及计费尚未确认.*分别生成并计费.*原任务状态仍会保留/)
+        assert.equal(dialog.actionLabel, '仍然生成')
+        assert.deepEqual(ui.decisions, [])
+        if (accepted) await ui.feedback.accept(dialog.id)
+        else ui.feedback.dismiss(dialog.id)
+        await new Promise<void>(resolve => setImmediate(resolve))
+        assert.deepEqual(ui.decisions, [accepted])
+        ui.replay()
+        assert.deepEqual(ui.decisions, [accepted])
+      } finally { ui.cleanup() }
+    }
+  }
+})
+
+test('expired or cleared new-generation confirmations cannot approve another submission', async () => {
+  const input = { operation: 'confirm-new-generation', unconfirmedJobCount: 1 }
+  const expired = mount('video_generate', input, Date.now() - 1)
+  const cleared = mount('media_generate_image', input)
+  try {
+    assert.deepEqual(expired.decisions, [false])
+    assert.equal(expired.feedback.getSnapshot(), null)
+    cleared.feedback.clear()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(cleared.decisions, [false])
+  } finally { expired.cleanup(); cleared.cleanup() }
+})
+
 test('reference uploads, local commands and other tools retain explicit approval', async () => {
   for (const [toolName, input] of [
     ['media_generate_image', { operation: 'upload-references' }],

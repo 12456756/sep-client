@@ -9,6 +9,7 @@ import { VideoStore } from '../data/video-store'
 import { VideoFiles } from '../data/video-files'
 import { VideoService } from './video-service'
 import type { LocalVideoJob, VideoScope } from '../domain/video-media'
+import { videoDefaultRecoveryExclusions } from '../domain/video-media'
 import type { VideoGatewayPort, VideoReceipt } from '../../src/shared/video-media'
 import { ScopePath, encodeTaskScopeSegment } from '../data/scope-path'
 import { AppError } from '../errors/app-error'
@@ -42,6 +43,17 @@ async function finish(service: VideoService, job: LocalVideoJob): Promise<LocalV
 }
 
 describe('VideoService mock submission, disk recovery and original delivery', () => {
+  it('freezes independent-request predecessors without excluding recovery before submission', async () => {
+    const f = await fixture()
+    const job = await f.service.prepare('task-a', input(), undefined, 'new-run', ['original-job'])
+    const reopened = new VideoStore(f.root)
+    assert.deepEqual((await reopened.getJob(scope, 'task-a', job.jobId))?.previousUnconfirmedJobIds, ['original-job'])
+    assert.equal(videoDefaultRecoveryExclusions(await reopened.listJobs(scope)).size, 0)
+    await assert.rejects(reopened.updateJob(scope, 'task-a', job.jobId, previous => ({ ...previous, previousUnconfirmedJobIds: [] })), /identity/)
+    await f.service.submit('task-a', job.jobId)
+    assert.deepEqual([...videoDefaultRecoveryExclusions(await reopened.listJobs(scope))], ['original-job'])
+  })
+
   it('persists unregistered submit diagnostics across missing-receipt recovery and clears them on confirmation', async context => {
     const f = await fixture()
     const submit = f.gateway.submit.bind(f.gateway)

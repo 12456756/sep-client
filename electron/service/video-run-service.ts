@@ -9,6 +9,7 @@ import { abortableVideo } from '../data/video-files'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
 import { setTimeout as delay } from 'node:timers/promises'
+import { isMediaResubmissionRequest } from '../../src/shared/tool-approval'
 
 type RunInput = Parameters<VideoRunPort['prepareRun']>[0]
 interface Run {
@@ -96,7 +97,7 @@ export class VideoRunService implements VideoRunPort {
     const run: Run = { taskId: input.taskId, host, controller, pending: new Set(), jobs, finished: false, terminalFailureNotified: false, onTerminalFailure: input.onTerminalFailure }
     this.runs.set(key, run)
     try {
-      const restored = await abortableVideo(host.getTaskVideo(input.taskId), controller.signal)
+      const restored = await abortableVideo(host.getTaskVideo(input.taskId, { forRunRecovery: !input.recoverJobIds }), controller.signal)
       validate()
       for (const job of restored.jobs) {
         if (input.recoverJobIds && !input.recoverJobIds.includes(job.jobId)) continue
@@ -137,10 +138,13 @@ export class VideoRunService implements VideoRunPort {
         if (!job) throw new AppError('NOT_FOUND')
         return job
       }
-      const job = await host.generateTool(input.taskId, name, raw, signal, { runId: input.runId, onJobCreated: input.onJobCreated,
+      const job = await host.generateTool(input.taskId, name, raw, signal, { runId: input.runId, onJobCreated: async job => {
+        await input.onJobCreated?.(job)
+        for (const id of job.previousUnconfirmedJobIds ?? []) run.jobs.delete(id)
+      },
         requestApproval: request => {
           validate()
-          return input.autoApproveMedia ? Promise.resolve(true) : input.requestApproval(request)
+          return input.autoApproveMedia && !isMediaResubmissionRequest(request) ? Promise.resolve(true) : input.requestApproval(request)
         } })
       run.jobs.add(job.jobId)
       validate()

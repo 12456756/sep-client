@@ -7,7 +7,7 @@ import { mediaReferenceProblem } from '../../src/shared/media-references'
 import { inspectMediaImage } from '../data/media-image'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
-import { videoSubmissionRejected, videoSpecAcceptance, videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
+import { videoDefaultRecoveryExclusions, videoSubmissionRejected, videoSpecAcceptance, videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { logger } from '../common/logger'
 import { abortableVideo } from '../data/video-files'
@@ -338,14 +338,16 @@ export class MockVideoHostService {
     if (JSON.stringify(current.scope) !== JSON.stringify(scope) || revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
     return runtime
   }
-  async getTaskVideo(taskId: string): Promise<VideoTaskView> {
+  async getTaskVideo(taskId: string, options: { forRunRecovery?: boolean } = {}): Promise<VideoTaskView> {
     const signal = this.signal(taskId)
     const revision = this.localRevision()
     const { scope, epoch, context } = await this.localBinding(taskId, signal)
     const runtime = this.localRuntime(scope)
     const jobs = await context.service.listJobsSnapshot(taskId)
+    const excluded = options.forRunRecovery ? videoDefaultRecoveryExclusions(jobs) : new Set<string>()
     const views: VideoJobView[] = []
     for (const job of jobs) {
+      if (excluded.has(job.jobId)) continue
       const savedOutputIds: string[] = []
       let invalidOutput = false
       for (const output of job.receipt?.outputs ?? []) {
@@ -487,26 +489,27 @@ export class MockVideoHostService {
           job.request.creativeBrief === input.creativeBrief &&
           job.request.specRevision === input.specRevision && mediaSpecsEqual(job.request.parameters, input.parameters) && job.request.referenceIds.length === 0) : undefined
         if (duplicate) return jobView(duplicate)
-        if (jobs.some(job => job.taskId === taskId && !videoSubmissionRejected(job) && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))) {
-          throw new AppError('CONFLICT', { message: '原视频提交状态尚未确认，请查询或恢复原任务，不能重复生成。' })
-        }
+        const unconfirmed = jobs.filter(job => job.taskId === taskId && !videoSubmissionRejected(job)
+          && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))
+        if (unconfirmed.some(job => job.runId === runId)) throw new AppError('CONFLICT', { message: '本轮视频提交结果尚未确认，请查询原任务；如需重新生成，请在后续消息中明确提出。' })
         const profile = this.profile(runtime, input)
         const policy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
         const toolName = input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
         if (policy && (policy.preset === 'read-only' || policy.preset !== 'full-local' && !policy.allowedTools.includes(toolName))) throw new AppError('PERMISSION_DENIED')
-        const approve = async (details: Record<string, unknown>) => {
+        const approve = async (details: Record<string, unknown>, force = false) => {
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
           const currentPolicy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
           if (currentPolicy && (currentPolicy.preset === 'read-only' || currentPolicy.preset !== 'full-local' && !currentPolicy.allowedTools.includes(toolName))) throw new AppError('PERMISSION_DENIED')
-          if (currentPolicy?.preset === 'full-local' && currentPolicy.approvalMode === 'auto-approve') return
+          if (!force && currentPolicy?.preset === 'full-local' && currentPolicy.approvalMode === 'auto-approve') return
           const allowed = await abortableVideo((run?.requestApproval ?? this.options.requestApproval)({ taskId, runId, subscriptionId: scope.subscriptionId, toolName, input: details }), signal)
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
           if (!allowed) throw new AppError('PERMISSION_DENIED')
         }
+        if (unconfirmed.length) await approve({ operation: 'confirm-new-generation', unconfirmedJobCount: unconfirmed.length }, true)
         const referenceIds: string[] = []
         if (input.localAssetIds.length) {
           await approve({ operation: 'upload-references', referenceCount: input.localAssetIds.length, mock: this.options.mock })
@@ -533,7 +536,8 @@ export class MockVideoHostService {
           }
         }
         const { localAssetIds: _localAssetIds, ...semantic } = input
-        const job = await context.service.prepare(taskId, { ...semantic, configVersion: profile.configVersion, referenceIds }, signal, run?.runId)
+        const job = await context.service.prepare(taskId, { ...semantic, configVersion: profile.configVersion, referenceIds }, signal, runId,
+          unconfirmed.map(previous => previous.jobId))
         if (this.options.mock ? job.quote.amount !== '0.000000' || job.quote.currency !== 'MOCK' : job.quote.currency !== 'CNY' || !/^\d+\.\d{6}$/.test(job.quote.amount ?? '')) throw new AppError('PERMISSION_DENIED')
         await approve({ profile: profile.displayName, parameters: input.parameters, creativeBrief: input.creativeBrief,
           mock: this.options.mock, quote: { amount: job.quote.amount, currency: job.quote.currency, expiresAt: job.quote.expiresAt,
@@ -543,7 +547,8 @@ export class MockVideoHostService {
         const current = await this.task(taskId, signal)
         if (JSON.stringify(current.scope) !== JSON.stringify(scope)) throw new AppError('AUTH_REQUIRED')
         if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
-        await run?.onJobCreated?.({ kind: 'video', jobId: job.jobId, operation: input.operation, localAssetIds: input.localAssetIds })
+        await run?.onJobCreated?.({ kind: 'video', jobId: job.jobId, operation: input.operation, localAssetIds: input.localAssetIds,
+          ...(unconfirmed.length ? { previousUnconfirmedJobIds: unconfirmed.map(previous => previous.jobId) } : {}) })
         this.assert(scope, epoch, signal)
         if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
         const submitted = await context.service.submit(taskId, job.jobId, signal)

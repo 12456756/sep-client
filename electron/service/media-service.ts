@@ -374,6 +374,16 @@ export class MediaService {
     let trackingStarted = false
     this.activities.set(activityKey, { taskId, controller, promise: pending })
     try {
+      const unconfirmed = (await this.options.store.listJobs(scope, taskId)).filter(previous =>
+        previous.submission !== 'NOT_SENT' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(previous.generationStatus))
+      this.assert(scope, epoch); parent.throwIfAborted()
+      if (unconfirmed.some(previous => previous.runId === binding.runId)) throw new AppError('CONFLICT', { message: '本轮图片提交结果尚未确认，请查询原任务；如需重新生成，请在后续消息中明确提出。' })
+      if (unconfirmed.length) {
+        const allowed = await this.network(scope, parent, () => binding.requestApproval({ taskId, runId: binding.runId,
+          subscriptionId: binding.subscriptionId, toolName: 'media_generate_image',
+          input: { operation: 'confirm-new-generation', unconfirmedJobCount: unconfirmed.length } }))
+        if (!allowed) throw new AppError('PERMISSION_DENIED')
+      }
       const gateway = this.gateway(), referenceHashes: string[] = [], referenceIds: string[] = []
       const references: MediaReferenceInfo[] = []
       for (const id of input.localAssetIds) {
@@ -451,7 +461,12 @@ export class MediaService {
         trackingStatus: 'ACTIVE', saveStatus: 'PENDING', outputs: [], billingStatus: 'UNKNOWN', nextPollAt: now, attempts: 0, error: null, createdAt: now, updatedAt: now }
       this.assert(scope, epoch); parent.throwIfAborted()
       await this.options.store.saveJob(scope, job)
-      await binding.onJobCreated?.({ kind: 'image', jobId, operation: input.operation, localAssetIds: input.localAssetIds })
+      const previousUnconfirmedJobIds = unconfirmed.map(previous => previous.jobId)
+      await binding.onJobCreated?.({ kind: 'image', jobId, operation: input.operation, localAssetIds: input.localAssetIds,
+        ...(previousUnconfirmedJobIds.length ? { previousUnconfirmedJobIds } : {}) })
+      const recoveryKey = this.key(scope, taskId) + ':' + binding.runId
+      const recovered = this.runRecoveries.get(recoveryKey)
+      if (recovered && previousUnconfirmedJobIds.length) this.runRecoveries.set(recoveryKey, recovered.filter(id => !previousUnconfirmedJobIds.includes(id)))
       this.assert(scope, epoch); parent.throwIfAborted()
       if (quote.expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED')
       job = { ...job, submission: 'MAYBE_SENT' }

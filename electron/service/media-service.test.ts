@@ -515,6 +515,73 @@ it('disables recovery for an unconfirmed submission when the channel cannot find
   assert.equal((await f.service.getTaskMedia(job.taskId)).jobs[0].canResumeTracking, false)
 })
 
+for (const accepted of [false, true]) it(`requires a risk decision before creating another image in the same task (accepted=${accepted})`, async () => {
+  const requests: Parameters<MediaServiceOptions['requestApproval']>[0][] = []
+  const f = await fixture({ policy: async () => policy('full-local', 'auto-approve'), requestApproval: async request => {
+    assert.equal(f.gateway.calls.quote.length, 0)
+    assert.equal(f.gateway.calls.submit.length, 0)
+    requests.push(request)
+    return accepted
+  } })
+  const original = notSentJob()
+  original.submission = 'MAYBE_SENT'
+  original.generationStatus = 'SUBMISSION_UNKNOWN'
+  original.trackingStatus = 'STOPPED'
+  original.profile.capabilities.recoverByRequestId = false
+  original.failure = { code: 'SERVICE_UNAVAILABLE', stage: 'image-submit', source: 'upstream', message: 'Upstream service temporarily unavailable' }
+  await f.store.saveJob(owner, original)
+
+  const generating = f.service.generateTaskMedia('task-a', input({ creativeBrief: 'New requested product photograph' }))
+  if (accepted) {
+    const next = await generating
+    await f.service.waitForRun('task-a', next.runId, { recoverOriginal: true })
+    assert.notEqual(next.jobId, original.jobId)
+    const saved = (await f.store.getJob(owner, 'task-a', next.jobId))!
+    assert.notEqual(saved.clientRequestId, original.clientRequestId)
+    assert.equal(saved.input.creativeBrief, 'New requested product photograph')
+    assert.equal(saved.saveStatus, 'SAVED')
+  } else await assert.rejects(generating, code('PERMISSION_DENIED'))
+  assert.equal(requests.length, 1)
+  assert.deepEqual(requests[0].input, { operation: 'confirm-new-generation', unconfirmedJobCount: 1 })
+  assert.equal(f.gateway.calls.quote.length, accepted ? 1 : 0)
+  assert.equal(f.gateway.calls.submit.length, accepted ? 1 : 0)
+  assert.deepEqual(await f.store.getJob(owner, 'task-a', original.jobId), original)
+})
+
+it('blocks automatic image resubmission within the same run without showing a new risk confirmation', async () => {
+  const f = await fixture()
+  const original = notSentJob()
+  original.submission = 'MAYBE_SENT'
+  original.generationStatus = 'SUBMISSION_UNKNOWN'
+  original.trackingStatus = 'STOPPED'
+  await f.store.saveJob(owner, original)
+  const tools = await f.service.prepareRun({ taskId: 'task-a', runId: original.runId,
+    subscriptionId: f.employee.subscriptionId, employee: f.employee, requestApproval: f.options.requestApproval })
+  assert.ok(tools)
+  await assert.rejects(tools.execute('media_generate_image', input()), code('CONFLICT'))
+  assert.equal(f.approvalRequests.length, 0)
+  assert.equal(f.gateway.calls.quote.length, 0)
+  assert.equal(f.gateway.calls.submit.length, 0)
+})
+
+it('cannot accept a late image risk confirmation after stopping the task', async () => {
+  const entered = deferred<void>(), decision = deferred<boolean>()
+  const f = await fixture({ requestApproval: async () => { entered.resolve(); return decision.promise } })
+  const original = notSentJob()
+  original.submission = 'MAYBE_SENT'
+  original.generationStatus = 'SUBMISSION_UNKNOWN'
+  original.trackingStatus = 'STOPPED'
+  await f.store.saveJob(owner, original)
+  const generating = f.service.generateTaskMedia('task-a', input())
+  const rejected = assert.rejects(generating)
+  await entered.promise
+  await f.service.stopTask('task-a')
+  decision.resolve(true)
+  await rejected
+  assert.equal(f.gateway.calls.quote.length, 0)
+  assert.equal(f.gateway.calls.submit.length, 0)
+})
+
 describe('media capability and handoff regressions', () => {
   for (const scenario of ['prompt', 'reference-count', 'reference-mime', 'reference-bytes', 'reference-width'] as const) {
     it(`${scenario === 'reference-bytes' ? 'validates local reference safety for' : 'does not duplicate backend business limits for'} real ${scenario}`, async context => {

@@ -1031,7 +1031,7 @@ test('legacy video tools require complete explicit specifications and reject V3 
   await f.host.stopAll()
 })
 
-test('V3 submit failures expose persisted diagnostics while host recovery blocks another paid generation', async () => {
+test('V3 submit failures retain diagnostics and block new generation when risk confirmation is declined', async () => {
   const f = await realSetup()
   f.state.runtime = videoRuntimeSchema.parse({ ...fixture.runtime, protocolVersion: 3, executionMode: 'real',
     profiles: fixture.runtime.profiles.map(profile => ({ ...profile, operations: ['text-to-video'], capabilities: { ...profile.capabilities, supportsTextToVideo: true } })),
@@ -1043,7 +1043,8 @@ test('V3 submit failures expose persisted diagnostics while host recovery blocks
     return new Response(JSON.stringify({ error: { code: 'UPSTREAM_SPEC_UNSUPPORTED', field: 'resolution', requestedValue: '8k', source: 'provider',
       alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved', message: 'private-secret' } }), { status: 422, headers: { 'Content-Type': 'application/json' } })
   } })
-  const options: MockVideoHostOptions = { ...f.options, gateway: () => ({ ...f.options.gateway(scope),
+  const options: MockVideoHostOptions = { ...f.options, requestApproval: async request =>
+    (request.input as { operation?: string }).operation !== 'confirm-new-generation', gateway: () => ({ ...f.options.gateway(scope),
     quote: async () => { quotes++; return { protocolVersion: 3, specRevision: 2, effectiveSpec: spec, quoteId: 'v3-quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.900000', currency: 'CNY' } },
     submit: remote.submit.bind(remote), findReceipt: async () => null,
   }) }
@@ -1052,12 +1053,12 @@ test('V3 submit failures expose persisted diagnostics while host recovery blocks
   const first = await host.generateTool('task-a', 'video_generate', raw)
   assert.equal(first.generationStatus, 'SUBMISSION_UNKNOWN'); assert.equal(first.billingStatus, 'RECONCILING')
   assert.equal(first.specFailure?.requestedValue, '8k'); assert.deepEqual(first.specFailure?.alternatives, [{ resolution: '1080p' }])
-  await assert.rejects(host.generateTool('task-a', 'video_generate', raw), { code: 'CONFLICT' })
+  await assert.rejects(host.generateTool('task-a', 'video_generate', raw), { code: 'PERMISSION_DENIED' })
   await host.stopAll()
   const reopened = new MockVideoHostService(options)
   const saved = (await reopened.getTaskVideo('task-a')).jobs.find(job => job.jobId === first.jobId)!
   assert.deepEqual(saved.specFailure, first.specFailure)
-  await assert.rejects(reopened.generateTool('task-a', 'video_generate', { ...raw, specRevision: 3, requestedSpec: { resolution: '1080p' } }), { code: 'CONFLICT' })
+  await assert.rejects(reopened.generateTool('task-a', 'video_generate', { ...raw, specRevision: 3, requestedSpec: { resolution: '1080p' } }), { code: 'PERMISSION_DENIED' })
   assert.equal(quotes, 1); assert.equal(submissions, 1)
   assert.doesNotMatch(JSON.stringify(saved), /private-secret/)
   await reopened.stopAll()

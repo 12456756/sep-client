@@ -26,6 +26,8 @@ export const videoSaveStatusSchema = z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE
 export const localVideoJobSchema = z.object({
   version: z.literal(1), scope: videoScopeSchema, taskId: videoLocalIdSchema, jobId: videoLocalIdSchema,
   runId: videoLocalIdSchema.optional(),
+  /** Older uncertain jobs left independent by an explicitly confirmed new request. */
+  previousUnconfirmedJobIds: z.array(videoLocalIdSchema).optional(),
   executionMode: z.enum(['mock', 'real']).optional(),
   request: videoRequestWithIdentitySchema, quote: videoStoredQuoteSchema,
   submission: z.enum(['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED']), receipt: videoReceiptSchema.nullable(),
@@ -52,6 +54,11 @@ export const localVideoJobSchema = z.object({
 })
 export type LocalVideoJob = z.infer<typeof localVideoJobSchema>
 
+/** Unsubmitted candidates must never detach recovery of an existing job. */
+export function videoDefaultRecoveryExclusions(jobs: readonly LocalVideoJob[]): Set<string> {
+  return new Set(jobs.filter(job => job.submission !== 'NOT_SENT').flatMap(job => job.previousUnconfirmedJobIds ?? []))
+}
+
 export function videoSubmissionRejected(job: LocalVideoJob): boolean {
   return job.submission === 'MAYBE_SENT' && job.receipt === null && job.trackingStatus === 'STOPPED' &&
     isVideoSubmissionRejectionCode(job.error)
@@ -72,7 +79,7 @@ export type LocalVideoAsset = z.infer<typeof localVideoAssetSchema>
 export type VideoAssetState = Omit<LocalVideoAsset, 'status'> & { status: 'SAVED' | 'MISSING' }
 
 export function assertVideoJobUpdate(previous: LocalVideoJob, next: LocalVideoJob): void {
-  const stable = ['version', 'scope', 'taskId', 'jobId', 'runId', 'executionMode', 'request', 'quote', 'createdAt'] as const
+  const stable = ['version', 'scope', 'taskId', 'jobId', 'runId', 'previousUnconfirmedJobIds', 'executionMode', 'request', 'quote', 'createdAt'] as const
   if (stable.some(key => !isDeepStrictEqual(previous[key], next[key])) || next.updatedAt < previous.updatedAt ||
     ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(next.submission) < ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(previous.submission)) {
     throw new Error('Frozen video identity or submission state cannot change.')
