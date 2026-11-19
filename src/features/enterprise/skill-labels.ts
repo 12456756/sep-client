@@ -3,7 +3,7 @@ import type { LocalSkillSubmission, SkillLibraryItem } from '../../shared/skill-
 import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../shared/skill-library';
 
 export function skillVersionLabel(version: SkillVersion): string {
-  if (version.scope === 'PERSONAL') return version.changeSummary || `个人版本 · ${version.createdAt ? new Date(version.createdAt).toLocaleString() : version.id.slice(-8)}`;
+  if (version.scope === 'PERSONAL') return version.changeSummary?.trim() || `个人版本 · ${version.createdAt ? new Date(version.createdAt).toLocaleString() : version.id.slice(-8)}`;
   return `${version.scope === 'ENTERPRISE' ? '企业版' : '平台版'} ${version.version}`;
 }
 export function skillVersionStatus(status: string): string {

@@ -105,6 +105,25 @@ const videoInput = (id: string) => ({ creativeBrief: 'Animate this product', loc
 const imageInput = { creativeBrief: 'Keep the product and replace its background', operation: 'edit',
   parameters: { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' } }
 
+test('image conversations keep capability discovery and new images available after an unknown submission', async context => {
+  const f = await fixture()
+  const submit = f.mediaGateway.submit.bind(f.mediaGateway)
+  context.mock.method(f.mediaGateway, 'submit', async (...args: Parameters<typeof submit>) => {
+    if (args[1].creativeBrief === 'Cover') throw new Error('No response to the original submission')
+    return submit(...args)
+  })
+  const host = await f.media.prepareRun({ ...f.runInput, allowImageReplacement: true })
+  const tools = (await f.service.prepareRun({ ...f.runInput, attachments: [], media: host, signal: new AbortController().signal })).media!
+  const cover = await tools.execute('media_generate_image', { ...imageInput, operation: 'generate', creativeBrief: 'Cover' }) as { jobId: string; generationStatus: string }
+  assert.equal(cover.generationStatus, 'SUBMISSION_UNKNOWN')
+  const view = await tools.execute('media_get_capabilities', {}) as { unconfirmedJobs: { jobId: string; replacementAvailable: boolean }[] }
+  assert.deepEqual(view.unconfirmedJobs.map(job => [job.jobId, job.replacementAvailable]), [[cover.jobId, false]])
+  await tools.execute('media_generate_image', { ...imageInput, operation: 'generate', creativeBrief: 'Body illustration' })
+  await f.media.waitForRun(f.task.id, f.runInput.runId, { allowIncomplete: true })
+  assert.equal((await f.images.listJobs(owner, f.task.id)).find(job => job.input.creativeBrief === 'Body illustration')?.saveStatus, 'SAVED')
+  assert.equal(f.mediaGateway.calls.submit.length, 1)
+})
+
 test('image-only conversations discover named attachments and preserve selected reference order', async () => {
   const f = await fixture(), first = await f.attach(png, 'first.png'), second = await f.attach(MOCK_MEDIA_PNG, 'second.png')
   const host = await f.media.prepareRun(f.runInput)

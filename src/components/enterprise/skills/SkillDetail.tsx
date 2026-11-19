@@ -2,14 +2,16 @@ import { ArrowLeft, Check, FileText, PanelRightOpen, Pencil, RefreshCw, Save, X 
 import * as Dialog from '@radix-ui/react-dialog';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterpriseWorkspace';
 import type { AppRoute } from '../../../features/enterprise/types';
 import { buildSkillVersions, findSkillVersion, initialSkillViewingVersion, skillDateLabel, skillReadingParts } from '../../../features/enterprise/skill-version-model';
 import { uniqueSkillBindings } from '../../../features/enterprise/skill-list-model';
 import type { SkillLibraryItem } from '../../../shared/skill-library';
+import { hasPersonalSkillVersionName, SKILL_VERSION_NAME_TAKEN } from '../../../shared/skill-library';
 import { SkillRewriteComposer } from './SkillRewriteComposer';
 import { changeSkillDraft, createSkillDraftHistory, resetSkillDraft, undoSkillDraft } from '../../../features/enterprise/skill-draft-history';
+import type { SkillEditDraft } from '../../../features/enterprise/skill-rewrite-session';
 import '../../../styles/skill-detail.css';
 
 interface Props {
@@ -22,18 +24,20 @@ type Operation = 'save' | 'upload' | null;
 const readingComponents = { a: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>, img: ({ alt }: { alt?: string }) => <span className="skill-caption">[图片：{alt || '未加载'}]</span> };
 
 export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Props): React.JSX.Element {
+  const rewriteSession = workspace.getSkillRewriteSession(skill.capability.id);
+  const rewriteState = useSyncExternalStore(rewriteSession.subscribe, rewriteSession.getSnapshot, rewriteSession.getSnapshot);
   const entries = useMemo(() => buildSkillVersions(skill), [skill]);
   const bindings = uniqueSkillBindings(skill);
-  const [viewingVersionId, setViewingVersionId] = useState(() => initialSkillViewingVersion(skill, sourceEmployeeId));
+  const [viewingVersionId, setViewingVersionId] = useState(() => rewriteSession.draft?.viewingVersionId ?? initialSkillViewingVersion(skill, sourceEmployeeId));
   const [tab, setTab] = useState<'description' | 'history'>('description');
   const [mode, setMode] = useState<'read' | 'raw'>('read');
   const [sourceOpen, setSourceOpen] = useState(false);
   const [chatRevision, setChatRevision] = useState(0);
   const [container, setContainer] = useState<HTMLElement>();
-  const [source, setSource] = useState('');
-  const [draftState, setDraftState] = useState(createSkillDraftHistory);
+  const [source, setSource] = useState(() => rewriteSession.draft?.source ?? '');
+  const [draftState, setDraftState] = useState(() => rewriteSession.draft?.draftState ?? createSkillDraftHistory());
   const { content } = draftState;
-  const [rewriteBusy, setRewriteBusy] = useState(false);
+  const rewriteBusy = Boolean(rewriteState.activeRequestId);
   const draft = useRef(draftState);
   const manualEdit = useRef<string | null>(null);
   const updateContent = useCallback((value: string): void => {
@@ -41,7 +45,7 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
     manualEdit.current = null;
     setDraftState(draft.current);
   }, []);
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(() => rewriteSession.draft?.editing ?? false);
   const [loading, setLoading] = useState(true);
   const [operation, setOperation] = useState<Operation>(null);
   const [sourceError, setSourceError] = useState('');
@@ -49,10 +53,11 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
   const [notice, setNotice] = useState('');
   const [savedId, setSavedId] = useState('');
   const [saveOpen, setSaveOpen] = useState(false);
-  const [name, setName] = useState('');
+  const [name, setName] = useState(() => rewriteSession.draft?.name ?? '');
   const [reload, setReload] = useState(0);
   const sourceCache = useRef(new Map<string, string>());
   const saveAttempt = useRef<{ key: string; signature: string } | null>(null);
+  const duplicateName = hasPersonalSkillVersionName(skill, name, saveAttempt.current?.key);
   const editor = useRef<HTMLTextAreaElement>(null);
   const page = useRef<HTMLDivElement>(null);
   const sourceTrigger = useRef<HTMLButtonElement>(null);
@@ -65,11 +70,23 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
   const retrySeconds = workspace.skillsRetrySeconds ?? 0;
   const canRefresh = !workspace.skillsLoading && !busy && !dirty && retrySeconds <= 0;
   const { previewSkillSource, registerSkillLeaveGuard } = workspace;
+  const snapshot = useRef<SkillEditDraft>();
+  const restored = useRef(rewriteSession.draft);
+  useLayoutEffect(() => {
+    snapshot.current = { viewingVersionId, source, draftState, editing, name };
+    if (!loading && !sourceError) rewriteSession.draft = snapshot.current;
+  }, [rewriteSession, viewingVersionId, source, draftState, editing, name, loading, sourceError]);
 
   useLayoutEffect(() => { setContainer(page.current?.closest<HTMLElement>('.ent-shell') ?? undefined); }, []);
   useLayoutEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
     let active = true;
+    if (restored.current?.viewingVersionId === viewingVersionId && reload === 0) {
+      sourceCache.current.set(viewingVersionId, restored.current.source);
+      setLoading(false);
+      return;
+    }
+    restored.current = undefined;
     setLoading(true); setSourceError(''); setSource(''); updateContent('');
     if (!viewingVersionId) { setLoading(false); return; }
     const cached = sourceCache.current.get(viewingVersionId);
@@ -82,10 +99,10 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
   }, [skill.capability.id, viewingVersionId, previewSkillSource, reload, updateContent]);
 
   useEffect(() => {
-    if (workspace.skillsLoading || workspace.skillsError || entry || dirty || busy) return;
+    if (workspace.skillsLoading || workspace.skillsError || entry || editing || rewriteBusy || dirty || busy) return;
     const fallback = initialSkillViewingVersion(skill, sourceEmployeeId);
     if (fallback !== viewingVersionId) { setEditing(false); setViewingVersionId(fallback); setNotice('原查看版本已不在当前列表中，已更新查看内容。'); }
-  }, [workspace.skillsLoading, workspace.skillsError, entry, dirty, busy, skill, sourceEmployeeId, viewingVersionId]);
+  }, [workspace.skillsLoading, workspace.skillsError, entry, editing, rewriteBusy, dirty, busy, skill, sourceEmployeeId, viewingVersionId]);
   useEffect(() => { if (sourceOpen && mode === 'raw') editor.current?.focus(); }, [editing, sourceOpen, mode]);
   useEffect(() => {
     if (!dirty && !busy && !rewriteBusy) return;
@@ -93,17 +110,30 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
     window.addEventListener('beforeunload', prevent);
     return () => window.removeEventListener('beforeunload', prevent);
   }, [dirty, busy, rewriteBusy]);
-  useLayoutEffect(() => registerSkillLeaveGuard?.(() => !busy && (!(dirty || rewriteBusy) || window.confirm('有未保存修改或正在生成的建议，确定离开吗？'))), [registerSkillLeaveGuard, dirty, busy, rewriteBusy]);
+  useLayoutEffect(() => registerSkillLeaveGuard?.(() => {
+    if (busy) return false;
+    if (snapshot.current && !loading && !sourceError) rewriteSession.draft = snapshot.current;
+    if (rewriteSession.finishUnchangedEditing()) setEditing(false);
+    return true;
+  }), [registerSkillLeaveGuard, busy, rewriteSession, loading, sourceError]);
 
   const mayDiscard = (): boolean => !busy && (!(dirty || rewriteBusy) || window.confirm('有未保存修改或正在生成的建议，确定放弃吗？'));
-  const view = (id: string): void => {
+  const discard = async (): Promise<void> => {
+    if (!mayDiscard() || !await rewriteSession.cancel(workspace.cancelSkillRewrite)) return;
+    rewriteSession.reset();
+    updateContent(source); setEditing(false); setSourceOpen(false); setMode('read'); setActionError(null); setChatRevision(value => value + 1);
+  };
+  const view = async (id: string): Promise<void> => {
+    if (id === viewingVersionId) { setTab('description'); return; }
     if (!mayDiscard()) return;
     const next = findSkillVersion(entries, id);
     if (!next) return;
+    if (!await rewriteSession.cancel(workspace.cancelSkillRewrite)) return;
+    rewriteSession.reset();
     setEditing(false); setSourceOpen(false); setMode('read'); setViewingVersionId(next.id); setTab('description'); setNotice(''); setSourceError('');
   };
   const back = (): void => {
-    if (!registerSkillLeaveGuard && !mayDiscard()) return;
+    if (busy) return;
     const employee = returnTo?.name === 'employee' ? workspace.employees.concat(workspace.organizationEmployees ?? []).find(item => item.id === returnTo.employeeId) : undefined;
     if (returnTo?.name === 'employee' && !employee) {
       workspace.updateSkillPageState?.({ notice: '来源员工已不在当前列表中，已返回技能列表。' });
@@ -114,7 +144,7 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
     workspace.navigate(employee ? { name: 'employee', employeeId: employee.id } : { name: 'skills' });
   };
   const save = async (): Promise<void> => {
-    if (busy || rewriteBusy || !name.trim() || !content.trim() || !validParent || !parentVersionId || !dirty) return;
+    if (busy || rewriteBusy || duplicateName || !name.trim() || !content.trim() || !validParent || !parentVersionId || !dirty) return;
     const request = { capabilityId: skill.capability.id, parentVersionId, content, changeSummary: name.trim() };
     const signature = JSON.stringify(request);
     if (saveAttempt.current?.signature !== signature) saveAttempt.current = { key: crypto.randomUUID(), signature };
@@ -126,8 +156,9 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
       saveAttempt.current = null;
       updateContent(content);
       setSaveOpen(false); setEditing(false); setSourceOpen(false); setMode('read'); setSource(content); setName(''); setSavedId(result.idempotencyKey);
+      rewriteSession.reset();
       setViewingVersionId(result.idempotencyKey);
-      setNotice(result.uploaded ? '个人版本已保存，已上传送审。' : '个人版本已保存到本机，上传未成功。');
+      setNotice(result.uploaded ? '个人版本已保存并启用，已上传送审。' : '个人版本已保存到本机并启用，上传未成功。');
     } catch (cause) { if (alive.current) setActionError({ phase: 'save', message: cause instanceof Error ? cause.message : '保存失败，请重试' }); }
     finally { if (alive.current) setOperation(null); }
   };
@@ -161,7 +192,7 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
   return <div ref={page} className={`ent-page skill-detail${editing ? ' skill-detail-editing' : ''}`}>
     <div className="skill-detail-navigation"><button type="button" className="skill-text-button skill-detail-back" disabled={busy} onClick={back}><ArrowLeft size={18} aria-hidden />{returnLabel}</button>{returnTo?.name === 'employee' ? <button type="button" className="skill-text-button" disabled={busy} onClick={() => workspace.navigate({ name: 'skills' })}>全部技能</button> : null}</div>
     <header className="skill-detail-heading"><h1>{skill.capability.name || '未命名技能'}</h1></header>
-    {notice ? <div className="ent-banner info skill-detail-notice" role="status"><span>{notice}</span>{savedId ? <button type="button" className="ent-btn sm" disabled={busy} onClick={returnToList}>返回列表切换</button> : null}</div> : null}
+    {notice ? <div className="ent-banner info skill-detail-notice" role="status"><span>{notice}</span>{savedId ? <button type="button" className="ent-btn sm" disabled={busy} onClick={returnToList}>返回技能列表</button> : null}</div> : null}
     {workspace.skillsWarning ? <p className="skill-caption" role="status">{workspace.skillsWarning}</p> : null}
     {workspace.skillsError ? <div className="ent-banner danger skill-state-banner" role="alert"><span>{workspace.skillsError}</span><button type="button" className="ent-btn sm" disabled={!canRefresh} onClick={() => void workspace.refreshSkills(true, skill.capability.id)}>{retrySeconds > 0 ? `${retrySeconds} 秒后重试` : '重试刷新'}</button></div> : null}
     {actionError && !(saveOpen && actionError.phase === 'save') ? <div className="ent-banner danger skill-state-banner" role="alert"><span>{actionError.message}</span>{actionError.phase === 'upload' ? <button type="button" className="ent-btn sm" disabled={busy || dirty} onClick={() => void retryUpload(actionError.key!)}>重试上传</button> : <button type="button" className="ent-btn sm" disabled={busy} onClick={() => setSaveOpen(true)}>重试保存</button>}</div> : null}
@@ -171,7 +202,8 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
       {sourceError ? <div className="ent-banner danger skill-state-banner" role="alert"><span>{sourceError}</span><button type="button" className="ent-btn sm" disabled={busy} onClick={() => { sourceCache.current.delete(viewingVersionId); setReload(value => value + 1); }}>重新读取</button></div> : null}
       {loading ? <p className="skill-loading" role="status">正在读取原文…</p> : !viewingVersionId ? <div className="skill-document-empty">当前技能暂无可查看的版本。</div> : !sourceError ? editing ? <SkillRewriteComposer key={`${viewingVersionId}-${chatRevision}`} content={content} revision={draft.current.revision} disabled={busy || !validParent || saveOpen}
         onRewrite={input => workspace.rewriteSkillSource({ ...input, capabilityId: skill.capability.id, versionId: viewingVersionId })}
-        onCancel={workspace.cancelSkillRewrite} onGeneratingChange={setRewriteBusy}
+        session={rewriteSession}
+        onCancel={workspace.cancelSkillRewrite}
         undoHead={draftState.changes.at(-1)}
         manualEdits={draftState.manualEdits}
         onApply={(expectedRevision, next, roundId) => {
@@ -187,7 +219,7 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
           draft.current = updated; setDraftState(updated); return true;
         }}
       /> : <div className="skill-document">{mode === 'raw' ? <textarea className="skill-source" aria-label="Skill 原始内容" value={content} readOnly spellCheck={false} /> : content.length ? <div className="skill-reading"><Markdown skipHtml remarkPlugins={[remarkGfm]} components={readingComponents}>{reading.body}</Markdown></div> : <p className="skill-document-empty">此版本内容为空。</p>}</div> : null}
-      {editing ? <footer className="skill-editor-footer"><span className="skill-chat-save-state">{dirty ? '原文有未保存修改' : '个人版本草稿'}</span><div className="skill-inline-actions"><button type="button" className="ent-btn" disabled={busy} onClick={() => { if (mayDiscard()) { updateContent(source); setEditing(false); setSourceOpen(false); setMode('read'); setActionError(null); setChatRevision(value => value + 1); } }}>取消修改</button><button type="button" className="ent-btn primary" disabled={busy || rewriteBusy || !content.trim() || !dirty || !validParent} onClick={() => setSaveOpen(true)}><Save size={14} aria-hidden />保存为个人版本</button></div></footer> : null}
+      {editing ? <footer className="skill-editor-footer"><span className="skill-chat-save-state">{dirty ? '原文有未保存修改' : '个人版本草稿'}</span><div className="skill-inline-actions"><button type="button" className="ent-btn" disabled={busy} onClick={() => void discard()}>取消修改</button><button type="button" className="ent-btn primary" disabled={busy || rewriteBusy || !content.trim() || !dirty || !validParent} onClick={() => setSaveOpen(true)}><Save size={14} aria-hidden />保存为个人版本</button></div></footer> : null}
       {editing && !validParent ? <p className="skill-error" role="alert">来源版本已不可用，草稿仍保留，当前无法保存。请核对技能状态后重试。</p> : null}
     </section>
     <section className="skill-history" id="skill-panel-history" role="tabpanel" aria-labelledby="skill-tab-history" hidden={tab !== 'history'}>
@@ -207,6 +239,6 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
         <footer className="skill-source-drawer-footer"><span>{dirty ? '有未保存修改' : '原文未修改'}</span><Dialog.Close asChild><button type="button" className="ent-btn" disabled={busy}>返回对话</button></Dialog.Close></footer>
       </Dialog.Content>
     </Dialog.Portal></Dialog.Root>
-    <Dialog.Root open={saveOpen} onOpenChange={open => { if (!busy) setSaveOpen(open); }}><Dialog.Portal container={container}><Dialog.Overlay className="skill-dialog-overlay" /><Dialog.Content className="skill-save-dialog"><Dialog.Title>保存为个人版本</Dialog.Title><Dialog.Description>保存新版本并上传送审，不会自动启用。</Dialog.Description><label className="ent-field"><span>版本名称 / 修改说明</span><input className="ent-input" value={name} onChange={event => setName(event.target.value)} placeholder="例如：我的优化版" disabled={busy} /></label>{actionError?.phase === 'save' ? <p role="alert" className="skill-error">{actionError.message}</p> : null}<footer><Dialog.Close asChild><button type="button" className="ent-btn" disabled={busy}>取消</button></Dialog.Close><button type="button" className="ent-btn primary" disabled={busy || !name.trim() || !content.trim() || !validParent} onClick={() => void save()}>{operation === 'save' ? '正在保存并上传…' : '确定保存'}</button></footer><Dialog.Close className="skill-dialog-close" aria-label="关闭保存弹窗" disabled={busy}><X size={16} aria-hidden /></Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root>
+    <Dialog.Root open={saveOpen} onOpenChange={open => { if (!busy) setSaveOpen(open); }}><Dialog.Portal container={container}><Dialog.Overlay className="skill-dialog-overlay" /><Dialog.Content className="skill-save-dialog"><Dialog.Title>保存为个人版本</Dialog.Title><Dialog.Description>保存后自动启用新版本，应用于全部关联员工，并上传送审。</Dialog.Description><label className="ent-field"><span>版本名称 / 修改说明</span><input className="ent-input" value={name} onChange={event => setName(event.target.value)} placeholder="例如：我的优化版" disabled={busy} aria-invalid={duplicateName || undefined} aria-describedby={duplicateName ? 'skill-version-name-error' : undefined} /></label>{duplicateName ? <p id="skill-version-name-error" role="alert" className="skill-error">{SKILL_VERSION_NAME_TAKEN}</p> : actionError?.phase === 'save' ? <p role="alert" className="skill-error">{actionError.message}</p> : null}<footer><Dialog.Close asChild><button type="button" className="ent-btn" disabled={busy}>取消</button></Dialog.Close><button type="button" className="ent-btn primary" disabled={busy || duplicateName || !name.trim() || !content.trim() || !validParent} onClick={() => void save()}>{operation === 'save' ? '正在保存并上传…' : '确定保存'}</button></footer><Dialog.Close className="skill-dialog-close" aria-label="关闭保存弹窗" disabled={busy}><X size={16} aria-hidden /></Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root>
   </div>;
 }

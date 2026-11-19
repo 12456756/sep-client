@@ -1,27 +1,50 @@
-.document-preview-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 32px)); height: min(880px, calc(100dvh - 32px)); max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); margin: auto; padding: 0; border: 1px solid #d9dfe1; border-radius: 8px; background: #fff; color: #293136; overflow: hidden; }
+.document-preview-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 32px)); height: min(880px, calc(100dvh - 32px)); max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); margin: auto; padding: 0; border: 1px solid var(--ent-line); border-radius: 8px; background: var(--ent-panel); color: var(--ent-ink); overflow: hidden; }
 .document-preview-dialog[open] { display: flex; flex-direction: column; }
 .document-preview-dialog::backdrop { background: rgb(0 0 0 / 42%); }
-.document-preview-heading, .document-preview-toolbar { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid #e5e9e8; }
+.document-preview-heading, .document-preview-toolbar { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid var(--ent-line); }
 .document-preview-heading > div:first-child { flex: 1; min-width: 0; }
 .document-preview-heading strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
-.document-preview-heading small { color: #62706a; font-size: 11px; }
+.document-preview-heading small { color: var(--ent-ink-3); font-size: 11px; }
 .document-preview-actions, .document-preview-pager { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
 .document-preview-dialog button:not(.ent-btn) { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
-.document-preview-dialog button:not(.ent-btn):hover { background: #edf3ef; }
+.document-preview-dialog button:not(.ent-btn):hover { background: var(--ent-muted-bg); }
 .document-preview-dialog button:disabled { opacity: 0.4; cursor: default; }
-.document-preview-dialog :is(button, select, input):focus-visible { outline: 2px solid #29765a; outline-offset: 2px; }
-.document-preview-toolbar { flex-wrap: wrap; justify-content: space-between; padding-block: 6px; font-size: 12px; background: #f8faf9; }
-.document-preview-toolbar select { max-width: min(440px, 100%); min-width: 0; padding: 6px 8px; border: 1px solid #d9dfe1; border-radius: 4px; background: white; color: inherit; }
+.document-preview-dialog :is(button, select, input):focus-visible { outline: 2px solid var(--ent-brand-solid); outline-offset: 2px; }
+.document-preview-toolbar { flex-wrap: wrap; justify-content: space-between; padding-block: 6px; font-size: 12px; background: var(--ent-panel-subtle); }
+.document-preview-toolbar select { max-width: min(440px, 100%); min-width: 0; padding: 6px 8px; border: 1px solid var(--ent-line); border-radius: 4px; background: var(--ent-panel); color: inherit; }
 .document-preview-pager span { min-width: 40px; text-align: center; }
 .document-preview-pager input { width: 56px; padding: 4px; border: 1px solid #d9dfe1; border-radius: 4px; }
 .document-preview-zoom { width: 40px; text-align: center; }
 .document-preview-notice { flex: 0 0 auto; margin: 0; padding: 8px 16px; background: #f2f7f4; color: #52645b; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .document-preview-frame { width: 100%; min-height: 0; flex: 1 1 0; border: none; background: white; }
 .document-preview-text { flex: 1; min-height: 0; padding: 20px 28px; overflow: auto; line-height: 1.75; overflow-wrap: anywhere; }
-.document-preview-text pre { margin: 0; white-space: pre-wrap; font: inherit; }
-.document-preview-text table { border-collapse: collapse; display: block; overflow: auto; }
-.document-preview-text :is(td, th) { padding: 6px 10px; border: 1px solid #d9dfe1; }
-.document-preview-text h1 { font-size: 26px; }.document-preview-text h2 { font-size: 22px; }.document-preview-text h3 { font-size: 18px; }
+.document-preview-text > pre { margin: 0; white-space: pre-wrap; font: inherit; }
+.document-preview-markdown { max-width: 52rem; margin-inline: auto; }
+.document-preview-markdown :is(p, ul, ol, blockquote, pre, hr, .document-preview-table) { margin-block: 0 1em; }
+.document-preview-markdown > :last-child { margin-bottom: 0; }
+.document-preview-markdown :is(h1, h2, h3, h4, h5, h6) { margin-block: 1em .5em; font-weight: 650; line-height: 1.4; }
+.document-preview-markdown > :first-child { margin-top: 0; }
+.document-preview-markdown h1 { font-size: 1.75em; }
+.document-preview-markdown h2 { font-size: 1.45em; }
+.document-preview-markdown h3 { font-size: 1.2em; }
+.document-preview-markdown :is(h1, h2) { padding-bottom: .25em; border-bottom: 1px solid var(--ent-line); }
+.document-preview-markdown :is(ul, ol) { padding-inline-start: 1.6em; }
+.document-preview-markdown ul { list-style: disc; }
+.document-preview-markdown ul ul { list-style: circle; }
+.document-preview-markdown ol { list-style: decimal; }
+.document-preview-markdown ul.contains-task-list { list-style: none; }
+.document-preview-markdown li + li { margin-top: .2em; }
+.document-preview-markdown li > :is(ul, ol) { margin-block: .2em 0; }
+.document-preview-markdown :is(li, blockquote) > :last-child { margin-bottom: 0; }
+.document-preview-markdown blockquote { padding-inline-start: .9em; border-inline-start: 3px solid var(--ent-line-strong); color: var(--ent-ink-2); }
+.document-preview-markdown hr { border-color: var(--ent-line); }
+.document-preview-markdown code { font-family: ui-monospace, monospace; font-size: .92em; }
+.document-preview-markdown pre { overflow-x: auto; padding: .8em 1em; border-radius: 6px; background: var(--ent-panel-subtle); white-space: pre; }
+.document-preview-markdown :not(pre) > code { padding: .1em .25em; border-radius: 4px; background: var(--ent-muted-bg); }
+.document-preview-table { overflow-x: auto; }
+.document-preview-table table { border-collapse: collapse; overflow-wrap: normal; }
+.document-preview-table :is(td, th) { min-width: 4em; padding: .35em .65em; border: 1px solid var(--ent-line); }
+.document-preview-table th { background: var(--ent-panel-subtle); }
 .document-preview-state { display: flex; flex: 1; min-height: 160px; padding: 24px; align-items: center; justify-content: center; flex-direction: column; gap: 12px; text-align: center; font-size: 14px; overflow-wrap: anywhere; }
 .document-preview-state p { max-width: 560px; margin: 0; }
 .document-preview-pdf { position: relative; flex: 1; min-height: 0; padding: 16px; overflow: auto; background: #e9edeb; }

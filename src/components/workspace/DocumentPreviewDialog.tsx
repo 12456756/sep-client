@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight, Copy, LoaderCircle, Minus, Plus, RotateCcw, X } from 'lucide-react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly'
 import remarkGfm from 'remark-gfm'
 import type { DocumentPreview, DocumentPreviewRequest } from '../../shared/document-preview'
 import { documentPreviewFrame } from './document-preview-frame'
@@ -8,6 +9,7 @@ import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { operationFailure, responseError } from '../../shared/arrangement-feedback'
 
 const PdfPreview = lazy(() => import('./PdfDocumentPreview'))
+const markdownPlugins = [remarkGfm, remarkCjkFriendly]
 export type DocumentPreviewDialogProps = DocumentPreviewRequest & { name: string; version?: string; onClose(): void }
 
 export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps) {
@@ -56,11 +58,15 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
     try { await navigator.clipboard.writeText(part); if (notice.isCurrent()) setCopied(true) }
     catch { if (notice.isCurrent()) { setCopied(false); notice.show('文档内容复制失败，请重试或手动选择内容复制。') } }
   }
-  return <dialog ref={dialog} className="document-preview-dialog" aria-label={`文档预览：${name}`} onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
+  const closePreview = () => {
+    dialog.current?.close()
+    onClose()
+  }
+  return <dialog ref={dialog} className="document-preview-dialog" aria-label={`文档预览：${name}`} onCancel={event => { event.preventDefault(); closePreview() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) closePreview() }}>
     <header className="document-preview-heading"><div><strong title={name}>{name}</strong><small>{fileId !== undefined ? '当前对话成果' : data?.source === 'verified-original' ? '已核对原件' : data?.source === 'recovered-snapshot' ? '历史恢复版本' : '节点验收版本'}</small></div>
       <div className="document-preview-actions">
         <button type="button" title="重新读取" aria-label="重新读取文档" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={17} /></button>
-        <button ref={close} type="button" title="关闭预览" aria-label="关闭文档预览" onClick={onClose}><X size={18} /></button>
+        <button ref={close} type="button" title="关闭预览" aria-label="关闭文档预览" onClick={closePreview}><X size={18} /></button>
       </div>
     </header>
     {error ? <div className="document-preview-state"><button type="button" className="ent-btn sm" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={14} />重试预览</button></div>
@@ -75,7 +81,15 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
             {content.kind === 'html' ? <>
               <p className="document-preview-notice">{content.notices.join(' ')}</p>
               <iframe key={index} className="document-preview-frame" title={`${name} · ${content.sections[index].title}`} sandbox="" referrerPolicy="no-referrer" srcDoc={documentPreviewFrame(content.sections[index].html, zoom)} />
-            </> : <div className="document-preview-text" style={{ fontSize: `${Math.round(15 * zoom)}px` }}>{content.kind === 'markdown' ? <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={{ a: ({ children }) => <span>{children}</span>, img: () => <span>［图片请查看原件］</span> }}>{part}</ReactMarkdown> : <pre>{part}</pre>}</div>}
+            </> : <div className="document-preview-text" style={{ fontSize: `${Math.round(15 * zoom)}px` }}>
+              {content.kind === 'markdown' ? <div className="document-preview-markdown">
+                <ReactMarkdown remarkPlugins={markdownPlugins} skipHtml components={{
+                  a: ({ children }) => <span>{children}</span>,
+                  img: () => <span>［图片请查看原件］</span>,
+                  table: ({ children }) => <div className="document-preview-table"><table>{children}</table></div>,
+                }}>{part}</ReactMarkdown>
+              </div> : <pre>{part}</pre>}
+            </div>}
           </>}
   </dialog>
 }

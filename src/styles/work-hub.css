@@ -144,7 +144,7 @@
 .ent-work-hub .ent-wk-inspector-heading { background: var(--work-list); }
 .ent-work-hub .ent-wk-inspector-trigger[aria-expanded='true'] { color: var(--work-selected-ink); background: var(--work-selected); }
 .ent-work-hub .ent-conversation-foot .ent-ask:focus-within { border-color: var(--ent-line-strong); box-shadow: none; }
-.ent-work-hub .ent-say.user p { background: var(--work-selected); }
+.ent-work-hub .ent-say.user > p { background: var(--work-selected); }
 
 /* Row actions stay separate from the selection button; popovers escape list clipping. */
 .ent-work-row-wrap { position: relative; }

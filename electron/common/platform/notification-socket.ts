@@ -1,6 +1,10 @@
 import WebSocket from 'ws'
+import { AuthApiError } from './platform-api'
 import { notificationSocketMessageSchema } from '../../../src/shared/notification-contracts'
 import type { NotificationUpdate } from '../../../src/shared/notification-contracts'
+import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
+import { safeApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
+import { logger } from '../logger'
 
 /** Node ws event surface, also implemented by deterministic test sockets. */
 export interface NotificationWebSocket {
@@ -17,6 +21,7 @@ export interface NotificationSocketOptions {
   subscribeAccessToken?: (callback: (token: string | null) => void) => () => void
   onMessage: (message: NotificationUpdate) => void
   onAuthenticationRequired: () => void
+  onDiagnostic?: (diagnostic: ApiDiagnostic) => void
   createSocket?: (url: string) => NotificationWebSocket
   /** Returns a cancellation function; all deadlines use this clock. */
   schedule?: (callback: () => void, delayMs: number) => () => void
@@ -29,12 +34,14 @@ interface Connection {
   listeners: [string, Listener][]
   opened: boolean
   authenticated: boolean
+  failure?: ApiDiagnostic
 }
 
 const CONNECT_TIMEOUT_MS = 10_000
 const HEARTBEAT_MS = 30_000
 const PONG_TIMEOUT_MS = 10_000
 const MAX_RECONNECT_MS = 30_000
+const MAX_FRAME_BYTES = 1024 * 1024
 
 function socketUrl(baseUrl: string): string {
   const url = new URL(baseUrl)
@@ -49,14 +56,15 @@ function socketUrl(baseUrl: string): string {
 }
 
 function textPayload(value: unknown): string | undefined {
-  if (typeof value === 'string') return value
-  if (Buffer.isBuffer(value)) return value.toString('utf8')
-  if (value instanceof ArrayBuffer) return Buffer.from(value).toString('utf8')
-  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('utf8')
+  if (typeof value === 'string') return Buffer.byteLength(value) <= MAX_FRAME_BYTES ? value : undefined
+  if (Buffer.isBuffer(value)) return value.byteLength <= MAX_FRAME_BYTES ? value.toString('utf8') : undefined
+  if (value instanceof ArrayBuffer) return value.byteLength <= MAX_FRAME_BYTES ? Buffer.from(value).toString('utf8') : undefined
+  if (ArrayBuffer.isView(value)) return value.byteLength <= MAX_FRAME_BYTES ? Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('utf8') : undefined
   return undefined
 }
 
 function isUnauthorized(value: unknown): boolean {
+  if (value instanceof AuthApiError) return value.isUnauthorized
   return typeof value === 'object' && value !== null && (
     ('statusCode' in value && value.statusCode === 401) || ('status' in value && value.status === 401)
   )
@@ -93,7 +101,7 @@ export class NotificationSocket {
     }
     this.createSocket = options.createSocket ?? (url => new WebSocket(url, {
       origin: origin.origin,
-      maxPayload: 1024 * 1024,
+      maxPayload: MAX_FRAME_BYTES,
       followRedirects: false,
     }))
     this.schedule = options.schedule ?? ((callback, delayMs) => {
@@ -202,9 +210,17 @@ export class NotificationSocket {
       this.send(connection, generation, { type: 'auth', token })
     })
     listen('message', (raw, isBinary) => this.receive(connection, generation, raw, isBinary))
-    listen('error', () => this.retry(generation))
+    listen('error', error => {
+      this.report(transportApiDiagnostic(error, 'notifications.websocket', [token]))
+      this.retry(generation)
+    })
     listen('close', (code, rawReason) => {
       const reason = textPayload(rawReason)
+      this.report({ ...connection.failure, operation: 'notifications.websocket', stage: 'websocket-close',
+        message: connection.failure?.message ?? reason,
+        body: { closeCode: typeof code === 'number' ? code : null, closeReason: reason ?? null,
+          ...(connection.failure ? { errorFrame: connection.failure.body ?? null } : {}) },
+      })
       // Backend: notifications.gateway.ts. Other 1008 policy errors are not JWT
       // failures and must not consume/rotate the refresh token.
       const authRejected = code === 4401 || (code === 1008 && (
@@ -228,6 +244,16 @@ export class NotificationSocket {
     if (text === undefined) return
     let input: unknown
     try { input = JSON.parse(text) } catch { return }
+    if (input && typeof input === 'object' && !Array.isArray(input) && 'type' in input && input.type === 'error') {
+      const frame = input as Record<string, unknown>
+      const error = frame.error && typeof frame.error === 'object' && !Array.isArray(frame.error) ? frame.error as Record<string, unknown> : {}
+      connection.failure ??= safeApiDiagnostic({ operation: 'notifications.websocket', stage: 'websocket-error',
+        body: frame.error, code: error.code, source: error.source,
+        message: typeof frame.error === 'string' ? frame.error : error.message,
+      }, this.currentToken ? [this.currentToken] : [])
+      if (connection.failure) this.report(connection.failure)
+      return
+    }
     const result = notificationSocketMessageSchema.safeParse(input)
     if (!result.success) return
     const message = result.data
@@ -256,6 +282,13 @@ export class NotificationSocket {
         this.heartbeat(connection, generation)
       }
     }, HEARTBEAT_MS)
+  }
+
+  private report(value: ApiDiagnostic): void {
+    const diagnostic = safeApiDiagnostic(value, this.currentToken ? [this.currentToken] : [])
+    if (!diagnostic) return
+    logger.child('notifications').warn('notification socket interrupted', { diagnostic })
+    try { this.options.onDiagnostic?.(diagnostic) } catch { /* Observers cannot alter socket recovery. */ }
   }
 
   private send(connection: Connection, generation: number, message: unknown): boolean {

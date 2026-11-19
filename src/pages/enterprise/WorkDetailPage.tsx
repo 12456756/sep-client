@@ -12,7 +12,8 @@ import { WorkConversation } from '../../components/enterprise/WorkTalkDrawer';
 import { IconHint } from '../../components/enterprise/IconHint';
 import { WorkStatusIcon, WorkTypeTag } from '../../components/enterprise/WorkIndicators';
 import { WorkSkills } from '../../components/enterprise/WorkSkills';
-import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
+import { MediaArtifactsPanel, type MediaArtifactsSummary } from '../../components/workspace/MediaArtifactsPanel';
+import { mediaRetryNotice, type MediaRetryState } from '../../shared/media-retry';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { ResultFileCard } from '../../components/workspace/ResultFileCard';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
@@ -46,7 +47,7 @@ export function WorkDetailPage({ workspace, workId }: Props) {
     </div>;
   }
   // 仅在权威分类已解析后显示该类型的操作；切换工作重置面板。
-  return <Detail key={work.id} work={work} workspace={workspace} />;
+  return <Detail key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} />;
 }
 
 /** 抬头右边和抽屉之间共用的一个状态：现在拉开的是哪个抽屉。 */
@@ -67,7 +68,8 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const mediaPhaseLabel = mediaPhase === 'preparing' ? '正在准备媒体请求' : mediaPhase === 'awaiting-approval' ? '等待确认媒体请求' : mediaPhase === 'submitted' ? '媒体已提交，等待供应商' : mediaPhase === 'tracking' ? '供应商正在生成媒体' : mediaPhase === 'saving' ? '正在下载并保存媒体' : mediaPhase === 'materializing' ? '正在整理媒体交付结果' : null;
   const [panel, setPanel] = useState<Panel>(null);
   const inspector = useRef<HTMLDialogElement | null>(null);
-  const [mediaSummary, setMediaSummary] = useState<{ images: number | null; videos: number | null; error: string | null }>({ images: null, videos: null, error: null });
+  const [mediaSummary, setMediaSummary] = useState<MediaArtifactsSummary>({ images: null, videos: null, error: null, retryState: 'checking' });
+  const [conversationSkipped, setConversationSkipped] = useState(false);
   const handleMediaSummary = useCallback((summary: typeof mediaSummary) => setMediaSummary(summary), []);
   const noConversationResults = mediaSummary.images === 0 && mediaSummary.videos === 0 && !mediaSummary.error;
   const showEmptyResults = work.deliverables.length === 0 && (isConversation ? noConversationResults : !work.arrangementExecution?.media?.length);
@@ -176,11 +178,11 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
       <div className="ent-wk-detail">
         {/* 主轴：两种工作类型都以内容为主体，内部滚动 */}
         <div className="ent-wk-detail-main">
-          <NeedsYou work={work} workspace={workspace} />
+          <NeedsYou work={work} workspace={workspace} mediaRetryState={isConversation ? mediaSummary.retryState : 'clear'} conversationSkipped={conversationSkipped} onViewResults={() => openInspector('results')} />
           {work.kind === 'flow' ? <FailedNodeActions work={work} busy={workspace.busy} onRetry={workspace.retryWork} /> : null}
 
           {isConversation ? <section className="ent-chat-panel" aria-label="工作对话">
-            <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} />
+            <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} onSkippedChange={setConversationSkipped} />
           </section> : <ArrangementTranscript work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey}
             busy={workspace.busy} onStop={workspace.stopWork} onResults={() => openInspector('results')} />}
         </div>
@@ -234,7 +236,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           {/* 工作信息按需打开，不占用消息区。 */}
           <section className="ent-panel ent-wk-inspector-content" aria-label="工作信息" hidden={panel !== 'info'}>
             <div className="ent-wk-info-facts"><span>{team.length ? `${team.length} 位协作员工` : work.currentEmployeeName}</span><span>创建于 {dayTimeText(work.createdAt)}</span><span>{runStartedAt === null ? '尚未开始' : `开始于 ${dayTimeText(runStartedAt)}`}</span><span>{over && runEndedAt !== null ? `结束于 ${dayTimeText(runEndedAt)}` : '仍在执行'}</span><span>{work.workDir || '默认工作目录'}</span></div>
-            <MoreInfo work={work} />
+            <MoreInfo work={work} stopReason={isConversation && (work.status === 'failed' || work.status === 'paused') ? mediaRetryNotice(mediaSummary.retryState) ?? work.stopReason : work.stopReason} />
             <button type="button" className="ent-btn danger ghost sm" disabled={workspace.busy} onClick={() => { void workspace.deleteWork(work.id); }}><Trash2 size={13} aria-hidden />删除记录</button>
 
           </section>
@@ -245,7 +247,9 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
 }
 
 /** 等待确认、失败与终止后的恢复操作始终留在主对话区。 */
-function NeedsYou({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
+function NeedsYou({ work, workspace, mediaRetryState, conversationSkipped, onViewResults }: {
+  work: WorkItem; workspace: EnterpriseWorkspace; mediaRetryState: MediaRetryState; conversationSkipped: boolean; onViewResults: () => void;
+}) {
 
   const execution = work.arrangementExecution;
   const missing = execution?.nodes.filter(node => node.status === 'waiting-employee') ?? [];
@@ -269,6 +273,17 @@ function NeedsYou({ work, workspace }: { work: WorkItem; workspace: EnterpriseWo
       </div>
     );
   }
+
+  if ((work.status === 'failed' || work.status === 'paused') && mediaRetryState !== 'clear') {
+    const checking = mediaRetryState === 'checking';
+    return <div className="ent-flow-act danger" aria-label={work.status === 'failed' ? '任务失败' : '任务已终止'}>
+      <AlertTriangle size={16} aria-hidden />
+      <p role="status">{mediaRetryNotice(mediaRetryState)}</p>
+      {!checking && <button type="button" className="ent-btn sm" onClick={onViewResults}>查看原任务</button>}
+    </div>;
+  }
+
+  if (conversationSkipped) return null;
 
   if (work.status === 'failed') {
     if (work.kind === 'flow' && execution?.nodes.some(node => node.status === 'failed')) return null;
@@ -352,7 +367,7 @@ function MediaInputReplyForm({ work, workspace, nodeId, request }: {
  * 用受控的按钮 + 网格行高而不是 <details>：<details> 的高度没法过渡，
  * 点开就是一次硬跳。
  */
-function MoreInfo({ work }: { work: WorkItem }) {
+function MoreInfo({ work, stopReason }: { work: WorkItem; stopReason: WorkItem['stopReason'] }) {
   const [open, setOpen] = useState(false);
   return (
     <section className={`ent-wk-more${open ? ' open' : ''}`}>
@@ -389,10 +404,10 @@ function MoreInfo({ work }: { work: WorkItem }) {
               </ol>
             </>
           ) : null}
-          {work.stopReason ? (
+          {stopReason ? (
             <>
               <h3>{work.status === 'paused' ? '终止原因' : '中断原因'}</h3>
-              <p className="ent-prose">{work.stopReason}</p>
+              <p className="ent-prose">{stopReason}</p>
             </>
           ) : null}
         </div>

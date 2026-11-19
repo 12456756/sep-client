@@ -85,6 +85,7 @@ export interface MediaJobView {
   error: string | null
   upstreamError?: MediaUpstreamError
   failure?: MediaFailure
+  submissionFailure?: MediaFailure
   outputErrors?: { index: number; code: string }[]
   createdAt: number
   updatedAt: number

@@ -64,6 +64,18 @@ test('conversation queue accepts a validated priority action and rejects unrelat
   assert.throws(() => queueRoute.schema.parse({ taskId: 'task', action: 'prioritize', unexpected: true }))
 })
 
+test('conversation skip requires a snapshot token and does not accept a replay or replacement prompt', async () => {
+  const input = { taskId: 'task', action: 'skip', skipToken: 'a'.repeat(64) }
+  const queue = { paused: false, items: [], failed: null, skipped: true }
+  const context = { conversations: { async queue(value: unknown) {
+    assert.deepEqual(value, input); return queue
+  } } } as unknown as RequestContext
+  assert.deepEqual(await queueRoute.handle(context, queueRoute.schema.parse(input) as never), { success: true, queue })
+  for (const bad of [{ ...input, skipToken: undefined }, { ...input, skipToken: 'old-run' }, { ...input, prompt: 'send automatically' }]) {
+    assert.equal(queueRoute.schema.safeParse(bad).success, false)
+  }
+})
+
 for (const queued of [false, true]) test(`continue returns the backend waiting decision queued=${queued}`, async () => {
   const input = route.schema.parse({ taskId: 'task', messageId: 'message', prompt: 'follow-up', queued: !queued })
   const context = { conversations: { async continue(value: Record<string, unknown>) {

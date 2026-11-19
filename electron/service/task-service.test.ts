@@ -10,6 +10,7 @@ import { TaskService, type TaskServiceDependencies } from './task-service'
 import { MediaStore } from '../data/media-store'
 import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
 import { ConversationService, type ConversationServiceDependencies } from './conversation-service'
+import { AppError } from '../errors/app-error'
 
 const owner: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const workspaceNames = { enterpriseName: 'Acme Studio', memberName: 'Alice' }
@@ -262,6 +263,15 @@ describe('task timeline admission', () => {
 })
 
 describe('task start failure recording', () => {
+  it('does not replace an existing failure when the media replay guard rejects the retry', async () => {
+    let recorded = false
+    const guarded = harness({
+      taskManager: { async getTask() { return task }, async recordStartFailure() { recorded = true } },
+      conversationQueue: { async resume() { throw new AppError('MEDIA_REPLAY_BLOCKED') } },
+    })
+    await assert.rejects(guarded.retry(task.id), { code: 'MEDIA_REPLAY_BLOCKED' })
+    assert.equal(recorded, false)
+  })
   for (const fails of [false, true]) it(`routes an empty conversation retry through its queue and records admission failure=${fails}`, async () => {
     const failure = new Error('worker unavailable')
     let recorded: string | undefined

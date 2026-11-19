@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { restoreKnowledgeFilename, type KnowledgeBase, type KnowledgeData } from '../../../shared/knowledge-contracts'
 import { isKnowledgeCancelled, type KnowledgeClient } from '../../../features/knowledge/knowledge-client'
 import { KnowledgeErrorNotice } from './KnowledgeUI'
+import { knowledgeDegradationMessage } from '../../../shared/knowledge-feedback'
 
 export function KnowledgeSearch({ client, base }: { client: KnowledgeClient; base: KnowledgeBase }) {
   const [query, setQuery] = useState('')
@@ -31,10 +32,10 @@ export function KnowledgeSearch({ client, base }: { client: KnowledgeClient; bas
     </form>
     <KnowledgeErrorNotice error={error} />
     {result ? <>
-      {result.degraded ? <p className="kb-info">向量检索暂不可用，本次使用关键词检索，结果覆盖能力可能受限。</p> : null}
+      {result.degraded ? <p className="kb-info">{knowledgeDegradationMessage(result)}</p> : null}
       {result.partial ? <p className="kb-info">部分资料尚未就绪，本次结果仅覆盖已就绪的资料。</p> : null}
       {result.status !== 'MATCHED' ? <div className="kb-empty"><Search size={30} /><h3>{({ NO_MATCH: '没有找到匹配的资料', NO_ACCESS: '暂无可访问的知识库', NOT_READY: '资料尚未就绪' })[result.status]}</h3><p>{result.status === 'NO_MATCH' ? '可以调整问题或补充相关资料。' : result.status === 'NOT_READY' ? '请等待文档处理完成，或联系管理员补充资料。' : '请联系企业管理员授权。'}</p></div> : <>
-        <div className="kb-result-summary">找到 {result.results.length} 条相关片段 · {result.actualStrategy} · {result.durationMs} ms</div>
+        <div className="kb-result-summary">找到 {result.results.length} 条相关片段{result.actualStrategy ? ` · ${result.actualStrategy}` : ''} · {result.durationMs} ms</div>
         <div className="kb-results">{result.results.map((item, index) => <article className="kb-result" key={item.sourceId}><header><strong>{index + 1}. {restoreKnowledgeFilename(item.documentName)}</strong><span>{item.knowledgeBaseName}</span></header><div className="kb-caption">版本 {item.versionId}{item.location.pageStart != null ? ` · 第 ${item.location.pageStart}${item.location.pageEnd != null && item.location.pageEnd !== item.location.pageStart ? `–${item.location.pageEnd}` : ''} 页` : ''}{item.location.sectionPath?.length ? ' · ' + item.location.sectionPath.join(' / ') : ''}</div><p>{item.content}</p>{item.truncated ? <small>此片段已按平台预算截取。</small> : null}</article>)}</div>
       </>}
     </> : null}

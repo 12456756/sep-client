@@ -2,6 +2,7 @@ import { mediaFailureSchema, type MediaFailure } from '../../src/shared/media-fa
 import { AppError } from './app-error'
 import { transportKind } from '../common/transport-error'
 import { safeMediaUpstreamMessage } from '../common/media-upstream-error'
+import { safeApiDiagnostic } from '../common/platform/api-diagnostic'
 
 export function mediaJobFailure(error: unknown, stage: MediaFailure['stage']): MediaFailure {
   const details = error instanceof AppError ? error.details ?? {} : {}
@@ -9,6 +10,8 @@ export function mediaJobFailure(error: unknown, stage: MediaFailure['stage']): M
   const code = transport === 'timeout' ? 'NETWORK_TIMEOUT' : transport === 'network' ? 'NETWORK_ERROR'
     : error instanceof AppError ? error.code : 'INTERNAL_ERROR'
   const result: MediaFailure = { code, stage }
+  const diagnostic = safeApiDiagnostic(error instanceof AppError ? error.diagnostic : undefined)
+  if (diagnostic) result.diagnostic = diagnostic
   // Validate each optional field independently so malformed metadata cannot erase the reason.
   const values = { businessCode: details.businessCode, gatewayCode: details.gatewayCode,
     requestId: details.requestId, httpStatus: details.statusCode, source: details.source,

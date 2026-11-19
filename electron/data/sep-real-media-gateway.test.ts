@@ -140,8 +140,8 @@ describe('SepRealMediaGateway response lifecycle', () => {
         const source = streamed(context, [Buffer.from(privateDetail)], { status }, cancelFails)
         const { gateway } = create(async () => source.response)
         await assert.rejects(gateway.content('subscription-1', 'receipt-1', 'output-1', signal()), safeError(expected))
-        assert.deepEqual(source.events, ['body.cancel'])
-        assert.equal(source.reads(), 0)
+        assert.deepEqual(source.events, ['reader.cancel', 'reader.release'])
+        assert.equal(source.reads(), 2)
         assert.equal(source.body.locked, false)
       })
     }
@@ -244,12 +244,12 @@ describe('SepRealMediaGateway response lifecycle', () => {
   }
 
   for (const [status, expected] of [[401, 'AUTH_REQUIRED'], [403, 'PERMISSION_DENIED'], [429, 'RATE_LIMITED'], [404, 'NOT_FOUND']] as const) {
-    it(`retains JSON HTTP ${status} mapping without parsing its error body`, async context => {
+    it(`retains JSON HTTP ${status} mapping while reading error evidence`, async context => {
       const source = streamed(context, [Buffer.from(privateDetail)], { status }, true)
       const { gateway } = create(async () => source.response)
       await assert.rejects(gateway.getReceipt('subscription-1', 'receipt-1', signal()), safeError(expected))
-      assert.deepEqual(source.events, ['body.cancel'])
-      assert.equal(source.reads(), 0)
+      assert.deepEqual(source.events, ['reader.cancel', 'reader.release'])
+      assert.equal(source.reads(), 2)
     })
   }
 })
@@ -330,7 +330,7 @@ describe('SepRealMediaGateway', () => {
       assert.ok(error instanceof AppError)
       assert.equal(error.details?.businessCode, 'MEDIA_RESULT_EXPIRED')
       assert.equal(error.details?.field, 'outputId')
-      assert.equal(error.details?.stage, 'image-content')
+      assert.equal(error.details?.stage, 'image-save')
       assert.equal(error.details?.recovery, 'query_original')
       assert.doesNotMatch(`${error.message} ${JSON.stringify(error)}`, /fixture-employment-token|private\.example|private-secret/)
       return true

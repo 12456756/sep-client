@@ -28,8 +28,13 @@
   .ent-multimedia-toolbar { grid-template-columns: minmax(0, 1fr) 32px; gap: 8px; }
   .ent-multimedia-toolbar > label { grid-column: 1 / -1; }
 }
-.ent-settings-backdrop { position: fixed; z-index: 80; inset: 60px 0 0; background: var(--work-canvas); }
 .ent-settings-layout { --ent-settings-sidebar-width: var(--ent-side-w); position: fixed; z-index: 81; inset: 60px 0 0; display: grid; grid-template-columns: var(--ent-settings-sidebar-width) minmax(0, 1fr); min-width: 0; min-height: 0; color: var(--ent-ink); background: var(--work-canvas); outline: none; }
+/* Let global panels share the settings layer while the workspace stays behind it. */
+.ent-shell-settings > .ent-shell-main { isolation: auto; }
+.ent-shell-settings > .ent-shell-main > .ent-top { z-index: auto; }
+.ent-shell-settings .ent-top-actions { position: relative; z-index: 82; }
+.ent-shell-settings > .ent-shell-main > .ent-command-layer { z-index: 83; }
+.ent-shell-settings :is(.ent-top .ent-top-sidebar-toggle, .ent-icon-items, .ent-icon-account, .ent-load-bar, .ent-scroll) { visibility: hidden; }
 .ent-settings-layout.sidebar-collapsed { --ent-settings-sidebar-width: var(--ent-side-w-collapsed); }
 .ent-settings-sidebar { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 24px 16px; border-right: 1px solid var(--ent-line); background: var(--work-rail); }
 .ent-settings-sidebar-toggle { position: fixed; z-index: 82; top: 14px; left: calc(var(--ent-settings-sidebar-width) + 28px); }

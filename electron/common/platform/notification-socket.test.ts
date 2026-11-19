@@ -3,7 +3,9 @@ import { EventEmitter } from 'node:events'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { it } from 'node:test'
+import { AuthApiError } from './platform-api'
 import type { NotificationUpdate } from '../../../src/shared/notification-contracts'
+import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
 import { NotificationSocket } from './notification-socket'
 import type { NotificationSocketOptions } from './notification-socket'
 
@@ -49,6 +51,22 @@ function gate<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: 
 
 async function flush(): Promise<void> { for (let i = 0; i < 8; i++) await Promise.resolve() }
 
+it('does not refresh or clear desktop login for an upstream token-acquisition 401', async () => {
+  const calls: (boolean | undefined)[] = []
+  const h = harness({ getAccessToken: async force => {
+    calls.push(force)
+    throw new AuthApiError({ statusCode: 401, message: 'Invalid API key', diagnostic: { source: 'upstream' } })
+  } })
+  h.transport.start()
+  await flush()
+  assert.deepEqual(calls, [false])
+  assert.equal(h.authenticationRequired, 0)
+  h.clock.tick(1000)
+  await flush()
+  assert.deepEqual(calls, [false, false])
+  h.transport.stop()
+})
+
 function harness(options: Partial<NotificationSocketOptions> = {}) {
   const clock = new FakeClock()
   const sockets: FakeSocket[] = []
@@ -87,6 +105,53 @@ async function connect(h: ReturnType<typeof harness>): Promise<FakeSocket> {
   socket.message({ type: 'connected', data: { unreadCount: 2 }, timestamp: 123 })
   return socket
 }
+
+it('retains a safe error frame through close 1011 without refreshing login or clearing previous updates', async () => {
+  const diagnostics: ApiDiagnostic[] = []
+  const h = harness({ onDiagnostic: diagnostic => diagnostics.push(diagnostic) })
+  const socket = await connect(h)
+  socket.message({ type: 'error', error: { code: 'STATUS_FAILED', message: 'State unavailable access-1', signature: 'signature-secret' } })
+  socket.close(1011, 'Internal failure access-1')
+  assert.equal(h.authenticationRequired, 0)
+  assert.deepEqual(h.tokenCalls, [false])
+  assert.equal(h.updates.length, 1)
+  assert.equal(diagnostics.length, 2)
+  assert.equal(diagnostics[1].code, 'STATUS_FAILED')
+  assert.match(diagnostics[1].message!, /State unavailable/)
+  assert.equal((diagnostics[1].body as Record<string, unknown>).closeCode, 1011)
+  assert.doesNotMatch(JSON.stringify(diagnostics), /access-1|signature-secret/)
+  h.clock.tick(1000); await flush()
+  assert.equal(h.sockets.length, 2)
+  h.transport.stop()
+})
+
+it('records only the actual close evidence when no error frame exists and isolates later connections', async () => {
+  const diagnostics: ApiDiagnostic[] = []
+  const h = harness({ onDiagnostic: diagnostic => diagnostics.push(diagnostic) })
+  const socket = await connect(h)
+  socket.message({ type: 'error', error: 'Old frame' })
+  h.rotate('access-2'); await flush()
+  const next = h.sockets.at(-1)!
+  next.open()
+  socket.close(1011, 'Stale reason')
+  next.close(1011)
+  assert.equal(diagnostics.length, 2)
+  assert.deepEqual(diagnostics[1].body, { closeCode: 1011, closeReason: '' })
+  assert.equal(diagnostics[1].httpStatus, undefined)
+  assert.equal(diagnostics[1].source, undefined)
+  assert.equal(h.authenticationRequired, 0)
+  h.transport.stop()
+})
+
+it('bounds untrusted WebSocket frames before parsing and tolerates diagnostic observers failing', async () => {
+  const h = harness({ onDiagnostic: () => { throw new Error('observer failed') } })
+  const socket = await connect(h)
+  socket.emit('message', Buffer.from(JSON.stringify({ type: 'error', error: 'x'.repeat(1024 * 1024) })), false)
+  socket.close(1011)
+  h.clock.tick(1000); await flush()
+  assert.equal(h.sockets.length, 2)
+  h.transport.stop()
+})
 
 it('derives safe ws/wss URLs and authenticates immediately on open without browser globals', async () => {
   for (const [baseUrl, expected] of [

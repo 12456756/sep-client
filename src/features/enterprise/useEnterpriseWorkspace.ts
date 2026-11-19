@@ -5,6 +5,7 @@ import { subscriptionAvailability } from './employee-view-model';
 import { createEmployeePageState, employeeBackgroundRoute, enterEmployeePage, readEmployeeView, saveEmployeeView, type EmployeePageState } from './employee-page-state';
 import { createSkillPageState, enterSkillPage, createSkillLeaveRegistry, type SkillPageState } from './skill-page-state';
 import { conversationDocument } from './run-settings';
+import { resolveTaskModel } from '../../shared/model-preferences';
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import { UserFeedbackError, responseError } from '../../shared/arrangement-feedback';
@@ -156,6 +157,7 @@ interface Options {
   enterpriseName: string;
   instances: Subscription[];
   employeeStatuses: EmployeeStatus[];
+  defaultModelId: string;
 }
 
 /**
@@ -258,7 +260,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
 
 }
 
-export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses }: Options): EnterpriseWorkspace {
+export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses, defaultModelId }: Options): EnterpriseWorkspace {
   const [tasks, setTasks] = useState<ClientTask[]>([]);
   const scopeKey = JSON.stringify([userId, enterpriseId]);
   const planningController = usePlanningSession({ memberId: userId, enterpriseId });
@@ -749,7 +751,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const title = goal.length > 40 ? `${goal.slice(0, 40)}…` : goal;
     setBusy(true);
     try {
-      const modelId = options?.modelId || employee.allowedModels[0];
+      const modelId = options?.modelId || resolveTaskModel(employee.allowedModels, defaultModelId);
       if (!modelId || !employee.allowedModels.includes(modelId)) throw new UserFeedbackError(employeeId === GENERAL_ASSISTANT_ID ? '通用助手没有可用的模型授权，请更换员工或联系平台管理员配置模型。' : '所选员工不支持当前模型，请重新选择');
       const document = { ...conversationDocument(title, goal, employeeId, modelId, options), ...(options?.attachmentRefs?.length ? { attachmentCandidates: options.attachmentRefs.map(attachment => ({ attachment, mustUse: true })), attachmentSessionId: options.attachmentSessionId } : {}) };
       const created = await api.createArrangementDraft(document);
@@ -780,7 +782,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     } finally {
       if (notice.isCurrent()) setBusy(false);
     }
-  }, [myEmployees, navigate, captureFeedback, deletedTaskIds]);
+  }, [myEmployees, navigate, captureFeedback, deletedTaskIds, defaultModelId]);
 
   const arrangeWork = useCallback(async (draft: ArrangeWorkDraft): Promise<boolean> => {
     const notice = captureFeedback();
@@ -793,7 +795,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       return {
         id: step.id,
         subscriptionId: step.employeeId,
-        modelId: draft.modelId || employee?.allowedModels[0] || '',
+        modelId: draft.modelId || resolveTaskModel(employee?.allowedModels ?? [], defaultModelId),
         title: step.title,
         instruction: [step.title, step.input && `输入：${step.input}`].filter(Boolean).join('\n'),
         expectedOutput: step.output || step.title,
@@ -848,7 +850,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     } finally {
       if (notice.isCurrent()) setBusy(false);
     }
-  }, [myEmployees, navigate, captureFeedback]);
+  }, [myEmployees, navigate, captureFeedback, defaultModelId]);
 
   const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string, knowledge?: KnowledgeSelection, messageId: string = crypto.randomUUID()): Promise<boolean> => {
     const prompt = text.trim();

@@ -283,7 +283,7 @@ test('definitive rejection requires matching status, platform source, submit sta
   await assert.rejects(headerOnly.submit(request, signal), error => error instanceof SepVideoGatewayError && error.definitelyRejected && error.requestId === 'req-header-1')
 })
 
-test('invalid, oversized or conflicting error evidence stays uncertain without leaking its contents', async () => {
+test('invalid, oversized or conflicting evidence remains diagnostic and never proves submission rejection', async () => {
   const request = videoRequestWithIdentitySchema.parse(fixture.request)
   const valid = { code: 'INSUFFICIENT_FUNDS', source: 'platform', requestId: 'req-safe-1' }
   const bodies: Array<{ body: string | Uint8Array<ArrayBuffer>; headers?: Record<string, string> }> = [
@@ -302,7 +302,7 @@ test('invalid, oversized or conflicting error evidence stays uncertain without l
   for (const { body, headers } of bodies) {
     const adapter = gateway(async () => new Response(body, { status: 402, headers: { 'Content-Type': 'application/json', ...headers } }))
     await assert.rejects(adapter.submit(request, signal), error => error instanceof SepVideoGatewayError &&
-      !error.definitelyRejected && error.businessCode === null && !JSON.stringify(error).includes('private'))
+      !error.definitelyRejected && error.businessCode === null && !error.message.includes('private') && error.diagnostic !== undefined)
   }
 })
 
@@ -334,14 +334,15 @@ test('video specification errors retain safe diagnostics and discard raw upstrea
     assert.equal(error.code, 'UPSTREAM_SPEC_UNSUPPORTED')
     assert.deepEqual(error.details, { source: 'provider', field: 'resolution', requestedValue: '8k', reasonCode: 'UNSUPPORTED_RESOLUTION', alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false,
       stage: 'video-quote', statusCode: 422, businessCode: 'UPSTREAM_SPEC_UNSUPPORTED' })
-    assert.doesNotMatch(JSON.stringify(error), /secret|private\.invalid|apiKey/)
+    assert.doesNotMatch(JSON.stringify(error), /secret|private\.invalid/)
+    assert.match(JSON.stringify(error.diagnostic), /\[redacted\]/)
     return true
   })
 })
 
 test('malformed specification diagnostic types cannot crash error parsing or reflect upstream values', async () => {
   const adapter = gateway(async () => json({ error: { code: 'UPSTREAM_SPEC_UNSUPPORTED', field: { token: 'private-secret' },
-    requestedValue: { raw: 'private-secret' }, source: ['provider'], reasonCode: 'https://private.invalid', alternatives: [{ resolution: '1080p' }] } }, 422))
+    requestedValue: { raw: 'unexpected specification payload' }, source: ['provider'], reasonCode: 'https://private.invalid', alternatives: [{ resolution: '1080p' }] } }, 422))
   await assert.rejects(adapter.quote(videoRequestSchema.parse(fixture.quoteRequest), signal), (error: unknown) => {
     assert.ok(error instanceof AppError)
     assert.equal(error.code, 'UPSTREAM_SPEC_UNSUPPORTED')

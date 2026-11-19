@@ -1,4 +1,4 @@
-import { ArrowDown, Send, StopCircle, X } from 'lucide-react';
+import { ArrowDown, Send, SkipForward, StopCircle, X } from 'lucide-react';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { SetStateAction } from 'react';
 import { isSubmitEnter } from '../../shared/composer-shortcut';
@@ -21,6 +21,7 @@ import { withComposerConnector } from '../../features/enterprise/composer-connec
 import { ContextUsageIndicator } from '../workspace/ContextUsageIndicator';
 import { ModelSelector } from './ModelSelector';
 import { ConversationEmployeePicker } from './ConversationEmployeePicker';
+import { mediaRetryNotice, type MediaRetryState } from '../../shared/media-retry';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -47,10 +48,14 @@ interface ConversationProps {
   work: WorkItem;
   workspace: EnterpriseWorkspace;
   onClose?: () => void;
+  mediaRetryState?: MediaRetryState;
+  onSkippedChange?: (skipped: boolean) => void;
 }
 
-export function WorkConversation({ work, workspace, onClose }: ConversationProps) {
+export function WorkConversation({ work, workspace, onClose, mediaRetryState = 'clear', onSkippedChange }: ConversationProps) {
   const queued = useConversationQueue(work.id, workspace.attachmentScopeKey);
+  const skipped = queued.queue.skipped === true;
+  useEffect(() => { onSkippedChange?.(skipped); }, [onSkippedChange, skipped]);
   const inheritedSessions = useContext(ConversationSessionsContext);
   const [localSessions] = useState(() => createConversationSessions(sessionId => { void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined); }));
   const sessions = inheritedSessions ?? localSessions;
@@ -110,7 +115,11 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
     : workspace.myEmployees.find(item => item.id === work.currentEmployeeId)?.allowedModels ?? [];
   const modelLocked = workspace.busy || sending || queued.busy || isReplying || queued.queue.items.length > 0 || !!queued.queue.failed;
   const hasStreamingReply = work.messages.some(message => message.id === `${work.id}-streaming`);
-  const statusText = work.status === 'completed' ? '本轮回复已完成，可继续提问'
+  const blockedRetry = !skipped && mediaRetryState !== 'clear' && (!!queued.queue.failed || work.status === 'failed' || work.status === 'paused');
+  const canSkip = blockedRetry && mediaRetryState !== 'checking' && !!queued.queue.skipToken && !isReplying;
+  const statusText = skipped && !isReplying ? (queued.queue.paused ? '未完成的请求已跳过，新消息队列已暂停' : '已跳过未完成的请求，可以发送新消息')
+    : blockedRetry && !isReplying ? mediaRetryNotice(mediaRetryState)
+    : work.status === 'completed' ? '本轮回复已完成，可继续提问'
     : work.status === 'paused' ? '工作已终止，已收到的内容仍保留'
       : work.status === 'failed' ? '本轮回复中断，请查看提示后重试'
         : work.status === 'waiting-user' ? '等待你的确认'
@@ -147,7 +156,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
   }, [savedSession]);
 
   const send = async () => {
-    if (!draft.trim() || workspace.busy || speech.busy || attachmentsBusy || savedSession.sending) return;
+    if (!draft.trim() || workspace.busy || queued.busy || canSkip || speech.busy || attachmentsBusy || savedSession.sending) return;
     const text = withComposerConnector(draft, savedSession.connectorId);
     const fingerprint = JSON.stringify([text, attachmentSession?.sessionId, attachments.map(item => item.attachmentId), knowledge]);
     const messageId = savedSession.beginSend(fingerprint);
@@ -195,8 +204,8 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
             <summary>等待处理 {queued.queue.items.length}/10{queued.queue.paused ? ' · 已暂停' : ''}</summary>
             {queued.queue.failed ? <p>未完成：{queued.queue.failed.prompt}</p> : null}
             <ol>{queued.queue.items.map(item => <li key={item.id}><span>{item.prompt}{item.attachmentNames.length ? <small>附件：{item.attachmentNames.join('、')}</small> : null}</span>{work.isActive && !queued.queue.paused ? <button type="button" className="ent-btn sm ghost" disabled={queued.busy} onClick={() => void queued.prioritize(item.id)}>优先执行</button> : null}</li>)}</ol>
-            {queued.queue.failed?.recoveryConfirmationRequired ? <p>会话文件已损坏，需要确认后根据任务历史重建上下文。</p> : null}
-            {queued.queue.paused ? <button type="button" className="ent-btn sm" disabled={queued.busy || work.isActive} onClick={() => void (queued.queue.failed?.recoveryConfirmationRequired ? queued.recover() : queued.resume())}>{queued.queue.failed?.recoveryConfirmationRequired ? '重建会话并继续' : queued.queue.failed || work.status === 'failed' ? '重试并继续' : '继续处理'}</button> : null}
+            {!blockedRetry && queued.queue.failed?.recoveryConfirmationRequired ? <p>会话文件已损坏，需要确认后根据任务历史重建上下文。</p> : null}
+            {queued.queue.paused && !blockedRetry ? <button type="button" className="ent-btn sm" disabled={queued.busy || work.isActive} onClick={() => void (queued.queue.failed?.recoveryConfirmationRequired ? queued.recover() : queued.resume())}>{queued.queue.failed?.recoveryConfirmationRequired ? '重建会话并继续' : queued.queue.failed || !skipped && work.status === 'failed' ? '重试并继续' : '继续处理'}</button> : null}
             {over ? <button type="button" className="ent-btn sm ghost" disabled={workspace.busy} onClick={() => void workspace.stopWork(work.id, '用户终止了这项工作')}>终止</button> : null}
           </details> : null}
           {hasNewContent ? <button type="button" className="ent-btn sm ent-new-content" onClick={scrollToLatest}>
@@ -205,6 +214,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
           <p className="ent-conversation-status" role="status">
             {isReplying ? <span className="ent-reply-dot" aria-hidden /> : null}{statusText}
           </p>
+          {canSkip ? <button type="button" className="ent-btn sm ent-conversation-skip" disabled={queued.busy || workspace.busy || sending} onClick={() => void queued.skip()}><SkipForward size={13} aria-hidden />跳过本轮，继续对话</button> : null}
           {unstarted ? <button type="button" className="ent-btn sm" disabled={queued.busy || workspace.busy} onClick={() => void queued.resume()}>开始执行</button> : null}
           <div className="ent-ask">
           <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
@@ -214,7 +224,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 {...speech.inputProps}
                 className="ent-ask-input"
                 value={draft}
-                placeholder={queued.queue.paused ? '可继续添加信息，点击继续处理后依次执行' : isReplying ? '补充信息将排队依次处理' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
+                placeholder={canSkip ? '队列已暂停，跳过本轮后可发送新消息' : queued.queue.paused ? blockedRetry ? '新消息将排队，当前队列已暂停' : '可继续添加信息，点击继续处理后依次执行' : isReplying ? '补充信息将排队依次处理' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
                 aria-label="给员工的下一句话"
                 onChange={event => { setDraft(event.target.value); setEditorVersion(version => version + 1); }}
                 onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
@@ -247,7 +257,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                   )}
                   <ContextUsageIndicator taskId={work.id} scopeKey={workspace.attachmentScopeKey} />
                   <SpeechInputActions speech={speech} disabled={workspace.busy} />
-                  <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || sending || speech.busy || attachmentsBusy} aria-label="发送">
+                  <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || queued.busy || canSkip || sending || speech.busy || attachmentsBusy} aria-label="发送">
                     <Send size={15} aria-hidden />
                   </button>
                 </div>

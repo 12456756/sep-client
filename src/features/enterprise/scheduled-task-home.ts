@@ -1,5 +1,6 @@
 import { defaultRunSettings, type RunSettings } from './run-settings'
 import type { SiliconEmployee } from './types'
+import { resolveTaskModel } from '../../shared/model-preferences'
 
 export interface ScheduledTaskDraft {
   goal: string
@@ -20,11 +21,14 @@ export function automaticPlanningSelection(
   employees: ReadonlyArray<Pick<SiliconEmployee, 'id' | 'assignedToMe' | 'availability' | 'allowedModels'>>,
   modelId: string,
   preferredSubscriptionId: string,
+  defaultModelId = '',
 ): { subscriptionId: string; modelId: string } {
   const available = employees.filter(item => item.assignedToMe && !['unavailable', 'needs-auth'].includes(item.availability) && item.allowedModels.length > 0)
   const preferred = available.find(item => item.id === preferredSubscriptionId)
-  const employee = preferred?.allowedModels.includes(modelId) ? preferred : available.find(item => item.allowedModels.includes(modelId)) ?? preferred ?? available[0]
-  return { subscriptionId: employee?.id ?? '', modelId: employee?.allowedModels.includes(modelId) ? modelId : employee?.allowedModels[0] ?? '' }
+  const selectedEmployee = preferred?.allowedModels.includes(modelId) ? preferred : available.find(item => item.allowedModels.includes(modelId))
+  const defaultEmployee = preferred?.allowedModels.includes(defaultModelId) ? preferred : available.find(item => item.allowedModels.includes(defaultModelId))
+  const employee = selectedEmployee ?? defaultEmployee ?? preferred ?? available[0]
+  return { subscriptionId: employee?.id ?? '', modelId: resolveTaskModel(employee?.allowedModels ?? [], defaultModelId, modelId) }
 }
 
 export const SCHEDULE_EXAMPLES = [

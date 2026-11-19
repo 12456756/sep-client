@@ -11,6 +11,7 @@ export interface MediaIssueState {
   error: string | null
   upstreamError?: MediaUpstreamError
   failure?: MediaFailure
+  submissionFailure?: MediaFailure
   outputErrors?: { index: number; code: string }[]
   canRetrySave?: boolean
   canResumeTracking?: boolean
@@ -46,8 +47,9 @@ function failureReason(job: MediaIssueState): string | null {
     ? mediaErrorReason(job.error) ?? '生成服务返回了尚未识别的错误，客户端未取得具体原因' : null
   // Supplier authentication and quota failures must not be described as the user's login or wallet.
   const reason = failure.source === 'upstream'
-    ? mediaUpstreamReason({ code: failure.businessCode, message: failure.message }) ?? '生成供应商返回异常，尚未提供可识别的具体原因'
+    ? mediaUpstreamReason(failure.diagnostic?.body) ?? mediaUpstreamReason({ code: failure.businessCode, message: failure.message }) ?? '生成服务返回异常，尚未提供可识别的具体原因'
     : mediaErrorReason(failure.reasonCode) ?? mediaErrorReason(failure.businessCode)
+      ?? mediaUpstreamReason(failure.diagnostic?.body)
       ?? (!['VIDEO_HTTP_ERROR', 'MEDIA_HTTP_ERROR'].includes(failure.gatewayCode ?? '') ? mediaErrorReason(failure.gatewayCode) : null)
       ?? mediaErrorReason(failure.code) ?? '客户端未取得可识别的具体原因'
   return `${FAILURE_STAGES[failure.stage]}：${reason}`
@@ -91,24 +93,39 @@ export function mediaIssueMessage(job: MediaIssueState, kind: 'image' | 'video')
   const name = kind === 'image' ? '图片' : '视频'
   // An unconfirmed submission must never be presented as a proven rejection.
   const reason = failureReason(job)
+  const receiptReason = job.upstreamError ? mediaUpstreamReason(job.upstreamError.body) : null
+  const outputReasons = outputFailureReasons(job)
   if (job.generationStatus === 'SUBMISSION_UNKNOWN') {
     const advice = job.error === 'QUERY_UNAVAILABLE' || job.canResumeTracking === false
       ? '当前无法查询原任务，请联系平台管理员核实，勿重复提交' : '请查询原任务，勿重复提交'
-    return `${name}提交结果尚未确认${reason ? `；已知异常：${reason}` : ''}；${advice}`
+    const initialReason = job.submissionFailure ? failureReason({ ...job, failure: job.submissionFailure, error: null }) : null
+    const reasons = [...new Set([receiptReason, initialReason, reason].filter(Boolean))].join('；')
+    return `${name}提交结果尚未确认${reasons ? `；已知异常：${reasons}` : ''}；${advice}`
   }
-  if (job.generationStatus === 'RESULT_EXPIRED' || job.error === 'RESULT_EXPIRED') return `${name}结果已过期，无法重新下载`
-  if ((job.canRetrySave === false || job.canDownload === false) && ['MISSING', 'SAVE_FAILED'].includes(job.saveStatus)) return `${reason ? `${reason}；` : ''}原结果当前不可下载，请联系平台管理员。`
+  const generationIssue = ['FAILED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) && receiptReason
+    ? `${job.generationStatus === 'PARTIAL_SUCCEEDED' ? `部分${name}` : name}生成失败：${receiptReason}` : ''
+  if (job.generationStatus === 'RESULT_EXPIRED' || job.error === 'RESULT_EXPIRED') {
+    return [generationIssue, outputReasons, `${name}结果已过期，无法重新下载`].filter(Boolean).join('；')
+  }
+  if ((job.canRetrySave === false || job.canDownload === false) && ['MISSING', 'SAVE_FAILED'].includes(job.saveStatus)) {
+    return [generationIssue, outputReasons, reason, '原结果当前不可下载，请联系平台管理员。'].filter(Boolean).join('；')
+  }
   const recoveryCode = job.failure?.source === 'upstream' ? undefined : job.failure?.businessCode ?? job.failure?.code ?? job.error
-  const outputReasons = outputFailureReasons(job)
   if (job.failure && reason) {
     const advice = job.saveStatus === 'SAVE_FAILED'
       ? `${job.failure.reasonCode === 'ENOSPC' || job.failure.reasonCode === 'EDQUOT' ? '请清理磁盘空间后' : ['EACCES', 'EPERM', 'EROFS'].includes(job.failure.reasonCode ?? '') ? '请检查保存目录的读写权限后' : '请'}重新保存原结果`
       : mediaRecoveryAdvice(recoveryCode)
-    return `${reason}${outputReasons ? `；${outputReasons}` : ''}；${advice}，勿重复生成。`
+    return `${generationIssue ? `${generationIssue}；` : ''}${reason}${outputReasons ? `；${outputReasons}` : ''}${job.generationStatus === 'PARTIAL_SUCCEEDED' ? '；已生成的成果可继续使用' : ''}；${advice}，勿重复生成。`
   }
   if (job.upstreamError && ['FAILED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
-    const upstreamReason = mediaUpstreamReason(job.upstreamError.body) ?? '生成供应商返回异常，尚未提供可识别的具体原因'
+    const upstreamReason = receiptReason ?? '生成服务返回异常，尚未提供可识别的具体原因'
     return `${job.generationStatus === 'PARTIAL_SUCCEEDED' ? `部分${name}生成失败` : `${name}生成失败`}：${upstreamReason}${outputReasons ? `；${outputReasons}` : ''}；${job.generationStatus === 'PARTIAL_SUCCEEDED' ? '已生成的成果可继续使用；' : ''}请联系平台管理员。`
+  }
+  if (outputReasons && ['FAILED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
+    const details = [reason, outputReasons].filter(Boolean).join('；')
+    return job.generationStatus === 'PARTIAL_SUCCEEDED'
+      ? `部分${name}未生成成功；${details}；已生成的成果可继续使用。`
+      : `${name}生成失败；${details}；${mediaRecoveryAdvice(job.error)}。`
   }
   if (job.error === 'MEDIA_FORBIDDEN') return `当前账号没有${name}生成权限，请联系企业管理员开通权限。`
   if (job.error && Object.hasOwn(MEDIA_BUSINESS_MESSAGES, job.error)) return MEDIA_BUSINESS_MESSAGES[job.error]
@@ -119,6 +136,7 @@ export function mediaIssueMessage(job: MediaIssueState, kind: 'image' | 'video')
   if (job.error === 'VIDEO_LOCAL_OUTPUT_INVALID') return '本地视频文件损坏或与保存记录不一致，请重新保存原结果，勿重复生成。'
   if (job.saveStatus === 'SAVE_FAILED') return `${name}成果下载、文件校验或本地保存失败，请重新保存原结果，并检查磁盘空间和保存权限，勿重复生成。`
   if (job.trackingStatus === 'AUTH_REQUIRED') return `${name}任务的访问授权不可用，请重新登录后恢复原任务；仍失败请联系平台管理员检查授权。`
+  if (receiptReason && ['RUNNING', 'QUEUED'].includes(job.generationStatus)) return `${name}任务尚未完成；已知异常：${receiptReason}；请查看原任务状态，勿重复生成；持续失败请联系平台管理员。`
   if (job.trackingStatus === 'INTERRUPTED') return `${name}任务跟踪已中断，尚未确认原任务的最新状态，请恢复原任务跟踪，勿重复生成。`
   const details = [reason, outputReasons].filter(Boolean).join('；') || '尚无可展示的具体原因'
   if (job.generationStatus === 'FAILED') return `${name}生成失败；${details}；${mediaRecoveryAdvice(job.error)}。`

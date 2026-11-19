@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { config } from '../config'
 import { AuthenticationRequiredError } from './authentication-required-error'
+import { AuthApiError } from './platform-api'
+import { parseRetryAfter, readApiDiagnostic, safeApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
+import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
 import {
   createClientTaskSchema, clientTaskStatusSchema, clientTaskHeartbeatSchema, clientTaskEventSchema,
   type CreateClientTaskRequest, type ClientTaskStatusRequest, type ClientTaskHeartbeatRequest, type ClientTaskEventRequest,
@@ -21,8 +24,11 @@ export interface ClientMonitorApiPort {
   sendEvent(mirrorId: string, request: ClientTaskEventRequest, signal?: AbortSignal): Promise<void>
 }
 export class ClientMonitorApiError extends Error {
-  constructor(message: string, public readonly statusCode: number, public readonly retryAfterMs?: number) { super(message); this.name = 'ClientMonitorApiError' }
-  get isUnauthorized(): boolean { return this.statusCode === 401 }
+  readonly diagnostic: ApiDiagnostic | undefined
+  constructor(message: string, public readonly statusCode: number, public readonly retryAfterMs?: number, diagnostic?: ApiDiagnostic) {
+    super(message); this.name = 'ClientMonitorApiError'; this.diagnostic = safeApiDiagnostic(diagnostic)
+  }
+  get isUnauthorized(): boolean { return this.statusCode === 401 && this.diagnostic?.source !== 'upstream' }
   get isRetryable(): boolean { return this.statusCode === 0 || this.statusCode === 408 || this.statusCode === 429 || this.statusCode >= 500 }
 }
 export interface ClientMonitorApiOptions {
@@ -104,7 +110,8 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
     } catch (error) {
       if (error instanceof ClientMonitorApiError) throw error
       if (error instanceof AuthenticationRequiredError) throw new ClientMonitorApiError('Authentication required.', 401)
-      throw new ClientMonitorApiError('SEP monitor request failed.', 0)
+      if (error instanceof AuthApiError) throw new ClientMonitorApiError('工作记录同步授权暂不可用，请稍后重试。', error.statusCode, error.error.retryAfterMs, error.error.diagnostic)
+      throw new ClientMonitorApiError('SEP monitor request failed.', 0, undefined, transportApiDiagnostic(error, 'client-monitor'))
     } finally {
       clearTimeout(timer)
       external?.removeEventListener('abort', abort)
@@ -117,69 +124,43 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
       const token = await this.options.getAccessToken(attempt === 1)
       signal.throwIfAborted()
       if (scope !== this.scopeKey()) throw new ClientMonitorApiError('SEP monitor scope changed.', 401)
-      const response = await this.fetcher(this.baseUrl + path, {
+      let response: Response
+      try { response = await this.fetcher(this.baseUrl + path, {
         method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Origin: this.webOrigin, Referer: this.webOrigin + '/' },
         ...(method !== 'GET' ? { body: JSON.stringify(body) } : {}), signal,
-      })
+      }) } catch (error) {
+        throw new ClientMonitorApiError('工作记录同步网络连接失败，请稍后重试。', 0, undefined, transportApiDiagnostic(error, 'client-monitor', [token]))
+      }
       if (!response.ok) {
-        const reason = response.status === 403 ? await this.forbiddenReason(response) : undefined
-        if (response.status !== 403) await response.body?.cancel()
-        if (response.status === 401 && attempt === 0) continue
-        // Only fixed, known reasons may escape the response boundary.
-        throw new ClientMonitorApiError('SEP monitor HTTP ' + response.status + (reason ? ': ' + reason : ''), response.status, this.retryAfter(response.headers.get('Retry-After')))
+        const diagnostic = await readApiDiagnostic(response, 'client-monitor', { maxBytes: 64 * 1024, signal, secrets: [token] })
+        signal.throwIfAborted()
+        if (response.status === 401 && diagnostic.source !== 'upstream' && attempt === 0) continue
+        throw new ClientMonitorApiError(this.errorMessage(diagnostic), response.status,
+          parseRetryAfter(response.headers.get('Retry-After'), (this.options.now ?? Date.now)()), diagnostic)
       }
       if (expectsMirror) return await response.json() as unknown
-      await response.body?.cancel()
+      void response.body?.cancel().catch(() => undefined)
       return undefined
     }
     throw new ClientMonitorApiError('Authentication required.', 401)
   }
-  private async forbiddenReason(response: Response): Promise<string | undefined> {
-    const reader = response.body?.getReader()
-    if (!reader) return undefined
-    try {
-      // Bound the untrusted body even when Content-Length is absent or incorrect.
-      const parts: Uint8Array[] = []
-      let size = 0
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        size += value.byteLength
-        if (size > 4096) return undefined
-        parts.push(value)
-      }
-      const bytes = new Uint8Array(size)
-      let offset = 0
-      for (const part of parts) { bytes.set(part, offset); offset += part.byteLength }
-      const parsed = z.object({ message: z.string().max(512) }).safeParse(JSON.parse(new TextDecoder().decode(bytes)) as unknown)
-      if (!parsed.success) return undefined
-      const message = parsed.data.message
-      for (const reason of ['Missing Origin or Referer header', 'Invalid Origin or Referer header', 'Subscription unavailable', '没有有效的员工使用授权']) {
-        if (message === reason) return reason
-      }
-      if (message === `Origin ${this.webOrigin} not allowed. CSRF protection.`) return 'Origin not allowed. CSRF protection.'
-      return undefined
-    } catch {
-      return undefined
-    } finally {
-      await reader.cancel().catch(() => undefined)
-      reader.releaseLock()
-    }
+  private errorMessage(diagnostic: ApiDiagnostic): string {
+    if (diagnostic.source === 'upstream') return '工作记录同步依赖的上游服务暂不可用，请联系平台管理员。'
+    if (diagnostic.truncated || diagnostic.readError) return '工作记录同步失败，请联系平台管理员。'
+    const body = diagnostic.body
+    const top = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+    const nested = top.error && typeof top.error === 'object' && !Array.isArray(top.error) ? top.error : top
+    const message = typeof body === 'string' ? body : nested.message ?? (typeof top.error === 'string' ? top.error : top.message)
+    if (message === 'Stale client run') return '工作运行记录已更新，当前同步对应旧的运行记录。'
+    if (message === 'Subscription unavailable' || message === '没有有效的员工使用授权') return '员工使用授权不可用，请联系企业管理员。'
+    if (message === 'Missing Origin or Referer header' || message === 'Invalid Origin or Referer header'
+      || message === 'Origin [redacted-url] not allowed. CSRF protection.') return '平台拒绝了工作记录同步来源，请联系平台管理员。'
+    return '工作记录同步失败，请联系平台管理员。'
   }
 
   private scopeKey(): string {
     const scope = this.options.scopeProvider?.()
     return scope ? `${scope.enterpriseId}\0${scope.memberId}` : ''
-  }
-
-  private retryAfter(value: string | null): number | undefined {
-    if (!value) return undefined
-    if (/^\d+(?:\.\d+)?$/.test(value.trim())) {
-      const milliseconds = Number(value) * 1000
-      return Number.isFinite(milliseconds) ? milliseconds : undefined
-    }
-    const date = Date.parse(value)
-    return Number.isFinite(date) ? Math.max(0, date - (this.options.now ?? Date.now)()) : undefined
   }
 
 }

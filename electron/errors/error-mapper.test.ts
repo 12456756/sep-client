@@ -31,6 +31,39 @@ describe('error code table', () => {
 })
 
 describe('toEnvelope', () => {
+  it('keeps HTTP classification, validation details and retry hints through both IPC projections', () => {
+    for (const [statusCode, code] of [[400, 'INVALID_ARGUMENT'], [409, 'CONFLICT'], [422, 'INVALID_ARGUMENT'], [502, 'SERVICE_UNAVAILABLE']] as const) {
+      const diagnostic = { httpStatus: statusCode, message: 'Stale client run', code: 123,
+        body: { errors: [{ field: 'clientRunId', message: 'Stale client run' }] }, sepRequestId: 'sep-id', retryable: false }
+      const error = new AuthApiError({ statusCode, message: diagnostic.message, diagnostic, retryAfterMs: 0 }, 'subscriptions')
+      for (const result of [toEnvelope(error, { authenticated: true }), toAuthEnvelope(error)]) {
+        assert.equal(result.code, code)
+        assert.equal(result.statusCode, statusCode)
+        assert.deepEqual(result.diagnostic, diagnostic)
+        assert.equal(result.retryable, false)
+        assert.equal(result.retryAfterMs, 0)
+      }
+    }
+  })
+  it('keeps upstream authentication separate from desktop login expiry', () => {
+    for (const statusCode of [401, 403]) {
+      const error = new AuthApiError({ statusCode, message: 'Invalid API key',
+        diagnostic: { httpStatus: statusCode, source: 'upstream', message: 'Invalid API key', code: 'INVALID_API_KEY' } }, 'subscriptions')
+      assert.equal(error.isUnauthorized, false)
+      assert.equal(error.isForbidden, false)
+      const result = toEnvelope(error, { authenticated: true })
+      assert.equal(result.code, 'SERVICE_UNAVAILABLE')
+      assert.equal(result.statusCode, statusCode)
+      assert.equal(result.diagnostic?.message, 'Invalid API key')
+      assert.doesNotMatch(result.message, /重新登录/)
+    }
+  })
+  it('only forwards an explicit sanitized AppError diagnostic, never log-only details', () => {
+    const result = toEnvelope(appError('CONFLICT', { details: { raw: 'log-only' },
+      diagnostic: { message: 'Denied Bearer private-token', body: { apiKey: 'private-key' }, headers: { Authorization: 'private-header' } } }))
+    assert.ok(result.diagnostic)
+    assert.doesNotMatch(JSON.stringify(result), /private-token|private-key|private-header|log-only/)
+  })
   it('preserves bounded specification context across IPC without forwarding provider bodies', () => {
     const result = toEnvelope(appError('UPSTREAM_SPEC_UNSUPPORTED', { message: 'private provider body', details: {
       field: 'requestedSpec.durationSeconds', requestedValue: 8, source: 'provider', submissionState: 'not_submitted',

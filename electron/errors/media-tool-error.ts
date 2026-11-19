@@ -4,13 +4,15 @@ import { ERROR_CODES } from './error-codes'
 import { mediaFailureSchema } from '../../src/shared/media-failure'
 import { mediaErrorReason, mediaRecoveryAdvice, mediaUpstreamReason } from '../../src/shared/media-error-messages'
 import { imageRequestedSpecSchema, videoRequestedSpecSchema, isMediaSpecError, type MediaSpecFailureContext } from '../../src/shared/media-spec-contract'
+import { safeApiDiagnostic } from '../common/platform/api-diagnostic'
+import type { ApiDiagnostic } from '../../src/shared/api-diagnostic'
 
 export interface MediaToolFailure {
   ok: false
   error: { code: string; message: string } & MediaToolFailureMeta
 }
 
-export type MediaToolFailureMeta = MediaSpecFailureContext & { requestId?: string; httpStatus?: number; gatewayCode?: string }
+export type MediaToolFailureMeta = MediaSpecFailureContext & { requestId?: string; httpStatus?: number; gatewayCode?: string; diagnostic?: ApiDiagnostic }
 
 function safeText(value: string): string {
   return redactText(value).replace(/https?:\/\/[^\s<>"']+/gi, '[redacted-url]')
@@ -28,16 +30,17 @@ function safeRequestedValue(meta?: MediaToolFailureMeta): string | number | bool
   return imageRequestedSpecSchema.safeParse(spec).success || videoRequestedSpecSchema.safeParse(spec).success ? meta.requestedValue : undefined
 }
 
-/** Model-facing business failures never include transport details, causes or URLs. */
+/** Keep readable business copy separate from explicitly sanitized model-facing evidence. */
 export function mediaToolFailure(code: string, message: string, meta?: MediaToolFailureMeta): MediaToolFailure {
   const requestedValue = safeRequestedValue(meta)
+  const diagnostic = safeApiDiagnostic(meta?.diagnostic)
   const alternatives = Array.isArray(meta?.alternatives) ? meta.alternatives.slice(0, 8).flatMap(value => {
     const parsed = imageRequestedSpecSchema.safeParse(value)
     if (parsed.success && Object.keys(parsed.data).length > 0) return [parsed.data]
     const video = videoRequestedSpecSchema.safeParse(value)
     return video.success && Object.keys(video.data).length > 0 ? [video.data] : []
   }) : undefined
-  const error = { code: safeText(code), message: safeText(message),
+  const error = { code: safeText(code), message: safeText(message), ...(diagnostic ? { diagnostic } : {}),
     ...(meta?.businessCode && /^[A-Z][A-Z0-9_]{0,95}$/.test(meta.businessCode) ? { businessCode: meta.businessCode } : {}),
     ...(meta?.field && /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/.test(meta.field) ? { field: meta.field } : {}),
     ...(meta?.stage && /^[a-z][a-z0-9-]{0,63}$/.test(meta.stage) ? { stage: meta.stage } : {}),
@@ -59,14 +62,16 @@ export function mediaToolFailureFrom(error: unknown, cancelled = false): MediaTo
   if (error instanceof AppError) {
     const details = error.details ?? {}
     const reason = details.source === 'upstream'
-      ? mediaUpstreamReason({ code: details.businessCode, message: details.upstreamMessage }) ?? '生成供应商返回异常，尚未提供可识别的具体原因'
+      ? mediaUpstreamReason(error.diagnostic?.body) ?? mediaUpstreamReason({ code: details.businessCode, message: details.upstreamMessage }) ?? '生成服务返回异常，尚未提供可识别的具体原因'
       : mediaErrorReason(details.reasonCode) ?? mediaErrorReason(details.businessCode)
+        ?? mediaUpstreamReason(error.diagnostic?.body)
         ?? (!['VIDEO_HTTP_ERROR', 'MEDIA_HTTP_ERROR'].includes(String(details.gatewayCode)) ? mediaErrorReason(details.gatewayCode) : null)
         ?? mediaErrorReason(error.code)
     const message = details.source === 'upstream' || reason
       ? `${reason}；${mediaRecoveryAdvice(details.source === 'upstream' ? undefined : typeof details.businessCode === 'string' ? details.businessCode : error.code)}，勿重复生成。`
       : error.userMessage
     return mediaToolFailure(error.code, isMediaSpecError(error.code) ? ERROR_CODES[error.code].message : message, {
+      diagnostic: error.diagnostic,
       businessCode: typeof details.businessCode === 'string' ? details.businessCode : undefined,
       field: typeof details.field === 'string' ? details.field : undefined,
       stage: typeof details.stage === 'string' ? details.stage : undefined,

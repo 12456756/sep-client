@@ -15,7 +15,9 @@ describe('notification REST v1', () => {
     const retryAt = new Date(Date.now() + 90_000).toUTCString()
     globalThis.fetch = async () => new Response('limited', { status: 429, headers: { 'Retry-After': retryAt } })
     await assert.rejects(() => api.listNotifications('access'), error => error instanceof api.AuthApiError && (error.error.retryAfterMs ?? 0) > 88_000)
-    for (const value of ['invalid', '-1', '0']) {
+    globalThis.fetch = async () => Response.json({ message: 'limited' }, { status: 429, headers: { 'Retry-After': '0' } })
+    await assert.rejects(() => api.listNotifications('access'), error => error instanceof api.AuthApiError && error.error.retryAfterMs === 0)
+    for (const value of ['invalid', '-1']) {
       globalThis.fetch = async () => Response.json({ message: 'limited' }, { status: 429, headers: { 'Retry-After': value } })
       await assert.rejects(() => api.listNotifications('access'), error => error instanceof api.AuthApiError && error.error.retryAfterMs === undefined)
     }

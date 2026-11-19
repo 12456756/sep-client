@@ -12,7 +12,7 @@
 import { Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
-import { ModelPreferenceProvider } from '../components/workspace/model-preference-scope';
+import { ModelPreferenceProvider, useModelPreference } from '../components/workspace/model-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { ConversationSessionsContext, createConversationSessions } from '../features/enterprise/conversation-sessions';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
@@ -29,6 +29,7 @@ import { useHomeDraftOwner } from '../features/enterprise/home-draft';
 import { useEmployeePageScroll } from '../features/enterprise/use-employee-page-scroll';
 import { useSkillPageScroll } from '../features/enterprise/use-skill-page-scroll';
 import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
+import type { AppRoute } from '../features/enterprise/types';
 import type { UpdateModel } from '../features/update/use-update';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
 import { WorkHubPage } from './enterprise/WorkHubPage';
@@ -76,7 +77,8 @@ export function ClientAppPage(props: Props) {
 
 function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
   useRuntimeFeedback(userId, enterpriseId);
-  const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
+  const { defaultModelId } = useModelPreference();
+  const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses, defaultModelId });
   const homeDraft = useHomeDraftOwner();
   const [conversationSessions] = useState(() => createConversationSessions(sessionId => {
     void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined);
@@ -145,6 +147,11 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
     return () => cancelAnimationFrame(frame);
   }, [route]);
 
+  const openWorkspacePage = (next: AppRoute) => {
+    setSettingsOpen(false);
+    workspace.navigate(next);
+  };
+
   const topBar = (
     <AppTopBar
       sidebarCollapsed={visibleSidebarCollapsed}
@@ -155,8 +162,8 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
       actions={(
         <div className="ent-top-actions-group">
           <div className="ent-view-switch" role="group" aria-label="页面切换">
-            <button type="button" className={contentRoute.name === 'organization' ? undefined : 'active'} onClick={() => workspace.navigate({ name: 'home' })} aria-pressed={contentRoute.name !== 'organization'} title="切换到个人工作台"><LayoutGrid size={14} aria-hidden />个人</button>
-            <button type="button" className={contentRoute.name === 'organization' ? 'active' : undefined} onClick={() => workspace.navigate({ name: 'organization' })} aria-pressed={contentRoute.name === 'organization'} title="切换到企业组织"><Network size={14} aria-hidden />企业</button>
+            <button type="button" className={contentRoute.name === 'organization' ? undefined : 'active'} onClick={() => openWorkspacePage({ name: 'home' })} aria-pressed={contentRoute.name !== 'organization'} title="切换到个人工作台"><LayoutGrid size={14} aria-hidden />个人</button>
+            <button type="button" className={contentRoute.name === 'organization' ? 'active' : undefined} onClick={() => openWorkspacePage({ name: 'organization' })} aria-pressed={contentRoute.name === 'organization'} title="切换到企业组织"><Network size={14} aria-hidden />企业</button>
           </div>
           <button type="button" className="ent-top-command" onClick={() => setCommandOpen(true)} title="打开命令入口（⌘K / Ctrl+K）" aria-label="打开命令入口"><Command size={14} aria-hidden /><span>⌘K</span></button>
           <button type="button" className="ent-top-icon" onClick={() => setDarkMode(value => !value)} title={darkMode ? '切换到浅色主题' : '切换到深色主题'} aria-label={darkMode ? '切换到浅色主题' : '切换到深色主题'}>{darkMode ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}</button>
@@ -172,7 +179,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
   );
 
   return (
-    <div className={`ent-shell${darkMode ? ' dark' : ''}${visibleSidebarCollapsed ? ' sidebar-collapsed' : ''}${['arrange', 'records', 'work'].includes(contentRoute.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
+    <div className={`ent-shell${darkMode ? ' dark' : ''}${visibleSidebarCollapsed ? ' sidebar-collapsed' : ''}${settingsOpen ? ' ent-shell-settings' : ''}${['arrange', 'records', 'work'].includes(contentRoute.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
         enterpriseName={displayEnterpriseName}
         enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
@@ -201,12 +208,12 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
             </ModelCatalogProvider>
           </ConversationSessionsContext.Provider>
         </div>
-        {route.name === 'employee' ? <EmployeeDetailDrawer key={route.employeeId} workspace={workspace} employeeId={route.employeeId} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} /> : null}
+        {!settingsOpen && route.name === 'employee' ? <EmployeeDetailDrawer key={route.employeeId} workspace={workspace} employeeId={route.employeeId} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} /> : null}
         {commandOpen ? (
           <CommandPalette
             darkMode={darkMode}
             onClose={() => setCommandOpen(false)}
-            onNavigate={routeToOpen => { workspace.navigate(routeToOpen); setCommandOpen(false); }}
+            onNavigate={openWorkspacePage}
             onToggleTheme={() => setDarkMode(value => !value)}
           />
         ) : null}

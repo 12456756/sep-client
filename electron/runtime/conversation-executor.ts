@@ -194,7 +194,7 @@ export class ConversationExecutor {
         }
       }
       const rawMediaTools = await this.options.media?.prepareRun({
-        taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
+        taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy, allowImageReplacement: true,
         requestApproval: request => this.options.approvals.request(request),
       })
       const rawVideoTools = await this.options.video?.prepareRun({
@@ -305,6 +305,7 @@ export class ConversationExecutor {
       if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
       if (mediaTools?.names.includes('media_generate_image') && this.options.conversationMedia) workerPrompt += '\n\n【图片参考素材】需要修改上传图片或本任务已生成的图片时，先查询 media_get_capabilities({})。referenceSources 将本轮附件名称、attachmentId 或已生成图片 sourceArtifactId 对应到可用参考图 localAssetId。调用 media_generate_image 时指定 operation="edit" 和 localAssetIds=[按用户指定顺序排列的参考图ID]，可以使用多张但不得超过当前能力返回的上限；候选来源不明确时先询问，不默认选择第一张。新建图片使用 operation="generate"、localAssetIds=[]，不得因为有附件就自动编辑，也不得将编辑请求降级为文生图。'
+      if (mediaTools?.names.includes('media_replace_images')) workerPrompt += '\n\n【图片提交未确认】同轮有多张独立图片时，某张提交结果不明，不要重提那张，但继续生成其他图片。“补图”先区分未提交的新图和已有任务；只有用户明确要求重做指定旧图时，才从 unconfirmedJobs 选择对应且可替换的原任务 ID，一次提交整批给 media_replace_images。已拒绝、已处理或不能确认对应关系的原任务，不改用普通生图绕过。'
       if (videoTools?.names.includes('video_from_image') && this.options.conversationMedia) workerPrompt += '\n\n【视频参考图片】需要使用上传图片或本任务已生成的图片制作视频时，先查询 video_get_job({})。referenceSources 将本轮附件名称、已生成图片的 sourceArtifactId 与可用参考图 localAssetId 对应起来；使用用户指定的真实图片，不得因为图片以附件上传就改用文生视频。存在多张候选图且来源不明确时先询问，不默认选择第一张。'
       const selection = queued.knowledge ?? queued.arrangement?.knowledge
       let trustedNames: string[] = []

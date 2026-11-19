@@ -10,6 +10,7 @@ import { chromium } from 'playwright-core'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const creationNavigationOnly = process.argv.includes('--creation-navigation')
+const historyLabelsOnly = process.argv.includes('--history-labels')
 const fixture = `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -147,12 +148,52 @@ const screenshots = process.env.SCHEDULED_UI_OUTPUT_DIR || resolve(tmpdir(), 'se
 let browser
 try {
   browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge' })
-  await mkdir(screenshots, { recursive: true })
+  if (!historyLabelsOnly) await mkdir(screenshots, { recursive: true })
   for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 620 }, { width: 1000, height: 760 }, { width: 760, height: 900 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport })
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
     await page.goto(`http://127.0.0.1:${server.address().port}${viewport.width === 1280 ? '/?dark' : ''}`)
+    if (historyLabelsOnly) {
+      await page.evaluate(async () => {
+        const api = window.electronAPI
+        const input = { name: '很长的定时任务名称'.repeat(10), goal: '汇总销售数据', subscriptionId: 'employee', modelId: 'test-model', workDir: 'D:/reports', scheduledAt: Date.now() + 3600000, timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
+        await api.createScheduledTask({ requestId: 'ended-task', input })
+        await api.planScheduledTask({ id: 'ended-task', expectedRevision: 1 })
+        window.seedRun('failed')
+        await api.createScheduledTask({ requestId: 'deleted-draft', input: { ...input, name: '已删除的草稿' } })
+        await api.deleteScheduledTask({ id: 'deleted-draft', expectedRevision: 1 })
+      })
+      const historyFold = page.locator('.ent-sch-nav-fold').filter({ hasText: '历史记录' })
+      await historyFold.waitFor()
+      assert.equal(await historyFold.evaluate(element => element.open), false)
+      assert.equal(await historyFold.locator('summary small').textContent(), '2')
+      const historyList = page.getByRole('region', { name: '定时任务历史', exact: true })
+      assert.equal(await historyList.isVisible(), false)
+      await historyFold.locator('summary').click()
+      await historyList.waitFor()
+      await historyFold.locator('summary').click()
+      assert.equal(await historyList.isVisible(), false)
+      await historyFold.locator('summary').press('Enter')
+      await historyList.waitFor()
+      const ended = historyList.getByRole('button', { name: /很长的定时任务名称.*已结束/ })
+      const deleted = historyList.getByRole('button', { name: /已删除的草稿.*已删除/ })
+      for (const [row, label] of [[ended, '已结束'], [deleted, '已删除']]) {
+        const badge = row.getByText(label, { exact: true })
+        await badge.waitFor()
+        const rowBox = await row.boundingBox(), badgeBox = await badge.boundingBox()
+        assert.ok(rowBox && badgeBox && badgeBox.x >= rowBox.x && badgeBox.x + badgeBox.width <= Math.min(rowBox.x + rowBox.width, viewport.width) + 1)
+        await row.click()
+        await page.locator('.ent-sch-detail-head').getByText(label, { exact: true }).waitFor()
+      }
+      await page.getByRole('heading', { name: '还没有执行记录', exact: true }).waitFor()
+      assert.equal(await page.getByRole('dialog', { name: '编辑定时任务', exact: true }).count(), 0)
+      await ended.click()
+      await page.getByRole('tabpanel', { name: '执行记录', exact: true }).getByText('执行失败', { exact: true }).first().waitFor()
+      assert.deepEqual(errors, [])
+      await page.close()
+      continue
+    }
     await page.evaluate(() => window.openWorkSchedule())
     const imported = page.getByRole('dialog', { name: '加入定时任务', exact: true })
     await imported.getByRole('button', {name:'创建并启用',exact:true}).waitFor()
@@ -350,6 +391,7 @@ try {
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
     assert.equal(await page.getByRole('region', { name: '定时任务创建进度', exact: true }).count(), 0)
     const history = page.getByRole('region', { name: '定时任务历史', exact: true })
+    await page.locator('.ent-sch-nav-fold').filter({ hasText: '历史记录' }).locator('summary').click()
     await history.waitFor()
     await history.getByRole('button').click()
     if (!creationNavigationOnly) {
@@ -606,5 +648,5 @@ try {
     assert.deepEqual(errors, [])
     await page.close()
   }
-  console.log(`Scheduled module UI smoke passed; screenshots: ${screenshots}`)
+  console.log(historyLabelsOnly ? 'Scheduled history labels passed at all viewport sizes' : `Scheduled module UI smoke passed; screenshots: ${screenshots}`)
 } finally { await browser?.close(); await new Promise(done => server.close(done)) }

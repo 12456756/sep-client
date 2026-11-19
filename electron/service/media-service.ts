@@ -5,15 +5,17 @@ import type { MediaAssetView, MediaJobView, MediaTaskView } from '../../src/shar
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { LocalMediaJob, MediaCapabilities, MediaGatewayPort, MediaGenerationInput, MediaReceipt, MediaStorePort } from '../domain/media'
-import type { MediaHostTools, MediaJobCreated } from '../domain/media-tools'
+import type { MediaHostTools, MediaJobCreated, MediaToolName } from '../domain/media-tools'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
-import { mediaToolGenerationInputSchema } from '../../src/shared/media-host'
+import { mediaReplacementInputSchema, mediaToolGenerationInputSchema } from '../../src/shared/media-host'
+import { toolApprovalTimeoutMs } from '../../src/shared/tool-approval'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
 import { realMediaParameters, realMediaSemanticHash } from '../common/platform/real-media-semantics'
 import { imageAspectRatio } from '../../src/shared/media-spec'
 import { imageReferenceSupport, mediaReferenceProblem, type MediaReferenceInfo } from '../../src/shared/media-references'
 import { imageEffectiveSpecMatches, isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
 import { logger } from '../common/logger'
+import { safeMediaUpstreamError } from '../common/media-upstream-error'
 import { AppError } from '../errors/app-error'
 import { mediaJobFailure } from '../errors/media-job-error'
 import { mediaFailureCodeSchema, mediaFailureSchema } from '../../src/shared/media-failure'
@@ -45,10 +47,19 @@ export interface MediaServiceOptions {
 interface RunInput {
   taskId: string; runId: string; subscriptionId: string; employee: MediaEmployeeRuntime
   toolPolicy?: TaskToolPolicy; requestApproval: Approval
+  allowImageReplacement?: boolean
   onJobCreated?: (job: MediaJobCreated) => Promise<void>
   recoverJobIds?: readonly string[]
 }
 interface Activity { taskId: string; controller: AbortController; promise: Promise<void> }
+
+function imageSubmissionUnconfirmed(job: LocalMediaJob): boolean {
+  return job.submission !== 'NOT_SENT' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
+}
+
+function canGenerateImages(policy: TaskToolPolicy | undefined): boolean {
+  return !policy || policy.preset !== 'read-only' && (policy.preset === 'full-local' || policy.allowedTools.includes('media_generate_image'))
+}
 
 /** Host-owned execution. No provider payloads, filesystem paths or prices come from the model. */
 export class MediaService {
@@ -140,6 +151,7 @@ export class MediaService {
       ...(job.downloadMs !== undefined ? { downloadMs: job.downloadMs } : {}),
       error: this.publicJobError(job.errorCode ?? job.error), ...(job.upstreamError ? { upstreamError: job.upstreamError } : {}), createdAt: job.createdAt, updatedAt: job.updatedAt,
       ...(job.failure ? { failure: mediaFailureSchema.parse(job.failure) } : {}),
+      ...(job.submissionFailure ? { submissionFailure: mediaFailureSchema.parse(job.submissionFailure) } : {}),
       ...(job.outputErrors?.length ? { outputErrors: job.outputErrors.filter(item => mediaFailureCodeSchema.safeParse(item.code).success) } : {}),
       assets: jobAssets.map(asset => this.viewAsset(asset)), canRetrySave,
       canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job)
@@ -253,16 +265,22 @@ export class MediaService {
     }
     if (recovered.length) this.runRecoveries.set(this.key(scope, input.taskId) + ':' + input.runId, recovered)
     if (!capabilities) return undefined
-    return { names: capabilities.tools, execute: async (name, raw, signal) => {
+    const names: MediaToolName[] = [...capabilities.tools]
+    if (input.allowImageReplacement && capabilities.tools.includes('media_generate_image') && canGenerateImages(input.toolPolicy)) names.push('media_replace_images')
+    return { names, execute: async (name, raw, signal) => {
       this.assert(scope, epoch)
-      if (!capabilities.tools.includes(name)) throw new AppError('PERMISSION_DENIED')
+      if (!names.includes(name)) throw new AppError('PERMISSION_DENIED')
+      if (name === 'media_replace_images') {
+        return this.replaceImages(scope, epoch, { ...input, capabilities }, mediaReplacementInputSchema.parse(raw).jobIds, signal)
+      }
       if (name === 'media_get_capabilities') {
         z.object({}).strict().parse(raw)
         const selected = new Set(this.selectedReferences.get(this.key(scope, input.taskId)) ?? [])
         const referenceAssets = (await this.options.store.listAssets(scope, input.taskId))
           .filter(asset => selected.has(asset.localAssetId)).map(asset => this.viewAsset(asset))
+        const unconfirmedJobs = names.includes('media_replace_images') ? await this.listUnconfirmedImages(scope, input) : undefined
         this.assert(scope, epoch)
-        return { capabilities, referenceAssets }
+        return { capabilities, referenceAssets, ...(unconfirmedJobs?.length ? { unconfirmedJobs } : {}) }
       }
       if (name === 'media_generate_image') {
         const requested = mediaToolGenerationInputSchema.parse(raw)
@@ -330,14 +348,82 @@ export class MediaService {
     if (stopVersion !== (this.taskStops.get(stopKey) ?? 0)) throw new AppError('INVALID_STATE')
     return this.generate(taskId, parseMediaInput(raw), { runId, subscriptionId, toolPolicy, capabilities, requestApproval: this.options.requestApproval })
   }
-  private async generate(taskId: string, input: MediaGenerationInput, binding: { runId: string; subscriptionId: string; toolPolicy?: TaskToolPolicy; capabilities: MediaCapabilities; requestApproval: Approval; onJobCreated?: RunInput['onJobCreated'] }, signal?: AbortSignal): Promise<MediaJobView> {
+
+  private async listUnconfirmedImages(scope: TaskOwnerScope, input: RunInput) {
+    const [jobs, decisions] = await Promise.all([
+      this.options.store.listJobs(scope, input.taskId), this.options.store.imageReplacementDecisions(scope, input.taskId),
+    ])
+    return jobs.filter(job => job.subscriptionId === input.subscriptionId && imageSubmissionUnconfirmed(job))
+      .sort((a, b) => b.createdAt - a.createdAt).slice(0, 32).map(job => ({
+        jobId: job.jobId, creativeBrief: job.input.creativeBrief.slice(0, 300),
+        replacementAvailable: job.generationStatus === 'SUBMISSION_UNKNOWN' && job.runId !== input.runId && !decisions.has(job.jobId),
+      }))
+  }
+
+  private async replaceImages(scope: TaskOwnerScope, epoch: number, binding: RunInput & { capabilities: MediaCapabilities }, jobIds: string[], signal?: AbortSignal) {
+    const { taskId, runId, subscriptionId } = binding
+    const key = `replace:${this.key(scope, taskId)}`
+    if (this.activities.has(key)) throw new AppError('CONFLICT')
+    const controller = new AbortController()
+    const parent = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    const check = () => { this.assert(scope, epoch); parent.throwIfAborted() }
+    check()
+    let finish!: () => void
+    const promise = new Promise<void>(resolve => { finish = resolve })
+    this.activities.set(key, { taskId, controller, promise })
+    try {
+      if ((await this.task(taskId)).subscriptionId !== subscriptionId) throw new AppError('AUTH_REQUIRED')
+      if (await this.options.store.isArchived(scope, taskId)) throw new AppError('INVALID_STATE')
+      const decisions = await this.options.store.imageReplacementDecisions(scope, taskId)
+      const originals = await Promise.all(jobIds.map(async id => {
+        const job = await this.options.store.getJob(scope, taskId, id)
+        if (!job || job.subscriptionId !== subscriptionId) throw new AppError('NOT_FOUND')
+        return job
+      }))
+      check()
+      const eligible = originals.filter(job => !decisions.has(job.jobId) && job.runId !== runId &&
+        job.submission !== 'NOT_SENT' && job.generationStatus === 'SUBMISSION_UNKNOWN')
+      if (!eligible.length) throw new AppError('CONFLICT', { message: '没有可替换的图片任务。已处理或本轮刚提交的任务不会重复请求确认，请查看原任务。' })
+
+      const request = { taskId, runId, subscriptionId, toolName: 'media_generate_image',
+        input: { operation: 'confirm-new-generation', unconfirmedJobCount: eligible.length } }
+      const accepted = await this.network(scope, parent, () => binding.requestApproval(request), toolApprovalTimeoutMs(request) + 1_000)
+      check()
+      // Consume this decision before any paid submission. It is never a reusable grant.
+      const recorded = await this.options.store.recordImageReplacement(scope, taskId, eligible.map(job => job.jobId), accepted ? 'approved' : 'declined', check)
+      check()
+      if (!recorded) throw new AppError('CONFLICT')
+      if (!accepted) throw new AppError('PERMISSION_DENIED', { message: '未确认重新生成，原图片任务已保留。' })
+
+      const eligibleIds = new Set(eligible.map(job => job.jobId))
+      const replacements = []
+      for (const job of originals) {
+        if (!eligibleIds.has(job.jobId)) { replacements.push({ originalJobId: job.jobId, status: 'skipped' as const }); continue }
+        try {
+          const replacement = await this.generate(taskId, job.input, binding, parent, job.jobId)
+          replacements.push({ originalJobId: job.jobId, status: 'created' as const, job: replacement })
+        } catch (error) {
+          check()
+          if (error instanceof AppError && error.code === 'AUTH_REQUIRED') throw error
+          replacements.push({ originalJobId: job.jobId, status: 'not_completed' as const })
+        }
+      }
+      return { replacements }
+    } finally {
+      this.releaseActivity(key, controller)
+      finish()
+    }
+  }
+
+  private async generate(taskId: string, input: MediaGenerationInput, binding: { runId: string; subscriptionId: string; toolPolicy?: TaskToolPolicy; capabilities: MediaCapabilities; requestApproval: Approval; onJobCreated?: RunInput['onJobCreated'] }, signal?: AbortSignal, replacesJobId?: string): Promise<MediaJobView> {
     const epoch = this.epoch, initialScope = this.scope(), stopKey = this.key(initialScope, taskId)
     const stopVersion = this.taskStops.get(stopKey) ?? 0
-    const { scope } = await this.task(taskId)
+    const { scope, subscriptionId } = await this.task(taskId)
     if (await this.options.store.isArchived(scope, taskId)) throw new AppError('INVALID_STATE')
     this.assert(scope, epoch); signal?.throwIfAborted()
     if (stopVersion !== (this.taskStops.get(stopKey) ?? 0)) throw new AppError('INVALID_STATE')
-    if (binding.toolPolicy && (binding.toolPolicy.preset === 'read-only' || (binding.toolPolicy.preset !== 'full-local' && !binding.toolPolicy.allowedTools.includes('media_generate_image')))) throw new AppError('PERMISSION_DENIED')
+    if (subscriptionId !== binding.subscriptionId) throw new AppError('AUTH_REQUIRED')
+    if (!canGenerateImages(binding.toolPolicy)) throw new AppError('PERMISSION_DENIED')
     const profile = binding.capabilities.profiles.find(profile => profile.profileId === input.profileId)
     const negotiated = input.protocolVersion === 3 && binding.capabilities.protocolVersion === 3
     if ((input.protocolVersion === 3) !== (binding.capabilities.protocolVersion === 3)) throw new AppError('UPGRADE_REQUIRED')
@@ -374,15 +460,21 @@ export class MediaService {
     let trackingStarted = false
     this.activities.set(activityKey, { taskId, controller, promise: pending })
     try {
-      const unconfirmed = (await this.options.store.listJobs(scope, taskId)).filter(previous =>
-        previous.submission !== 'NOT_SENT' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(previous.generationStatus))
-      this.assert(scope, epoch); parent.throwIfAborted()
-      if (unconfirmed.some(previous => previous.runId === binding.runId)) throw new AppError('CONFLICT', { message: '本轮图片提交结果尚未确认，请查询原任务；如需重新生成，请在后续消息中明确提出。' })
-      if (unconfirmed.length) {
-        const allowed = await this.network(scope, parent, () => binding.requestApproval({ taskId, runId: binding.runId,
-          subscriptionId: binding.subscriptionId, toolName: 'media_generate_image',
-          input: { operation: 'confirm-new-generation', unconfirmedJobCount: unconfirmed.length } }))
-        if (!allowed) throw new AppError('PERMISSION_DENIED')
+      const assertOriginalUnconfirmed = async (id: string) => {
+        const original = await this.options.store.getJob(scope, taskId, id)
+        this.assert(scope, epoch); parent.throwIfAborted()
+        if (!original || original.subscriptionId !== subscriptionId || !imageSubmissionUnconfirmed(original)) throw new AppError('CONFLICT')
+      }
+      if (replacesJobId) await assertOriginalUnconfirmed(replacesJobId)
+      else {
+        const duplicates = (await this.options.store.listJobs(scope, taskId)).some(previous =>
+          previous.subscriptionId === subscriptionId && imageSubmissionUnconfirmed(previous) &&
+          previous.input.creativeBrief === input.creativeBrief && previous.input.operation === input.operation &&
+          mediaSpecsEqual(previous.input.parameters, input.parameters) &&
+          previous.input.localAssetIds.length === input.localAssetIds.length &&
+          previous.input.localAssetIds.every((id, index) => id === input.localAssetIds[index]))
+        this.assert(scope, epoch); parent.throwIfAborted()
+        if (duplicates) throw new AppError('CONFLICT', { message: '这张图片的原任务是否提交尚未确认，请查看原任务，不要重复提交。' })
       }
       const gateway = this.gateway(), referenceHashes: string[] = [], referenceIds: string[] = []
       const references: MediaReferenceInfo[] = []
@@ -454,6 +546,7 @@ export class MediaService {
       }
       if (!approvalAccepted || quote.expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED', { message: '报价授权已过期，请重新发起。' })
       if (!gateway.quoteRequiresUploadedReferences) await uploadReferences()
+      if (replacesJobId) await assertOriginalUnconfirmed(replacesJobId)
       const now = Date.now(), clientRequestId = randomUUID()
       job = { version: 1, owner: scope, jobId, taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
         clientRequestId, requestHash, input, profile, request: { ...semantic, referenceIds, requestHash, quoteId: quote.quoteId, clientRequestId },
@@ -461,12 +554,7 @@ export class MediaService {
         trackingStatus: 'ACTIVE', saveStatus: 'PENDING', outputs: [], billingStatus: 'UNKNOWN', nextPollAt: now, attempts: 0, error: null, createdAt: now, updatedAt: now }
       this.assert(scope, epoch); parent.throwIfAborted()
       await this.options.store.saveJob(scope, job)
-      const previousUnconfirmedJobIds = unconfirmed.map(previous => previous.jobId)
-      await binding.onJobCreated?.({ kind: 'image', jobId, operation: input.operation, localAssetIds: input.localAssetIds,
-        ...(previousUnconfirmedJobIds.length ? { previousUnconfirmedJobIds } : {}) })
-      const recoveryKey = this.key(scope, taskId) + ':' + binding.runId
-      const recovered = this.runRecoveries.get(recoveryKey)
-      if (recovered && previousUnconfirmedJobIds.length) this.runRecoveries.set(recoveryKey, recovered.filter(id => !previousUnconfirmedJobIds.includes(id)))
+      await binding.onJobCreated?.({ kind: 'image', jobId, operation: input.operation, localAssetIds: input.localAssetIds })
       this.assert(scope, epoch); parent.throwIfAborted()
       if (quote.expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED')
       job = { ...job, submission: 'MAYBE_SENT' }
@@ -528,10 +616,16 @@ export class MediaService {
       || (job.receiptId && job.receiptId !== receipt.receiptId) || new Set(receipt.outputs.map(output => output.outputId)).size !== receipt.outputs.length
       || (job.input.protocolVersion !== 3 && job.input.parameters.count !== undefined && receipt.outputs.length > job.input.parameters.count)) throw new AppError('INVALID_ARGUMENT')
     const priorMismatch = job.errorCode === 'OUTPUT_SPEC_MISMATCH'
+    const sameGeneration = !!job.receiptId && terminal.has(job.generationStatus) &&
+      (job.generationStatus === receipt.status || receipt.status === 'RESULT_EXPIRED')
     job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'; job.generationStatus = receipt.status
     job.outputs = receipt.outputs; job.billingStatus = receipt.billingStatus
     job.actualSpec = receipt.actualSpec
-    job.recovery = receipt.recovery; job.errorCode = receipt.errorCode; job.outputErrors = receipt.outputErrors; job.upstreamError = receipt.upstreamError
+    job.recovery = receipt.recovery; job.errorCode = receipt.errorCode
+    job.outputErrors = sameGeneration && !receipt.outputErrors?.length ? job.outputErrors : receipt.outputErrors
+    job.upstreamError = safeMediaUpstreamError(receipt.upstreamError) ?? (sameGeneration ? job.upstreamError : undefined)
+    job.submissionFailure = receipt.status === 'SUBMISSION_UNKNOWN'
+      ? job.submissionFailure ?? (job.failure?.stage === 'image-submit' ? job.failure : undefined) : undefined
     job.failure = undefined
     if (priorMismatch) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
     if (job.input.protocolVersion === 3 && receipt.actualSpec && job.input.requestedSpec && Object.entries(job.input.requestedSpec).some(([key, requested]) => {
@@ -659,6 +753,7 @@ export class MediaService {
         } catch (error) {
           if (parent.aborted) throw parent.reason
           if (!(error instanceof AppError && error.code === 'NOT_FOUND' && !job.receiptId && job.failure)) {
+            if (job.failure?.stage === 'image-submit') job.submissionFailure ??= job.failure
             job.failure = mediaJobFailure(error, job.saveStatus === 'SAVING' ? 'image-save' : 'image-query')
           }
           if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) {
@@ -791,7 +886,7 @@ export class MediaService {
     check()
     if (settlementError) throw settlementError
   }
-  async waitForRun(taskId: string, runId: string, options: { recoverOriginal?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+  async waitForRun(taskId: string, runId: string, options: { recoverOriginal?: boolean; allowIncomplete?: boolean; signal?: AbortSignal } = {}): Promise<void> {
     const { scope } = await this.task(taskId)
     const stopKey = this.key(scope, taskId), stopVersion = this.taskStops.get(stopKey) ?? 0, epoch = this.epoch
     const recoveries = new Map<string, number>()
@@ -815,7 +910,7 @@ export class MediaService {
         if (!saved) pending.push(job)
       }
       if (!pending.length) return
-      if (pending.some(job => ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus))) {
+      if (!options.allowIncomplete && pending.some(job => ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus))) {
         if (options.recoverOriginal) {
           const phase = pending.some(job => job.generationStatus === 'RESULT_EXPIRED') ? 'expired' : 'generation'
           throw new ArrangementMediaRecoveryError(phase, new Error('Original image generation did not deliver an available result.'))
@@ -829,6 +924,7 @@ export class MediaService {
         await Promise.race([activity, delay(100)])
         continue
       }
+      if (options.allowIncomplete) return
       if (options.recoverOriginal) {
         if (pending.some(job => job.trackingStatus === 'AUTH_REQUIRED')) throw new AppError('AUTH_REQUIRED')
         if (pending.some(job => job.generationStatus === 'SUBMISSION_UNKNOWN')) {

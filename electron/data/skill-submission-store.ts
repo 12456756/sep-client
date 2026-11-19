@@ -1,6 +1,8 @@
 import { join } from 'node:path'
 import { z } from 'zod'
 import type { LocalSkillSubmission } from '../../src/shared/skill-library'
+import { hasPersonalSkillVersionName, SKILL_VERSION_NAME_TAKEN } from '../../src/shared/skill-library'
+import { AppError } from '../errors/app-error'
 import { idempotencyKeySchema, personalSkillVersionRequestSchema, skillVersionSchema } from '../../src/shared/platform-supplement-contracts'
 import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
@@ -32,6 +34,9 @@ export class SkillSubmissionStore {
       const current = await this.read(scope)
       const existing = current.find(item => item.idempotencyKey === value.idempotencyKey)
       if (existing && JSON.stringify(existing.request) !== JSON.stringify(validated.request)) throw new Error('同一保存请求不能修改原文，请创建新版本。')
+      if (!existing && hasPersonalSkillVersionName({ versions: [], localVersions: current.filter(item => item.request.capabilityId === validated.request.capabilityId) }, validated.request.changeSummary ?? '')) {
+        throw new AppError('INVALID_ARGUMENT', { message: SKILL_VERSION_NAME_TAKEN })
+      }
       await writeJsonAtomic(this.file(scope), [...current.filter(item => item.idempotencyKey !== value.idempotencyKey), validated])
     })
   }

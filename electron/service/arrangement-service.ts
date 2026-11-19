@@ -38,7 +38,8 @@ import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpo
 import type { ArrangementExecutionSnapshot, ArrangementMediaPhase, ArrangementMediaSummary } from '../../src/shared/types'
 import type { ArrangementMediaLinkStorePort } from '../domain/arrangement-media'
 import type { ArrangementMediaAssetsPort } from '../domain/arrangement-media-runtime'
-import type { VideoStorePort } from '../domain/video-media'
+import { videoSubmissionRejected, type VideoStorePort } from '../domain/video-media'
+import { mediaIssueMessage } from '../../src/shared/media-feedback'
 import type { MediaStorePort } from '../domain/media'
 import type { AttachmentService } from './attachment-service'
 import type { DraftAttachmentCandidate, NodeInputRef } from '../../src/shared/attachment-contracts'
@@ -472,7 +473,8 @@ export class ArrangementService {
       const job = link.kind === 'image'
         ? await this.deps.mediaStore?.getJob(scope, taskId, link.jobId)
         : await this.deps.videoStore?.getJob({ ...scope, subscriptionId: link.subscriptionId }, taskId, link.jobId)
-      const generation = job && ('generationStatus' in job ? job.generationStatus : job.receipt?.status)
+      const generation = job && ('generationStatus' in job ? job.generationStatus : job.receipt?.status ??
+        (job.submission === 'NOT_SENT' ? undefined : videoSubmissionRejected(job) ? 'FAILED' : 'SUBMISSION_UNKNOWN'))
       const node = state.nodes.find(node => node.nodeId === link.nodeId)
       const delivery = node?.delivery
       const materialization = link.materializations[link.materializations.length - 1]
@@ -487,9 +489,19 @@ export class ArrangementService {
       else phase = 'tracking'
       const pendingActions = phase === 'blocked' && (materialization?.status === 'conflict' || job && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)) ? ['retry-save' as const]
         : outputs.some(output => output.status === 'saved') ? ['export' as const] : []
+      // Public status only; keep the original provider response out of the execution snapshot.
+      const issue = job && generation && (phase === 'blocked' || generation === 'PARTIAL_SUCCEEDED') ? mediaIssueMessage({
+        generationStatus: generation, trackingStatus: job.trackingStatus, saveStatus: job.saveStatus,
+        failure: job.failure, submissionFailure: job.submissionFailure,
+        ...('generationStatus' in job ? { error: job.errorCode ?? null, upstreamError: job.upstreamError, outputErrors: job.outputErrors,
+          canDownload: job.recovery?.canDownload, canResumeTracking: job.recovery?.canQuery } :
+          { error: job.error, upstreamError: job.receipt?.upstreamError, outputErrors: job.receipt?.outputErrors,
+            canDownload: job.receipt?.recovery?.canDownload, canResumeTracking: job.receipt?.recovery?.canQuery }),
+      }, link.kind) : null
       return { nodeId: link.nodeId, nodeRunId: link.nodeRunId, kind: link.kind, operation: link.operation,
         jobId: link.jobId, phase, inputs: link.inputs.map(input => ({ artifactId: input.artifactId, ...(input.sourceNodeId ? { sourceNodeId: input.sourceNodeId } : {}) })),
         outputs, pendingActions,
+        ...(issue ? { issue } : {}),
         ...(job?.lastQueriedAt === undefined ? {} : { lastQueriedAt: job.lastQueriedAt }),
         ...(job && 'providerWaitMs' in job ? { providerWaitMs: job.providerWaitMs } : {}),
         ...(job && 'downloadMs' in job ? { downloadMs: job.downloadMs } : {}),

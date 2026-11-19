@@ -76,17 +76,22 @@ interface Context {
 function jobView(job: LocalVideoJob): VideoJobView {
   const rejected = videoSubmissionRejected(job)
   const measured = videoSpecAcceptance(job)
+  const acceptance = job.receipt?.acceptance ?? job.receipt?.deliveryStatus ??
+    (job.receipt?.errorCode === 'OUTPUT_SPEC_MISMATCH' ? 'mismatched' : measured.acceptance)
   return {
     jobId: job.jobId, taskId: job.taskId, profileId: job.request.profileId, operation: job.request.operation,
     parameters: { ...job.request.parameters }, generationStatus: job.receipt?.status ?? (job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : rejected ? 'FAILED' : 'SUBMISSION_UNKNOWN'),
     ...(job.request.protocolVersion === 3 ? { protocolVersion: 3, requestedSpec: job.request.requestedSpec, specRevision: job.request.specRevision, parameterSources: job.request.parameterSources,
-      effectiveSpec: job.quote.effectiveSpec, actualSpec: measured.actualSpec, acceptance: measured.acceptance } : {}),
+      effectiveSpec: job.quote.effectiveSpec, actualSpec: measured.actualSpec } : {}),
+    ...(job.receipt ? { acceptance, canDownload: job.receipt.recovery.canDownload } : {}),
     trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: job.receipt?.billingStatus ?? ((job.executionMode ?? 'mock') === 'real'
       ? job.submission === 'NOT_SENT' || rejected ? 'NOT_RESERVED' : 'RECONCILING' : 'MOCK_NOT_CHARGED'),
     ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
       ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
     ...(job.specFailure ? { specFailure: structuredClone(job.specFailure) } : {}),
     ...(job.failure ? { failure: structuredClone(job.failure) } : {}),
+    ...(job.submissionFailure ? { submissionFailure: structuredClone(job.submissionFailure) } : {}),
+    ...(job.receipt?.outputErrors?.length ? { outputErrors: structuredClone(job.receipt.outputErrors) } : {}),
     ...(job.receipt?.upstreamError ? { upstreamError: structuredClone(job.receipt.upstreamError) } : {}),
     createdAt: job.createdAt, updatedAt: job.updatedAt, error: job.error === 'OUTPUT_SPEC_MISMATCH' ? null : job.error,
     ...(job.lastQueriedAt === undefined ? {} : { lastQueriedAt: job.lastQueriedAt }),

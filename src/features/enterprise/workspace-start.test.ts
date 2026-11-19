@@ -7,9 +7,12 @@ import ts from 'typescript'
 import { responseError } from '../../shared/arrangement-feedback'
 import { mergeTaskUpdate } from './task-read-cache'
 import { runtimeKey } from '../../shared/work-activity'
+import { resolveTaskModel } from '../../shared/model-preferences'
+import { conversationDocument } from './run-settings'
+import { GENERAL_ASSISTANT_ID } from './general-assistant'
 import type { ElectronAPI } from '../../shared/ipc'
 
-function mountWorkspace(cancelTask: (id: string, reason: string) => Promise<{ success: boolean; error?: { message: string } }> = async () => ({ success: true }), api: Partial<ElectronAPI> = {}) {
+function mountWorkspace(cancelTask: (id: string, reason: string) => Promise<{ success: boolean; error?: { message: string } }> = async () => ({ success: true }), api: Partial<ElectronAPI> = {}, defaultModelId = '') {
   const confirmations: unknown[] = []
   const failures: unknown[] = []
   const notices: Array<{ message: string; tone: string }> = []
@@ -58,8 +61,9 @@ function mountWorkspace(cancelTask: (id: string, reason: string) => Promise<{ su
     '../../shared/arrangement-feedback': { responseError },
     '../../shared/run-response': { RunResponseBuffer: class { get() {} keys() { return [][Symbol.iterator]() } delete() {} clear() {} } },
     './placeholder': { WORK_TEMPLATES: [] },
-    './general-assistant': { GENERAL_ASSISTANT_ID: 'general', generalAssistant: () => ({ id: 'general', allowedModels: ['model-a'] }) },
-    './run-settings': { conversationDocument: () => ({ mode: 'conversation' }) },
+    './general-assistant': { GENERAL_ASSISTANT_ID, generalAssistant: () => ({ id: GENERAL_ASSISTANT_ID, allowedModels: ['model-a', 'model-b'] }) },
+    './run-settings': { conversationDocument },
+    '../../shared/model-preferences': { resolveTaskModel },
     './task-read-cache': { mergeTaskUpdate },
     './work-mapping': { getArrangementDisplayEvents: () => [], buildWorkItem: ({ task }: { task: { id: string; workType: unknown } }) => ({ id: task.id, workType: task.workType, kind: 'conversation', participants: [], steps: [] }) },
     '../../shared/work-activity': { runtimeKey },
@@ -68,7 +72,7 @@ function mountWorkspace(cancelTask: (id: string, reason: string) => Promise<{ su
   compileFunction(compiled, ['require', 'module', 'exports', 'window'], { filename })(
     (id: string) => Reflect.get(imports, id) ?? {}, module, module.exports, { electronAPI: { cancelTask, ...api } })
   const hook = (module.exports as typeof import('./useEnterpriseWorkspace')).useEnterpriseWorkspace
-  const render = () => { cursor = 0; return hook({ userId: 'user', userName: 'User', enterpriseId: 'ent', enterpriseName: 'Enterprise', instances: [], employeeStatuses: [] }) }
+  const render = () => { cursor = 0; return hook({ userId: 'user', userName: 'User', enterpriseId: 'ent', enterpriseName: 'Enterprise', instances: [], employeeStatuses: [], defaultModelId }) }
   return { render, confirmations, failures, notices }
 }
 
@@ -112,14 +116,18 @@ test('stopping work reports IPC failure without a confirmation and uses a defaul
 
 test('first submission enters the created conversation without a redundant renderer preflight or waiting for execution', async () => {
   const ui = mountWorkspace(undefined, {
-    async createArrangementDraft() { return { success: true, draft: { id: 'draft', revision: 1 } } as Awaited<ReturnType<ElectronAPI['createArrangementDraft']>> },
+    async createArrangementDraft(document) {
+      assert.equal(document.conversation?.kind, 'general')
+      if (document.conversation?.kind === 'general') assert.equal(document.conversation.modelId, 'model-b')
+      return { success: true, draft: { id: 'draft', revision: 1 } } as Awaited<ReturnType<ElectronAPI['createArrangementDraft']>>
+    },
     async preflightArrangementDraft() { assert.fail('confirmation already validates the draft') },
     async confirmAndStartArrangement() {
       return { success: true, task: { id: 'new-task', ownerId: 'user', ownerEnterpriseId: 'ent', status: 'pending', activeRunId: null, workType: { state: 'resolved', kind: 'conversation' } },
         execution: { id: 'new-task', status: 'queued' } } as Awaited<ReturnType<ElectronAPI['confirmAndStartArrangement']>>
     },
-  })
-  assert.equal(await ui.render().startConversation('general', '分析电商市场'), true)
+  }, 'model-b')
+  assert.equal(await ui.render().startConversation(GENERAL_ASSISTANT_ID, '分析电商市场'), true)
   assert.equal(ui.render().route.name, 'work')
   assert.equal(ui.render().works[0]?.id, 'new-task')
   assert.equal(ui.render().busy, false)

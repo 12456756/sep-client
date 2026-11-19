@@ -151,7 +151,7 @@ test('real host approves actual CNY quote, freezes mode, saves and reopens witho
   await reopened.stopAll()
 })
 
-test('video host ignores persisted specification mismatch without changing saved outputs or billing', async () => {
+test('video host projects persisted specification mismatch independently of saved outputs and billing', async () => {
   const f = await realSetup()
   try {
     const job = await f.host.generate('task-a', input())
@@ -161,6 +161,7 @@ test('video host ignores persisted specification mismatch without changing saved
       error: 'OUTPUT_SPEC_MISMATCH', receipt: { ...previous.receipt!, acceptance: 'mismatched', deliveryStatus: 'mismatched' } }))
     const view = (await f.host.getTaskVideo('task-a')).jobs[0]
     assert.equal(view.error, null)
+    assert.equal(view.acceptance, 'mismatched')
     assert.equal(view.generationStatus, 'SUCCEEDED')
     assert.equal(view.saveStatus, 'SAVED')
     assert.equal(view.actualCostCny, saved.actualCostCny)
@@ -1045,7 +1046,8 @@ test('V3 submit failures retain diagnostics and block new generation when risk c
   const remote = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: scope.subscriptionId, token: async () => 'test-token', fetch: async () => {
     submissions++
     return new Response(JSON.stringify({ error: { code: 'UPSTREAM_SPEC_UNSUPPORTED', field: 'resolution', requestedValue: '8k', source: 'provider',
-      alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved', message: 'private-secret' } }), { status: 422, headers: { 'Content-Type': 'application/json' } })
+      alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved',
+      message: 'Unsupported resolution', apiKey: 'private-secret', detail: 'Rejected test-token' } }), { status: 422, headers: { 'Content-Type': 'application/json' } })
   } })
   const options: MockVideoHostOptions = { ...f.options, requestApproval: async request =>
     (request.input as { operation?: string }).operation !== 'confirm-new-generation', gateway: () => ({ ...f.options.gateway(scope),
@@ -1064,6 +1066,7 @@ test('V3 submit failures retain diagnostics and block new generation when risk c
   assert.deepEqual(saved.specFailure, first.specFailure)
   await assert.rejects(reopened.generateTool('task-a', 'video_generate', { ...raw, specRevision: 3, requestedSpec: { resolution: '1080p' } }), { code: 'PERMISSION_DENIED' })
   assert.equal(quotes, 1); assert.equal(submissions, 1)
-  assert.doesNotMatch(JSON.stringify(saved), /private-secret/)
+  assert.equal((saved.failure?.diagnostic?.body as { error: { message: string } }).error.message, 'Unsupported resolution')
+  assert.doesNotMatch(JSON.stringify(saved), /private-secret|test-token/)
   await reopened.stopAll()
 })

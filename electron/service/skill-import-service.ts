@@ -10,12 +10,15 @@ import {
   type SkillImportStateView, type SkillImportCommandSchema,
 } from '../../src/shared/skill-import-contracts'
 import { SkillImportApiError } from '../common/platform/skill-import-api'
+import { safeApiDiagnostic } from '../common/platform/api-diagnostic'
 import { logger } from '../common/logger'
 import { acceptedScopeHash, normalizedRootIds } from '../domain/skill-import'
+import { platformDiagnosticMessage } from '../errors/platform-diagnostic-feedback'
 import type { ImportApiPort, ImportChallenge, ImportDevicesPort, ImportFilesPort, ImportIdentity, ImportInstance, ImportScope } from '../domain/skill-import-ports'
 
 const okSchema = z.object({ ok: z.literal(true) }).strict()
 const TERMINAL_CODES = new Set(['SESSION_EXPIRED', 'SESSION_CANCELLED', 'SESSION_CLOSED', 'DEVICE_REVOKED', 'OWNER_AUTH_REQUIRED', 'OWNER_AUTH_REVOKED', 'OWNER_MISMATCH'])
+const isTerminal = (error: SkillImportApiError): boolean => error.status === 410 || TERMINAL_CODES.has(error.code)
 const MESSAGES: Record<string, string> = {
   IMPORT_DISABLED: '此站点暂未开放本机导入。', CLIENT_UPGRADE_REQUIRED: '请升级 SEP 客户端后重新打开导入。',
   CLIENT_BUSY: '另一项本机导入正在进行，请返回网页稍后重试。', SCOPE_MISMATCH: '扫描范围与已批准的授权不一致，请重新发起导入。',
@@ -24,6 +27,13 @@ const MESSAGES: Record<string, string> = {
   SESSION_CANCELLED: '本次导入已取消。', DEVICE_REVOKED: '设备授权已撤销，请重新确认。',
   PACKAGE_REJECTED: '技能包未通过检查，请返回网页查看并重新选择。',
   NETWORK_UNAVAILABLE: '暂时无法连接站点，正在重试。', PREVIEW_TIMEOUT: '预览超时，请在网页重试。',
+  NETWORK_TIMEOUT: '连接站点超时，正在重试。', RATE_LIMITED: '操作过于频繁，请稍后重试。',
+  GRANT_EXPIRED: '本次导入授权已过期，请从网页重新发起。',
+  OWNER_AUTH_REQUIRED: '网页端登录状态已失效，请在网页重新登录并发起导入。',
+  OWNER_AUTH_REVOKED: '网页端授权已撤销，请在网页重新发起导入。',
+  OWNER_MISMATCH: '本次导入的账号不匹配，请从当前账号的网页重新发起。',
+  OPERATION_CONFLICT: '导入内容与当前操作不一致，请返回网页重新预览。',
+  PACKAGE_CHANGED: '技能包内容已变化，请返回网页重新预览。',
   REVOCATION_PENDING: '本机授权已停用，云端撤销尚未确认；联网后重试或在网页设备管理中撤销。',
   SCAN_PARTIAL: '部分目录无法完整读取或已达到扫描上限，当前结果可能不完整。请检查目录权限后从网页重新发起。',
   SCAN_FAILED: '本机扫描未能完成，请检查目录权限后从网页重新发起。',
@@ -262,7 +272,7 @@ export class SkillImportService {
         if (grant.pairingId !== current.pairingId) throw new SkillImportApiError('DEVICE_PROOF_INVALID')
         if (Date.parse(grant.expiresAt) <= this.now()) throw new SkillImportApiError('SESSION_EXPIRED')
         this.publish({ phase: 'waiting-web-confirmation' })
-        await this.wait(Math.max(SKILL_IMPORT_LIMITS.pollMs, grant.retryAfterSeconds * 1000), current.controller.signal)
+        await this.waitForRetry(current, Math.max(SKILL_IMPORT_LIMITS.pollMs, grant.retryAfterSeconds * 1000))
         continue
       }
       if (grant.sessionId !== current.sessionId || grant.acceptedScopeHash !== acceptedScopeHash(consent.scope, consent.rootIds) || Date.parse(grant.sessionGrantExpiresAt) <= this.now()) throw new SkillImportApiError('SCOPE_MISMATCH')
@@ -298,7 +308,7 @@ export class SkillImportService {
     const monitor = (async () => {
       let backoff: number = SKILL_IMPORT_LIMITS.pollMs
       while (!signal.aborted && this.active === current) {
-        await this.wait(backoff, signal)
+        await this.waitForRetry(current, backoff, signal)
         try {
           if (this.now() + SKILL_IMPORT_LIMITS.grantRenewBeforeMs >= current.grantExpiresAt) await this.renewGrant(current)
           const batch = await current.api.request('GET', `sessions/${current.sessionId}/commands?cursor=${current.commandCursor}`,
@@ -307,7 +317,8 @@ export class SkillImportService {
           backoff = SKILL_IMPORT_LIMITS.pollMs
         } catch (error) {
           if (signal.aborted) return
-          if (error instanceof SkillImportApiError && error.retryable && !TERMINAL_CODES.has(error.code)) {
+          if (error instanceof SkillImportApiError && error.retryable && !isTerminal(error)) {
+            this.recordFailure(error)
             backoff = Math.max(error.retryAfterMs, Math.min(backoff * 2, SKILL_IMPORT_LIMITS.maxBackoffMs))
             continue
           }
@@ -387,7 +398,7 @@ export class SkillImportService {
         throw error
       }
       await this.event(current, command, 'error', payload)
-      this.publish({ phase: 'results', error: this.errorView(code) })
+      this.publish({ phase: 'results', error: this.errorView(code, error) })
     }
   }
 
@@ -415,8 +426,10 @@ export class SkillImportService {
         return
       } catch (error) {
         this.assertCurrent(current)
-        if (error instanceof SkillImportApiError && (TERMINAL_CODES.has(error.code) || !error.retryable && !['GRANT_EXPIRED', 'UPLOAD_PROCESSING', 'INVALID_RESPONSE'].includes(error.code))) throw error
-        await this.wait(2000, current.controller.signal)
+        if (error instanceof SkillImportApiError && (isTerminal(error) || !error.retryable && !['GRANT_EXPIRED', 'UPLOAD_PROCESSING', 'INVALID_RESPONSE'].includes(error.code))) throw error
+        this.recordFailure(error)
+        if (error instanceof SkillImportApiError && error.status === 429) this.publish({ error: this.errorView(error.code, error) })
+        await this.waitForRetry(current, Math.max(2000, error instanceof SkillImportApiError ? error.retryAfterMs : 0))
       }
     }
   }
@@ -441,23 +454,28 @@ export class SkillImportService {
   private async request<T>(current: ActiveImport, method: 'GET' | 'POST' | 'DELETE', route: string, schema: z.ZodType<T>, body?: unknown, authenticated = true, contentResponse = false): Promise<T> {
     let backoff: number = SKILL_IMPORT_LIMITS.pollMs
     let recovered = false
+    let retryNoticeRevision: number | undefined
     for (;;) {
       this.assertCurrent(current)
       try {
         const result = await current.api.request(method, route, schema, { signal: current.controller.signal, body, contentResponse, ...(authenticated && current.grant ? { token: current.grant } : {}) })
         this.assertCurrent(current)
+        if (this.state.revision === retryNoticeRevision) this.publish({ error: null })
         return result
       } catch (error) {
         this.assertCurrent(current)
         if (!(error instanceof SkillImportApiError)) throw error
+        this.recordFailure(error)
+        if (isTerminal(error)) throw error
         if (authenticated && error.code === 'GRANT_EXPIRED' && !recovered) {
           recovered = true
           await this.renewGrant(current)
           continue
         }
-        if (TERMINAL_CODES.has(error.code) || !error.retryable) throw error
-        this.publish({ error: this.errorView(error.code) })
-        await this.wait(Math.max(error.retryAfterMs, Math.floor(backoff * (0.8 + Math.random() * 0.2))), current.controller.signal)
+        if (!error.retryable) throw error
+        this.publish({ error: this.errorView(error.code, error) })
+        retryNoticeRevision = this.state.revision
+        await this.waitForRetry(current, Math.max(error.retryAfterMs, Math.floor(backoff * (0.8 + Math.random() * 0.2))))
         backoff = Math.min(backoff * 2, SKILL_IMPORT_LIMITS.maxBackoffMs)
       }
     }
@@ -466,11 +484,13 @@ export class SkillImportService {
   private launch(current: ActiveImport, job: () => Promise<void>): void {
     current.job = job().catch(async error => {
       if (this.active !== current) return
-      const code = this.code(current.controller.signal.aborted ? current.controller.signal.reason : error)
+      const failure = current.controller.signal.aborted ? current.controller.signal.reason : error
+      this.recordFailure(failure)
+      const code = failure instanceof SkillImportApiError && failure.status === 410 && !TERMINAL_CODES.has(failure.code) ? 'SESSION_CLOSED' : this.code(failure)
       // A non-retryable failure before the first pairing leaves the client in a
       // hidden connecting state otherwise, so surface it as an actionable error.
       const showInitialPairingError = !current.pairingId && error instanceof SkillImportApiError && !error.retryable
-      this.publish({ error: this.errorView(code), ...(['CLIENT_UPGRADE_REQUIRED', 'STORAGE_UNAVAILABLE', 'DEVICE_LIMIT_REACHED'].includes(code) || showInitialPairingError ? { visible: true } : {}) })
+      this.publish({ error: this.errorView(code, failure), ...(['CLIENT_UPGRADE_REQUIRED', 'STORAGE_UNAVAILABLE', 'DEVICE_LIMIT_REACHED'].includes(code) || showInitialPairingError ? { visible: true } : {}) })
       await this.stopFromWorker(current, code === 'SESSION_EXPIRED' ? 'expired' : TERMINAL_CODES.has(code) ? 'cancelled' : 'failed')
     }).finally(() => { current.job = undefined })
   }
@@ -517,5 +537,35 @@ export class SkillImportService {
     this.options.publish(structuredClone(this.state))
   }
   private code(error: unknown): string { return error instanceof SkillImportApiError ? error.code : error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'IMPORT_UNAVAILABLE' }
-  private errorView(code: string): NonNullable<SkillImportStateView['error']> { return { code, message: MESSAGES[code] ?? '本机导入暂不可用，请返回网页重试。', retryable: ['NETWORK_UNAVAILABLE', 'CANDIDATE_CHANGED', 'SNAPSHOT_EXPIRED', 'REVOCATION_PENDING'].includes(code) } }
+  private waitForRetry(current: ActiveImport, delayMs: number, signal = current.controller.signal): Promise<void> {
+    // Deadlines abort the wait; never pass an overflowing delay to Node's timers.
+    return this.wait(Math.min(delayMs, SKILL_IMPORT_LIMITS.sessionMs), signal)
+  }
+  private recordFailure(error: unknown): void {
+    if (error instanceof SkillImportApiError && error.diagnostic) this.log.warn('import request failed', {
+      code: error.code, status: error.status, diagnostic: safeApiDiagnostic(error.diagnostic),
+    })
+  }
+  private errorView(code: string, error?: unknown): NonNullable<SkillImportStateView['error']> {
+    const transport = error instanceof SkillImportApiError ? error : undefined
+    const rateLimited = transport?.status === 429
+    const known = Object.hasOwn(MESSAGES, code) ? MESSAGES[code] : undefined
+    const diagnostic = transport?.diagnostic
+    const reason = diagnostic?.message ?? ''
+    let message = platformDiagnosticMessage(diagnostic, transport?.status)
+    if (!message && transport?.status !== 410) {
+      if (transport?.status === 413 || code === 'PACKAGE_TOO_LARGE') message = '技能包超过大小限制，请减少导入文件后重试。'
+      else if (code === 'PACKAGE_DIGEST_MISMATCH' || code === 'PACKAGE_HASH_MISMATCH' ||
+        (transport?.status === 409 || code === 'PACKAGE_REJECTED') && /\b(?:sha256|checksum|digest|hash)\b.{0,60}\b(?:mismatch|does not match)\b|摘要不一致/i.test(reason)) message = MESSAGES.PACKAGE_CHANGED
+      else if (!known && transport?.status === 409) message = '当前导入与网页状态不一致，请刷新网页后重新确认导入。'
+    }
+    if (rateLimited) {
+      const seconds = Math.ceil(transport.retryAfterMs / 1000)
+      if (transport.retryAfterMs >= SKILL_IMPORT_LIMITS.sessionMs) message = '服务端要求等待的时间超过本次导入的有效期，请稍后从网页重新发起。'
+      else message = Number.isFinite(seconds) && seconds > 0 ? `导入请求过于频繁，请等待 ${seconds} 秒后再试。` : MESSAGES.RATE_LIMITED
+    }
+    const localRetryable = ['NETWORK_UNAVAILABLE', 'CANDIDATE_CHANGED', 'SNAPSHOT_EXPIRED', 'REVOCATION_PENDING'].includes(code)
+    const retryable = transport ? !isTerminal(transport) && (transport.retryable || localRetryable) : localRetryable
+    return { code, message: message ?? known ?? '本机导入暂不可用，请返回网页重试。', retryable }
+  }
 }

@@ -63,6 +63,13 @@ it('recognizes a flattened response termination without guessing unrelated failu
   }
 })
 
+it('preserves controlled gateway feedback after SDK serializes an upstream 401 error body', () => {
+  const message = '模型服务暂时不可用，请稍后重试；持续失败请联系平台管理员。'
+  assert.equal(runtimeFeedback(new Error(`401: ${JSON.stringify({ message })}`)).code, 'SERVICE_UNAVAILABLE')
+  assert.equal(runtimeFeedback(new Error(`401 ${message}`)).code, 'SERVICE_UNAVAILABLE')
+  assert.equal(runtimeFeedback(new Error('401: {"message":"Invalid token"}')).code, 'AUTH_REQUIRED')
+})
+
 it('uses the interrupted response message in normalized retry and session error events', () => {
   for (const type of ['session_error', 'auto_retry_start', 'auto_retry_end', 'retry_budget_exhausted']) {
     const event: TaskExecutionEvent = { taskId: 't', runId: 'r', subscriptionId: 's', sequence: 1, occurredAt: 1,

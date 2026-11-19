@@ -120,9 +120,13 @@ export function ProfileSettingsDialog({
   }
 
   return (
-    <Dialog.Root open onOpenChange={open => { if (!open) onClose() }}>
-      <Dialog.Overlay className="ent-settings-backdrop" />
+    <Dialog.Root open modal={false} onOpenChange={open => { if (!open) onClose() }}>
       <Dialog.Content className={`ent-settings-layout${sidebarCollapsed ? ' sidebar-collapsed' : ''}`} aria-describedby={undefined}
+        onInteractOutside={event => event.preventDefault()}
+        onEscapeKeyDown={event => {
+          // The command and notification panels handle Escape outside Radix.
+          if (event.target instanceof Element && event.target.closest('[role="dialog"]:not(.ent-settings-layout)')) event.preventDefault()
+        }}
         onKeyDown={event => {
           if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
             event.preventDefault()

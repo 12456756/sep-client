@@ -17,7 +17,7 @@ function phaseLabel(phase: ArrangementMediaSummary['phase']): string {
 export function ArrangementMediaPanel({ media, deliverables }: { media: ArrangementMediaSummary[]; deliverables: WorkDeliverable[] }) {
   const delivered = new Set(deliverables.flatMap(file => file.sourceArtifact ? [`${file.nodeId}:${file.sourceArtifact.artifactId}`] : []))
   const pending = media.filter(summary => {
-    if (summary.phase !== 'ready') return true
+    if (summary.phase !== 'ready' || summary.issue) return true
     // Final files come only from accepted nodes; extra generated candidates are not pending deliveries.
     if (deliverables.some(file => file.nodeId === summary.nodeId)) return false
     return summary.outputs.some(output => output.status === 'saved' && !delivered.has(`${summary.nodeId}:${output.artifactId}`))
@@ -25,7 +25,7 @@ export function ArrangementMediaPanel({ media, deliverables }: { media: Arrangem
   if (!pending.length) return null
   return <section className="arrangement-media-statuses" aria-label="编排媒体状态">
     {pending.map(summary => <p className={`media-result-status${summary.phase === 'blocked' ? ' error' : ''}`} role={summary.phase === 'blocked' ? 'alert' : 'status'} key={`${summary.nodeRunId}:${summary.jobId}`}>
-      {summary.kind === 'image' ? '图片' : '视频'} · {phaseLabel(summary.phase)}
+      {summary.kind === 'image' ? '图片' : '视频'} · {phaseLabel(summary.phase)}{summary.issue ? `：${summary.issue}` : null}
     </p>)}
   </section>
 }

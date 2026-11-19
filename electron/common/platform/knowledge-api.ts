@@ -6,14 +6,23 @@ import { config } from '../config'
 import { AuthenticationRequiredError } from './authentication-required-error'
 import { platformSourceHeaders } from './platform-source-headers'
 import { logger } from '../logger'
+import { AuthApiError } from './platform-api'
+import { parseRetryAfter, readApiDiagnostic, safeApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
+import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
 
 export class KnowledgeApiError extends Error {
+  readonly diagnostic: ApiDiagnostic | undefined
   constructor(
     public readonly statusCode: number,
     public readonly platformCode?: string,
     public readonly requestId?: string,
     public readonly retryAfterMs?: number,
-  ) { super(knowledgeErrorMessage(statusCode, platformCode)); this.name = 'KnowledgeApiError' }
+    diagnostic?: ApiDiagnostic,
+  ) {
+    super(diagnostic?.source === 'upstream' ? '知识库依赖的上游服务暂不可用，请联系平台管理员。' : knowledgeErrorMessage(statusCode, platformCode))
+    this.name = 'KnowledgeApiError'; this.diagnostic = safeApiDiagnostic(diagnostic)
+  }
+  get isUnauthorized(): boolean { return this.statusCode === 401 && this.diagnostic?.source !== 'upstream' }
 }
 export function knowledgeErrorMessage(status: number, code?: string): string {
   if (code === 'SOURCE_REJECTED') return '平台拒绝了请求来源，请联系管理员检查客户端来源配置。'
@@ -21,18 +30,21 @@ export function knowledgeErrorMessage(status: number, code?: string): string {
   if (code === 'INVALID_RESPONSE') return '平台返回的数据格式与知识库契约不一致，请联系管理员核查。'
   if (code === 'DOCUMENT_VERSION_CHANGED') return '文档版本已变化，请从第一页重新打开预览。'
   if (code === 'IDEMPOTENCY_CONFLICT') return '此操作标识与另一项操作冲突，请刷新后重新确认操作。'
+  if (code === 'KNOWLEDGE_OPERATION_RETIRED') return '此知识库操作已停用，请更新客户端；仍有问题请联系平台管理员。'
+  if (code === 'DOCUMENT_PROCESSING') return '文档正在处理，请稍后刷新详情。'
+  if (code === 'DOCUMENT_NOT_READY') return '文档尚未就绪，请等待处理完成后重试。'
   if (status === 401) return '登录已失效，请重新登录。'
   if (status === 403) return '当前成员没有执行此知识库操作的权限。'
   if (status === 404) return '知识库或文档不存在，或你已失去访问权限。'
   if (status === 412 || status === 428) return '文档已更新或缺少版本信息，请刷新详情后重新确认操作。'
-  if (status === 409) return '文档正在处理、尚未就绪或不支持当前操作，请刷新详情。'
+  if (status === 409) return '当前操作与知识库状态冲突，请刷新后重新确认操作。'
   if (status === 413) return '文件超过平台允许的 10 MiB 上限。'
   if (status === 415) return '平台不支持此文件格式，请使用 PDF、DOCX、TXT 或 MD。'
   if (status === 429) return '知识库请求过于频繁，请等待后重试。'
   if (status === 499) return '请求已取消。'
   if (status === 408) return '请求超时；写入结果可能尚未确认，请先刷新查看，再重试同一操作。'
   if (status >= 500) return '知识库服务暂时不可用，请稍后重试。'
-  if (status === 400) return '知识库请求参数不符合平台要求，请检查输入。'
+  if (status === 400 || status === 422) return '知识库请求参数不符合平台要求，请检查输入。'
   return '无法连接知识库平台，请检查网络后重试。'
 }
 
@@ -114,8 +126,9 @@ export class KnowledgeApi {
       if (control.aborted) throw new KnowledgeApiError(499)
       const timeout = AbortSignal.timeout(endpoint.file ? this.options.uploadTimeoutMs ?? 60_000 : this.options.requestTimeoutMs ?? 15_000)
       const signal = AbortSignal.any([control, timeout])
+      let token: string | undefined
       try {
-        const token = await knowledgeAbortable(this.options.getAccessToken(forceRefresh), signal)
+        token = await knowledgeAbortable(this.options.getAccessToken(forceRefresh), signal)
         forceRefresh = false
         signal.throwIfAborted()
         const headers: Record<string, string> = {
@@ -133,22 +146,27 @@ export class KnowledgeApi {
         } else if (endpoint.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(endpoint.body) }
         headers['Cache-Control'] = 'no-store'
         const response = await knowledgeAbortable(this.fetcher(this.baseUrl + endpoint.path, { method: endpoint.method, headers, body, signal, redirect: 'error' }), signal)
-        if (response.status === 401 && !refreshed) {
-          if (response.body) await knowledgeAbortable(response.body.cancel(), signal)
-          refreshed = true; forceRefresh = true; continue
-        }
         if (!response.ok) {
-          const error = await this.responseError(response, signal)
+          const error = await this.responseError(response, signal, token)
+          if (error.isUnauthorized && !refreshed) {
+            refreshed = true; forceRefresh = true; continue
+          }
           if (response.status === 429 && request.action !== 'createBase' && retries < 3) {
             const delay = error.retryAfterMs ?? 2000 * 2 ** retries
-            if (waited + delay > 300_000) throw new KnowledgeApiError(429, 'WAIT_LIMIT_EXCEEDED', error.requestId, delay)
+            if (waited + delay > 300_000) throw new KnowledgeApiError(429, 'WAIT_LIMIT_EXCEEDED', error.requestId, delay, error.diagnostic)
             waited += delay; retries++
             await knowledgeAbortable((this.options.sleep ?? sleep)(delay, control), control)
             continue
           }
           throw error
         }
-        const value: unknown = response.status === 204 ? undefined : await this.readJson(response, signal)
+        let value: unknown = response.status === 204 ? undefined : await this.readJson(response, signal)
+        if (request.action === 'search' && value && typeof value === 'object' && !Array.isArray(value)) {
+          const result = value as Record<string, unknown>
+          const evidence = safeApiDiagnostic({ body: result.diagnostic, message: result.degradationReason }, [token])
+          value = { ...result, ...(result.diagnostic !== undefined ? { diagnostic: evidence?.body } : {}),
+            ...(typeof result.degradationReason === 'string' ? { degradationReason: evidence?.message } : {}) }
+        }
         const withEtag = value && typeof value === 'object' && !Array.isArray(value) && response.headers.get('ETag')
           ? { ...value, etag: response.headers.get('ETag') } : value
         const parsed = knowledgeResponseSchemas[request.action].safeParse(withEtag)
@@ -169,9 +187,11 @@ export class KnowledgeApi {
       } catch (error) {
         if (control.aborted) throw new KnowledgeApiError(499)
         if (error instanceof KnowledgeApiError) throw error
-        if (timeout.aborted) throw new KnowledgeApiError(408)
+        if (timeout.aborted) throw new KnowledgeApiError(408, undefined, undefined, undefined, transportApiDiagnostic(error, 'knowledge', token ? [token] : []))
         if (error instanceof AuthenticationRequiredError) throw new KnowledgeApiError(401)
-        throw new KnowledgeApiError(0)
+        if (error instanceof AuthApiError) throw new KnowledgeApiError(error.statusCode,
+          typeof error.error.diagnostic?.code === 'string' ? error.error.diagnostic.code : undefined, error.error.requestId, error.error.retryAfterMs, error.error.diagnostic)
+        throw new KnowledgeApiError(0, undefined, undefined, undefined, transportApiDiagnostic(error, 'knowledge', token ? [token] : []))
       }
     }
   }
@@ -197,15 +217,13 @@ export class KnowledgeApi {
       reader.releaseLock()
     }
   }
-  private async responseError(response: Response, signal: AbortSignal): Promise<KnowledgeApiError> {
-    let value: Record<string, unknown> = {}
-    try { const raw = await this.readJson(response, signal); if (raw && typeof raw === 'object') value = raw as Record<string, unknown> }
-    catch { signal.throwIfAborted() /* Never expose untrusted response bodies. */ }
-    const safeId = (input: unknown): string | undefined => typeof input === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(input) ? input : undefined
-    const code = response.status === 403 && typeof value.message === 'string' && /Origin|Referer|CSRF/.test(value.message) ? 'SOURCE_REJECTED' : safeId(value.code)
-    const retry = response.headers.get('Retry-After')
-    const parsed = retry && /^\d+(?:\.\d+)?$/.test(retry.trim()) ? Number(retry) * 1000 : retry ? Date.parse(retry) - (this.options.now ?? Date.now)() : NaN
-    return new KnowledgeApiError(response.status, code, safeId(value.requestId) ?? safeId(response.headers.get('x-request-id')), Number.isFinite(parsed) ? Math.max(0, parsed) : undefined)
+  private async responseError(response: Response, signal: AbortSignal, token: string): Promise<KnowledgeApiError> {
+    const diagnostic = await readApiDiagnostic(response, 'knowledge', { maxBytes: 64 * 1024, signal, secrets: [token] })
+    signal.throwIfAborted()
+    const code = response.status === 403 && diagnostic.source !== 'upstream' && /Origin|Referer|CSRF/.test(diagnostic.message ?? '')
+      ? 'SOURCE_REJECTED' : typeof diagnostic.code === 'string' ? diagnostic.code : undefined
+    return new KnowledgeApiError(response.status, code, diagnostic.sepRequestId,
+      parseRetryAfter(response.headers.get('Retry-After'), (this.options.now ?? Date.now)()), diagnostic)
   }
 }
 

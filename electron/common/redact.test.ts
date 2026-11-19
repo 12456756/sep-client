@@ -3,6 +3,12 @@ import * as assert from 'node:assert/strict'
 import { describeError, redactModelTraceText, redactOptionalText, redactText, redactValue } from './redact'
 
 describe('redactText', () => {
+  it('removes connector grants and signatures in plain text and model diagnostics', () => {
+    const text = 'Invalid package; sessionGrant="SESSION_PRIVATE" upload_grant=UPLOAD_PRIVATE signature: SIGN_PRIVATE'
+    assert.doesNotMatch(redactText(text), /SESSION_PRIVATE|UPLOAD_PRIVATE|SIGN_PRIVATE/)
+    assert.doesNotMatch(redactModelTraceText(text), /SESSION_PRIVATE|UPLOAD_PRIVATE|SIGN_PRIVATE/)
+    assert.match(redactText(text), /Invalid package/)
+  })
   it('strips bearer tokens', () => {
     assert.equal(
       redactText('request failed: Authorization: Bearer abc.def.ghi; retrying'),

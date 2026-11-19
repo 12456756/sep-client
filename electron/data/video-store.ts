@@ -62,18 +62,17 @@ export class VideoStore implements VideoStorePort {
     }
     return [...ids].sort()
   }
-  private async jobs(scope: VideoScope): Promise<LocalVideoJob[]> {
+  private async jobs(scope: VideoScope, taskId?: string): Promise<LocalVideoJob[]> {
     const jobs: LocalVideoJob[] = []
-    for (const taskId of await this.files.names(join(this.root(scope), 'tasks'))) {
-      videoLocalIdSchema.parse(taskId)
-      for (const jobId of this.manifestIds(await this.files.names(join(this.task(scope, taskId), 'jobs')))) {
-        const job = await this.job(scope, taskId, jobId)
+    for (const id of taskId === undefined ? await this.files.names(join(this.root(scope), 'tasks')) : [taskId]) {
+      for (const jobId of this.manifestIds(await this.files.names(join(this.task(scope, id), 'jobs')))) {
+        const job = await this.job(scope, id, jobId)
         if (job) jobs.push(job)
       }
     }
     return jobs.sort((a, b) => a.createdAt - b.createdAt || a.jobId.localeCompare(b.jobId))
   }
-  async listJobs(scope: VideoScope): Promise<LocalVideoJob[]> { return this.locked(scope, () => this.jobs(scope)) }
+  async listJobs(scope: VideoScope, taskId?: string): Promise<LocalVideoJob[]> { return this.locked(scope, () => this.jobs(scope, taskId)) }
 
   async createJob(scope: VideoScope, value: LocalVideoJob): Promise<void> {
     const job = localVideoJobSchema.parse(value)

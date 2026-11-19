@@ -1,5 +1,5 @@
-import { ChevronRight, RefreshCw, Search, X } from 'lucide-react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronRight, LoaderCircle, Pencil, RefreshCw, Search, TriangleAlert, X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Empty } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { SkillDetail } from '../../components/enterprise/skills/SkillDetail';
@@ -12,6 +12,7 @@ import type { SkillLibraryItem } from '../../shared/skill-library';
 import '../../styles/skills.css';
 import { useDirectoryPagination } from '../../features/enterprise/use-directory-pagination';
 import { ListPagination } from '../../components/enterprise/ListPagination';
+import { effectiveRewriteStatus, type SkillRewriteSession } from '../../features/enterprise/skill-rewrite-session';
 
 type SkillsRoute = Extract<AppRoute, { name: 'skills' }>;
 interface Props {
@@ -115,13 +116,13 @@ function SkillList({ workspace, employeeFilterId, missingSkillId }: { workspace:
     {missingSkillId && !workspace.skillsLoading && !hasError ? <div className="ent-banner info">该技能不在当前授权列表中。<button type="button" className="ent-btn sm" onClick={() => workspace.navigate({ name: 'skills' })}>返回技能列表</button></div> : null}
     {!workspace.skillsLoading && !hasError && !matches.length ? <Empty title={filtered ? '没有匹配的技能' : '当前账号还没有已授权的员工技能'}>{filtered ? '请尝试调整搜索词或清除筛选条件。' : '企业给你的硅基员工配置技能后，会显示在这里。'}</Empty> : null}
     <div className="ent-directory-scroll" ref={pagination.listRef} data-skill-scroll>
-    {matches.length ? <section className="skill-list-surface" aria-label="员工技能列表"><div className="skill-list-columns" aria-hidden><span>技能 / 简介</span><span>关联员工</span><span>使用版本 · 全部关联员工</span><span>操作</span></div><ul className="skill-rows">{pagination.records.map(item => <SkillRow key={item.capability.id} skill={item} options={options} pendingVersionId={pending?.skillId === item.capability.id ? pending.versionId : undefined} disabled={Boolean(pending)} onVersion={id => void switchVersion(item, id)} onOpen={() => open(item.capability.id)} onEmployee={id => update({ employeeFilterId: id, query: '' })} />)}</ul></section> : null}
+    {matches.length ? <section className="skill-list-surface" aria-label="员工技能列表"><div className="skill-list-columns" aria-hidden><span>技能 / 简介</span><span>关联员工</span><span>使用版本 · 全部关联员工</span><span>操作</span></div><ul className="skill-rows">{pagination.records.map(item => <SkillRow key={item.capability.id} skill={item} session={workspace.getSkillRewriteSession?.(item.capability.id)} options={options} pendingVersionId={pending?.skillId === item.capability.id ? pending.versionId : undefined} disabled={Boolean(pending)} onVersion={id => void switchVersion(item, id)} onOpen={() => open(item.capability.id)} onEmployee={id => update({ employeeFilterId: id, query: '' })} />)}</ul></section> : null}
     </div>
     <ListPagination pagination={pagination} label="员工技能分页" disabled={Boolean(pending)} />
   </div>;
 }
 
-function SkillRow({ skill, options, pendingVersionId, disabled, onVersion, onOpen, onEmployee }: { skill: SkillLibraryItem; options: ReturnType<typeof skillEmployeeOptions>; pendingVersionId?: string; disabled: boolean; onVersion: (id: string) => void; onOpen: () => void; onEmployee: (id: string) => void }): React.JSX.Element {
+function SkillRow({ skill, session, options, pendingVersionId, disabled, onVersion, onOpen, onEmployee }: { skill: SkillLibraryItem; session?: SkillRewriteSession; options: ReturnType<typeof skillEmployeeOptions>; pendingVersionId?: string; disabled: boolean; onVersion: (id: string) => void; onOpen: () => void; onEmployee: (id: string) => void }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const bindings = uniqueSkillBindings(skill);
   const name = skill.capability.name.trim() || '未命名技能';
@@ -129,7 +130,7 @@ function SkillRow({ skill, options, pendingVersionId, disabled, onVersion, onOpe
   const versions = buildSkillSelectionOptions(skill);
   const selected = unifiedSkillSelection(skill, versions);
   return <li className="skill-row" data-skill-id={skill.capability.id}>
-    <div className="skill-row-identity"><h2><button type="button" id={`skill-detail-${skill.capability.id}`} disabled={disabled} onClick={onOpen}>{name}</button>{hasPersonalSkillVersion(skill) ? <span className="skill-badge">有个人版本</span> : null}</h2>{skill.capability.description ? <details className="skill-description"><summary>{skill.capability.description}</summary><p>{skill.capability.description}</p></details> : null}</div>
+    <div className="skill-row-identity"><h2><button type="button" id={`skill-detail-${skill.capability.id}`} disabled={disabled} onClick={onOpen}>{name}</button>{hasPersonalSkillVersion(skill) ? <span className="skill-badge">有个人版本</span> : null}</h2>{session ? <SkillEditStatus session={session} name={name} /> : null}{skill.capability.description ? <details className="skill-description"><summary>{skill.capability.description}</summary><p>{skill.capability.description}</p></details> : null}</div>
     <div className="skill-row-employees">{(expanded ? bindings : bindings.slice(0, 2)).map(binding => {
       const option = options.find(option => option.id === binding.subscriptionId);
       return <button type="button" className="skill-employee" key={binding.subscriptionId} onClick={() => onEmployee(binding.subscriptionId)} aria-label={`筛选员工：${option?.label ?? binding.subscriptionId}`}><EmployeeFace employee={option?.employee} name={option?.employee?.name ?? '?'} size="sm" round /><span>{option?.label ?? '员工信息暂不可用'}</span></button>;
@@ -137,4 +138,18 @@ function SkillRow({ skill, options, pendingVersionId, disabled, onVersion, onOpe
     <div className="skill-row-version"><select className="ent-select skill-version-select" id={`skill-version-${skill.capability.id}`} aria-label={`切换使用版本：${name}（全部 ${bindings.length} 名关联员工）`} aria-busy={Boolean(pendingVersionId)} value={pendingVersionId ?? selected?.id ?? ''} disabled={disabled || !bindings.length || !versions.some(version => version.usable)} onChange={event => onVersion(event.target.value)}>{!selected ? <option value="" disabled>{summary}</option> : null}{versions.map(version => <option key={version.id} value={version.id} disabled={!version.usable}>{version.label}{!version.usable ? ' · 不可用' : ''}</option>)}</select>{pendingVersionId ? <span className="skill-caption" role="status">切换中…</span> : null}</div>
     <button type="button" className="skill-text-button skill-row-open" disabled={disabled} onClick={onOpen} aria-label={`查看详情：${name}`}>查看详情<ChevronRight size={14} aria-hidden /></button>
   </li>;
+}
+
+function SkillEditStatus({ session, name }: { session: SkillRewriteSession; name: string }): React.JSX.Element | null {
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const draft = session.draft;
+  const latest = state.rounds.filter(round => round.kind === 'rewrite').at(-1);
+  const generating = Boolean(state.activeRequestId);
+  const failed = !generating && latest?.status === 'failed';
+  const pending = !generating && !failed && state.rounds.some(round => round.kind === 'rewrite' && round.result && effectiveRewriteStatus(round, draft?.draftState.revision ?? round.revision) === 'pending');
+  const dirty = draft?.editing && draft.draftState.content !== draft.source;
+  const label = generating ? '修改中 · 正在生成' : failed ? '修改中 · 生成失败' : pending ? '修改中 · 建议待采纳' : dirty ? '修改中 · 草稿未保存' : '';
+  if (!label) return null;
+  const Icon = generating ? LoaderCircle : failed ? TriangleAlert : pending ? Check : Pencil;
+  return <span className={`skill-edit-status${failed ? ' is-failed' : ''}`} role="status" aria-label={`${name}：${label}`}><Icon size={13} className={generating ? 'ent-spin' : undefined} aria-hidden />{label}</span>;
 }

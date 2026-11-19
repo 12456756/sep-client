@@ -3,6 +3,14 @@ import { imageRequestedSpecSchema, mediaParameterSourcesSchema } from './media-s
 
 /** Model-facing identities only; never include local paths or platform upload IDs. */
 const referenceId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+export const mediaReplacementInputSchema = z.object({
+  jobIds: z.array(referenceId).min(1).max(16),
+}).strict().refine(({ jobIds }) => new Set(jobIds).size === jobIds.length)
+
+export const mediaUnconfirmedJobsSchema = z.array(z.object({
+  jobId: referenceId, creativeBrief: z.string().max(300), replacementAvailable: z.boolean(),
+})).max(32)
+
 export const mediaReferenceSourceSchema = z.discriminatedUnion('source', [
   z.object({ localAssetId: referenceId, source: z.literal('attachment'), attachmentId: referenceId, displayName: z.string().min(1).max(256) }),
   z.object({ localAssetId: referenceId, source: z.literal('generated'), sourceArtifactId: referenceId,

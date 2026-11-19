@@ -5,11 +5,12 @@ import { z } from 'zod'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels } from '../../shared/media-view'
 import type { VideoJobView, VideoTaskView } from '../../shared/video-host'
-import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoRuntimeSchema, videoSpecFailureSchema } from '../../shared/video-media'
+import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputErrorsSchema, videoOutputSchema, videoRuntimeSchema, videoSpecFailureSchema } from '../../shared/video-media'
 import { mediaSpecMetadataSchema, videoActualSpecSchema, videoRequestedSpecSchema } from '../../shared/media-spec-contract'
 import { isVideoSubmissionRejectionCode } from '../../shared/video-errors'
 import { mediaUpstreamErrorSchema } from '../../shared/media-upstream-error'
 import { mediaFailureSchema } from '../../shared/media-failure'
+import { mediaRetryState, type MediaJobSummary } from '../../shared/media-retry'
 
 
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
@@ -38,6 +39,7 @@ const jobSchema = z.object({
   specFailure: videoSpecFailureSchema.optional(),
   upstreamError: mediaUpstreamErrorSchema.optional(),
   failure: mediaFailureSchema.optional(),
+  submissionFailure: mediaFailureSchema.optional(),
   parameters: videoRequestedSpecSchema, generationStatus: z.string().max(80),
   protocolVersion: z.literal(3).optional(), specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(),
   requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(), actualSpec: videoActualSpecSchema.optional(),
@@ -47,6 +49,7 @@ const jobSchema = z.object({
   billingStatus: videoBillingStatusSchema, amountCny: z.string().optional(), actualCostCny: z.string().optional(), amountUsd: z.string().optional(), createdAt: z.number().finite(), updatedAt: z.number().finite(),
   lastQueriedAt: z.number().finite().optional(), providerWaitMs: z.number().finite().nonnegative().optional(), downloadMs: z.number().finite().nonnegative().optional(),
   error: z.string().nullable(), outputs: z.array(videoOutputSchema).max(4),
+  outputErrors: videoOutputErrorsSchema.optional(), canDownload: z.boolean().optional(),
   savedOutputIds: z.array(localId).max(4).optional(),
 })
 
@@ -68,11 +71,12 @@ function failure(result: IpcCommandResult, operation: FeedbackOperation): string
 
 export function videoTaskIssue(jobs: VideoJobView[], context: 'summary' | 'notice' = 'summary'): string | null {
   for (const job of jobs) {
-    if (job.error === 'OUTPUT_SPEC_MISMATCH' ||
-      context === 'notice' && job.generationStatus === 'SUBMISSION_UNKNOWN') continue
-    const issue = mediaIssueMessage(job, 'video')
+    if (context === 'notice' && job.generationStatus === 'SUBMISSION_UNKNOWN') continue
+    const hasUnsavedOutput = job.outputs.some(output => !videoOutputIsSaved(job, output.outputId))
+    const issue = mediaIssueMessage({ ...job, error: job.error === 'OUTPUT_SPEC_MISMATCH' ? null : job.error,
+      ...(hasUnsavedOutput ? { canRetrySave: videoJobCanRetrySave(job) } : {}) }, 'video')
     const spec = job.specFailure ? mediaSpecFailureMessage(job.specFailure) : null
-    const message = spec && job.generationStatus === 'SUBMISSION_UNKNOWN' ? `${issue}；${spec}` : spec ?? issue
+    const message = [issue, spec].filter(Boolean).join('；')
     if (message) return message
   }
   return null
@@ -88,9 +92,8 @@ export function videoOutputIsSaved(job: VideoJobView & { savedOutputIds?: string
     (job.savedOutputIds === undefined ? job.saveStatus === 'SAVED' : job.savedOutputIds.includes(outputId))
 }
 
-function videoJobCanDownload(job: VideoJobView): boolean {
-  const recovery = job as VideoJobView & { canDownload?: boolean }
-  return recovery.canDownload !== false
+function videoJobCanRetrySave(job: VideoJobView): boolean {
+  return job.canDownload !== false && job.outputs.some(output => !videoOutputIsSaved(job, output.outputId) && (!output.expiresAt || Date.parse(output.expiresAt) > Date.now()))
 }
 
 function validVideoAmount(value: string | undefined): string | undefined {
@@ -129,8 +132,10 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
       ? mediaGenerationLabels[job.generationStatus as keyof typeof mediaGenerationLabels]
       : { label: job.generationStatus === 'NOT_SUBMITTED' ? '尚未提交' : '未知生成状态', tone: 'warning' }
     const generated = ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)
+    const acceptance = generated ? (job.acceptance ?? (job.error === 'OUTPUT_SPEC_MISMATCH' ? 'mismatched' : undefined)) : undefined
+    const acceptanceLabel = acceptance && { matched: '规格匹配', mismatched: '实际产物与约定规格不一致', unknown: '规格验收尚未确认' }[acceptance]
     const unfinished = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
-    const downloadable = videoJobCanDownload(job) && job.outputs.some(output => !videoOutputIsSaved(job, output.outputId) && (!output.expiresAt || Date.parse(output.expiresAt) > Date.now()))
+    const downloadable = videoJobCanRetrySave(job)
     const retry = generated && downloadable && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)
     const resume = !explicitlyRejected && job.trackingStatus !== 'ACTIVE' && (videoBillingPending(job.billingStatus) || unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
     if (compact) {
@@ -140,6 +145,7 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
             : savedOutputs.length === 0 ? mediaSaveLabels[job.saveStatus].label : null)
       return <article className="media-result-job" key={job.jobId}>
         {status && <p className="media-result-status" role={issue ? 'alert' : 'status'}>{status}</p>}
+        {acceptanceLabel && <p className="media-result-status" role="status">{acceptanceLabel}</p>}
         {(resume || retry) && <div className="media-job-actions">
           {resume && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />继续</button>}
           {retry && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'retry')}><Download size={13} />重新保存</button>}
@@ -156,6 +162,7 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
       <small className="media-job-id">配置 {job.profileId} · {job.parameters.resolution ?? '分辨率未指定'} · {job.parameters.frameRate === undefined ? '帧率未指定' : `${job.parameters.frameRate} fps`} · {job.parameters.audio === undefined ? '音频未指定' : job.parameters.audio ? '含音频' : '无音频'}</small>
       {job.protocolVersion === 3 && <small>规格来源：{Object.entries(job.parameterSources ?? {}).map(([field, source]) => `${field}（${source === 'user' ? '用户要求' : source === 'model' ? '模型建议' : '上游决定'}）`).join('、') || '未指定字段由上游决定'} · 需求版本 {job.specRevision}</small>}
       {job.actualSpec && <small>实际生成：{job.actualSpec.durationSeconds === undefined ? '时长待核验' : `${job.actualSpec.durationSeconds} 秒`} · {job.actualSpec.width && job.actualSpec.height ? `${job.actualSpec.width}×${job.actualSpec.height}` : job.actualSpec.resolution ?? '尺寸待核验'} · {job.actualSpec.frameRate === undefined ? '帧率待核验' : `${job.actualSpec.frameRate} fps`}</small>}
+      {acceptanceLabel && <small>{acceptanceLabel}</small>}
       <small className="media-job-id">任务 {job.jobId}</small>
       <div className="media-job-states" aria-live="polite">{[generation, mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
       <small>{videoBillingLabel(job)}</small>
@@ -256,12 +263,13 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, onClose, onExpor
   </dialog>
 }
 
-function VideoTaskController({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
+function VideoTaskController({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: MediaJobSummary) => void; presentation?: 'full' | 'results' }) {
   const [view, setView] = useState<VideoTaskView | null>(null)
   const [pending, setPending] = useState<Command | null>(null)
   const { capture } = useOperationFeedback(taskId)
   const queryFailure = useRef(false)
   const [error, setError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
   const [preview, setPreview] = useState<OutputSelection | null>(null)
   const alive = useRef(false)
   const lifetime = useRef(0)
@@ -282,10 +290,11 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
         if (!queryFailure.current) { queryFailure.current = true; notice.show(message) }
         return
       }
-      if (result.data === null) { setView(null); setPreview(null); setError(null); return }
+      if (result.data === null) { setView(null); setPreview(null); setError(null); setLoaded(true); queryFailure.current = false; return }
       const next = safeView(result.data, taskId)
       if (!next) { setView(null); setPreview(null); setError('视频任务数据不完整或执行模式不匹配，请刷新任务；持续失败请联系平台管理员。'); if (!queryFailure.current) { queryFailure.current = true; notice.show('视频任务数据不完整或执行模式不匹配，请刷新任务；持续失败请联系平台管理员。') }; return }
       setView(next)
+      setLoaded(true)
       setError(null)
       queryFailure.current = false
     } catch {
@@ -306,6 +315,7 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
       if (active) timer = setTimeout(() => { void poll() }, POLL_INTERVAL)
     }
     if (typeof window.electronAPI?.getTaskVideo === 'function') void poll()
+    else setLoaded(true)
     return () => { alive.current = false; active = false; lifetime.current = epoch + 1; if (timer) clearTimeout(timer) }
   }, [refresh])
 
@@ -342,9 +352,10 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
   const outputCount = savedOutputCount
   const taskIssue = videoTaskIssue(view?.jobs ?? [])
   const summaryError = error || taskIssue
+  const retryState = mediaRetryState(view?.jobs.map(job => job.generationStatus) ?? [], loaded, Boolean(error))
   useEffect(() => {
-    onSummary?.({ outputs: outputCount, error: summaryError })
-  }, [onSummary, outputCount, summaryError])
+    onSummary?.({ outputs: outputCount, error: summaryError, retryState })
+  }, [onSummary, outputCount, summaryError, retryState])
   return <>
     {visible ? <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending} presentation={presentation}
       onAction={(job, action) => { void run(action, api => action === 'resume' ? api.resumeVideoTracking({ taskId, jobId: job.jobId }) : api.retryVideoSave({ taskId, jobId: job.jobId })) }}
@@ -353,7 +364,7 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
   </>
 }
 
-export function VideoTaskPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
+export function VideoTaskPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: MediaJobSummary) => void; presentation?: 'full' | 'results' }) {
   return <VideoTaskController key={taskId} taskId={taskId} visible={visible} onSummary={onSummary} presentation={presentation} />
 }
 

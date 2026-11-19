@@ -12,6 +12,7 @@ import * as sessions from './conversation-sessions'
 import * as composerConnectors from './composer-connectors'
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant'
 import type { ConversationQueueView } from '../../shared/conversation-queue'
+import * as mediaRetry from '../../shared/media-retry'
 import type { WorkItem } from './types'
 import type { EnterpriseWorkspace } from './useEnterpriseWorkspace'
 
@@ -33,6 +34,7 @@ const dependencies: Record<string, unknown> = {
   './KnowledgeSelector': { KnowledgeSelector: empty },
   './ConversationEmployeePicker': { ConversationEmployeePicker: ({ label, disabled, employees }: { label: string; disabled: boolean; employees: { id: string }[] }) => React.createElement('button', { 'aria-label': label, disabled, 'data-employees': employees.map(item => item.id).join(',') }) },
   '../../shared/knowledge-selection': { noKnowledgeSelection: () => ({ mode: 'none', knowledgeBaseIds: [] }) },
+  '../../shared/media-retry': mediaRetry,
   '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {}, async prioritize() {} }) },
   './ConversationMessages': { ConversationMessages: empty },
   '../workspace/ContextUsageIndicator': { ContextUsageIndicator: empty },
@@ -48,12 +50,12 @@ compileFunction(source, ['require', 'exports', 'module'], { filename })((id: str
 }, componentModule.exports, componentModule)
 const { WorkConversation } = componentModule.exports as typeof import('../../components/enterprise/WorkTalkDrawer')
 
-function render(status: WorkItem['status'] = 'completed', employeeId = 'employee') {
+function render(status: WorkItem['status'] = 'completed', employeeId = 'employee', mediaRetryState?: mediaRetry.MediaRetryState) {
   const work = { id: 'task', title: '测试', currentEmployeeId: 'employee', currentEmployeeName: '电商员工',
     kind: 'conversation', status, modelId: 'model-a', isActive: status === 'running', messages: [] } as unknown as WorkItem
   work.currentEmployeeId = employeeId
   const workspace = { employees: [], myEmployees: [{ id: 'employee', name: '电商员工', allowedModels: ['model-a', 'model-b'] }], busy: false, attachmentScopeKey: 'account' } as unknown as EnterpriseWorkspace
-  return renderToStaticMarkup(React.createElement(WorkConversation, { work, workspace }))
+  return renderToStaticMarkup(React.createElement(WorkConversation, { work, workspace, mediaRetryState }))
 }
 
 test('conversation shows persisted pending text and attachment names, count and employee-switch lock', () => {
@@ -115,4 +117,34 @@ test('a damaged session exposes explicit reconstruction instead of an ineffectiv
   assert.match(html, /会话文件已损坏，需要确认后根据任务历史重建上下文/)
   assert.match(html, />重建会话并继续<\/button>/)
   assert.doesNotMatch(html, />重试并继续<\/button>/)
+})
+
+test('unverified media suppresses queue replay and offers skipping after the media check', () => {
+  for (const recoveryConfirmationRequired of [false, true]) {
+    queue = { paused: true, items: [], skipToken: 'a'.repeat(64), failed: { id: 'failed', prompt: '原生成请求', createdAt: 1, attachmentNames: [], recoveryConfirmationRequired } }
+    for (const state of ['checking', 'unavailable', 'unconfirmed'] as const) {
+      const html = render('failed', 'employee', state)
+      assert.match(html, /正在核实媒体任务状态|勿重复提交/)
+      assert.doesNotMatch(html, /本轮回复中断，请查看提示后重试|>重试并继续<|>重建会话并继续</)
+      assert.match(html, /aria-label="给员工的下一句话"/)
+      if (state === 'checking') assert.doesNotMatch(html, /跳过本轮，继续对话/)
+      else assert.match(html, /跳过本轮，继续对话/)
+    }
+  }
+})
+
+test('an initial run can be skipped without waiting entries and a skipped conversation can send new messages', () => {
+  queue = { paused: true, items: [], failed: null, skipToken: 'a'.repeat(64) }
+  const blocked = render('failed', 'employee', 'unconfirmed')
+  assert.doesNotMatch(blocked, /ent-conversation-queue/)
+  assert.match(blocked, /跳过本轮，继续对话/)
+  assert.match(blocked, /队列已暂停，跳过本轮后可发送新消息/)
+  queue = { paused: false, items: [], failed: null, skipped: true }
+  const skipped = render('failed', 'employee', 'unconfirmed')
+  assert.match(skipped, /已跳过未完成的请求，可以发送新消息/)
+  assert.doesNotMatch(skipped, /跳过本轮，继续对话|等待处理|重试并继续/)
+  queue = { paused: true, items: [{ id: 'new', prompt: '继续编辑', createdAt: 1, attachmentNames: [] }], failed: null, skipped: true }
+  const restored = render('failed', 'employee', 'unconfirmed')
+  assert.match(restored, />继续处理<\/button>/)
+  assert.doesNotMatch(restored, /重试并继续|本轮回复中断，请查看提示后重试/)
 })

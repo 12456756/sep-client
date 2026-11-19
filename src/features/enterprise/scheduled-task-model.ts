@@ -9,8 +9,10 @@ export const RUN_LABELS: Record<ScheduledRunStatus, string> = {
 }
 export const TERMINAL_RUNS = new Set<ScheduledRunStatus>(['completed', 'failed', 'cancelled', 'timed_out', 'missed'])
 
-export function definitionLabel(definition: ScheduledDefinition): string {
-  return definition.deleted ? '已归档' : definition.enabled ? '已启用' : definition.pausedAt != null ? '已暂停' : definition.plan ? '未启用' : '草稿'
+export function definitionLabel(definition: ScheduledDefinition, inHistory = false): string {
+  if (definition.deleted) return '已删除'
+  if (inHistory) return '已结束'
+  return definition.enabled ? '已启用' : definition.pausedAt != null ? '已暂停' : definition.plan ? '未启用' : '草稿'
 }
 
 export function scheduledHomeGroups(definitions: ScheduledDefinition[], occurrences: ScheduledOccurrence[]): { active: ScheduledDefinition[]; paused: ScheduledDefinition[]; pending: ScheduledDefinition[]; history: ScheduledDefinition[] } {

@@ -11,6 +11,46 @@ const creation = (revision = 1, stage: ScheduledCreation['stage'] = 'parsing'): 
 })
 
 const snapshot: ScheduledSnapshot = { definitions: [], occurrences: [], schedulerState: 'running' }
+const definition: ScheduledDefinition = {
+  id: 'report', revision: 1, enabled: false, deleted: false, nextRunAt: null, planInputKey: null, plan: null, createdAt: 1, updatedAt: 1,
+  input: { name: 'Report', goal: 'Produce report', subscriptionId: 'sub', modelId: 'model', workDir: 'D:/reports', scheduledAt: 2000, timezone: 'UTC', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } },
+}
+
+test('refresh removes definitions missing from the persisted list', async () => {
+  let definitions = [definition]
+  const client = new ScheduledTaskClient(async () => ({ success: true, data: { ...snapshot, definitions } }))
+  await client.refresh()
+  assert.equal(client.getSnapshot().data?.definitions[0].id, definition.id)
+  definitions = []
+  await client.refresh()
+  assert.deepEqual(client.getSnapshot().data?.definitions, [])
+})
+
+test('refresh retains deletion markers and cannot downgrade a known definition revision', async () => {
+  let definitions = [definition]
+  const client = new ScheduledTaskClient(async () => ({ success: true, data: { ...snapshot, definitions } }))
+  await client.refresh()
+  const deleted = { ...definition, revision: 2, deleted: true }
+  definitions = [deleted]
+  await client.refresh()
+  assert.deepEqual(client.getSnapshot().data?.definitions, [deleted])
+  definitions = [definition]
+  await client.refresh()
+  assert.deepEqual(client.getSnapshot().data?.definitions, [deleted])
+})
+
+test('a late list response cannot discard a definition accepted after that read began', async () => {
+  let finish!: (value: { success: true; data: ScheduledSnapshot }) => void
+  let reads = 0
+  const client = new ScheduledTaskClient(() => ++reads === 1 ? Promise.resolve({ success: true, data: snapshot }) : new Promise(resolve => { finish = resolve }))
+  await client.refresh()
+  const pending = client.refresh()
+  client.acceptDefinition(definition)
+  finish({ success: true, data: snapshot })
+  await pending
+  assert.deepEqual(client.getSnapshot().data?.definitions, [definition])
+})
+
 test('automatic arrangement snapshots retain their kind and node dependencies at the renderer boundary', () => {
   const definition = { id: 'auto', revision: 1, enabled: false, deleted: false, nextRunAt: null, planInputKey: 'key', createdAt: 1, updatedAt: 1,
     input: { mode: 'auto', name: 'Report', goal: 'Research', subscriptionId: 'sub', modelId: 'model', workDir: 'D:/reports', scheduledAt: 2000, timezone: 'UTC', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } },

@@ -10,6 +10,8 @@
  *     这是"token 值不得出现在日志、控制台或 IPC 事件载荷"的落点。
  */
 
+import { MEDIA_REPLAY_BLOCKED } from '../../src/shared/media-retry'
+
 export const ERROR_CODES = {
   CONVERSATION_QUEUE_FULL: { status: 409, retryable: false, level: 'warn', message: '任务队列已经满了' },
   AUTH_REQUIRED: { status: 401, retryable: false, level: 'warn', message: '请重新登录。' },
@@ -27,6 +29,7 @@ export const ERROR_CODES = {
   STORAGE_UNAVAILABLE: { status: 422, retryable: false, level: 'error', message: '系统安全存储不可用。' },
   NOT_FOUND: { status: 404, retryable: false, level: 'warn', message: '未找到对应资源。' },
   INVALID_STATE: { status: 409, retryable: false, level: 'warn', message: '当前状态下无法执行该操作。' },
+  MEDIA_REPLAY_BLOCKED: { status: 409, retryable: false, level: 'warn', message: MEDIA_REPLAY_BLOCKED },
   DRAFT_REVISION_CONFLICT: { status: 409, retryable: true, level: 'warn', message: '安排草稿已被更新，请重新加载后再保存。' },
   PLANNING_FAILED: { status: 503, retryable: true, level: 'warn', message: '自动编排暂时未能完成，请稍后重试。' },
   SKILL_REWRITE_FAILED: { status: 503, retryable: true, level: 'warn', message: '未能生成有效的技能修改建议，请稍后重试。' },
@@ -69,5 +72,4 @@ export function errorCodeSpec(code: ErrorCode): ErrorCodeSpec {
 export function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === 'string' && value in ERROR_CODES
 }
-
 

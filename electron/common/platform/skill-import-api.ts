@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { z } from 'zod'
+import { parseRetryAfter, readApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
+import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
 
 const SMALL_RESPONSE_BYTES = 1024 * 1024
-const httpErrorSchema = z.object({ code: z.string().max(96).optional(), retryable: z.boolean().optional() }).passthrough()
 
 export class SkillImportApiError extends Error {
-  constructor(readonly code: string, readonly status = 0, readonly retryable = false, readonly retryAfterMs = 0) {
+  constructor(readonly code: string, readonly status = 0, readonly retryable = false, readonly retryAfterMs = 0, readonly diagnostic?: ApiDiagnostic) {
     super(code)
     this.name = 'SkillImportApiError'
   }
@@ -31,7 +32,10 @@ export class SkillImportApi {
   async request<T>(method: 'GET' | 'POST' | 'DELETE', route: string, schema: z.ZodType<T>, options: ImportHttpOptions): Promise<T> {
     const body = options.body === undefined ? undefined : JSON.stringify(options.body)
     if (body && !options.contentResponse && Buffer.byteLength(body) > SMALL_RESPONSE_BYTES) throw new SkillImportApiError('REQUEST_BODY_TOO_LARGE')
-    return this.send(method, route, schema, { ...options, body }, options.contentResponse ? undefined : 20_000)
+    const signature = z.object({ signature: z.string().optional() }).safeParse(options.body)
+    return this.send(method, route, schema, { ...options, body,
+      secrets: signature.success && signature.data.signature ? [signature.data.signature] : [],
+    }, options.contentResponse ? undefined : 20_000)
   }
 
   async upload<T>(sessionId: string, operationId: string, token: string,
@@ -63,13 +67,15 @@ export class SkillImportApi {
   }
 
   private async send<T>(method: string, route: string, schema: z.ZodType<T>,
-    options: Omit<ImportHttpOptions, 'body'> & { body?: RequestInit['body']; headers?: Record<string, string> }, timeoutMs?: number): Promise<T> {
+    options: Omit<ImportHttpOptions, 'body'> & { body?: RequestInit['body']; headers?: Record<string, string>; secrets?: readonly string[] }, timeoutMs?: number): Promise<T> {
     if (!/^[A-Za-z0-9_/?=&-]+$/.test(route) || route.startsWith('/') || route.includes('..')) throw new SkillImportApiError('INVALID_ARGUMENT')
     const controller = new AbortController()
     const abort = () => controller.abort(options.signal.reason)
     options.signal.addEventListener('abort', abort, { once: true })
     const timer = timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(new SkillImportApiError('NETWORK_TIMEOUT', 0, true)), timeoutMs)
     timer?.unref?.()
+    const secrets = [...(options.secrets ?? []), ...(options.token ? [options.token] : [])]
+    const operation = 'skill-import.connector'
     try {
       options.signal.throwIfAborted()
       const init: RequestInit & { duplex?: 'half' } = {
@@ -80,41 +86,65 @@ export class SkillImportApi {
         ...(options.body instanceof Readable ? { duplex: 'half' as const } : {}),
       }
       const response = await this.fetcher(this.base + route, init)
+      if (!response.ok) {
+        const diagnostic = await readApiDiagnostic(response, operation, { signal: controller.signal, secrets })
+        const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+        const top = record(diagnostic.body), nested = record(top.error), wrapped = record(top.body)
+        const seconds = nested.retryAfterSeconds ?? top.retryAfterSeconds ?? record(wrapped.error).retryAfterSeconds ?? wrapped.retryAfterSeconds
+        const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'))
+          ?? (typeof seconds === 'number' && Number.isFinite(seconds * 1000) && seconds >= 0 ? Math.ceil(seconds * 1000) : 0)
+        const code = typeof diagnostic.code === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(diagnostic.code) ? diagnostic.code : 'IMPORT_UNAVAILABLE'
+        throw new SkillImportApiError(code, response.status,
+          ![409, 410].includes(response.status) && (response.status === 429 || response.status >= 500 || diagnostic.retryable === true), retryAfterMs, diagnostic)
+      }
       const limit = response.ok && options.contentResponse ? Infinity : SMALL_RESPONSE_BYTES
       const declaredBytes = Number(response.headers.get('content-length') ?? 0)
-      if (declaredBytes > limit) { await response.body?.cancel(); throw new SkillImportApiError('RESPONSE_TOO_LARGE') }
+      if (declaredBytes > limit) { void response.body?.cancel().catch(() => {}); throw new SkillImportApiError('RESPONSE_TOO_LARGE', response.status) }
       const reader = response.body?.getReader()
       const chunks: Uint8Array[] = []
       let bytes = 0
       if (reader) {
+        let onAbort: (() => void) | undefined
+        const aborted = new Promise<never>((_, reject) => {
+          onAbort = () => reject(controller.signal.reason)
+          controller.signal.addEventListener('abort', onAbort, { once: true })
+        })
         try {
+          controller.signal.throwIfAborted()
           for (;;) {
-            const part = await reader.read()
+            const part = await Promise.race([reader.read(), aborted])
             if (part.done) break
             bytes += part.value.byteLength
-            if (bytes > limit) { await reader.cancel(); throw new SkillImportApiError('RESPONSE_TOO_LARGE') }
+            if (bytes > limit) throw new SkillImportApiError('RESPONSE_TOO_LARGE', response.status)
             chunks.push(part.value)
           }
-        } finally { reader.releaseLock() }
+        } catch (error) {
+          options.signal.throwIfAborted()
+          const diagnostic = await readApiDiagnostic(new Response(Buffer.concat(chunks), { headers: response.headers }), operation, { secrets })
+          const code = error instanceof SkillImportApiError ? error.code : 'NETWORK_UNAVAILABLE'
+          throw new SkillImportApiError(code, response.status, code !== 'RESPONSE_TOO_LARGE', 0, {
+            ...diagnostic, ...transportApiDiagnostic(error, operation, secrets), httpStatus: response.status,
+            readError: 'Connector response body could not be read completely', ...(code === 'RESPONSE_TOO_LARGE' ? { truncated: true } : {}),
+          })
+        } finally {
+          if (onAbort) controller.signal.removeEventListener('abort', onAbort)
+          void reader.cancel().catch(() => {})
+          reader.releaseLock()
+        }
       }
-      const retryAfter = response.headers.get('retry-after')
-      const retryAfterMs = retryAfter ? Math.max(0, /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0
-      const boundedRetryAfterMs = Number.isFinite(retryAfterMs) ? retryAfterMs : 0
-      const retryableStatus = response.status === 429 || response.status >= 500
+      const buffer = Buffer.concat(chunks)
+      const invalidResponse = async () => new SkillImportApiError('INVALID_RESPONSE', response.status, false, 0,
+        { ...await readApiDiagnostic(new Response(buffer, { headers: response.headers }), operation, { secrets }), httpStatus: response.status })
       let value: unknown
-      try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')) }
-      catch { throw new SkillImportApiError('INVALID_RESPONSE', response.status, !response.ok && retryableStatus, response.ok ? 0 : boundedRetryAfterMs) }
-      if (!response.ok) {
-        const error = httpErrorSchema.safeParse(value)
-        throw new SkillImportApiError(error.success ? error.data.code ?? 'IMPORT_UNAVAILABLE' : 'IMPORT_UNAVAILABLE', response.status,
-          retryableStatus || (error.success && error.data.retryable === true), boundedRetryAfterMs)
-      }
+      try { value = JSON.parse(buffer.toString('utf8')) }
+      catch { throw await invalidResponse() }
       const parsed = schema.safeParse(value)
-      if (!parsed.success) throw new SkillImportApiError('INVALID_RESPONSE', response.status)
+      if (!parsed.success) throw await invalidResponse()
       return parsed.data
     } catch (error) {
       if (error instanceof SkillImportApiError || options.signal.aborted) throw error
-      throw new SkillImportApiError('NETWORK_UNAVAILABLE', 0, true)
+      if (controller.signal.reason instanceof SkillImportApiError) throw controller.signal.reason
+      throw new SkillImportApiError('NETWORK_UNAVAILABLE', 0, true, 0, transportApiDiagnostic(error, operation, secrets))
     } finally {
       clearTimeout(timer)
       options.signal.removeEventListener('abort', abort)

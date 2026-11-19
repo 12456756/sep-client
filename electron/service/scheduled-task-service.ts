@@ -50,8 +50,9 @@ export class ScheduledTaskService {
     if (generation !== this.generation || current?.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
   }
   private definition(data: ScheduledSnapshot, id: string, revision: number): ScheduledDefinition {
-    const item = data.definitions.find(value => value.id === id && !value.deleted)
-    if (!item) throw new AppError('NOT_FOUND')
+    const item = data.definitions.find(value => value.id === id)
+    if (!item) throw new AppError('NOT_FOUND', { message: '未找到该定时任务，请刷新列表后重试。' })
+    if (item.deleted) throw new AppError('NOT_FOUND', { message: '定时任务已删除，请刷新列表。' })
     if (item.revision !== revision) throw new AppError('DRAFT_REVISION_CONFLICT')
     return item
   }

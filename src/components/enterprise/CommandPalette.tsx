@@ -143,6 +143,11 @@ export function CommandPalette({
         aria-modal="true"
         aria-labelledby="ent-command-title"
         ref={panel}
+        onKeyDown={event => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          onClose();
+        }}
       >
         <div className="ent-command-search">
           <Search size={17} aria-hidden />

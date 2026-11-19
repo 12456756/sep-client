@@ -8,6 +8,7 @@ import { ConversationQueueService } from './conversation-queue-service'
 import type { ClientTask } from '../../src/shared/types'
 import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
 import { conversationQueueInputSchema } from '../../src/shared/conversation-queue'
+import { AppError } from '../errors/app-error'
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'conversation-queue-'))
@@ -280,6 +281,107 @@ test('empty-queue retry admission failure restores the pause and preserves the e
     await service.enqueue('task', { id: 'later', prompt: 'later' }, async () => ({}))
     await service.view('task')
     assert.deepEqual(f.started, [])
+  } finally { service.stop(); await f.cleanup() }
+})
+
+for (const kind of ['original', 'failed message'] as const) {
+  test(`unconfirmed media blocks replay of the ${kind} without changing the queue`, async () => {
+    const f = await fixture()
+    const owner = { memberId: 'member', enterpriseId: 'enterprise' }
+    let blocked = true
+    const service = new ConversationQueueService({ ...f.options, assertReplayAllowed: async (scope, task) => {
+      assert.deepEqual(scope, owner)
+      assert.equal(task.id, 'task')
+      if (blocked) throw new AppError('MEDIA_REPLAY_BLOCKED')
+    } })
+    try {
+      f.task.status = 'failed'; f.task.activeRunId = null; f.task.lastRunId = 'initial'
+      if (kind === 'failed message') await f.store.save(owner, { version: 1, taskId: 'task', owner, paused: true, entries: [{
+        id: 'old-message', runId: 'original-run', prompt: 'original request', status: 'failed', createdAt: 1,
+        attachmentNames: [], recoveryConfirmationRequired: true,
+      }] })
+      await service.view('task')
+      const before = await f.store.get(owner, 'task')
+      const options = kind === 'original' ? { retryOriginal: true } : { messageId: 'old-message', confirmed: true as const }
+      await assert.rejects(service.resume('task', options), { code: 'MEDIA_REPLAY_BLOCKED' })
+      assert.deepEqual(await f.store.get(owner, 'task'), before)
+      assert.equal(f.task.activeRunId, null)
+      assert.deepEqual(f.started, [])
+      blocked = false
+      await service.resume('task', options)
+      assert.ok(f.task.activeRunId)
+      assert.deepEqual(f.started, kind === 'original' ? [] : ['old-message'])
+    } finally { service.stop(); await f.cleanup() }
+  })
+}
+
+for (const kind of ['original', 'follow-up'] as const) {
+  test(`skipping a blocked ${kind} preserves history and only starts a newly sent prompt`, async () => {
+    const f = await fixture()
+    const owner = { memberId: 'member', enterpriseId: 'enterprise' }
+    const options = { ...f.options, retry: async () => { assert.fail('the original must not be replayed') },
+      assertReplayAllowed: async () => { throw new AppError('MEDIA_REPLAY_BLOCKED') } }
+    let service = new ConversationQueueService(options)
+    try {
+      f.task.status = 'failed'; f.task.activeRunId = null; f.task.lastRunId = 'failed-run'
+      await f.store.save(owner, { version: 1, taskId: 'task', owner, paused: true, entries: [
+        { id: 'history', runId: 'history', status: 'completed', prompt: 'saved answer', createdAt: 1, attachmentNames: [] },
+        ...(kind === 'follow-up' ? [{ id: 'unfinished', runId: 'failed-run', status: 'failed' as const, prompt: 'export document', createdAt: 2, attachmentNames: [] }] : []),
+        { id: 'old-waiting', runId: 'old-waiting', status: 'waiting', prompt: 'export document', createdAt: 3, attachmentNames: [] },
+      ] })
+      await assert.rejects(service.resume('task'), { code: 'MEDIA_REPLAY_BLOCKED' })
+      const { skipToken } = await service.view('task')
+      assert.ok(skipToken)
+      const skipped = await service.skip('task', skipToken)
+      assert.equal(skipped.skipped, true)
+      assert.equal(skipped.paused, false)
+      assert.equal(skipped.failed, null)
+      assert.deepEqual(skipped.items, [])
+      assert.equal(f.task.status, 'failed')
+      assert.deepEqual((await f.store.get(owner, 'task'))?.entries.map(entry => entry.status),
+        kind === 'follow-up' ? ['completed', 'cancelled', 'cancelled'] : ['completed', 'cancelled'])
+      service.stop()
+      service = new ConversationQueueService(options)
+      await service.settled('task', 'failed-run') // A late callback must not re-pause the skipped run.
+      assert.equal((await service.view('task')).paused, false)
+      assert.equal((await service.view('task')).skipped, true)
+      await assert.rejects(service.resume('task', { retryOriginal: true }), { code: 'INVALID_STATE' })
+      await service.enqueue('task', { id: 'old-waiting', prompt: 'export document' }, async () => assert.fail('cancelled messages must not be re-enqueued'))
+      await service.view('task')
+      assert.deepEqual(f.started, [])
+      assert.equal((await service.enqueue('task', { id: 'fresh', prompt: 'only export a Word file' }, async () => ({}))).queued, false)
+      await service.view('task')
+      assert.deepEqual(f.started, ['fresh'])
+      f.task.activeRunId = null; f.task.lastRunId = 'fresh'; f.task.status = 'failed'
+      await service.settled('task', 'fresh')
+      const failedAgain = await service.view('task')
+      assert.equal(failedAgain.skipped, undefined)
+      assert.equal(failedAgain.paused, true)
+      assert.equal(failedAgain.failed?.id, 'fresh')
+      await assert.rejects(service.resume('task'), { code: 'MEDIA_REPLAY_BLOCKED' })
+    } finally { service.stop(); await f.cleanup() }
+  })
+}
+
+test('skip rejects stale confirmations and refuses to interrupt an active or disposing run', async () => {
+  const f = await fixture()
+  let busy = false
+  const service = new ConversationQueueService({ ...f.options, isBusy: () => busy })
+  try {
+    f.task.status = 'failed'; f.task.activeRunId = null; f.task.lastRunId = 'failed-run'
+    const { skipToken } = await service.view('task')
+    assert.ok(skipToken)
+    await service.enqueue('task', { id: 'newly-queued', prompt: 'queued elsewhere' }, async () => ({}))
+    await assert.rejects(service.skip('task', skipToken), { code: 'INVALID_STATE' })
+    const updated = await service.view('task')
+    assert.ok(updated.skipToken)
+    assert.equal(updated.items[0]?.id, 'newly-queued')
+    busy = true
+    await assert.rejects(service.skip('task', updated.skipToken), { code: 'INVALID_STATE' })
+    busy = false; f.task.activeRunId = 'another-run'
+    await assert.rejects(service.skip('task', updated.skipToken), { code: 'INVALID_STATE' })
+    f.task.activeRunId = null
+    assert.deepEqual(await service.view('task'), updated)
   } finally { service.stop(); await f.cleanup() }
 })
 

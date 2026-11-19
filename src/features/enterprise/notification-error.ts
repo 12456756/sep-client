@@ -1,6 +1,7 @@
 /** Electron and upstream errors may contain stack traces or URLs; never render them verbatim. */
 export function notificationErrorMessage(error: unknown, operation: 'read' | 'mutation' = 'read'): string {
-  const failure = error && typeof error === 'object' ? error as { statusCode?: number; code?: string } : {}
+  const failure = error && typeof error === 'object' ? error as { statusCode?: number; code?: string; diagnostic?: { source?: string } } : {}
+  if (failure.diagnostic?.source === 'upstream' && [401, 403].includes(failure.statusCode ?? 0)) return '通知上游服务授权异常，请联系平台管理员。'
   if (failure.statusCode === 429 || failure.code === 'RATE_LIMITED') return '通知请求较多，请稍后重试。'
   if (failure.statusCode === 401 || failure.code === 'AUTH_REQUIRED') return '登录状态已过期，请重新登录。'
   if (failure.statusCode === 403 || failure.code === 'PERMISSION_DENIED') return '当前账号没有此通知操作的权限，请联系平台管理员。'

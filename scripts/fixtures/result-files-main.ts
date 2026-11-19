@@ -81,15 +81,26 @@ void app.whenReady().then(async () => {
   invoke('release', service.release.bind(service))
   const revealCalls: unknown[] = []
   invoke('reveal', async (input: Parameters<typeof service.reveal>[0]) => { revealCalls.push(input); await service.reveal(input) })
-  ipcMain.handle('result-test:state', () => ({ revealed, revealCalls, requests, imagePath: conversation.imagePath, videoPath: conversation.videoPath }))
+  const blockedRequests: string[] = []
+  ipcMain.handle('result-test:state', () => ({ revealed, revealCalls, requests, blockedRequests, imagePath: conversation.imagePath, videoPath: conversation.videoPath }))
   ipcMain.handle('result-test:images', (_event, taskId: string) => ({ success: true, data: taskId === 'conversation-test' ? conversation.images
-    : { capabilities: null, unavailableReason: null, assets: [], selectedReferenceIds: [], jobs: [], archived: false } }))
-  ipcMain.handle('result-test:videos', (_event, taskId: string) => ({ success: true, data: taskId === 'conversation-test' ? conversation.videos : null }))
+    : taskId === 'conversation-replay-image' ? conversation.replayImages
+      : { capabilities: null, unavailableReason: null, assets: [], selectedReferenceIds: [], jobs: [], archived: false } }))
+  ipcMain.handle('result-test:videos', (_event, taskId: string) => ({ success: true, data: taskId === 'conversation-test' ? conversation.videos
+    : taskId === 'conversation-replay-video' ? conversation.replayVideos : null }))
   ipcMain.handle('result-test:logout', () => { scope = null; service.clear() })
   ipcMain.handle('result-test:replace', async () => writeFile(join(workspace, 'product.png'), 'changed'))
   const window = new BrowserWindow({ width: 1280, height: 900, show: false,
     webPreferences: { preload: process.env.SEP_RESULT_TEST_PRELOAD!, contextIsolation: true, nodeIntegration: false, offscreen: true } })
+  const testUrl = new URL(process.env.SEP_RESULT_TEST_URL!)
+  if (testUrl.protocol !== 'http:' || testUrl.hostname !== '127.0.0.1') throw new Error('Result tests require a loopback fixture')
+  window.webContents.session.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
+    const target = new URL(details.url)
+    const cancel = target.origin !== testUrl.origin || !['GET', 'HEAD'].includes(details.method)
+    if (cancel) blockedRequests.push(`${details.method} ${target.origin}`)
+    callback({ cancel })
+  })
   ipcMain.handle('result-test:secure', () => installSpeechPermissions(window, window.webContents.getURL()))
-  await window.loadURL(process.env.SEP_RESULT_TEST_URL!)
+  await window.loadURL(testUrl.href)
 })
 app.on('window-all-closed', () => app.quit())

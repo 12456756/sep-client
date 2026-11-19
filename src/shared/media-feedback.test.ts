@@ -139,3 +139,71 @@ it('keeps supplier authentication and funding failures separate from the user ac
     assert.doesNotMatch(message, /请重新登录|企业管理员.*资金|未扣费/)
   }
 })
+
+it('shows a receipt reason alongside submission uncertainty without exposing technical evidence', () => {
+  for (const kind of ['image', 'video'] as const) {
+    const message = mediaIssueMessage({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: 'SUBMISSION_UNKNOWN',
+      upstreamError: { status: 403, body: { error: { code: 'permission_error', message: 'Image edit denied' },
+        sepDiagnostics: [{ message: 'Supplier account disabled' }] } } }, kind)!
+    assert.match(message, /提交结果尚未确认.*图片编辑请求被生成服务拒绝.*原任务.*勿重复提交/)
+    assert.doesNotMatch(message, /Image edit denied|permission_error|403|账号已停用|退款|未受理|重新发起/)
+  }
+})
+
+it('shows the structured moderation failure behind a generic video receipt error', () => {
+  const message = mediaIssueMessage({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: 'UPSTREAM_FAILED',
+    upstreamError: { status: 200, body: { error: { code: 'ContentModerationFailed', message: 'private provider detail' } } } }, 'video')!
+  assert.match(message, /^视频生成失败：生成内容未通过安全审核/)
+  assert.doesNotMatch(message, /ContentModerationFailed|private provider detail|UPSTREAM_FAILED|重新生成|未扣费|已退款/)
+})
+
+it('recognizes known reasons inside wrappers and arrays even when the error code is numeric', () => {
+  const message = mediaIssueMessage({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: null,
+    upstreamError: { status: 200, body: [{ error: { code: 123, message: 'Invalid parameters', reason: 'Unsupported image dimensions', details: { width: 1300 } } }] } }, 'video')!
+  assert.match(message, /视频生成失败.*不支持指定尺寸.*联系平台管理员/)
+  assert.doesNotMatch(message, /123|Invalid parameters|1300/)
+})
+
+it('retains the generation reason alongside later query or save failures and partial output', () => {
+  const message = mediaIssueMessage({ generationStatus: 'PARTIAL_SUCCEEDED', trackingStatus: 'INTERRUPTED', saveStatus: 'SAVE_FAILED', error: 'VIDEO_SAVE_FAILED',
+    upstreamError: { status: 422, body: { error: { message: 'Content rejected' }, sepDiagnostics: [{ message: 'Invalid API key' }] } },
+    outputErrors: [{ index: 1, code: 'CONTENT_REJECTED' }],
+    failure: { code: 'INTERNAL_ERROR', stage: 'video-save', reasonCode: 'ENOSPC' } }, 'video')!
+  assert.match(message, /部分视频生成失败.*安全审核.*磁盘空间不足.*第 2 项.*已生成的成果可继续使用.*重新保存原结果/)
+  assert.doesNotMatch(message, /访问凭据无效|重新生成|退款|ENOSPC/)
+})
+
+it('keeps a running receipt distinct from a query error and does not infer its source from the container name', () => {
+  const message = mediaIssueMessage({ generationStatus: 'RUNNING', trackingStatus: 'ACTIVE', saveStatus: 'PENDING', error: null,
+    upstreamError: { status: 429, body: { source: 'platform', code: 'RATE_LIMITED', message: 'Too many requests' } } }, 'image')!
+  assert.match(message, /图片任务尚未完成.*请求过于频繁.*原任务.*勿重复生成/)
+  assert.doesNotMatch(message, /生成失败|供应商请求频率|重新登录/)
+})
+
+it('uses preserved structured reasons for safe query feedback without exposing raw response fields', () => {
+  const message = mediaIssueMessage({ generationStatus: 'RUNNING', trackingStatus: 'INTERRUPTED', saveStatus: 'PENDING', error: 'SERVICE_UNAVAILABLE',
+    failure: { code: 'SERVICE_UNAVAILABLE', stage: 'image-query', source: 'upstream', diagnostic: {
+      body: { body: { error: { code: 123, reason: 'Unsupported image dimensions' } }, readError: 'Private transport detail' },
+    } } }, 'image')!
+  assert.match(message, /图片查询.*不支持指定尺寸.*原任务/)
+  assert.doesNotMatch(message, /123|Private transport detail|Unsupported image dimensions/)
+})
+
+it('keeps image output failures visible when originals are no longer downloadable', () => {
+  const state = { generationStatus: 'PARTIAL_SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVE_FAILED', error: 'DOWNLOAD_UNAVAILABLE',
+    canRetrySave: false, outputErrors: [{ index: 1, code: 'CONTENT_REJECTED' }] } as const
+  const job = { ...state, outputErrors: [...state.outputErrors] }
+  const unavailable = mediaIssueMessage(job, 'image')!
+  assert.match(unavailable, /第 2 项：生成内容被审核拒绝.*原结果当前不可下载/)
+  assert.doesNotMatch(unavailable, /重新保存|重新生成/)
+  assert.match(mediaIssueMessage({ ...job, generationStatus: 'RESULT_EXPIRED' }, 'image')!, /第 2 项.*已过期/)
+})
+
+it('continues inspecting known details under an unmapped platform envelope without exposing raw text', () => {
+  const message = mediaIssueMessage({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: null,
+    upstreamError: { status: 200, body: { source: 'platform', code: 'NEW_PLATFORM_WRAPPER', details: {
+      error: { code: 1234, message: 'Unsupported resolution' }, internal: 'secret internal detail',
+    }, sepDiagnostics: [{ code: 'AUTH_REQUIRED' }] } } }, 'video')!
+  assert.match(message, /视频生成失败.*不支持指定分辨率/)
+  assert.doesNotMatch(message, /1234|Unsupported resolution|internal|授权失效/)
+})

@@ -10,6 +10,8 @@ import { inspectMediaImage } from './media-image'
 import { imageEffectiveSpecMatches, imageRequestedSpecSchema } from '../../src/shared/media-spec-contract'
 import { mediaUpstreamErrorSchema } from '../../src/shared/media-upstream-error'
 import { safeMediaUpstreamError, safeMediaUpstreamMessage } from '../common/media-upstream-error'
+import { readApiDiagnostic, transportApiDiagnostic } from '../common/platform/api-diagnostic'
+import { AuthApiError } from '../common/platform/platform-api'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const v3ProfileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
@@ -70,7 +72,7 @@ const publicErrorMetadataSchema = z.object({
   billingState: z.enum(['not_reserved', 'reserved', 'settled', 'released', 'reconciling', 'unknown']).optional(),
   retryable: z.boolean().optional(), alternatives: z.array(imageRequestedSpecSchema.refine(spec => Object.keys(spec).length > 0)).max(8).optional(),
 })
-const SAFE_ERROR_STAGES = new Set(['image-authorization', 'image-quote', 'image-submit', 'image-query', 'image-content'])
+const SAFE_ERROR_STAGES = new Set(['image-authorization', 'image-quote', 'image-submit', 'image-query', 'image-save'])
 
 export interface SepRealMediaGatewayOptions {
   baseUrl: string
@@ -160,10 +162,7 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
 
   async content(subscriptionId: string, receiptId: string, outputId: string, signal: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
-    const response = await this.request(subscriptionId, `/requests/${this.safeId(receiptId)}/outputs/${this.safeId(outputId)}/content`, 'GET', undefined, signal)
-    if (!response.ok) {
-      throw await this.httpError(response, 'image-content')
-    }
+    const { response, token } = await this.request(subscriptionId, `/requests/${this.safeId(receiptId)}/outputs/${this.safeId(outputId)}/content`, 'GET', undefined, signal)
     const expectedHash = response.headers.get('X-SHA256')
     const length = Number(response.headers.get('Content-Length'))
     const body = response.body
@@ -188,7 +187,8 @@ export class SepRealMediaGateway implements MediaGatewayPort {
         const all = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)))
         if (inspectMediaImage(all).mime !== mime) throw new AppError('SERVICE_UNAVAILABLE')
         verified = true
-      } catch { throw new AppError('SERVICE_UNAVAILABLE', { message: 'Media result could not be verified.' }) }
+      } catch (error) { throw new AppError('SERVICE_UNAVAILABLE', { message: 'Media result could not be verified.',
+        diagnostic: transportApiDiagnostic(error, 'image-save', [token]), details: { stage: 'image-save' } }) }
       finally {
         if (reader) {
           if (!verified) await reader.cancel().catch(() => undefined)
@@ -234,12 +234,9 @@ export class SepRealMediaGateway implements MediaGatewayPort {
       ...(value.upstreamError ? { upstreamError: safeMediaUpstreamError(value.upstreamError) } : {}) }
   }
   private async json<T>(subscriptionId: string, path: string, method: 'GET' | 'POST', body: unknown, schema: ZodType<T>, signal: AbortSignal): Promise<T> {
-    const response = await this.request(subscriptionId, path, method, body, signal)
+    const { response, token } = await this.request(subscriptionId, path, method, body, signal)
     const stage = method === 'POST' ? path === '/quotes' ? 'image-quote' : 'image-submit' : 'image-query'
     const details = { stage, statusCode: response.status, gatewayCode: 'IMAGE_INVALID_RESPONSE' }
-    if (!response.ok) {
-      throw await this.httpError(response, stage)
-    }
     const length = Number(response.headers.get('Content-Length'))
     const responseBody = response.body
     if (response.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json'
@@ -264,6 +261,9 @@ export class SepRealMediaGateway implements MediaGatewayPort {
       const parsed = schema.safeParse(data)
       if (!parsed.success) throw new Error()
       verified = true
+      if (parsed.data && typeof parsed.data === 'object' && 'upstreamError' in parsed.data && parsed.data.upstreamError) {
+        return { ...parsed.data, upstreamError: safeMediaUpstreamError(parsed.data.upstreamError, [token]) }
+      }
       return parsed.data
     }
     catch (error) {
@@ -277,38 +277,29 @@ export class SepRealMediaGateway implements MediaGatewayPort {
       }
     }
   }
-  private async httpError(response: Response, stage: string): Promise<AppError> {
+  private async httpError(response: Response, stage: string, signal: AbortSignal, token: string): Promise<AppError> {
     const status = response.status
-    let payload: unknown
-    const contentType = response.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase()
-    const upstream = response.headers.get('X-SEP-Error-Source') === 'upstream'
-    const length = Number(response.headers.get('Content-Length'))
-    if ((upstream || contentType === 'application/json') && (!Number.isFinite(length) || length <= MAX_JSON) && response.body) {
-      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
-      try {
-        reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0
-        while (true) { const { done, value } = await reader.read(); if (done) break; size += value.byteLength; if (size > MAX_JSON) throw new Error(); chunks.push(value) }
-        const text = Buffer.concat(chunks, size).toString('utf8')
-        try { payload = JSON.parse(text) } catch { payload = contentType === 'text/html' ? undefined : text }
-      } catch { if (reader) await reader.cancel().catch(() => undefined); else await response.body.cancel().catch(() => undefined) }
-      finally { reader?.releaseLock() }
-    } else await response.body?.cancel().catch(() => undefined)
-    const error = payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>).error : undefined
+    const diagnostic = await readApiDiagnostic(response, stage, { maxBytes: MAX_JSON, signal, secrets: [token] })
+    signal.throwIfAborted()
+    const payload = diagnostic.body
+    const upstream = diagnostic.source === 'upstream'
+    const top = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+    const error = top.error && typeof top.error === 'object' && !Array.isArray(top.error) ? top.error : top
     const code = error && typeof error === 'object' && typeof (error as Record<string, unknown>).code === 'string' && SAFE_ERROR_CODE.test((error as Record<string, unknown>).code as string)
       ? (error as Record<string, unknown>).code as string : undefined
     const field = error && typeof error === 'object' && typeof (error as Record<string, unknown>).field === 'string' && SAFE_ERROR_FIELD.test((error as Record<string, unknown>).field as string)
       ? (error as Record<string, unknown>).field as string : undefined
     const recovery = error && typeof error === 'object' && typeof (error as Record<string, unknown>).recovery === 'string' && SAFE_ERROR_RECOVERY.test((error as Record<string, unknown>).recovery as string)
       ? (error as Record<string, unknown>).recovery as string : undefined
-    const mapped: ErrorCode = upstream ? 'SERVICE_UNAVAILABLE' : code && isErrorCode(code) ? code : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED' : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 400 ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
+    const mapped: ErrorCode = upstream ? 'SERVICE_UNAVAILABLE' : code && isErrorCode(code) ? code : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED' : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 400 || status === 422 ? 'INVALID_ARGUMENT' : status === 409 ? 'CONFLICT' : 'SERVICE_UNAVAILABLE'
     const message = mapped === 'AUTH_REQUIRED' ? '图片服务认证已失效，请重新登录。' : mapped === 'PERMISSION_DENIED' ? '图片服务拒绝了当前授权或请求。' : mapped === 'INVALID_ARGUMENT' ? '图片服务拒绝了当前输入或规格。' : mapped === 'NOT_FOUND' ? '未找到对应的图片任务或资源。' : mapped === 'RATE_LIMITED' ? '图片服务请求过于频繁，请稍后重试。' : '图片服务暂时不可用，请查询原请求，不要自动重新生成。'
     const metadata = publicErrorMetadataSchema.safeParse(error)
     const bodyId = error && typeof error === 'object' && 'requestId' in error ? error.requestId : undefined
-    const headerId = response.headers.get('x-request-id')
+    const headerId = diagnostic.sepRequestId
     const requestId = headerId ?? bodyId
     const validId = typeof requestId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(requestId) && (bodyId === undefined || bodyId === requestId)
     const upstreamMessage = upstream ? safeMediaUpstreamMessage(payload) : undefined
-    return new AppError(mapped, { message: upstreamMessage ?? message, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', statusCode: status, ...(validId ? { requestId } : {}), ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}), ...(metadata.success ? metadata.data : {}), ...(upstream ? { source: 'upstream', ...(upstreamMessage ? { upstreamMessage } : {}) } : {}) } })
+    return new AppError(mapped, { message, diagnostic, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', statusCode: status, ...(validId ? { requestId } : {}), ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}), ...(metadata.success ? metadata.data : {}), ...(upstream ? { source: 'upstream', ...(upstreamMessage ? { upstreamMessage } : {}) } : {}) } })
   }
   private async request(subscriptionId: string, path: string, method: 'GET'|'POST', body: unknown, signal: AbortSignal) {
     this.safeId(subscriptionId); signal.throwIfAborted()
@@ -316,8 +307,14 @@ export class SepRealMediaGateway implements MediaGatewayPort {
     try {
       token = await this.options.token(subscriptionId, signal)
     } catch (error) {
+      if (error instanceof AuthApiError) {
+        const code = error.isUnauthorized ? 'AUTH_REQUIRED' : error.isForbidden ? 'PERMISSION_DENIED'
+          : error.statusCode === 429 ? 'RATE_LIMITED' : error.isNetworkError ? 'NETWORK_ERROR' : 'SERVICE_UNAVAILABLE'
+        throw new AppError(code, { cause: error, diagnostic: error.error.diagnostic,
+          details: { stage: 'image-authorization', source: error.error.diagnostic?.source === 'upstream' ? 'upstream' : 'authorization' } })
+      }
       if (error instanceof AppError) throw new AppError(error.code, { message: error.userMessage, cause: error,
-        details: { ...error.details, stage: 'image-authorization', source: 'authorization' } })
+        diagnostic: error.diagnostic, details: { ...error.details, stage: 'image-authorization', source: error.diagnostic?.source === 'upstream' ? 'upstream' : 'authorization' } })
       throw new AppError(signal.aborted ? 'INVALID_STATE' : 'AUTH_REQUIRED', { cause: error, details: { stage: 'image-authorization', source: 'authorization' } })
     }
     if (typeof token !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new AppError('AUTH_REQUIRED', { details: { stage: 'image-authorization', source: 'authorization' } })
@@ -330,11 +327,17 @@ export class SepRealMediaGateway implements MediaGatewayPort {
         await response.body?.cancel().catch(() => undefined)
         throw new AppError('SERVICE_UNAVAILABLE', { details: { gatewayCode: 'IMAGE_REDIRECT_BLOCKED', statusCode: response.status } })
       }
-      return response
+      if (!response.ok) {
+        const stage = path.endsWith('/content') ? 'image-save' : method === 'POST' ? path === '/quotes' ? 'image-quote' : 'image-submit' : 'image-query'
+        throw await this.httpError(response, stage, signal, token)
+      }
+      return { response, token }
     } catch (error) {
-      if (signal.aborted) throw new AppError('INVALID_STATE', { message: 'Media request was cancelled.', cause: error })
+      if (signal.aborted) throw new AppError('INVALID_STATE', { message: 'Media request was cancelled.',
+        diagnostic: transportApiDiagnostic(error, 'image-request', [token]) })
       if (error instanceof AppError) throw error
-      throw new AppError('NETWORK_ERROR', { cause: error })
+      const diagnostic = transportApiDiagnostic(error, 'image-request', [token])
+      throw new AppError('NETWORK_ERROR', { cause: diagnostic.transportError, diagnostic })
     }
   }
 }

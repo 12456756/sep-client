@@ -219,6 +219,7 @@ describe('SkillLibraryService', () => {
     const saved = await f.submissions.list(scope, 'cap')
     assert.equal(saved[0]?.request.content, content)
     assert.equal(saved[0]?.uploadedVersion, undefined)
+    assert.equal(await f.versions.selected(scope, 'sub-a', 'cap'), null)
   })
   it('groups a capability across employees without losing subscription selections', async () => {
     const { service } = await fixture()
@@ -227,7 +228,7 @@ describe('SkillLibraryService', () => {
     assert.equal(items[0].bindings.length, 2)
     assert.equal(items[0].bindings[0].selectedVersionId, 'v1')
   })
-  it('saves exact source locally before upload, persists retry keys, allows owner-local use before upload and review', async () => {
+  it('saves and automatically uses exact local source for every employee before upload and review', async () => {
     const f = await fixture()
     f.fail(true)
     const request = { capabilityId: 'cap', parentVersionId: 'v1', content, changeSummary: 'My version' }
@@ -235,7 +236,14 @@ describe('SkillLibraryService', () => {
     assert.equal(saved.uploaded, false)
     assert.equal((await f.submissions.list(scope, 'cap'))[0].request.content, content)
     assert.equal((await f.service.list())[0].localVersions.length, 1)
-    await f.service.select({ capabilityId: 'cap', versionId: saved.idempotencyKey })
+    assert.equal(saved.item?.bindings.length, 2)
+    for (const binding of saved.item!.bindings) {
+      assert.equal(binding.selectedVersionId, saved.idempotencyKey)
+      assert.equal(binding.selectionMode, 'personal')
+      const selected = await f.versions.selected(scope, binding.subscriptionId, 'cap')
+      assert.ok(selected)
+      assert.equal((await f.versions.load(scope, binding.subscriptionId, 'cap', selected))?.content, content)
+    }
     const localId = await f.versions.selected(scope, 'sub-a', 'cap')
     assert.ok(localId)
     assert.ok(localId.startsWith('local-'))
@@ -271,14 +279,76 @@ describe('SkillLibraryService', () => {
     await assert.rejects(f.service.select({ capabilityId: 'cap', versionId: 'personal-v1' }))
     assert.equal(await f.versions.selected({ ...scope, memberId: 'other' }, 'sub-a', 'cap'), null)
   })
-  it('keeps a selected local source identified as local even when upload is already approved', async () => {
+  it('automatically selects the new local source after upload regardless of review status', async () => {
+    for (const status of ['PENDING_ENTERPRISE_REVIEW', 'ENTERPRISE_APPROVED']) {
+      const f = await fixture(status)
+      const saved = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'test-upload-auto-use-01' })
+      assert.equal(saved.uploaded, true)
+      for (const binding of saved.item!.bindings) {
+        assert.equal(binding.selectedVersionId, saved.idempotencyKey)
+        assert.equal(binding.selectionMode, 'personal')
+        const selected = await f.versions.selected(scope, binding.subscriptionId, 'cap')
+        assert.ok(selected)
+        assert.equal((await f.versions.load(scope, binding.subscriptionId, 'cap', selected))?.content, content)
+        assert.deepEqual((await f.versions.selections(scope, binding.subscriptionId)).cap, { versionId: selected })
+      }
+    }
+  })
+  it('replaces the previous personal selection when another new version is saved', async () => {
     const f = await fixture('ENTERPRISE_APPROVED')
-    const saved = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'test-approved-local-01' })
-    await f.service.select({ capabilityId: 'cap', versionId: saved.idempotencyKey })
+    f.fail(true)
+    const request = { capabilityId: 'cap', parentVersionId: 'v1', content }
+    await f.service.save({ request, idempotencyKey: 'test-first-local-01' })
+    const saved = await f.service.save({ request, idempotencyKey: 'test-second-local-01' })
     const item = (await f.service.list())[0]
-    assert.equal(item.bindings[0].selectedVersionId, saved.idempotencyKey)
+    assert.equal(item.localVersions.length, 2)
+    assert.ok(item.bindings.every(binding => binding.selectedVersionId === saved.idempotencyKey && binding.selectionMode === 'personal'))
     assert.ok(item.usableVersionIds.includes(saved.idempotencyKey))
-    assert.ok(item.usableVersionIds.includes('personal-v1'))
+  })
+  it('does not reactivate a saved version on upload retry after the user switches back to platform', async () => {
+    const f = await fixture()
+    f.fail(true)
+    const saved = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'test-retry-selection-01' })
+    await f.service.select({ capabilityId: 'cap', versionId: 'follow-platform' })
+    f.fail(false)
+    const retried = await f.service.retry({ capabilityId: 'cap', idempotencyKey: saved.idempotencyKey })
+    assert.equal(retried.uploaded, true)
+    assert.ok(retried.item?.bindings.every(binding => binding.selectedVersionId === 'v1' && binding.selectionMode === 'follow-platform'))
+    for (const subscription of ['sub-a', 'sub-b']) {
+      assert.deepEqual((await f.versions.selections(scope, subscription)).cap, { versionId: 'platform-v1', automatic: true })
+    }
+  })
+  it('keeps the saved source recoverable and retries activation when a selection write fails', async t => {
+    const f = await fixture()
+    f.fail(true)
+    const input = { request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'test-activation-retry-01' }
+    const select = f.versions.select.bind(f.versions)
+    let fail = true
+    t.mock.method(f.versions, 'select', async (...args: Parameters<typeof select>) => {
+      if (args[1] === 'sub-b' && fail) { fail = false; throw new Error('selection write failed') }
+      return select(...args)
+    })
+    await assert.rejects(f.service.save(input), /selection write failed/)
+    assert.equal((await f.submissions.list(scope, 'cap'))[0].request.content, content)
+    const saved = await f.service.save(input)
+    assert.equal(saved.item?.localVersions.length, 1)
+    assert.ok(saved.item?.bindings.every(binding => binding.selectedVersionId === input.idempotencyKey))
+    for (const subscription of ['sub-a', 'sub-b']) assert.ok(await f.versions.selected(scope, subscription, 'cap'))
+  })
+  it('does not activate the saved source for a new identity if the account changes during selection', async t => {
+    const f = await fixture()
+    f.fail(true)
+    const save = f.versions.save.bind(f.versions)
+    t.mock.method(f.versions, 'save', async (...args: Parameters<typeof save>) => {
+      const saved = await save(...args)
+      f.switchUser()
+      return saved
+    })
+    await assert.rejects(f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'test-activation-scope-01' }), { code: 'INVALID_STATE' })
+    for (const subscription of ['sub-a', 'sub-b']) {
+      assert.equal(await f.versions.selected(scope, subscription, 'cap'), null)
+      assert.equal(await f.versions.selected({ ...scope, memberId: 'other' }, subscription, 'cap'), null)
+    }
   })
   it('rejects changed content with the same key and unauthorized capability', async () => {
     const f = await fixture()
@@ -287,6 +357,46 @@ describe('SkillLibraryService', () => {
     await assert.rejects(() => f.service.save({ ...input, request: { ...input.request, content: 'changed' } }))
     await assert.rejects(() => f.service.preview({ capabilityId: 'other', versionId: 'v1' }))
     assert.equal((await f.submissions.list({ ...scope, memberId: 'other' }, 'cap')).length, 0)
+  })
+  it('rejects duplicate personal names before upload while allowing the same save to be retried', async () => {
+    const f = await fixture()
+    const request = { capabilityId: 'cap', parentVersionId: 'v1', content, changeSummary: '版本1' }
+    const input = { request, idempotencyKey: 'unique-personal-name-01' }
+    const saved = await f.service.save(input)
+    await assert.rejects(f.service.save({ request: { ...request, changeSummary: ' 版本1 ' }, idempotencyKey: 'unique-personal-name-02' }), error => {
+      assert.equal(toEnvelope(error).code, 'INVALID_ARGUMENT')
+      assert.equal(toEnvelope(error).message, '已有同名个人版本，请使用其他版本名称。')
+      return true
+    })
+    assert.equal(f.uploads.length, 1)
+    assert.equal((await f.submissions.list(scope, 'cap')).length, 1)
+    assert.ok((await f.service.list())[0].bindings.every(binding => binding.selectedVersionId === saved.idempotencyKey))
+    const retried = await f.service.save(input)
+    assert.equal(retried.idempotencyKey, saved.idempotencyKey)
+    assert.equal((await f.submissions.list(scope, 'cap')).length, 1)
+  })
+  it('rejects a personal name already visible only in platform history', async () => {
+    const remote = { ...published, id: 'remote-personal', scope: 'PERSONAL', status: 'ENTERPRISE_APPROVED', ownerId: scope.memberId, changeSummary: '版本1' }
+    const f = await fixture('PENDING_ENTERPRISE_REVIEW', [published, remote])
+    await assert.rejects(f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content, changeSummary: '版本1' }, idempotencyKey: 'remote-name-conflict-01' }), { code: 'INVALID_ARGUMENT' })
+    assert.equal(f.uploads.length, 0)
+    assert.equal((await f.submissions.list(scope, 'cap')).length, 0)
+  })
+  it('serializes duplicate-name checks for concurrent local saves without blocking names on other skills', async () => {
+    const f = await fixture()
+    f.fail(true)
+    const request = { capabilityId: 'cap', parentVersionId: 'v1', content, changeSummary: '版本1' }
+    const results = await Promise.allSettled([
+      f.service.save({ request, idempotencyKey: 'concurrent-name-key-01' }),
+      f.service.save({ request, idempotencyKey: 'concurrent-name-key-02' }),
+    ])
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+    const failed = results.find(result => result.status === 'rejected') as PromiseRejectedResult
+    assert.equal(toEnvelope(failed.reason).code, 'INVALID_ARGUMENT')
+    assert.equal((await f.submissions.list(scope, 'cap')).length, 1)
+    assert.equal(f.uploads.length, 1)
+    await f.submissions.save(scope, { request: { ...request, capabilityId: 'another-cap' }, idempotencyKey: 'other-skill-name-key-01', createdAt: new Date().toISOString() })
+    assert.equal((await f.submissions.list(scope, 'another-cap')).length, 1)
   })
   for (const status of [403, 409]) {
     it(`surfaces platform ${status} errors instead of treating them as retryable upload failures`, async () => {
@@ -302,6 +412,7 @@ describe('SkillLibraryService', () => {
       const saved = await f.submissions.list(scope, 'cap')
       assert.equal(saved.length, 1)
       assert.equal(saved[0]?.request.content, content)
+      assert.equal(await f.versions.selected(scope, 'sub-a', 'cap'), null)
     })
   }
   it('keeps an opened skill edit durable even when the network fails before token refresh', async () => {
@@ -312,6 +423,7 @@ describe('SkillLibraryService', () => {
     const saved = await f.service.save(input)
     assert.equal(saved.uploaded, false)
     assert.equal((await f.submissions.list(scope, 'cap'))[0].request.content, content)
+    assert.ok(saved.item?.bindings.every(binding => binding.selectedVersionId === input.idempotencyKey && binding.selectionMode === 'personal'))
     await assert.rejects(f.service.save({ ...input, request: { ...input.request, capabilityId: 'unauthorized' } }))
   })
 

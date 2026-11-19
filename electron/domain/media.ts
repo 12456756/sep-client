@@ -109,6 +109,7 @@ export interface LocalMediaJob {
   recovery?: MediaReceipt['recovery']
   errorCode?: MediaReceipt['errorCode']
   failure?: MediaFailure
+  submissionFailure?: MediaFailure
   outputErrors?: MediaReceipt['outputErrors']
   upstreamError?: MediaUpstreamError
   /** Last provider status query, retained for recovery diagnostics. */
@@ -135,10 +136,14 @@ export interface MediaRunSnapshot {
   createdAt: number
 }
 
+export type ImageReplacementDecision = 'approved' | 'declined'
+
 export interface MediaStorePort {
   getJob(scope: TaskOwnerScope, taskId: string, jobId: string): Promise<LocalMediaJob | null>
   listJobs(scope: TaskOwnerScope, taskId?: string): Promise<LocalMediaJob[]>
   saveJob(scope: TaskOwnerScope, job: LocalMediaJob): Promise<void>
+  imageReplacementDecisions(scope: TaskOwnerScope, taskId: string): Promise<ReadonlyMap<string, ImageReplacementDecision>>
+  recordImageReplacement(scope: TaskOwnerScope, taskId: string, jobIds: readonly string[], decision: ImageReplacementDecision, validate: () => void): Promise<boolean>
   listAssets(scope: TaskOwnerScope, taskId: string): Promise<LocalMediaAsset[]>
   getAsset(scope: TaskOwnerScope, taskId: string, assetId: string): Promise<LocalMediaAsset | null>
   readAsset(scope: TaskOwnerScope, taskId: string, assetId: string): Promise<Uint8Array>

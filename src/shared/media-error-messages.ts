@@ -1,4 +1,4 @@
-import { mediaUpstreamMessage } from './media-upstream-error'
+import { mediaUpstreamMessages } from './media-upstream-error'
 
 /** Reasons contain no retry or billing claims; recovery depends on the original job state. */
 const REASONS: Readonly<Record<string, string>> = {
@@ -75,11 +75,14 @@ const UPSTREAM_CODES: Readonly<Record<string, string>> = {
   AUTHENTICATION_ERROR: '生成供应商身份验证失败', INSUFFICIENT_QUOTA: '生成供应商账号额度不足',
   RATE_LIMIT_EXCEEDED: '生成供应商请求频率已达上限', MODEL_NOT_FOUND: '生成供应商找不到所请求的模型',
   CONTENT_REJECTED: REASONS.CONTENT_REJECTED, CONTENT_POLICY_VIOLATION: REASONS.CONTENT_POLICY_VIOLATION,
+  CONTENTMODERATIONFAILED: REASONS.CONTENT_POLICY_VIOLATION,
   PROVIDER_ACCOUNT_DISABLED: REASONS.PROVIDER_ACCOUNT_DISABLED, PROVIDER_QUOTA_EXHAUSTED: REASONS.PROVIDER_QUOTA_EXHAUSTED,
   UPSTREAM_TIMEOUT: REASONS.UPSTREAM_TIMEOUT,
   UPSTREAM_SPEC_UNSUPPORTED: REASONS.UPSTREAM_SPEC_UNSUPPORTED,
   UNSUPPORTED_DURATION: REASONS.UNSUPPORTED_DURATION, UNSUPPORTED_RESOLUTION: REASONS.UNSUPPORTED_RESOLUTION,
   UNSUPPORTED_SIZE: REASONS.UNSUPPORTED_SIZE,
+  INVALID_PARAMETER: REASONS.INVALID_PARAMETER, INVALID_REFERENCE: REASONS.INVALID_REFERENCE,
+  UNSUPPORTED_MEDIA_PARAMETERS: REASONS.UNSUPPORTED_MEDIA_PARAMETERS,
 }
 
 const UPSTREAM_MESSAGES: ReadonlyArray<readonly [RegExp, string]> = [
@@ -92,6 +95,8 @@ const UPSTREAM_MESSAGES: ReadonlyArray<readonly [RegExp, string]> = [
   [/^(?:server overloaded|provider busy)[.!]?$/i, REASONS.PROVIDER_BUSY],
   [/^(?:content policy violation|content rejected|safety check failed)[.!]?$/i, REASONS.CONTENT_POLICY_VIOLATION],
   [/^reference subject rejected[.!]?$/i, '参考内容被生成服务拒绝'],
+  [/^image edit denied[.!]?$/i, '图片编辑请求被生成服务拒绝'],
+  [/^unsupported image dimensions[.!]?$/i, REASONS.UNSUPPORTED_SIZE],
   [/^(?:unsupported duration|duration (?:is )?not supported)[.!]?$/i, REASONS.UNSUPPORTED_DURATION],
   [/^(?:unsupported resolution|resolution (?:is )?not supported)[.!]?$/i, REASONS.UNSUPPORTED_RESOLUTION],
   [/^(?:unsupported (?:image )?size|(?:image )?size (?:is )?not supported)[.!]?$/i, REASONS.UNSUPPORTED_SIZE],
@@ -101,15 +106,29 @@ const UPSTREAM_MESSAGES: ReadonlyArray<readonly [RegExp, string]> = [
 ]
 
 /** Match explicit supplier codes or whole known messages, never infer a cause from a keyword. */
-export function mediaUpstreamReason(value: unknown): string | null {
+export function mediaUpstreamReason(value: unknown, depth = 0): string | null {
+  if (depth > 6) return null
+  if (Array.isArray(value)) {
+    return value.slice(0, 16).map(child => mediaUpstreamReason(child, depth + 1)).find(Boolean) ?? null
+  }
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const item = value as Record<string, unknown>
-    const nested = item.error && typeof item.error === 'object' ? item.error as Record<string, unknown> : item
-    const code = typeof nested.code === 'string' ? nested.code.toUpperCase() : null
-    if (code && Object.hasOwn(UPSTREAM_CODES, code)) return UPSTREAM_CODES[code]
+    const nested = item.error && typeof item.error === 'object' && !Array.isArray(item.error) ? item.error as Record<string, unknown> : item
+    const code = typeof nested.code === 'string' ? nested.code.toUpperCase() : typeof item.code === 'string' ? item.code.toUpperCase() : null
+    const source = nested.source ?? item.source
+    const platform = source === 'platform' || source === 'sep'
+    const reason = code && (platform ? mediaErrorReason(code) : Object.hasOwn(UPSTREAM_CODES, code) ? UPSTREAM_CODES[code] : null)
+    if (reason) return reason
+    for (const child of [item.error, item.body, item.reason, item.detail, item.details, item.errors]) {
+      const reason = mediaUpstreamReason(child, depth + 1)
+      if (reason) return reason
+    }
   }
-  const message = mediaUpstreamMessage(value)
-  return message ? UPSTREAM_MESSAGES.find(([pattern]) => pattern.test(message))?.[1] ?? null : null
+  for (const message of mediaUpstreamMessages(value)) {
+    const reason = UPSTREAM_MESSAGES.find(([pattern]) => pattern.test(message))?.[1]
+    if (reason) return reason
+  }
+  return null
 }
 
 export function mediaRecoveryAdvice(code: string | null | undefined): string {

@@ -97,7 +97,12 @@ export class ScheduledTaskClient {
       if (sequence !== this.sequence || this.disposed) return
       if (!result.success) { this.update({ loading: false, error: result.error?.message || '无法刷新定时任务，请重新加载。' }); return }
       const incoming = snapshotSchema.parse(result.data)
-      const data = { ...incoming, definitions: mergeRevisions(this.state.data?.definitions ?? [], incoming.definitions), creations: mergeRevisions(this.state.data?.creations ?? [], incoming.creations ?? []) }
+      const currentDefinitions = new Map(this.state.data?.definitions.map(item => [item.id, item]))
+      const definitions = incoming.definitions.map(item => {
+        const current = currentDefinitions.get(item.id)
+        return current && current.revision > item.revision ? current : item
+      })
+      const data = { ...incoming, definitions, creations: mergeRevisions(this.state.data?.creations ?? [], incoming.creations ?? []) }
       this.resolvePending(data.creations)
       this.update({ data, pendingCreations: [...this.pending.values()], loading: false, error: this.operationError })
     } catch {

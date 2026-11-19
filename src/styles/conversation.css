@@ -4,6 +4,7 @@
 .ent-chat-panel .ent-talk { max-height: none; margin: 0; overflow: visible; }
 .ent-conversation-body { overflow-anchor: none; }
 .ent-conversation-status { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); }
+.ent-conversation-skip { margin-bottom: 8px; }
 .ent-reply-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ent-brand-solid); }
 .ent-new-content { display: flex; margin: 0 auto 8px; }
 .ent-message-time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }

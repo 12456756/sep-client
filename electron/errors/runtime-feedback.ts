@@ -41,7 +41,12 @@ export function runtimeFeedback(error: unknown): RuntimeFailure {
       }
       return failure(codes[error.phase])
     }
-    const known = (Object.keys(RUNTIME_FAILURE_MESSAGES) as RuntimeFailureCode[]).find(code => RUNTIME_FAILURE_MESSAGES[code] === error.message)
+    let publicMessage = error.message.replace(/^(?:HTTP\s+)?[45]\d{2}(?:\s+|:\s*)/, '')
+    try {
+      const body: unknown = JSON.parse(publicMessage)
+      if (body && typeof body === 'object' && !Array.isArray(body) && 'message' in body && typeof body.message === 'string') publicMessage = body.message
+    } catch { /* SDK errors may contain either plain text or a serialized error object. */ }
+    const known = (Object.keys(RUNTIME_FAILURE_MESSAGES) as RuntimeFailureCode[]).find(code => RUNTIME_FAILURE_MESSAGES[code] === publicMessage)
     if (known) return failure(known)
     if (Object.hasOwn(legacyFailures, error.message)) return failure(legacyFailures[error.message])
     const transport = transportKind(error)
