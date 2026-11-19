@@ -58,6 +58,7 @@ import {
   requiresToolApproval,
 } from '../../../pi-extension'
 import { logger } from '../../common/logger'
+import { safeApiDiagnostic } from '../../common/platform/api-diagnostic'
 import type { McpRuntime } from './pi-mcp-client'
 import { BROWSER_MODE_TOOL, createHostMcpRuntime } from './pi-browser-runtime'
 import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
@@ -72,6 +73,8 @@ import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
 import { modelPayloadText, readableTraceValue, traceModelStream } from './pi-model-trace'
 import { fetchWithModelDiagnostics } from './model-transport-diagnostics'
+import { guardGatewayResponse } from './gateway-response'
+import { gatewayDisallowsRetry } from '../../errors/gateway-response-error'
 import { evaluateOfficeCommand, OFFICE_TOOL_NAME } from './pi-office-policy'
 
 const log = logger.child('pi-gateway')
@@ -1065,7 +1068,8 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
           },
           fetch: async (input, init) => {
             const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
-            headers.set('authorization', buildBearerAuthorizationHeader(await config.getAccessToken()))
+            const accessToken = await config.getAccessToken()
+            headers.set('authorization', buildBearerAuthorizationHeader(accessToken))
             startedAt = Date.now()
             sent = true
             log.info('model request overview', { ...overview, ...fields, requestId: number, traceRequestId: requestId })
@@ -1081,17 +1085,26 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
                   错误类型: failure.errorName, 错误信息: failure.errorMessage, 错误代码: failure.errorCode,
                   底层错误类型: cause?.name, 底层错误码: cause?.code, 底层原因: cause?.message,
                   原因链: JSON.stringify(causes), 平台请求标识: failure.platformRequestId, 响应状态码: failure.providerStatus,
+                  关联诊断: failure.diagnostic ? JSON.stringify(failure.diagnostic) : undefined,
                   已接收字节数: failure.bytesReceived, 总耗时毫秒: failure.elapsedMs,
                   网络首字节毫秒: failure.firstByteMs, 距离最后收包毫秒: failure.lastDataAgeMs,
                   是否主动取消: failure.signalAborted ? '是' : '否',
                 } })
-            })
+            }, { secrets: [accessToken] })
             headersMs = Date.now() - startedAt
-            platformRequestId = response.headers.get('x-request-id') ?? undefined
+            platformRequestId = safeApiDiagnostic({ sepRequestId: response.headers.get('x-request-id') ?? undefined }, [accessToken])?.sepRequestId
             providerStatus = response.status
             void requestRecord({ phase: '', kind: 'status', text: `收到响应头；状态码 ${providerStatus}`, metrics: { 响应头耗时毫秒: headersMs, 平台请求标识: platformRequestId, 响应状态码: providerStatus } })
             if (!retryWait.inspect(response)) settingsManager.setRetryEnabled(false)
-            return response
+            return guardGatewayResponse(response, {
+              signal: init?.signal, secrets: [accessToken],
+              onFailure: ({ kind, diagnostic }) => {
+                if (gatewayDisallowsRetry(diagnostic) || kind === 'sse' && diagnostic.retryable !== true) settingsManager.setRetryEnabled(false)
+                log.warn('model gateway response failed', { ...fields, kind, diagnostic, traceRequestId: requestId })
+                void requestRecord({ phase: '', kind: 'status', text: '模型请求失败；已保留脱敏后的服务端或传输诊断。',
+                  metrics: { 失败阶段: kind, 诊断: JSON.stringify(diagnostic) } })
+              },
+            })
           },
         })
         return traceModelStream(source, requestRecord, async (response, timings) => {

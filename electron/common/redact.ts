@@ -8,7 +8,7 @@
  * 而事件 data、工具参数、平台错误文本都可能夹带凭据。所有对外输出必须先过这里。
  */
 
-const SENSITIVE_KEY = /authorization|cookie|password|secret|token|api[-_]?key|credential/i
+const SENSITIVE_KEY = /authorization|cookie|password|secret|token|api[-_]?key|credential|signature|^(?:session|upload)?grant$/i
 const MAX_STRING_LENGTH = 8_192
 const MAX_ARRAY_LENGTH = 50
 const MAX_OBJECT_KEYS = 50
@@ -21,7 +21,7 @@ export function redactText(value: string, maxLength: number = MAX_STRING_LENGTH)
     .replace(/Basic\s+[A-Za-z0-9+/=]+/gi, 'Basic [redacted]')
     .replace(/([?&](?:token|(?:access|refresh|id)[_-]?token|password|secret|api[_-]?key|sig|signature|x-amz-signature|x-amz-credential)=)[^&\s]+/gi, '$1[redacted]')
     .replace(/\b((?:set-cookie|cookie)\s*:\s*)[^\r\n]*/gi, '$1[redacted]')
-    .replace(/(?<![?&\w-])((?:["']?)(?:password|secret|token|(?:access|refresh|id)[_-]?token|(?:x[_-]?)?api[_-]?key)(?:["']?)\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|[^\s,;}]+)/gi, '$1[redacted]')
+    .replace(/(?<![?&\w-])((?:["']?)(?:password|secret|token|(?:access|refresh|id)[_-]?token|(?:x[_-]?)?api[_-]?key|signature|(?:session|upload)?[_-]?grant)(?:["']?)\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|[^\s,;}]+)/gi, '$1[redacted]')
   return redacted.length <= maxLength
     ? redacted
     : `${redacted.slice(0, maxLength)}...[truncated]`
@@ -68,7 +68,7 @@ export function describeError(error: unknown): string {
 
 /** Local transcripts keep full business text, but never authentication material or binary data. */
 export function isSensitiveModelTraceKey(key: string): boolean {
-  return /^(?:authorization|proxyauthorization|cookies?|setcookie|password|secret|token|accesstoken|refreshtoken|idtoken|apikey|xapikey|credential)$/i.test(key.replace(/[-_]/g, ''))
+  return /^(?:authorization|proxyauthorization|cookies?|setcookie|password|secret|token|accesstoken|refreshtoken|idtoken|apikey|xapikey|credential|signature|(?:session|upload)?grant)$/i.test(key.replace(/[-_]/g, ''))
 }
 
 export function redactModelTraceText(value: string): string {
@@ -76,7 +76,7 @@ export function redactModelTraceText(value: string): string {
     .replace(/data:[^\s;]+;base64,[A-Za-z0-9+/=_-]+/gi, '[binary data omitted]')
     // HTTP credentials and cookies can contain spaces or semicolon-separated values.
     .replace(/\b((?:proxy-authorization|authorization|set-cookie|cookie)\s*:\s*)[^\r\n]*/gi, '$1[redacted]')
-    .replace(/((?:["']?)(?:authorization|proxy[_-]?authorization|set[_-]?cookie|cookies?|password|secret|token|(?:access|refresh|id)[_-]?token|(?:x[_-]?)?api[_-]?key|credential)(?:["']?)\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|[^\s,;}]+)/gi, '$1[redacted]')
+    .replace(/((?:["']?)(?:authorization|proxy[_-]?authorization|set[_-]?cookie|cookies?|password|secret|token|(?:access|refresh|id)[_-]?token|(?:x[_-]?)?api[_-]?key|credential|signature|(?:session|upload)?[_-]?grant)(?:["']?)\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|[^\s,;}]+)/gi, '$1[redacted]')
     .replace(/([?&](?:x-amz-signature|x-amz-credential|signature|sig)=)[^&\s)"']+/gi, '$1[redacted]')
 }
 

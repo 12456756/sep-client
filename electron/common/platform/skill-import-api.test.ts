@@ -85,3 +85,109 @@ test('malformed successful responses remain invalid even when the response schem
     return true
   })
 })
+
+test('connector retains nested validation evidence, independent IDs and redacts grant/signature echoes', async () => {
+  const api = new SkillImportApi('https://sep.example/api', async () => new Response(JSON.stringify({
+    error: { code: 'PACKAGE_REJECTED', message: ['Invalid digest', 'grant-value proof-value'], retryable: false },
+    signature: 'other-signature', sessionGrant: 'other-grant', uploadGrant: 'upload-secret',
+  }), { status: 422, headers: { 'x-request-id': 'sep-1', 'x-compute-request-id': 'compute-2', 'x-upstream-request-id': 'upstream-3', 'x-sep-execution-id': 'exec-4' } }))
+  await assert.rejects(api.request('POST', 'grants', z.unknown(), {
+    token: 'grant-value', body: { signature: 'proof-value' }, signal: new AbortController().signal,
+  }), error => {
+    assert.ok(error instanceof SkillImportApiError)
+    assert.equal(error.code, 'PACKAGE_REJECTED')
+    assert.match(error.diagnostic!.message!, /Invalid digest/)
+    assert.equal(error.diagnostic!.sepRequestId, 'sep-1')
+    assert.equal(error.diagnostic!.computeRequestId, 'compute-2')
+    assert.equal(error.diagnostic!.upstreamRequestId, 'upstream-3')
+    assert.equal(error.diagnostic!.executionId, 'exec-4')
+    assert.doesNotMatch(JSON.stringify(error), /grant-value|proof-value|other-signature|other-grant|upload-secret/)
+    return true
+  })
+})
+
+test('409 conflicts and unknown 410 errors cannot request infinite retry', async () => {
+  for (const status of [409, 410]) {
+    const api = new SkillImportApi('https://sep.example/api', async () => new Response(JSON.stringify({
+      code: 'NEW_SERVER_CODE', message: 'Snapshot no longer matches', retryable: true,
+    }), { status }))
+    await assert.rejects(api.request('GET', 'sessions/id/commands', z.unknown(), { signal: new AbortController().signal }), error => {
+      assert.ok(error instanceof SkillImportApiError)
+      assert.equal(error.status, status)
+      assert.equal(error.retryable, false)
+      assert.equal(error.diagnostic!.message, 'Snapshot no longer matches')
+      return true
+    })
+  }
+})
+
+test('202 pending confirmation is normal, and retry hints come from actual headers or body', async () => {
+  const pending = { status: 'pending-web-confirmation', pairingId: 'pairing-1' }
+  const api = new SkillImportApi('https://sep.example/api', async () => new Response(JSON.stringify(pending), { status: 202 }))
+  assert.deepEqual(await api.request('POST', 'grants', z.unknown(), { signal: new AbortController().signal }), pending)
+  for (const [body, headers, delay] of [
+    [{ error: { retryAfterSeconds: 2.5 } }, {}, 2500],
+    [{ retryAfterSeconds: 2 }, { 'retry-after': '0.5' }, 500],
+    [{ code: 1234, message: 'Busy' }, {}, 0],
+    [{ retryAfterSeconds: 1e308 }, {}, 0],
+  ] as const) {
+    const rate = new SkillImportApi('https://sep.example/api', async () => new Response(JSON.stringify(body), { status: 429, headers }))
+    await assert.rejects(rate.request('POST', 'grants', z.unknown(), { signal: new AbortController().signal }), error => {
+      assert.ok(error instanceof SkillImportApiError)
+      assert.equal(error.retryAfterMs, delay)
+      if ('code' in body) assert.equal(error.diagnostic!.code, 1234)
+      return true
+    })
+  }
+})
+
+test('HTTP error evidence survives truncated or aborted bodies without waiting for cancellation', async () => {
+  for (const truncated of [true, false]) {
+    const abort = new AbortController()
+    const api = new SkillImportApi('https://sep.example/api', async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from(truncated ? 'x'.repeat(300000) : 'partial reason'))
+        if (!truncated) setImmediate(() => abort.abort(new Error('read stopped')))
+      },
+      cancel() { return new Promise(() => {}) },
+    }), { status: 503, headers: { 'x-request-id': 'partial-id' } }))
+    await assert.rejects(api.request('GET', 'pairings', z.unknown(), { signal: abort.signal }), error => {
+      assert.ok(error instanceof SkillImportApiError)
+      assert.equal(error.status, 503)
+      assert.equal(error.diagnostic!.sepRequestId, 'partial-id')
+      if (truncated) assert.equal(error.diagnostic!.truncated, true)
+      else assert.match(error.diagnostic!.readError!, /read stopped/)
+      return true
+    })
+  }
+})
+
+test('connector connection failures retain transport evidence without an invented HTTP response', async () => {
+  const api = new SkillImportApi('https://sep.example/api', async () => { throw new TypeError('grant-value', { cause: new Error('DNS unavailable') }) })
+  await assert.rejects(api.request('GET', 'pairings', z.unknown(), { token: 'grant-value', signal: new AbortController().signal }), error => {
+    assert.ok(error instanceof SkillImportApiError)
+    assert.equal(error.diagnostic!.httpStatus, undefined)
+    assert.match(JSON.stringify(error.diagnostic), /DNS unavailable/)
+    assert.doesNotMatch(JSON.stringify(error.diagnostic), /grant-value/)
+    return true
+  })
+})
+
+test('a successful HTTP header followed by body failure retains the received status and partial body', async () => {
+  let reads = 0
+  const api = new SkillImportApi('https://sep.example/api', async () => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (reads++ === 0) controller.enqueue(Buffer.from('{"partial":"kept"'))
+      else controller.error(new TypeError('terminated'))
+    },
+  }, { highWaterMark: 0 }), { headers: { 'x-request-id': 'received-headers' } }))
+  await assert.rejects(api.request('GET', 'pairings', z.unknown(), { signal: new AbortController().signal }), error => {
+    assert.ok(error instanceof SkillImportApiError)
+    assert.equal(error.status, 200)
+    assert.equal(error.diagnostic!.httpStatus, 200)
+    assert.match(String(error.diagnostic!.body), /partial/)
+    assert.equal(error.diagnostic!.sepRequestId, 'received-headers')
+    assert.match(JSON.stringify(error.diagnostic!.transportError), /terminated/)
+    return true
+  })
+})

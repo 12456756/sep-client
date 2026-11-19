@@ -66,6 +66,66 @@ async function until(predicate: () => boolean, timeoutMs = 1000): Promise<void> 
   while (!predicate()) { if (Date.now() > deadline) assert.fail('condition did not settle'); await new Promise(resolve => setTimeout(resolve, 1)) }
 }
 
+test('an unknown HTTP 410 terminates command polling even when marked retryable', async () => {
+  const h = harness()
+  const request = h.api.request
+  let polls = 0
+  h.api.request = async (method, route, schema, options) => {
+    if (route.includes('/commands')) { polls++; throw new SkillImportApiError('FUTURE_TERMINAL_CODE', 410, true) }
+    return request(method, route, schema, options)
+  }
+  await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+  await until(() => h.service['state'].phase === 'awaiting-local-consent')
+  await h.service.confirmConsent({ pairingId: 'pairing_1', rememberDevice: false, scope: 'user', rootIds: ['root_1'] })
+  await until(() => !h.service.isActive())
+  assert.equal(polls, 1)
+  assert.equal(h.service['state'].phase, 'cancelled')
+  assert.equal(h.service['state'].error?.message, '网页已结束本次导入。')
+  assert.equal(h.service['state'].error?.retryable, false)
+})
+
+test('connector conflict explains a known package checksum failure without exposing server data', async () => {
+  const h = harness({ request: async () => { throw new SkillImportApiError('PACKAGE_REJECTED', 409, false, 0, {
+    httpStatus: 409, message: 'Package SHA256 mismatch for private file', body: { raw: 'private file' },
+  }) } })
+  try {
+    await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+    await until(() => h.service['state'].phase === 'failed')
+    assert.deepEqual(h.service['state'].error, { code: 'PACKAGE_REJECTED', message: '技能包内容已变化，请返回网页重新预览。', retryable: false })
+    assert.equal(h.calls.filter(call => call.route === 'pairings').length, 1)
+  } finally { await h.service.dispose() }
+})
+
+test('a connector grant 401 ends only this import and exposes controlled actionable copy', async () => {
+  const h = harness()
+  const request = h.api.request
+  h.api.request = async (method, route, schema, options) => {
+    if (route === 'grants') throw new SkillImportApiError('OWNER_AUTH_REQUIRED', 401)
+    return request(method, route, schema, options)
+  }
+  await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+  await until(() => h.service['state'].phase === 'awaiting-local-consent')
+  await h.service.confirmConsent({ pairingId: 'pairing_1', rememberDevice: false, scope: 'user', rootIds: ['root_1'] })
+  await until(() => !h.service.isActive())
+  assert.equal(h.calls.filter(call => call.route === 'pairings').length, 1)
+  assert.equal(h.service['state'].error?.message, '网页端登录状态已失效，请在网页重新登录并发起导入。')
+})
+
+test('oversized retry hints wait for the bounded session lifetime instead of overflowing Node timers', async () => {
+  const waits: number[] = []
+  const h = harness({ request: async () => { throw new SkillImportApiError('RATE_LIMITED', 429, true, 10_000_000_000) },
+    wait: (ms, signal) => new Promise((_resolve, reject) => {
+      waits.push(ms)
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    }) })
+  await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+  await until(() => waits.length > 0)
+  assert.equal(waits[0], 1_800_000)
+  assert.match(h.service['state'].error?.message ?? '', /超过本次导入的有效期/)
+  assert.equal(h.service['state'].error?.retryable, true)
+  await h.service.cancel('session_1')
+})
+
 test('pairing alone cannot scan before local consent and Web confirmation', async () => {
   let grantCalls = 0
   const h = harness({ request: async (_method, route, _schema, _options) => {

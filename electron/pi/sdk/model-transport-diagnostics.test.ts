@@ -91,6 +91,8 @@ for (const code of ['UND_ERR_SOCKET', 'UND_ERR_BODY_TIMEOUT']) {
       transportPhase: 'response-body', errorName: 'TypeError', errorMessage: 'terminated',
       causes: [{ name: 'Error', code, message: 'stream failure' }],
       providerStatus: 200, platformRequestId: 'platform-a',
+      diagnostic: { operation: 'gateway.chat', httpStatus: 200, sepRequestId: 'platform-a',
+        headers: { 'content-type': 'text/event-stream', 'x-request-id': 'platform-a' } },
       elapsedMs: 80, bytesReceived: 3, firstByteMs: 20, lastDataAgeMs: 60, signalAborted: false,
     })
     assert.equal(source.body?.locked, false)
@@ -163,6 +165,22 @@ it('does not replace transport failures when diagnostic sinks throw or reject', 
     await assert.rejects(response.text(), actual => actual === error)
   }
   await tick()
+})
+
+it('keeps execution/compute/upstream IDs on body failures and removes exact credential echoes', async () => {
+  const failures: ModelTransportFailure[] = []
+  const source = new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    controller.error(new Error('connection ended private-grant'))
+  } }), { headers: { 'x-request-id': 'private-grant', 'x-compute-request-id': 'compute-id',
+    'x-upstream-request-id': 'upstream-id', 'x-sep-execution-id': 'execution-id' } })
+  const response = await fetchWithModelDiagnostics(url, {}, failure => { failures.push(failure) }, {
+    fetch: async () => source, secrets: ['private-grant'],
+  })
+  await assert.rejects(response.text())
+  assert.equal(failures[0].diagnostic?.computeRequestId, 'compute-id')
+  assert.equal(failures[0].diagnostic?.upstreamRequestId, 'upstream-id')
+  assert.equal(failures[0].diagnostic?.executionId, 'execution-id')
+  assert.doesNotMatch(JSON.stringify(failures), /private-grant/)
 })
 
 it('keeps overlapping request diagnostics and byte counts independent', async () => {
