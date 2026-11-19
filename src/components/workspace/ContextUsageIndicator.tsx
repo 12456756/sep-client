@@ -2,20 +2,12 @@ import * as Tooltip from '@radix-ui/react-tooltip'
 import { contextUsageLabel, formatContextTokens } from '../../shared/context-usage'
 import { useContextUsage } from '../../features/workspace/use-context-usage'
 
-const categories = [
-  ['system', '系统提示词'],
-  ['tools', '工具定义'],
-  ['messages', '对话消息'],
-] as const
-
 export function ContextUsageIndicator({ taskId, scopeKey }: { taskId?: string; scopeKey?: string }) {
   const usage = useContextUsage(taskId, scopeKey)
   if (!taskId) return null
   const label = contextUsageLabel(usage)
   const fill = Math.min(100, usage?.percent ?? 0)
-  const breakdown = usage?.breakdown
-  const total = usage && usage.percent !== null ? usage.tokens : null
-  const detail = breakdown ? `${label.detail} ${categories.map(([key, name]) => `${name}约 ${formatContextTokens(breakdown[key])} Token`).join('；')}` : label.detail
+  const remaining = usage?.percent == null ? null : Math.max(0, 100 - Math.round(usage.percent))
   return <Tooltip.Provider delayDuration={180}>
     <Tooltip.Root>
       <Tooltip.Trigger asChild>
@@ -28,22 +20,12 @@ export function ContextUsageIndicator({ taskId, scopeKey }: { taskId?: string; s
         </span>
       </Tooltip.Trigger>
       <Tooltip.Portal>
-        <Tooltip.Content className="context-usage-card" side="top" align="end" sideOffset={10} collisionPadding={12} aria-label={detail}>
-          <div className="context-usage-heading">
-            <span>上下文已用 <strong>{label.text}</strong></span>
-            {usage && total !== null && <strong className="context-usage-total">~{formatContextTokens(total)} / {formatContextTokens(usage.contextWindow)}<span> Token</span></strong>}
-          </div>
-          <div className="context-usage-track" aria-hidden>
-            {breakdown && total ? categories.map(([key]) => breakdown[key] > 0 && (
-              <span key={key} data-kind={key} style={{ width: `${breakdown[key] / total * fill}%` }} />
-            )) : <span data-kind="total" style={{ width: `${fill}%` }} />}
-          </div>
-          {breakdown ? <dl className="context-usage-breakdown">
-            {categories.map(([key, name]) => <div key={key}>
-              <dt><span data-kind={key} aria-hidden />{name}</dt>
-              <dd>~{formatContextTokens(breakdown[key])}</dd>
-            </div>)}
-          </dl> : <p className="context-usage-note">{total !== null ? '暂无分项统计' : '暂无用量数据'}</p>}
+        <Tooltip.Content className="context-usage-card" side="top" sideOffset={8} collisionPadding={12} aria-label={label.detail}>
+          <div className="context-usage-heading">上下文窗口</div>
+          {usage?.tokens != null && remaining !== null ? <>
+            <div><strong>已用 {label.text}</strong>（剩余 {remaining}%）</div>
+            <div className="context-usage-note">约 {formatContextTokens(usage.tokens)} / {formatContextTokens(usage.contextWindow)} Token</div>
+          </> : <div className="context-usage-note">暂无用量数据</div>}
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
