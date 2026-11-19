@@ -44,19 +44,21 @@ describe('skill artifact rate limit recovery', () => {
   it('waits for Retry-After and releases the rejected body before requesting the same artifact', async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] })
     let calls = 0
-    let cancelled = false
+    let rejectedResponse: Response | undefined
     globalThis.fetch = async (url, init) => {
       assert.equal(String(url), `${config.SEP_BASE_URL}${artifact.downloadPath}`)
       assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer ordinary-access')
-      if (++calls === 1) return new Response(new ReadableStream({ cancel() { cancelled = true } }), {
+      if (++calls === 1) return rejectedResponse = new Response('Rate limited', {
         status: 429, headers: { 'Retry-After': '3' },
       })
-      assert.equal(cancelled, true)
+      assert.equal(rejectedResponse?.body?.locked, false)
+      assert.equal(rejectedResponse?.bodyUsed, true)
       return new Response(bytes, { headers: headers() })
     }
     const pending = downloadSkillArtifact('sub-1', artifact, 'ordinary-access')
     await flush()
-    assert.equal(cancelled, true)
+    assert.equal(rejectedResponse?.body?.locked, false)
+    assert.equal(rejectedResponse?.bodyUsed, true)
     t.mock.timers.tick(2999)
     await flush()
     assert.equal(calls, 1)
@@ -213,13 +215,10 @@ describe('skill artifact authenticated download', () => {
   for (const status of [401, 403, 404, 409, 500]) {
     it(`propagates HTTP ${status} without a legacy fallback or leaking response secrets`, async () => {
       let calls = 0
-      let cancelled = false
+      let rejectedResponse: Response | undefined
       globalThis.fetch = async () => {
         calls++
-        return new Response(new ReadableStream({
-          start(controller) { controller.enqueue(Buffer.from('private-upstream-message')) },
-          cancel() { cancelled = true },
-        }), { status })
+        return rejectedResponse = new Response('private-upstream-message', { status })
       }
       await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'private-access-token'), error => {
         assert.ok(error instanceof AuthApiError)
@@ -228,7 +227,8 @@ describe('skill artifact authenticated download', () => {
         return true
       })
       assert.equal(calls, 1)
-      assert.equal(cancelled, true)
+      assert.equal(rejectedResponse?.body?.locked, false)
+      assert.equal(rejectedResponse?.bodyUsed, true)
     })
   }
 
@@ -371,7 +371,18 @@ describe('skill artifact authenticated download', () => {
         if (!duringStream) throw new Error('Network unavailable')
         return new Response(new ReadableStream({ start(controller) { controller.error(new Error('Stream interrupted')) } }), { headers: headers() })
       }
-      await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /Network unavailable|Stream interrupted/)
+      await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), error => {
+        if (duringStream) {
+          assert.ok(error instanceof Error)
+          assert.match(error.message, /Stream interrupted/)
+        } else {
+          assert.ok(error instanceof AuthApiError)
+          assert.equal(error.statusCode, 0)
+          assert.match(JSON.stringify(error.error.diagnostic?.transportError), /Network unavailable/)
+          assert.doesNotMatch(error.message, /Network unavailable/)
+        }
+        return true
+      })
       assert.equal(calls, 1)
     }
   })

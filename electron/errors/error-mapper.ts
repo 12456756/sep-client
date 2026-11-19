@@ -83,6 +83,16 @@ function envelope(code: ErrorCode, message?: string): IpcErrorEnvelope {
 function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
   if (error.isNetworkError && error.statusCode === 0) return envelope('NETWORK_ERROR', transportKind(error) === 'timeout' ? '网络连接超时，请稍后重试。' : undefined)
   if (error.statusCode === 408) return envelope('NETWORK_ERROR', '网络连接超时，请稍后重试。')
+  if (error.resource === 'skills' && error.statusCode === 409 && error.error.diagnostic?.source !== 'upstream'
+    && error.error.diagnostic?.code === 'SKILL_ARTIFACT_BLOCKED') {
+    const body = error.error.diagnostic.body
+    const top = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+    const nested = top.error && typeof top.error === 'object' && !Array.isArray(top.error) ? top.error : top
+    const reasons: Record<string, string> = { INVALID_ENTRY: '技能入口文件无效', PACKAGE_REQUIRED: '此技能需要完整技能包',
+      PACKAGE_UNAVAILABLE: '技能包暂不可用', PACKAGE_CONTENT_MISMATCH: '技能包内容与批准版本不一致' }
+    const reason = typeof nested.reason === 'string' && Object.hasOwn(reasons, nested.reason) ? reasons[nested.reason] : '技能包暂不允许安装'
+    return envelope('INVALID_STATE', `${reason}，请联系平台管理员。`)
+  }
   // 技能缺失要与"员工不存在"区分开：前者管理员发布一下就能好，后者不能。
   if ([401, 403].includes(error.statusCode) && error.error.diagnostic?.source === 'upstream') {
     return envelope('SERVICE_UNAVAILABLE', '上游服务拒绝了访问凭据或授权，请联系平台管理员。')
@@ -107,7 +117,7 @@ function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
 export function toEnvelope(error: unknown, context: { authenticated?: boolean; feedbackOperation?: FeedbackOperation } = {}): IpcErrorEnvelope {
   const result = mapEnvelope(error, context)
   const diagnostic = safeApiDiagnostic(error instanceof AuthApiError ? error.error.diagnostic
-    : error instanceof AppError ? error.diagnostic : undefined)
+    : error instanceof AppError || error instanceof KnowledgeApiError ? error.diagnostic : undefined)
   if (diagnostic) {
     result.diagnostic = diagnostic
     if (diagnostic.sepRequestId) result.requestId = diagnostic.sepRequestId
@@ -124,9 +134,10 @@ function mapEnvelope(error: unknown, context: { authenticated?: boolean }): IpcE
   if (error instanceof LoginFeedbackError) return { ...LOGIN_FEEDBACK[error.reason], reason: error.reason }
   if (error instanceof KnowledgeApiError) {
     const status = error.statusCode
-    const code: ErrorCode = status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED'
+    const code: ErrorCode = error.diagnostic?.source === 'upstream' ? 'SERVICE_UNAVAILABLE' : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED'
       : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 0 || status === 408 ? 'NETWORK_ERROR'
-      : status >= 500 ? 'SERVICE_UNAVAILABLE' : status === 400 || status === 413 || status === 415 ? 'INVALID_ARGUMENT' : 'INVALID_STATE'
+      : status >= 500 ? 'SERVICE_UNAVAILABLE' : status === 400 || status === 413 || status === 415 || status === 422 ? 'INVALID_ARGUMENT'
+      : status === 409 ? 'CONFLICT' : 'INVALID_STATE'
     return { ...envelope(code, error.message), statusCode: status, platformCode: error.platformCode, requestId: error.requestId, retryAfterMs: error.retryAfterMs }
   }
   if (error instanceof AppError) {

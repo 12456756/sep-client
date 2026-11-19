@@ -623,8 +623,8 @@ export class ClientMonitorService {
           const latest = await this.options.store.load(scope, taskId)
           if (latest) await this.options.store.save(scope, taskId, { ...latest, retryAt, retryStatusCode: code })
         }, true)
-        // Only allowlisted metadata: never arbitrary remote error text or message bodies.
-        log.warn('client monitor pending operation retained', { taskId, kind: operation.kind, statusCode: code })
+        log.warn('client monitor pending operation retained', { taskId, kind: operation.kind, statusCode: code,
+          ...(error instanceof ClientMonitorApiError ? { diagnostic: error.diagnostic } : {}) })
         return
       }
     }

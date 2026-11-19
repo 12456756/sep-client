@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { ApiDiagnostic } from './api-diagnostic'
 
 export const KNOWLEDGE_MAX_FILE_BYTES = 10 * 1024 * 1024
 function hasControlCharacters(value: string): boolean {
@@ -99,7 +100,8 @@ export const knowledgeGrantSchema = z.object({
 export const knowledgeGrantPageSchema = z.object({ ...paging, items: z.array(knowledgeGrantSchema) })
 export const knowledgeSearchResponseSchema = z.object({
   searchId: z.string().optional(), status: z.enum(['MATCHED', 'NO_MATCH', 'NO_ACCESS', 'NOT_READY']),
-  actualStrategy: z.string(), degraded: z.boolean(), partial: z.boolean(), durationMs: z.number().nonnegative(),
+  actualStrategy: z.string().nullable(), degraded: z.boolean(), partial: z.boolean(), durationMs: z.number().nonnegative(),
+  degradationReason: z.string().nullable().optional(), diagnostic: z.json().optional(),
   results: z.array(z.object({
     sourceId: knowledgeIdSchema, knowledgeBaseId: knowledgeIdSchema, knowledgeBaseName: z.string(),
     documentId: knowledgeIdSchema, documentName: z.string(), versionId: knowledgeIdSchema, content: z.string(), location,
@@ -136,5 +138,6 @@ export interface KnowledgeError {
   platformCode?: string
   requestId?: string
   retryAfterMs?: number
+  diagnostic?: ApiDiagnostic
 }
 export type KnowledgeResult<A extends KnowledgeAction> = { success: true; data: KnowledgeData<A> } | { success: false; error: KnowledgeError }
