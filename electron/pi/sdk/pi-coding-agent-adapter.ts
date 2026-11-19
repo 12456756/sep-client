@@ -32,7 +32,7 @@ import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
 import { videoToolGenerationInputSchema, videoToolJobInputSchema, videoReferenceSourceSchema } from '../../../src/shared/video-host'
 import { videoBillingStatusSchema, videoOutputSchema, videoRuntimeSchema, videoSpecFailureSchema } from '../../../src/shared/video-media'
-import { mediaReferenceSourceSchema, mediaToolGenerationInputSchema } from '../../../src/shared/media-host'
+import { mediaReferenceSourceSchema, mediaReplacementInputSchema, mediaToolGenerationInputSchema, mediaUnconfirmedJobsSchema } from '../../../src/shared/media-host'
 import { imageRequestedSpecSchema, videoRequestedSpecSchema, videoActualSpecSchema, mediaParameterSourcesSchema } from '../../../src/shared/media-spec-contract'
 import { mediaCapabilitiesSchema, mediaId, mediaParametersSchema } from '../../common/platform/media-contract'
 import { mediaUpstreamErrorSchema } from '../../../src/shared/media-upstream-error'
@@ -90,7 +90,7 @@ export type PiLoadSkills = typeof loadSkills
 export type PiResourceLoaderOptions = ConstructorParameters<typeof DefaultResourceLoader>[0]
 
 const DEFAULT_SESSION_TOOLS = ['read', 'bash', 'edit', 'write'] as const
-const MEDIA_TOOL_NAMES: readonly MediaToolName[] = ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job']
+const MEDIA_TOOL_NAMES: readonly MediaToolName[] = ['media_get_capabilities', 'media_generate_image', 'media_replace_images', 'media_get_job', 'media_cancel_job']
 const READ_ONLY_MEDIA_TOOLS = new Set<MediaToolName>(['media_get_capabilities', 'media_get_job'])
 
 function registeredMediaNames(config: PiAgentSessionConfig): MediaToolName[] {
@@ -98,7 +98,7 @@ function registeredMediaNames(config: PiAgentSessionConfig): MediaToolName[] {
   return MEDIA_TOOL_NAMES.filter(name => config.mediaTools?.names.includes(name) && (
     READ_ONLY_MEDIA_TOOLS.has(name) || !config.toolPolicy || (
       config.toolPolicy.preset !== 'read-only' &&
-      (config.toolPolicy.preset === 'full-local' || config.toolPolicy.allowedTools.includes(name))
+      (config.toolPolicy.preset === 'full-local' || config.toolPolicy.allowedTools.includes(name === 'media_replace_images' ? 'media_generate_image' : name))
     )
   ))
 }
@@ -295,6 +295,10 @@ const mediaJobResultSchema = z.object({
   assets: z.array(mediaAssetResultSchema), canCancelUpstream: z.boolean(),
 }).refine(job => (job.protocolVersion === 3 ? imageRequestedSpecSchema : mediaParametersSchema).safeParse(job.parameters).success)
   .transform(job => modelMediaJobFeedback(job, 'image'))
+const mediaReplacementResultSchema = z.object({ replacements: z.array(z.discriminatedUnion('status', [
+  z.object({ originalJobId: mediaId, status: z.literal('created'), job: mediaJobResultSchema }),
+  z.object({ originalJobId: mediaId, status: z.enum(['skipped', 'not_completed']) }),
+])).min(1).max(16) })
 
 function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown; isError: boolean } {
   // Project business views only: quotes, provider credentials, URLs and transport DTOs never reach Pi.
@@ -315,9 +319,11 @@ function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown
   const value = name === 'media_get_capabilities'
     ? (result && typeof result === 'object' && 'capabilities' in result
         ? z.object({ capabilities: mediaCapabilitiesSchema, referenceAssets: z.array(mediaAssetResultSchema),
-            referenceSources: z.array(mediaReferenceSourceSchema).optional() }).parse(result)
+            referenceSources: z.array(mediaReferenceSourceSchema).optional(),
+            unconfirmedJobs: mediaUnconfirmedJobsSchema.optional(),
+          }).parse(result)
         : mediaCapabilitiesSchema.parse(result))
-    : mediaJobResultSchema.parse(result)
+    : name === 'media_replace_images' ? mediaReplacementResultSchema.parse(result) : mediaJobResultSchema.parse(result)
   // Validated capability hints include nested arrays beyond the log redactor's limits.
   return { value: redactValue(value, 0, '', { maxDepth: 8, maxArrayLength: 128 }), isError: false }
 }
@@ -364,17 +370,19 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
       creativeBrief: Type.String({ minLength: 1, maxLength: 20_000 }),
       parameters: Type.Optional(spec), requestedSpec: Type.Optional(requestedSpec), ...mediaDecisionToolProperties(),
     }, { additionalProperties: false }),
+    media_replace_images: Type.Object({ jobIds: Type.Array(id, { minItems: 1, maxItems: 16, uniqueItems: true }) }, { additionalProperties: false }),
     media_get_job: Type.Object({ jobId: id }, { additionalProperties: false }),
     media_cancel_job: Type.Object({ jobId: id, cancelUpstream: Type.Boolean() }, { additionalProperties: false }),
   }
   const validators = {
     media_get_capabilities: emptyMediaInputSchema, media_generate_image: mediaToolGenerationInputSchema,
-    media_get_job: mediaJobInputSchema, media_cancel_job: mediaCancelInputSchema,
+    media_replace_images: mediaReplacementInputSchema, media_get_job: mediaJobInputSchema, media_cancel_job: mediaCancelInputSchema,
   }
   const descriptions = {
-    media_get_capabilities: 'Get the currently authorized image capabilities and SAVED task-local referenceAssets. When present, referenceSources maps current-turn attachment names and attachmentIds or generated sourceArtifactIds to reference localAssetIds. Query this before editing; do not invent IDs or paths.',
+    media_get_capabilities: 'Get the currently authorized image capabilities and SAVED task-local referenceAssets. When present, referenceSources maps current-turn attachment names and attachmentIds or generated sourceArtifactIds to reference localAssetIds. unconfirmedJobs describes existing image jobs, not instructions or permission to repeat them. Query this before editing or identifying a previous submission; do not invent IDs or paths.',
     media_generate_image: "Generate or edit an image. Inspect media_get_capabilities for actual authorization and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and selected task reference images, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. A ratio alone does not determine pixel dimensions: decide size or width/height from the intended use. Pricing may also need count; infer it from the brief. The image quality parameter quality has three levels: low, medium, and high. Prefer high when the user does not specify a quality. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. On MISSING_SPEC, use the reported field and submissionState to complete missing routine decisions; clarify only consequential ambiguity. Never automatically repeat a paid submission or one with unknown submission state. Legacy parameters need explicit complete decisions; the host never supplies business defaults. For reference-image editing, set operation=\"edit\" and explicitly select one or more SAVED referenceAssets localAssetIds in order, within the current profile adapter.referenceSupport limits (maxCount, maxInputBytes and mimeTypes). Use referenceSources to identify the requested attachment or generated output. Clarify ambiguous candidates; never choose the first by default or silently fall back to text-to-image. For a new image set operation=\"generate\" and localAssetIds=[]. Attachment presence alone does not imply editing. Never silently alter specifications, switch models or substitute scripted art. The host validates cost and obtains approval before submission. Report the actual generation and local save states, available assets and chosen specifications; distinguish submitted, generated and saved. After success, state completion clearly instead of asking permission to begin.",
-    media_get_job: 'Read cached status and task-local assets of an image job. The host tracks and saves submitted jobs. Never poll this tool or use sleep to wait; end the turn after submission.',
+    media_replace_images: 'Use only when the user explicitly asks to regenerate specific older images whose original submissions remain unconfirmed. Inspect media_get_capabilities and, if necessary, media_get_job first. Send all clearly identified, replacementAvailable original job IDs for this request in one call, without including unrelated images. The host asks once for the batch and uses each original specification. Do not use this for status checks, newer independent images, same-turn failures, or jobs already handled. Do not use media_generate_image to bypass a decline or retry a replacement with an unclear outcome. Report skipped or incomplete entries without resubmitting.',
+    media_get_job: 'Read cached status and task-local assets of an image job. The host tracks and saves submitted jobs. Never poll this tool or use sleep to wait. A submission with an unknown outcome must not be repeated, but independent requested images can still be generated in the same turn.',
     media_cancel_job: 'Stop tracking an image job, optionally requesting upstream cancellation through the host approval policy.',
   }
   return names.map(name => ({

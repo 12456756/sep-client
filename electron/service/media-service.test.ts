@@ -516,37 +516,78 @@ it('disables recovery for an unconfirmed submission when the channel cannot find
   assert.equal((await f.service.getTaskMedia(job.taskId)).jobs[0].canResumeTracking, false)
 })
 
-for (const accepted of [false, true]) it(`requires a risk decision before creating another image in the same task (accepted=${accepted})`, async () => {
-  const requests: Parameters<MediaServiceOptions['requestApproval']>[0][] = []
-  const f = await fixture({ policy: async () => policy('full-local', 'auto-approve'), requestApproval: async request => {
-    assert.equal(f.gateway.calls.quote.length, 0)
-    assert.equal(f.gateway.calls.submit.length, 0)
-    requests.push(request)
-    return accepted
-  } })
-  const original = notSentJob()
-  original.submission = 'MAYBE_SENT'
-  original.generationStatus = 'SUBMISSION_UNKNOWN'
-  original.trackingStatus = 'STOPPED'
-  original.profile.capabilities.recoverByRequestId = false
-  original.failure = { code: 'SERVICE_UNAVAILABLE', stage: 'image-submit', source: 'upstream', message: 'Upstream service temporarily unavailable' }
-  await f.store.saveJob(owner, original)
+function unconfirmedImage(jobId = 'original-image', runId = 'original-run', creativeBrief = input().creativeBrief): LocalMediaJob {
+  const job = notSentJob()
+  const clientRequestId = `${jobId}-request`
+  return { ...job, jobId, runId, clientRequestId, submission: 'MAYBE_SENT', generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'STOPPED',
+    input: { ...job.input, creativeBrief }, request: { ...job.request, clientRequestId, creativeBrief },
+    profile: { ...job.profile, capabilities: { ...job.profile.capabilities, recoverByRequestId: false } } }
+}
 
-  const generating = f.service.generateTaskMedia('task-a', input({ creativeBrief: 'New requested product photograph' }))
+async function imageConversation(f: Awaited<ReturnType<typeof fixture>>, runId: string, service = f.service) {
+  const tools = await service.prepareRun({ taskId: 'task-a', runId, subscriptionId: f.employee.subscriptionId,
+    employee: f.employee, toolPolicy: policy('full-local', 'auto-approve'), allowImageReplacement: true, requestApproval: f.options.requestApproval })
+  assert.ok(tools?.names.includes('media_replace_images'))
+  return tools!
+}
+
+it('generates distinct images in the same and later turns despite an unconfirmed original', async () => {
+  const f = await fixture()
+  const original = unconfirmedImage()
+  await f.store.saveJob(owner, original)
+  const current = await imageConversation(f, original.runId)
+  for (const creativeBrief of ['Cover', 'First illustration', 'Second illustration']) {
+    await current.execute('media_generate_image', input({ creativeBrief }))
+  }
+  const next = await imageConversation(f, 'later-run')
+  await next.execute('media_generate_image', input({ creativeBrief: 'Third illustration' }))
+  assert.equal(f.gateway.calls.submit.length, 4)
+  assert.equal(f.approvalRequests.length, 0)
+  assert.deepEqual(await f.store.getJob(owner, 'task-a', original.jobId), original)
+})
+
+for (const accepted of [false, true]) it(`decides a replacement batch once across turns and service restarts (accepted=${accepted})`, async () => {
+  const requests: Parameters<MediaServiceOptions['requestApproval']>[0][] = []
+  let allow = accepted
+  const f = await fixture({ requestApproval: async request => {
+    requests.push(request)
+    return allow
+  } })
+  const originals = [unconfirmedImage('cover-old', 'original-run', 'Cover'), unconfirmedImage('body-old', 'original-run', 'Body')]
+  for (const original of originals) await f.store.saveJob(owner, original)
+  const jobIds = originals.map(job => job.jobId)
+  const tools = await imageConversation(f, 'replacement-run')
+  const task = await tools.execute('media_get_capabilities', {}) as { unconfirmedJobs: { jobId: string; replacementAvailable: boolean }[] }
+  assert.deepEqual(task.unconfirmedJobs.map(job => job.jobId).sort(), [...jobIds].sort())
+  assert.ok(task.unconfirmedJobs.every(job => job.replacementAvailable))
+  const generating = tools.execute('media_replace_images', { jobIds })
   if (accepted) {
-    const next = await generating
-    await f.service.waitForRun('task-a', next.runId, { recoverOriginal: true })
-    assert.notEqual(next.jobId, original.jobId)
-    const saved = (await f.store.getJob(owner, 'task-a', next.jobId))!
-    assert.notEqual(saved.clientRequestId, original.clientRequestId)
-    assert.equal(saved.input.creativeBrief, 'New requested product photograph')
-    assert.equal(saved.saveStatus, 'SAVED')
+    await generating
+    await f.service.waitForRun('task-a', 'replacement-run', { recoverOriginal: true })
+    assert.deepEqual(f.gateway.calls.submit.map(call => call.request.creativeBrief), ['Cover', 'Body'])
+    assert.ok(f.gateway.calls.submit.every(call => originals.every(original => call.request.clientRequestId !== original.clientRequestId)))
   } else await assert.rejects(generating, code('PERMISSION_DENIED'))
   assert.equal(requests.length, 1)
-  assert.deepEqual(requests[0].input, { operation: 'confirm-new-generation', unconfirmedJobCount: 1 })
-  assert.equal(f.gateway.calls.quote.length, accepted ? 1 : 0)
-  assert.equal(f.gateway.calls.submit.length, accepted ? 1 : 0)
-  assert.deepEqual(await f.store.getJob(owner, 'task-a', original.jobId), original)
+  assert.deepEqual(requests[0].input, { operation: 'confirm-new-generation', unconfirmedJobCount: 2 })
+  assert.equal(f.gateway.calls.quote.length, accepted ? 2 : 0)
+  assert.equal(f.gateway.calls.submit.length, accepted ? 2 : 0)
+  for (const original of originals) assert.deepEqual(await f.store.getJob(owner, 'task-a', original.jobId), original)
+
+  await f.service.stopAll()
+  const restarted = new MediaService({ ...f.options, store: new MediaStore(f.root) })
+  services.push(restarted)
+  const later = await imageConversation(f, 'later-run', restarted)
+  await assert.rejects(later.execute('media_replace_images', { jobIds }), code('CONFLICT'))
+  await assert.rejects(later.execute('media_generate_image', input({ creativeBrief: 'Cover' })), code('CONFLICT'))
+  assert.equal(requests.length, 1)
+  const newlyUnknown = unconfirmedImage('new-problem', 'another-run', 'Another illustration')
+  await f.store.saveJob(owner, newlyUnknown)
+  allow = true
+  await later.execute('media_replace_images', { jobIds: [...jobIds, newlyUnknown.jobId] })
+  assert.deepEqual(requests.map(request => request.input), [
+    { operation: 'confirm-new-generation', unconfirmedJobCount: 2 }, { operation: 'confirm-new-generation', unconfirmedJobCount: 1 },
+  ])
+  assert.equal(f.gateway.calls.submit.length, accepted ? 3 : 1)
 })
 
 it('blocks automatic image resubmission within the same run without showing a new risk confirmation', async () => {
@@ -556,9 +597,8 @@ it('blocks automatic image resubmission within the same run without showing a ne
   original.generationStatus = 'SUBMISSION_UNKNOWN'
   original.trackingStatus = 'STOPPED'
   await f.store.saveJob(owner, original)
-  const tools = await f.service.prepareRun({ taskId: 'task-a', runId: original.runId,
-    subscriptionId: f.employee.subscriptionId, employee: f.employee, requestApproval: f.options.requestApproval })
-  assert.ok(tools)
+  const tools = await imageConversation(f, original.runId)
+  await assert.rejects(tools.execute('media_replace_images', { jobIds: [original.jobId] }), code('CONFLICT'))
   await assert.rejects(tools.execute('media_generate_image', input()), code('CONFLICT'))
   assert.equal(f.approvalRequests.length, 0)
   assert.equal(f.gateway.calls.quote.length, 0)
@@ -573,12 +613,14 @@ it('cannot accept a late image risk confirmation after stopping the task', async
   original.generationStatus = 'SUBMISSION_UNKNOWN'
   original.trackingStatus = 'STOPPED'
   await f.store.saveJob(owner, original)
-  const generating = f.service.generateTaskMedia('task-a', input())
+  const tools = await imageConversation(f, 'new-run')
+  const generating = tools.execute('media_replace_images', { jobIds: [original.jobId] })
   const rejected = assert.rejects(generating)
   await entered.promise
   await f.service.stopTask('task-a')
   decision.resolve(true)
   await rejected
+  assert.equal((await f.store.imageReplacementDecisions(owner, 'task-a')).size, 0)
   assert.equal(f.gateway.calls.quote.length, 0)
   assert.equal(f.gateway.calls.submit.length, 0)
 })

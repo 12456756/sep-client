@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { videoToolGenerationInputSchema, videoToolJobInputSchema } from '../../src/shared/video-host'
-import { mediaToolGenerationInputSchema, type MediaReferenceSource } from '../../src/shared/media-host'
+import { mediaToolGenerationInputSchema, mediaUnconfirmedJobsSchema, type MediaReferenceSource } from '../../src/shared/media-host'
 import type { ConversationMediaPort } from '../domain/conversation-media'
 import type { ArrangementMediaAssetsPort } from '../domain/arrangement-media-runtime'
 import type { MediaStorePort } from '../domain/media'
@@ -64,7 +64,8 @@ export class ConversationMediaService implements ConversationMediaPort {
       return converted.artifactId
     }
     const discoverGenerated = async (signal: AbortSignal) => {
-      await this.options.media.waitForRun(input.taskId, input.runId, { signal })
+      // Capability discovery can still use saved outputs when another image failed or remains unconfirmed.
+      await this.options.media.waitForRun(input.taskId, input.runId, { allowIncomplete: true, signal })
       signal.throwIfAborted()
       await check()
       const assets = await this.options.images.listAssets(scope, input.taskId)
@@ -107,7 +108,8 @@ export class ConversationMediaService implements ConversationMediaPort {
         signal.throwIfAborted()
         await check()
         if (name !== 'media_get_capabilities') return result
-        const view = z.object({ capabilities: z.unknown(), referenceAssets: z.array(z.object({ localAssetId: z.string() }).passthrough()) }).parse(result)
+        const view = z.object({ capabilities: z.unknown(), referenceAssets: z.array(z.object({ localAssetId: z.string() }).passthrough()),
+          unconfirmedJobs: mediaUnconfirmedJobsSchema.optional() }).parse(result)
         const mappedSources = [...sources, ...generated.values()]
         const ids = new Set([...view.referenceAssets.map(asset => asset.localAssetId), ...mappedSources.map(source => source.localAssetId)])
         const referenceAssets = []

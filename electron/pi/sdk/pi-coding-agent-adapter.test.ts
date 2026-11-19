@@ -508,6 +508,29 @@ describe('common Office skills with the real Pi SDK', () => {
 })
 
 describe('trusted media host tools with the real Pi SDK', () => {
+  it('sends one validated replacement batch to the image host and projects business results only', async () => {
+    const calls: unknown[] = []
+    const args = { jobIds: ['cover-old', 'body-old'] }
+    const mediaTools: MediaHostTools = { names: [...mediaNames, 'media_replace_images'], async execute(name, input) {
+      assert.equal(name, 'media_replace_images')
+      calls.push(input)
+      return { replacements: [
+        { originalJobId: 'cover-old', status: 'created', job: { ...jobView, providerSecret: 'private-provider-field' } },
+        { originalJobId: 'body-old', status: 'skipped' },
+      ] }
+    } }
+    const { bodies, approvals } = await mediaSession({ mediaTools, toolPolicy: { ...readOnlyPolicy, preset: 'workspace-edit', allowedTools: ['media_generate_image'] } },
+      { name: 'media_replace_images', input: args })
+    assert.ok(bodies[0].tools?.some(tool => tool.function.name === 'media_replace_images'))
+    assert.deepEqual(calls, [args])
+    assert.equal(approvals, 0)
+    const text = messageText(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content)
+    assert.match(text, /cover-old.*created.*body-old.*skipped/)
+    assert.doesNotMatch(text, /private-provider-field/)
+    await mediaSession({ mediaTools }, { name: 'media_replace_images', input: { jobIds: ['cover-old', 'cover-old'] } })
+    assert.deepEqual(calls, [args])
+  })
+
   it('rejects images for a model explicitly marked as text-only before sending HTTP', async () => {
     await assert.rejects(mediaSession({ vision: false, mcpServers: [], getAccessToken: async () => { assert.fail('must not send an image request') } }, undefined, jobView, undefined, undefined, true), /不支持图片/)
     const { bodies } = await mediaSession({ vision: false, mcpServers: [] })

@@ -72,12 +72,14 @@ test('expired approvals and invalid paid video quotes are denied without a dialo
 test('new generation after an unknown submission always requires an explicit risk decision', async () => {
   for (const toolName of ['media_generate_image', 'video_generate', 'video_from_image']) {
     for (const accepted of [true, false]) {
-      const ui = mount(toolName, { operation: 'confirm-new-generation', unconfirmedJobCount: 1,
+      const ui = mount(toolName, { operation: 'confirm-new-generation', unconfirmedJobCount: 4,
         mock: false, quote: { amount: '1.000000', currency: 'CNY' } })
       try {
         const dialog = ui.feedback.getSnapshot()!
         assert.equal(dialog.tone, 'confirm')
-        assert.match(dialog.message, /是否受理及计费尚未确认.*分别生成并计费.*原任务状态仍会保留/)
+        assert.match(dialog.message, toolName === 'media_generate_image'
+          ? /4 个原图片任务.*尚未确认.*分别计费.*原任务仍会保留/
+          : /是否受理及计费尚未确认.*分别生成并计费.*原任务状态仍会保留/)
         assert.equal(dialog.actionLabel, '仍然生成')
         assert.deepEqual(ui.decisions, [])
         if (accepted) await ui.feedback.accept(dialog.id)

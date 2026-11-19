@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { employeeRuntimeSnapshotSchema } from '../common/platform/employee-runtime-contract'
 import { imageMimeSchema, mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId, mediaOutputErrorsSchema, mediaOutputSchema, mediaParametersSchema, mediaProfileSchema, mediaQuoteSchema, mediaRecoverySchema } from '../common/platform/media-contract'
 import { imageRequestedSpecSchema, mediaParameterSourcesSchema } from '../../src/shared/media-spec-contract'
-import type { LocalMediaAsset, LocalMediaJob, MediaOutput, MediaRunSnapshot, MediaStorePort } from '../domain/media'
+import type { ImageReplacementDecision, LocalMediaAsset, LocalMediaJob, MediaOutput, MediaRunSnapshot, MediaStorePort } from '../domain/media'
 import { writeJsonAtomic } from './atomic-file'
 import { inspectMediaImage, MAX_MEDIA_BYTES, MAX_MEDIA_DIMENSION, MAX_MEDIA_PIXELS } from './media-image'
 import { isSafeId, ScopePath, TaskScopeError, type TaskOwnerScope } from './scope-path'
@@ -19,6 +19,7 @@ const hashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const timestamp = z.number().int().nonnegative()
 const opaqueId = z.string().min(1).max(256)
 const ownerSchema = z.object({ memberId: z.string().min(1).max(256), enterpriseId: z.string().min(1).max(256) }).strict()
+const imageReplacementSchema = z.record(mediaId, z.enum(['approved', 'declined']))
 const generationSchema = z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'])
 const saveSchema = z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING'])
 const requestSchema = z.object({
@@ -316,6 +317,23 @@ export class MediaStore implements MediaStorePort {
         if ((await this.listJobs(scope)).some(item => item.clientRequestId === job.clientRequestId)) throw new MediaPersistenceError('Media request ID is already assigned.')
       }
       await this.write(file, job)
+    })
+  }
+
+  async imageReplacementDecisions(scope: TaskOwnerScope, taskId: string): Promise<ReadonlyMap<string, ImageReplacementDecision>> {
+    const file = join(this.paths.mediaRoot(scope, taskId), 'image-replacements.json')
+    return new Map(Object.entries(await this.json(file, imageReplacementSchema) ?? {}))
+  }
+
+  async recordImageReplacement(scope: TaskOwnerScope, taskId: string, jobIds: readonly string[], decision: ImageReplacementDecision, validate: () => void): Promise<boolean> {
+    const file = join(this.paths.mediaRoot(scope, taskId), 'image-replacements.json')
+    return writes.run(this.key(scope, taskId), async () => {
+      const previous = await this.imageReplacementDecisions(scope, taskId)
+      validate()
+      if (jobIds.some(id => previous.has(id))) return false
+      const next = imageReplacementSchema.parse(Object.fromEntries([...previous, ...jobIds.map(id => [id, decision] as const)]))
+      await this.write(file, next, validate)
+      return true
     })
   }
 

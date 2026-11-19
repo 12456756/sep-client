@@ -72,7 +72,9 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
     if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
     if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
-    if (resubmission) message = `原任务是否受理及计费尚未确认，可能仍在生成。仍要创建新的${isVideo ? '视频' : '图片'}任务？新旧任务可能分别生成并计费，原任务状态仍会保留。`
+    if (resubmission) message = isVideo
+      ? '原任务是否受理及计费尚未确认，可能仍在生成。仍要创建新的视频任务？新旧任务可能分别生成并计费，原任务状态仍会保留。'
+      : `有 ${input.success ? Number(input.data.unconfirmedJobCount) : 1} 个原图片任务的提交结果尚未确认。仍要重新生成这批图片？新旧任务可能分别计费，原任务仍会保留。`
     if (price?.success) message += ` 本次报价 ${price.data.quote.amount} ${price.data.quote.currency}。`
     if (input.success && ['bash', 'write', 'edit'].includes(request.toolName)) {
       const target = request.toolName === 'bash' ? input.data.command : input.data.path
