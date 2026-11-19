@@ -98,12 +98,12 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
   const models = employee?.allowedModels ?? []
   const selectedModel = resolveTaskModel(models, defaultModelId, modelId)
   const selectEmployee = (id: string) => {
-    const nextEmployee = id === GENERAL_ASSISTANT_ID ? assistant : employees.find(item => item.id === id)
-    const nextModelId = resolveTaskModel(nextEmployee?.allowedModels ?? [], defaultModelId)
+    if (id !== employeeId) {
+      draft.modelId = ''
+      setModelId('')
+    }
     draft.employeeId = id
-    draft.modelId = nextModelId
     setEmployeeId(id)
-    setModelId(nextModelId)
     setPanel(null)
     setError(null)
     input.current?.focus()

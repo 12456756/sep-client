@@ -30,6 +30,14 @@ test('automatic planning never selects unavailable, unauthorized or model-less e
   assert.deepEqual(automaticPlanningSelection([], '', ''), { subscriptionId: '', modelId: '' })
 })
 
+test('scheduled automatic mode prefers a saved default and finds an employee authorized to use it', () => {
+  assert.deepEqual(automaticPlanningSelection(employees, '', 'first', 'model-b'), { subscriptionId: 'second', modelId: 'model-b' })
+  assert.deepEqual(automaticPlanningSelection(employees, '', 'second', 'shared'), { subscriptionId: 'second', modelId: 'shared' })
+  assert.deepEqual(automaticPlanningSelection(employees, 'model-a', 'second', 'model-b'), { subscriptionId: 'first', modelId: 'model-a' })
+  assert.deepEqual(automaticPlanningSelection(employees, 'revoked', 'first', 'model-b'), { subscriptionId: 'second', modelId: 'model-b' })
+  assert.deepEqual(automaticPlanningSelection(employees, '', 'second', 'revoked'), { subscriptionId: 'second', modelId: 'model-b' })
+})
+
 test('home drafts start without execution authority or a guessed employee and do not share mutable settings', () => {
   const first = emptyScheduledTaskDraft(), second = emptyScheduledTaskDraft()
   assert.deepEqual(first, { goal: '', mode: 'employee', subscriptionId: '', settings: { workDir: '', modelId: '', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' }, knowledge: { mode: 'none', knowledgeBaseIds: [] } } })

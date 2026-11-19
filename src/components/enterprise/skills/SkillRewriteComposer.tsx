@@ -4,6 +4,8 @@ import { IconHint } from '../IconHint';
 import { ModelSelector } from '../ModelSelector';
 import { ComposerResizeHandle } from '../ComposerResizeHandle';
 import { useModelCatalog } from '../ModelCatalogContext';
+import { useModelPreference } from '../../workspace/model-preference-scope';
+import { resolveTaskModel } from '../../../shared/model-preferences';
 import { isSubmitEnter } from '../../../shared/composer-shortcut';
 import type { SkillRewriteInput, SkillRewriteResult } from '../../../shared/skill-rewrite';
 import { SkillRewriteComparison } from './SkillRewriteComparison';
@@ -60,8 +62,9 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
   const composer = useRef<HTMLDivElement>(null);
   const history = useRef<HTMLDivElement>(null);
   const catalog = useModelCatalog();
+  const { defaultModelId } = useModelPreference();
   const models = catalog.models.map(model => model.modelId);
-  const selectedModel = models.includes(modelId) ? modelId : models[0] ?? '';
+  const selectedModel = resolveTaskModel(models, defaultModelId, modelId);
   const latestRound = rounds.at(-1);
   const rewriteNumbers = new Map(rounds.filter(round => round.kind === 'rewrite').map((round, index) => [round.id, index + 1]));
 
@@ -88,7 +91,8 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
     if (panel && last) panel.scrollTop += last.getBoundingClientRect().top - panel.getBoundingClientRect().top;
   }, [latestRound?.id, latestRound?.status]);
 
-  const preview = async (request = prompt, model = selectedModel): Promise<void> => {
+  const preview = async (request = prompt, previousModelId?: string): Promise<void> => {
+    const model = previousModelId && models.includes(previousModelId) ? previousModelId : selectedModel;
     if (disabled || active.current || !model || !request.trim() || !content.trim()) return;
     const round: RewriteRound = { kind: 'rewrite', id: crypto.randomUUID(), prompt: request.trim(), source: content, revision, model, status: 'generating' };
     const previous: SkillRewriteInput['history'] = rounds.flatMap(item => {

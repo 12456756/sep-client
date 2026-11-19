@@ -54,6 +54,47 @@ test('model catalog shows SEP display names and billing labels without widening 
   assert.equal(await page.getByText('未授权模型', { exact: true }).count(), 0)
 })
 
+test('scheduled creation submits the saved default until explicitly overridden', async t => {
+  const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } })
+  t.after(() => page.close())
+  await page.route(/\/main\.tsx(?:\?.*)?$/, route => route.fulfill({ contentType: 'text/javascript', body: `${entry}
+    import { DefaultModelSettings } from '/components/enterprise/DefaultModelSettings.tsx';
+    import { ModelCatalogProvider } from '/components/enterprise/ModelCatalogContext.tsx';
+    import { ModelPreferenceProvider } from '/components/workspace/model-preference-scope.tsx';
+    import { ScheduledTaskHome } from '/components/enterprise/scheduled/ScheduledTaskHome.tsx';
+    const models = ['first', 'preferred', 'next-default', 'manual'];
+    const catalog = models.map(modelId => ({ modelId, displayName: modelId, billingMultiplier: '1', discountLabel: '', isFree: false }));
+    const employees = [{ id: 'employee', assignedToMe: true, availability: 'ready', allowedModels: models }];
+    const workspace = { myEmployees: employees, route: { name: 'scheduled' }, chooseFolder: async () => 'D:/reports' };
+    const noop = () => {};
+    window.electronAPI = { getDefaultWorkspaceDirectory: async () => ({ success: false }) };
+    window.testModels = { scheduled: [] };
+    const scheduled = { submitCreation: async input => { window.testModels.scheduled.push(input.modelId); } };
+    const h = React.createElement;
+    ReactDOM.createRoot(document.getElementById('root')).render(h(ModelPreferenceProvider, { scope: { enterpriseId: 'test', memberId: 'member' } },
+      h(ModelCatalogProvider, { models: catalog }, h(DefaultModelSettings, { models }),
+        h('section', { id: 'schedule' }, h(ScheduledTaskHome, { workspace, model: scheduled, onCreate: noop })))));` }))
+  await page.goto(base)
+  const settings = page.getByLabel('默认模型', { exact: true })
+  const schedule = page.locator('#schedule')
+  const scheduleModel = schedule.getByRole('combobox', { name: '模型', exact: true })
+  await settings.selectOption('preferred')
+  assert.match(await scheduleModel.textContent(), /preferred/)
+  await schedule.getByRole('button', { name: '选择目录' }).click()
+  await schedule.getByLabel('定时任务工作内容').fill('Create a report')
+  await schedule.getByRole('button', { name: '创建并启用定时任务' }).click()
+  assert.deepEqual(await page.evaluate(() => window.testModels), { scheduled: ['preferred'] })
+
+  await settings.selectOption('next-default')
+  assert.match(await scheduleModel.textContent(), /next-default/)
+  await scheduleModel.click()
+  await page.getByRole('dialog', { name: '选择模型' }).getByRole('option', { name: 'manual', exact: true }).click()
+  await settings.selectOption('first')
+  assert.match(await scheduleModel.textContent(), /manual/)
+  await schedule.getByRole('button', { name: '创建并启用定时任务' }).click()
+  assert.deepEqual(await page.evaluate(() => window.testModels), { scheduled: ['preferred', 'manual'] })
+})
+
 test('model selection opens a searchable popover above the trigger with the knowledge picker style', async t => {
   const page = await openPage(t)
   const trigger = page.getByRole('combobox', { name: '模型', exact: true })

@@ -12,7 +12,7 @@
 import { Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
-import { ModelPreferenceProvider } from '../components/workspace/model-preference-scope';
+import { ModelPreferenceProvider, useModelPreference } from '../components/workspace/model-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { ConversationSessionsContext, createConversationSessions } from '../features/enterprise/conversation-sessions';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
@@ -77,7 +77,8 @@ export function ClientAppPage(props: Props) {
 
 function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
   useRuntimeFeedback(userId, enterpriseId);
-  const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
+  const { defaultModelId } = useModelPreference();
+  const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses, defaultModelId });
   const homeDraft = useHomeDraftOwner();
   const [conversationSessions] = useState(() => createConversationSessions(sessionId => {
     void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined);

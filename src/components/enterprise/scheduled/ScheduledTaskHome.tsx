@@ -13,6 +13,8 @@ import { ScheduledExecutionFields } from './ScheduledExecutionFields'
 import { ScheduledCreationList } from './ScheduledCreationList'
 import { ScheduledTaskDetail } from './ScheduledTaskDetail'
 import { ComposerResizeHandle } from '../ComposerResizeHandle'
+import { useModelPreference } from '../../workspace/model-preference-scope'
+import { resolveTaskModel } from '../../../shared/model-preferences'
 
 interface Props { workspace: EnterpriseWorkspace; model: ScheduledTasksModel; selectedDefinition?: ScheduledDefinition; onCreate(): void }
 type Example = typeof SCHEDULE_EXAMPLES[number]
@@ -34,14 +36,20 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
   const data = model.data
   const continuation = data?.creations?.find(item => item.id === continuationId)
   const models = authorizedScheduledModels(workspace.myEmployees)
-  const settings = { ...draft.settings, modelId: draft.settings.modelId || models[0] || '' }
+  const { defaultModelId } = useModelPreference()
+  const settings = { ...draft.settings, modelId: continuation
+    ? draft.settings.modelId || continuation.request.modelId
+    : resolveTaskModel(models, defaultModelId, draft.settings.modelId) }
   const pending = model.pendingCreations ?? []
   const awaiting = pending.some(item => item.request.requestId === continuationId || item.request.requestId === submitted.current?.requestId) || (!continuationId && pending.length > 0)
   const sending = pending.some(item => item.sending && item.request.requestId === submitted.current?.requestId)
   useEffect(() => {
     const request = submitted.current
     if (!request || !data?.creations?.some(item => creationAccepted(item, request))) return
-    setDraft(value => value.goal.trim() === request.message ? { ...value, goal: '' } : value)
+    setDraft(value => ({ ...value,
+      goal: value.goal.trim() === request.message ? '' : value.goal,
+      settings: request.expectedRevision === undefined ? value.settings : { ...value.settings, modelId: '' },
+    }))
     setContinuationId(null)
     submitted.current = null
   }, [data])
@@ -71,7 +79,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
   const resume = (creation: ScheduledCreation) => {
     if (awaiting) return
     setContinuationId(creation.id)
-    setDraft(value => ({ ...value, goal: '', settings: { ...value.settings, workDir: creation.request.workDir, modelId: creation.request.modelId, permissions: { ...creation.request.permissions } } }))
+    setDraft(value => ({ ...value, goal: '', settings: { ...value.settings, workDir: creation.request.workDir, modelId: '', permissions: { ...creation.request.permissions } } }))
     focusComposer()
   }
   const open = (id: string) => workspace.navigate({ name: 'scheduled', taskId: id, view: 'history' })
@@ -130,7 +138,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
       </div>
     <form className="ent-sch-home-compose" onSubmit={event => { event.preventDefault(); submit() }}>
       <div className="ent-sch-home-compose-actions"><button type="button" className="ent-btn ghost sm" onClick={onCreate}>手动设置</button></div>
-      {continuation ? <div className="ent-sch-replying"><span>补充：{continuation.interpretation?.task.title ?? continuation.request.message}</span><button type="button" aria-label="退出补充" title="退出补充" disabled={awaiting} onClick={() => { setContinuationId(null); setDraft(value => ({ ...value, goal: '' })) }}><X size={14} /></button></div> : null}
+      {continuation ? <div className="ent-sch-replying"><span>补充：{continuation.interpretation?.task.title ?? continuation.request.message}</span><button type="button" aria-label="退出补充" title="退出补充" disabled={awaiting} onClick={() => { setContinuationId(null); setDraft(value => ({ ...value, goal: '', settings: { ...value.settings, modelId: '' } })) }}><X size={14} /></button></div> : null}
       <fieldset ref={composer} disabled={sending} className="ent-sch-composer">
         <label className="sr-only" htmlFor="schedule-home-goal">定时任务工作内容</label><textarea id="schedule-home-goal" ref={input} rows={2} value={draft.goal} maxLength={16000} placeholder={continuation ? '补充缺少的信息…' : '安排一项定期完成的工作…'} onChange={event => setDraft(value => ({ ...value, goal: event.target.value }))} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) { event.preventDefault(); submit() } }} />
         <ScheduledExecutionFields naturalLanguage value={{ ...draft, settings }} employees={workspace.myEmployees} onChange={patch => setDraft(value => ({ ...value, ...patch, settings: { ...value.settings, ...patch.settings } }))} action={<button type="submit" className="ent-sch-home-send" aria-label={continuation ? '发送补充信息' : '创建并启用定时任务'} title={continuation ? '发送补充信息' : '创建并启用'} disabled={awaiting || !draft.goal.trim() || !settings.workDir.trim() || !models.includes(settings.modelId)}><ArrowUp size={19} aria-hidden /></button>} onChooseFolder={async path => {
