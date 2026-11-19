@@ -6,6 +6,7 @@ import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { ScheduledServiceOptions } from './scheduled-task-service'
 import { BeforeScheduledAdmissionError, type ScheduledRunnerPort } from './scheduled-dispatcher'
 import { setLogSink, type LogRecord } from '../common/logger'
+import { toEnvelope } from '../errors/error-mapper'
 
 const input: ScheduleInput = { name: 'Report', goal: 'Produce report', subscriptionId: 'sub', modelId: 'model', workDir: 'D:/reports', scheduledAt: 2000, timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
 const plan: EmployeeWorkPlan = { status: 'ready', objective: 'Report', instruction: 'Produce report', expectedOutput: 'File', deliverables: [{ id: 'file', name: 'Report', format: 'md', path: 'report.md', contentOutline: ['Summary'], acceptanceCriteria: ['Sources'] }] }
@@ -272,6 +273,48 @@ test('editing a definition retains its ID and invalidates the plan only for work
   assert.equal(h.data.definitions.length, 1)
   h.service.stop()
 })
+test('missing and deleted scheduled definitions return distinct public messages', async () => {
+  const h = harness()
+  try {
+    const created = await h.service.create('removed-definition', input)
+    await h.service.pause(created.id, created.revision, true)
+    for (const [id, message] of [
+      [created.id, '定时任务已删除，请刷新列表。'],
+      ['missing-definition', '未找到该定时任务，请刷新列表后重试。'],
+    ]) {
+      for (const operation of [
+        () => h.service.edit(id, created.revision, input),
+        () => h.service.plan(id, created.revision),
+        () => h.service.confirm(id, created.revision),
+        () => h.service.pause(id, created.revision),
+      ]) {
+        await assert.rejects(operation(), error => {
+          const envelope = toEnvelope(error)
+          assert.equal(envelope.code, 'NOT_FOUND')
+          assert.equal(envelope.statusCode, 404)
+          assert.equal(envelope.message, message)
+          return true
+        })
+      }
+    }
+    assert.equal(h.data.definitions.length, 1)
+    assert.equal(h.data.definitions[0].deleted, true)
+    assert.equal(h.starts, 0)
+    assert.equal(h.plans, 0)
+  } finally { h.service.stop() }
+})
+
+test('an existing scheduled definition with a stale revision remains a revision conflict', async () => {
+  const h = harness()
+  try {
+    const created = await h.service.create('stale-definition', input)
+    await h.service.edit(created.id, created.revision, { ...input, name: 'Updated report' })
+    await assert.rejects(h.service.edit(created.id, created.revision, input), { code: 'DRAFT_REVISION_CONFLICT' })
+    assert.equal(h.data.definitions[0].input.name, 'Updated report')
+    assert.equal(h.data.definitions[0].deleted, false)
+  } finally { h.service.stop() }
+})
+
 test('launch-intent uncertainty after a crash never triggers a fresh launch', async () => {
   const h = harness()
   const task = await h.service.create('request-c', input)
