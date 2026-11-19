@@ -6,6 +6,7 @@ import { receiptMatchesRequest, videoSubmissionRejected, videoLocalIdSchema, vid
 import { abortableVideo } from '../data/video-files'
 import { WriteChain } from '../data/write-chain'
 import { AppError } from '../errors/app-error'
+import { safeMediaUpstreamError } from '../common/media-upstream-error'
 import { mediaJobFailure } from '../errors/media-job-error'
 import { VideoRequestError } from '../errors/video-request-error'
 import { transportKind } from '../errors/operation-feedback'
@@ -131,7 +132,8 @@ export class VideoService {
   }
 
   private async accept(job: LocalVideoJob, value: VideoReceipt): Promise<LocalVideoJob> {
-    const receipt = videoReceiptSchema.parse(value)
+    const parsed = videoReceiptSchema.parse(value)
+    const receipt = parsed.upstreamError ? { ...parsed, upstreamError: safeMediaUpstreamError(parsed.upstreamError) } : parsed
     if (!receiptMatchesRequest(job, receipt) || (job.receipt && job.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')
     return this.store.updateJob(this.scope, job.taskId, job.jobId, previous => {
       if (!receiptMatchesRequest(previous, receipt) || (previous.receipt && previous.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')

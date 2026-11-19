@@ -43,7 +43,8 @@ const VIDEO_MESSAGES: Partial<Record<AppError['code'], string>> = {
 
 function authFailure(error: AuthApiError): { failure: MediaToolFailure; diagnostic: VideoToolFailureDiagnostic } {
   const status = error.statusCode
-  const code = status === 401 ? 'AUTH_REQUIRED'
+  const code = error.error.diagnostic?.source === 'upstream' ? 'SERVICE_UNAVAILABLE'
+    : status === 401 ? 'AUTH_REQUIRED'
     : status === 403 ? 'PERMISSION_DENIED'
       : status === 404 ? 'NOT_FOUND'
         : status === 429 ? 'RATE_LIMITED'
@@ -53,7 +54,7 @@ function authFailure(error: AuthApiError): { failure: MediaToolFailure; diagnost
     ? '视频所需能力包的准备请求过于频繁，请稍后再试，勿自动重发视频生成请求。'
     : VIDEO_MESSAGES[code as AppError['code']] ?? '视频操作失败，尚未取得具体原因，请联系平台管理员；勿推断模型缺失或自动重新生成。'
   return {
-    failure: mediaToolFailure(code, message),
+    failure: mediaToolFailure(code, message, { diagnostic: error.error.diagnostic }),
     diagnostic: { code, exceptionType: safeExceptionType(error.name), ...(safeStatus(status) === undefined ? {} : { httpStatus: safeStatus(status) }),
       ...(SAFE_RESOURCES.has(error.resource ?? '') ? { resource: error.resource } : {}),
       ...(error.resource === 'skills' ? { stage: 'skill-preparation' } : {}) },

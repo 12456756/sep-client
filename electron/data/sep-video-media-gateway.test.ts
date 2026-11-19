@@ -11,14 +11,15 @@ const video = Buffer.from(fixture.mediaFixture.base64, 'base64')
 const request = videoRequestWithIdentitySchema.parse(fixture.request)
 
 test('keeps unregistered video business codes without treating them as proven rejections', async () => {
-  const adapter = gateway(async () => json({ error: { code: 'UPSTREAM_TIMEOUT', source: 'upstream', requestId: 'req-video', message: 'private raw body' } }, 503))
+  const adapter = gateway(async () => json({ error: { code: 'UPSTREAM_TIMEOUT', source: 'upstream', requestId: 'req-video', message: 'Specific provider rejection', apiKey: 'secret-provider-key' } }, 503))
   await assert.rejects(adapter.submit(request, signal), (error: unknown) => {
     assert.ok(error instanceof SepVideoGatewayError)
     assert.equal(error.code, 'SERVICE_UNAVAILABLE')
     assert.equal(error.businessCode, 'UPSTREAM_TIMEOUT')
     assert.equal(error.requestId, 'req-video')
     assert.equal(error.definitelyRejected, false)
-    assert.doesNotMatch(JSON.stringify(error), /private raw body/)
+    assert.equal(error.diagnostic?.message, 'Specific provider rejection')
+    assert.doesNotMatch(JSON.stringify(error), /secret-provider-key/)
     return true
   })
 })

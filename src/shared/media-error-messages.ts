@@ -1,4 +1,4 @@
-import { mediaUpstreamMessage } from './media-upstream-error'
+import { mediaUpstreamMessages } from './media-upstream-error'
 
 /** Reasons contain no retry or billing claims; recovery depends on the original job state. */
 const REASONS: Readonly<Record<string, string>> = {
@@ -80,6 +80,8 @@ const UPSTREAM_CODES: Readonly<Record<string, string>> = {
   UPSTREAM_SPEC_UNSUPPORTED: REASONS.UPSTREAM_SPEC_UNSUPPORTED,
   UNSUPPORTED_DURATION: REASONS.UNSUPPORTED_DURATION, UNSUPPORTED_RESOLUTION: REASONS.UNSUPPORTED_RESOLUTION,
   UNSUPPORTED_SIZE: REASONS.UNSUPPORTED_SIZE,
+  INVALID_PARAMETER: REASONS.INVALID_PARAMETER, INVALID_REFERENCE: REASONS.INVALID_REFERENCE,
+  UNSUPPORTED_MEDIA_PARAMETERS: REASONS.UNSUPPORTED_MEDIA_PARAMETERS,
 }
 
 const UPSTREAM_MESSAGES: ReadonlyArray<readonly [RegExp, string]> = [
@@ -92,6 +94,8 @@ const UPSTREAM_MESSAGES: ReadonlyArray<readonly [RegExp, string]> = [
   [/^(?:server overloaded|provider busy)[.!]?$/i, REASONS.PROVIDER_BUSY],
   [/^(?:content policy violation|content rejected|safety check failed)[.!]?$/i, REASONS.CONTENT_POLICY_VIOLATION],
   [/^reference subject rejected[.!]?$/i, '参考内容被生成服务拒绝'],
+  [/^image edit denied[.!]?$/i, '图片编辑请求被生成服务拒绝'],
+  [/^unsupported image dimensions[.!]?$/i, REASONS.UNSUPPORTED_SIZE],
   [/^(?:unsupported duration|duration (?:is )?not supported)[.!]?$/i, REASONS.UNSUPPORTED_DURATION],
   [/^(?:unsupported resolution|resolution (?:is )?not supported)[.!]?$/i, REASONS.UNSUPPORTED_RESOLUTION],
   [/^(?:unsupported (?:image )?size|(?:image )?size (?:is )?not supported)[.!]?$/i, REASONS.UNSUPPORTED_SIZE],
@@ -101,15 +105,30 @@ const UPSTREAM_MESSAGES: ReadonlyArray<readonly [RegExp, string]> = [
 ]
 
 /** Match explicit supplier codes or whole known messages, never infer a cause from a keyword. */
-export function mediaUpstreamReason(value: unknown): string | null {
+export function mediaUpstreamReason(value: unknown, depth = 0): string | null {
+  if (depth > 6) return null
+  if (Array.isArray(value)) {
+    return value.slice(0, 16).map(child => mediaUpstreamReason(child, depth + 1)).find(Boolean) ?? null
+  }
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const item = value as Record<string, unknown>
-    const nested = item.error && typeof item.error === 'object' ? item.error as Record<string, unknown> : item
-    const code = typeof nested.code === 'string' ? nested.code.toUpperCase() : null
+    const nested = item.error && typeof item.error === 'object' && !Array.isArray(item.error) ? item.error as Record<string, unknown> : item
+    const code = typeof nested.code === 'string' ? nested.code.toUpperCase() : typeof item.code === 'string' ? item.code.toUpperCase() : null
+    const source = nested.source ?? item.source
+    if ((source === 'platform' || source === 'sep') && code) {
+      return mediaErrorReason(code)
+    }
     if (code && Object.hasOwn(UPSTREAM_CODES, code)) return UPSTREAM_CODES[code]
+    for (const child of [item.error, item.body, item.reason, item.detail, item.details, item.errors]) {
+      const reason = mediaUpstreamReason(child, depth + 1)
+      if (reason) return reason
+    }
   }
-  const message = mediaUpstreamMessage(value)
-  return message ? UPSTREAM_MESSAGES.find(([pattern]) => pattern.test(message))?.[1] ?? null : null
+  for (const message of mediaUpstreamMessages(value)) {
+    const reason = UPSTREAM_MESSAGES.find(([pattern]) => pattern.test(message))?.[1]
+    if (reason) return reason
+  }
+  return null
 }
 
 export function mediaRecoveryAdvice(code: string | null | undefined): string {

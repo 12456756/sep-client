@@ -1361,10 +1361,12 @@ describe('MediaService local delivery and original-request recovery', () => {
 
   it('preserves image submit diagnostics on disk and public views during missing-receipt recovery', async context => {
     const f = await fixture({}, new MockMediaGateway({ missingFinds: 100 }))
+    const diagnostic = { httpStatus: 502, source: 'upstream', code: 123, body: { error: { code: 123, message: 'Specific rejection',
+      details: [{ width: 1300 }] }, sepDiagnostics: [{ stage: 'billing', message: 'Lookup failed' }] }, computeRequestId: 'compute-id' }
     let posts = 0
     context.mock.method(f.gateway, 'submit', async () => {
       posts++
-      throw new AppError('SERVICE_UNAVAILABLE', { details: { businessCode: 'PROVIDER_OVERLOADED', stage: 'image-submit',
+      throw new AppError('SERVICE_UNAVAILABLE', { diagnostic, details: { businessCode: 'PROVIDER_OVERLOADED', stage: 'image-submit',
         requestId: 'req-image-persisted', statusCode: 503, source: 'upstream', upstreamMessage: 'Supplier account disabled', rawResponse: 'private raw body' } })
     })
     const first = await f.service.generateTaskMedia('task-a', input())
@@ -1378,6 +1380,7 @@ describe('MediaService local delivery and original-request recovery', () => {
     assert.equal(view.failure?.requestId, 'req-image-persisted')
     assert.equal(view.failure?.httpStatus, 503)
     assert.equal(view.failure?.message, 'Supplier account disabled')
+    assert.deepEqual(view.failure?.diagnostic, diagnostic)
     assert.doesNotMatch(JSON.stringify(view), /private raw body|rawResponse/)
     await f.service.resume('task-a', first.jobId)
     await assert.rejects(f.service.waitForRun('task-a', first.runId))

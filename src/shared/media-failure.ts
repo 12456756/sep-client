@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { apiDiagnosticSchema } from './api-diagnostic'
 
 export const mediaFailureCodeSchema = z.string().regex(/^[A-Z][A-Z0-9_]{0,95}$/)
 export const mediaFailureSchema = z.object({
@@ -11,6 +12,7 @@ export const mediaFailureSchema = z.object({
   requestId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   httpStatus: z.number().int().min(100).max(599).optional(),
   message: z.string().max(1000).optional(),
+  diagnostic: apiDiagnosticSchema.optional(),
   source: z.enum(['client', 'sep', 'platform', 'adapter', 'pricing', 'sub2api', 'provider', 'upstream', 'authorization']).optional(),
 }).strip()
 
