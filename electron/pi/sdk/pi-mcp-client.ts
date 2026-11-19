@@ -26,7 +26,7 @@ const PUBLIC_RUNTIME_ENV = new Map([['ELECTRON_RUN_AS_NODE', '1'], ['OFFICECLI_S
 
 export interface McpToolResult {
   content: Array<{ type: 'text'; text: string }>
-  details: { serverName: string; toolName: string; isError: boolean; executionUncertain?: true }
+  details: { serverName: string; toolName: string; isError: boolean; executionUncertain?: true; browserSessionClosed?: true }
 }
 
 function safeText(text: string, config: McpServerConfig, maxLength?: number): string {

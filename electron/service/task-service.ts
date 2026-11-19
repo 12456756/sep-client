@@ -66,6 +66,7 @@ export interface TaskServiceDependencies {
   runSnapshots?: Pick<MediaStore, 'getSnapshot'>
   attachments?: AttachmentService
   conversationQueue?: import('./conversation-queue-service').ConversationQueueService
+  releaseTaskResources?: (taskId: string, scope: TaskOwnerScope) => Promise<void>
 }
 
 export interface CreateTaskInput {
@@ -256,6 +257,7 @@ export class TaskService {
     if (await this.deps.media?.archiveIfMedia(taskId)) {
       this.assertScope(scope)
       this.deps.taskManager.hideTaskRecord(taskId, scope)
+      await this.deps.releaseTaskResources?.(taskId, scope)
       return
     }
     if (!await this.deps.taskManager.deleteTask(taskId)) {
@@ -266,6 +268,7 @@ export class TaskService {
         : '工作状态已变化，无法删除，请刷新后重试。'
       throw new AppError('INVALID_STATE', { message })
     }
+    await this.deps.releaseTaskResources?.(taskId, scope)
   }
 
   async deleteExecutionGroup(taskId: string): Promise<void> {
@@ -290,6 +293,7 @@ export class TaskService {
       if (!await this.deps.taskManager.deleteTaskRecords(members.map(item => item.task.id), archived, scope)) {
         throw new AppError('INVALID_STATE', { message: '工作状态已变化，无法删除，请刷新后重试。' })
       }
+      await Promise.all(members.map(({ task }) => this.deps.releaseTaskResources?.(task.id, scope)))
     })
   }
 

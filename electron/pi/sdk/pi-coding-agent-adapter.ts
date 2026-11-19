@@ -1181,7 +1181,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     const builtinBrowser = canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG && process.env.SEP_PLAYWRIGHT_MCP !== '0'
     const baseMcp = attachConnectorTools(await createHostMcpRuntime([...servers, ...(connector?.servers ?? [])], config.workspaceDir, builtinBrowser,
       connector ? new Map(connector.servers.map(server => [server.name, connector.fetch])) : undefined,
-      () => config.authorizeTool({ toolName: BROWSER_MODE_TOOL, input: { operation: 'manual-handoff' } })), connector, config.workspaceDir)
+      () => config.authorizeTool({ toolName: BROWSER_MODE_TOOL, input: { operation: 'manual-handoff' } }), config.browserOwner), connector, config.workspaceDir)
     const attached = await attachOfficeRuntime(baseMcp, common, config).catch(async error => {
       await baseMcp.dispose()
       throw error

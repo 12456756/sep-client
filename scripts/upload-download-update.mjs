@@ -94,6 +94,30 @@ async function rsync(context, source, destination, phase) {
   }
 }
 
+export async function withSshContext(env, action) {
+  const temp = await mkdtemp(join(tmpdir(), 'sep-client-upload-'))
+  try {
+    const context = {
+      host: requiredEnv(env, 'SEP_UPLOAD_HOST'), user: requiredEnv(env, 'SEP_UPLOAD_USER'),
+      root: requiredEnv(env, 'SEP_UPLOAD_ROOT').replace(/\/+$/, ''), port: env.SEP_UPLOAD_PORT || '22',
+      key: join(temp, 'id_ed25519'), knownHosts: join(temp, 'known_hosts'), config: join(temp, 'ssh_config'),
+    }
+    requireValue(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(context.host), 'SEP_UPLOAD_HOST contains invalid characters')
+    requireValue(/^[A-Za-z_][A-Za-z0-9._-]*$/.test(context.user), 'SEP_UPLOAD_USER contains invalid characters')
+    requireValue(context.root.startsWith('/') && context.root !== '/', 'SEP_UPLOAD_ROOT must be a non-root absolute path')
+    requireValue(/^\d+$/.test(context.port) && Number(context.port) >= 1 && Number(context.port) <= 65535, 'SEP_UPLOAD_PORT must be between 1 and 65535')
+    await writeFile(context.key, decodePrivateKey(env), { mode: 0o600 })
+    await writeFile(context.knownHosts, requiredEnv(env, 'SEP_UPLOAD_KNOWN_HOSTS'), { mode: 0o600 })
+    await writeFile(context.config, `Host sep-upload\n${sshConfig(context)}`, { mode: 0o600 })
+    await chmod(context.key, 0o600)
+    await chmod(context.knownHosts, 0o600)
+    await chmod(context.config, 0o600)
+    return await action(context)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+}
+
 async function upload({ source, prepared, channel, env = process.env }) {
   requireValue(channel === 'stable', 'only the stable channel is publishable')
   const planPath = resolve(prepared, 'upload-plan.json')
@@ -110,111 +134,66 @@ async function upload({ source, prepared, channel, env = process.env }) {
   }
   for (const name of MANIFESTS) await localFile(prepared, name)
 
-  const temp = await mkdtemp(join(tmpdir(), 'sep-client-upload-'))
-  const key = join(temp, 'id_ed25519')
-  const knownHosts = join(temp, 'known_hosts')
-  const config = join(temp, 'ssh_config')
-  const context = {
-    host: requiredEnv(env, 'SEP_UPLOAD_HOST'),
-    user: requiredEnv(env, 'SEP_UPLOAD_USER'),
-    root: requiredEnv(env, 'SEP_UPLOAD_ROOT').replace(/\/+$/, ''),
-    port: env.SEP_UPLOAD_PORT || '22',
-    key,
-    knownHosts,
-    config,
-  }
-  requireValue(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(context.host), 'SEP_UPLOAD_HOST contains invalid characters')
-  requireValue(/^[A-Za-z_][A-Za-z0-9._-]*$/.test(context.user), 'SEP_UPLOAD_USER contains invalid characters')
-  requireValue(context.root.startsWith('/') && context.root !== '/', 'SEP_UPLOAD_ROOT must be a non-root absolute path')
-  requireValue(/^\d+$/.test(context.port) && Number(context.port) >= 1 && Number(context.port) <= 65535, 'SEP_UPLOAD_PORT must be between 1 and 65535')
-  const runId = (env.GITHUB_RUN_ID || `${Date.now()}`).replace(/[^A-Za-z0-9_.-]/g, '-')
-  const staging = `${context.root}/.sep-client-staging-${plan.version}-${runId}`
-  const versionRoot = `${context.root}/${plan.version}`
-  const manifestStaging = `${context.root}/.sep-client-manifests-${plan.version}-${runId}`
-  try {
-    await writeFile(key, decodePrivateKey(env), { mode: 0o600 })
-    await writeFile(knownHosts, requiredEnv(env, 'SEP_UPLOAD_KNOWN_HOSTS'), { mode: 0o600 })
-    await writeFile(config, `Host sep-upload\n${sshConfig(context)}`, { mode: 0o600 })
-    await chmod(key, 0o600)
-    await chmod(knownHosts, 0o600)
-    await chmod(config, 0o600)
-    await ssh(context, `set -eu; test -d ${shellQuote(context.root)}; test ! -e ${shellQuote(versionRoot)}; mkdir ${shellQuote(staging)} ${shellQuote(manifestStaging)}`, 'SSH preflight (remote directory check and staging creation)')
-    for (const item of artifacts) await rsync(context, (await localFile(source, item.name)).file, `${staging}/${item.name}`, `artifact upload (${item.name})`)
-    if (connectorArtifacts.length) {
-      const componentStaging = `${staging}/connector-assets`
-      const componentRoot = `${context.root}/connector-assets`
-      await ssh(context, `set -eu; mkdir ${shellQuote(componentStaging)}; mkdir -p ${shellQuote(componentRoot)}`, 'connector directory preparation')
-      for (const item of connectorArtifacts) {
-        await rsync(context, (await localFile(join(source, 'connector-assets'), item.name)).file, `${componentStaging}/${item.name}`, `connector upload (${item.name})`)
-        const staged = shellQuote(`${componentStaging}/${item.name}`)
-        const target = shellQuote(`${componentRoot}/${item.name}`)
-        await ssh(context, `set -eu; printf '%s  %s\\n' ${shellQuote(item.sha256)} ${staged} | sha256sum -c -; if test -e ${target}; then printf '%s  %s\\n' ${shellQuote(item.sha256)} ${target} | sha256sum -c -; else mv ${staged} ${target}; fi`, 'connector verification and publication')
+  return withSshContext(env, async context => {
+    const runId = (env.GITHUB_RUN_ID || `${Date.now()}`).replace(/[^A-Za-z0-9_.-]/g, '-')
+    const staging = `${context.root}/.sep-client-staging-${plan.version}-${runId}`
+    const versionRoot = `${context.root}/${plan.version}`
+    const manifestStaging = `${context.root}/.sep-client-manifests-${plan.version}-${runId}`
+    try {
+      await ssh(context, `set -eu; test -d ${shellQuote(context.root)}; test ! -e ${shellQuote(versionRoot)}; mkdir ${shellQuote(staging)} ${shellQuote(manifestStaging)}`, 'SSH preflight (remote directory check and staging creation)')
+      for (const item of artifacts) await rsync(context, (await localFile(source, item.name)).file, `${staging}/${item.name}`, `artifact upload (${item.name})`)
+      if (connectorArtifacts.length) {
+        const componentStaging = `${staging}/connector-assets`
+        const componentRoot = `${context.root}/connector-assets`
+        await ssh(context, `set -eu; mkdir ${shellQuote(componentStaging)}; mkdir -p ${shellQuote(componentRoot)}`, 'connector directory preparation')
+        for (const item of connectorArtifacts) {
+          await rsync(context, (await localFile(join(source, 'connector-assets'), item.name)).file, `${componentStaging}/${item.name}`, `connector upload (${item.name})`)
+          const staged = shellQuote(`${componentStaging}/${item.name}`)
+          const target = shellQuote(`${componentRoot}/${item.name}`)
+          await ssh(context, `set -eu; printf '%s  %s\\n' ${shellQuote(item.sha256)} ${staged} | sha256sum -c -; if test -e ${target}; then printf '%s  %s\\n' ${shellQuote(item.sha256)} ${target} | sha256sum -c -; else mv ${staged} ${target}; fi`, 'connector verification and publication')
+        }
+        await ssh(context, `rm -rf -- ${shellQuote(componentStaging)}`, 'connector staging cleanup')
       }
-      await ssh(context, `rm -rf -- ${shellQuote(componentStaging)}`, 'connector staging cleanup')
+      const remoteChecks = artifacts.map(item => `printf '%s  %s\\n' ${shellQuote(item.sha256)} ${shellQuote(`${staging}/${item.name}`)} | sha256sum -c -`)
+      await ssh(context, `set -eu; ${remoteChecks.join('; ')}; mv ${shellQuote(staging)} ${shellQuote(versionRoot)}`, 'remote artifact checksum verification and version directory publish')
+      for (const name of MANIFESTS) await rsync(context, (await localFile(prepared, name)).file, `${manifestStaging}/${name}`, `update manifest upload (${name})`)
+      const backup = `${context.root}/.sep-client-backup-${plan.version}-${runId}`
+      const publish = [
+        'set -eu',
+        `root=${shellQuote(context.root)}`,
+        `stage=${shellQuote(manifestStaging)}`,
+        `backup=${shellQuote(backup)}`,
+        'mkdir "$backup"',
+        'restore() { status=$?; if [ "$status" -ne 0 ]; then for name in latest.yml latest-mac.yml; do rm -f -- "$root/$name"; if [ -e "$backup/$name" ]; then mv -- "$backup/$name" "$root/$name"; fi; done; fi; rm -rf -- "$stage" "$backup"; exit "$status"; }',
+        'trap restore EXIT',
+        'for name in latest.yml latest-mac.yml; do if [ -e "$root/$name" ]; then mv -- "$root/$name" "$backup/$name"; fi; done',
+        'mv -- "$stage/latest.yml" "$root/latest.yml"',
+        'mv -- "$stage/latest-mac.yml" "$root/latest-mac.yml"',
+        'trap - EXIT',
+        'rm -rf -- "$stage" "$backup"',
+      ].join('; ')
+      await ssh(context, publish, 'update manifest publication')
+      return { channel, version: plan.version, artifacts: artifacts.length, remote: `${context.host}:${versionRoot}` }
+    } catch (error) {
+      try { await ssh(context, `rm -rf -- ${shellQuote(staging)} ${shellQuote(manifestStaging)}`, 'temporary upload cleanup') } catch { /* cleanup is best effort after the primary failure */ }
+      throw error
     }
-    const remoteChecks = artifacts.map(item => `printf '%s  %s\\n' ${shellQuote(item.sha256)} ${shellQuote(`${staging}/${item.name}`)} | sha256sum -c -`)
-    await ssh(context, `set -eu; ${remoteChecks.join('; ')}; mv ${shellQuote(staging)} ${shellQuote(versionRoot)}`, 'remote artifact checksum verification and version directory publish')
-    for (const name of MANIFESTS) await rsync(context, (await localFile(prepared, name)).file, `${manifestStaging}/${name}`, `update manifest upload (${name})`)
-    const backup = `${context.root}/.sep-client-backup-${plan.version}-${runId}`
-    const publish = [
-      'set -eu',
-      `root=${shellQuote(context.root)}`,
-      `stage=${shellQuote(manifestStaging)}`,
-      `backup=${shellQuote(backup)}`,
-      'mkdir "$backup"',
-      'restore() { status=$?; if [ "$status" -ne 0 ]; then for name in latest.yml latest-mac.yml; do rm -f -- "$root/$name"; if [ -e "$backup/$name" ]; then mv -- "$backup/$name" "$root/$name"; fi; done; fi; rm -rf -- "$stage" "$backup"; exit "$status"; }',
-      'trap restore EXIT',
-      'for name in latest.yml latest-mac.yml; do if [ -e "$root/$name" ]; then mv -- "$root/$name" "$backup/$name"; fi; done',
-      'mv -- "$stage/latest.yml" "$root/latest.yml"',
-      'mv -- "$stage/latest-mac.yml" "$root/latest-mac.yml"',
-      'trap - EXIT',
-      'rm -rf -- "$stage" "$backup"',
-    ].join('; ')
-    await ssh(context, publish, 'update manifest publication')
-    return { channel, version: plan.version, artifacts: artifacts.length, remote: `${context.host}:${versionRoot}` }
-  } catch (error) {
-    try { await ssh(context, `rm -rf -- ${shellQuote(staging)} ${shellQuote(manifestStaging)}`, 'temporary upload cleanup') } catch { /* cleanup is best effort after the primary failure */ }
-    throw error
-  } finally {
-    await rm(temp, { recursive: true, force: true })
-  }
+  })
 }
 
 async function preflight({ version, env = process.env }) {
   requireValue(typeof version === 'string' && /^\d+\.\d+\.\d+$/.test(version), 'preflight requires a stable release version')
-  const context = {
-    host: requiredEnv(env, 'SEP_UPLOAD_HOST'),
-    user: requiredEnv(env, 'SEP_UPLOAD_USER'),
-    root: requiredEnv(env, 'SEP_UPLOAD_ROOT').replace(/\/+$/, ''),
-    port: env.SEP_UPLOAD_PORT || '22',
-  }
-  requireValue(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(context.host), 'SEP_UPLOAD_HOST contains invalid characters')
-  requireValue(/^[A-Za-z_][A-Za-z0-9._-]*$/.test(context.user), 'SEP_UPLOAD_USER contains invalid characters')
-  requireValue(context.root.startsWith('/') && context.root !== '/', 'SEP_UPLOAD_ROOT must be a non-root absolute path')
-  requireValue(/^\d+$/.test(context.port) && Number(context.port) >= 1 && Number(context.port) <= 65535, 'SEP_UPLOAD_PORT must be between 1 and 65535')
-
-  const temp = await mkdtemp(join(tmpdir(), 'sep-client-ssh-preflight-'))
-  const key = join(temp, 'id_ed25519')
-  const knownHosts = join(temp, 'known_hosts')
-  const config = join(temp, 'ssh_config')
-  Object.assign(context, { key, knownHosts, config })
-  try {
-    await writeFile(key, decodePrivateKey(env), { mode: 0o600 })
-    await writeFile(knownHosts, requiredEnv(env, 'SEP_UPLOAD_KNOWN_HOSTS'), { mode: 0o600 })
-    await writeFile(config, `Host sep-upload\n${sshConfig(context)}`, { mode: 0o600 })
-    await chmod(key, 0o600)
-    await chmod(knownHosts, 0o600)
-    await chmod(config, 0o600)
-    const identity = await command('ssh-keygen', ['-lf', key])
-    console.log(`SSH identity loaded: ${identity.stdout.trim()}`)
-    const remoteCheck = `set -eu; test -d ${shellQuote(context.root)}; test ! -e ${shellQuote(`${context.root}/${version}`)}; printf 'remote directory and version slot are ready\\n'`
-    await command('ssh', ['-F', config, 'sep-upload', `bash -c ${shellQuote(remoteCheck)}`])
-    console.log(`SSH preflight passed for ${context.user}@${context.host}:${context.root}, version ${version}`)
-  } catch (error) {
-    throw new Error(`SSH preflight failed: ${error.message}`)
-  } finally {
-    await rm(temp, { recursive: true, force: true })
-  }
+  return withSshContext(env, async context => {
+    try {
+      const identity = await command('ssh-keygen', ['-lf', context.key])
+      console.log(`SSH identity loaded: ${identity.stdout.trim()}`)
+      const remoteCheck = `set -eu; test -d ${shellQuote(context.root)}; test ! -e ${shellQuote(`${context.root}/${version}`)}; printf 'remote directory and version slot are ready\\n'`
+      await command('ssh', ['-F', context.config, 'sep-upload', `bash -c ${shellQuote(remoteCheck)}`])
+      console.log(`SSH preflight passed for ${context.user}@${context.host}:${context.root}, version ${version}`)
+    } catch (error) {
+      throw new Error(`SSH preflight failed: ${error.message}`)
+    }
+  })
 }
 
 export function parseArguments(args = process.argv.slice(2)) {

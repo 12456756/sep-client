@@ -39,6 +39,8 @@ export interface McpServerConfig {
 }
 
 export interface PiAgentSessionConfig {
+  /** Host-owned, conversation-scoped browser; never supplied through IPC. */
+  browserOwner?: import('./pi-browser-owner').SharedBrowserOwner
   connectorBinding?: import('../../domain/connectors').ConnectorBinding
   modelTrace?: import('../../domain/model-trace').ModelTraceRecorder
   taskTitle?: string

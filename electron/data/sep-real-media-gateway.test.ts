@@ -5,6 +5,7 @@ import { SepRealMediaGateway } from './sep-real-media-gateway'
 import { AppError } from '../errors/app-error'
 import { toLocalMediaCapabilities } from '../common/platform/sep-media-runtime-contract'
 import { realMediaSemanticHash } from '../common/platform/real-media-semantics'
+import { referenceImages } from './media-reference.test-helper'
 
 const token = 'fixture-employment-token-not-real'
 const request = { profileId: 'image-prod', configVersion: 'cfg-v1', operation: 'generate' as const, referenceIds: [], referenceHashes: [],
@@ -30,6 +31,24 @@ const privateDetail = `${token} https://private.example/storage?credential=priva
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQ2FIBAAJEAU2Vdyv6AAAAAElFTkSuQmCC', 'base64')
 const pngHeaders = { 'Content-Type': 'image/png', 'Content-Length': String(png.length),
   'X-SHA256': createHash('sha256').update(png).digest('hex'), 'X-SEP-Media-Mock': 'false' }
+
+for (const image of referenceImages) it(`image reference upload preserves ${image.mime} bytes and accepts matching metadata`, async () => {
+  const sha256 = createHash('sha256').update(image.bytes).digest('hex')
+  let wrongMime = false
+  const { gateway } = create(async (_url, init) => {
+    assert.ok(init?.body instanceof FormData)
+    const file = init.body.get('file') as Blob & { name: string }
+    assert.equal(file.type, image.mime)
+    assert.equal(file.name, `reference.${image.extension}`)
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), image.bytes)
+    return json({ mock: false, referenceId: 'reference-real', expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      mimeType: wrongMime ? (image.mime === 'image/png' ? 'image/jpeg' : 'image/png') : image.mime,
+      byteLength: image.bytes.length, sha256, width: 1, height: 1 })
+  })
+  assert.equal((await gateway.uploadReference('sub-1', { bytes: image.bytes, mime: image.mime, sha256 }, signal())).referenceId, 'reference-real')
+  wrongMime = true
+  await assert.rejects(gateway.uploadReference('sub-1', { bytes: image.bytes, mime: image.mime, sha256 }, signal()), { code: 'SERVICE_UNAVAILABLE' })
+})
 
 it('keeps token authorization errors distinct from network failures before fetch', async () => {
   let calls = 0

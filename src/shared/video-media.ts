@@ -214,12 +214,13 @@ const currentSepVideoRuntimeSchema = sepRuntimeV3Schema('video').transform((runt
     const operations = profile.operations.filter((op): op is VideoOperation => profile.adapter.operations.includes(op)
       && (op === 'text-to-video' && runtime.tools.includes('video_generate')
         || op === 'image-to-video' && runtime.tools.includes('video_from_image')
-          && !!reference && reference.maxCount >= 1 && reference.minCount <= MAX_MEDIA_REFERENCES && reference.mimeTypes.includes('image/png')))
+          && !!reference && reference.maxCount >= 1 && reference.minCount <= MAX_MEDIA_REFERENCES
+          && reference.mimeTypes.some(mime => ['image/jpeg', 'image/png', 'image/webp'].includes(mime))))
     if (!operations.length) return []
     const referenceSupport = reference && operations.includes('image-to-video') ? {
       maxCount: Math.min(MAX_MEDIA_REFERENCES, reference.maxCount),
       maxInputBytes: Math.min(MAX_MEDIA_REFERENCE_BYTES, reference.maxInputBytes),
-      mimeTypes: reference.mimeTypes.filter(mime => mime === 'image/png'),
+      mimeTypes: reference.mimeTypes.filter(mime => ['image/jpeg', 'image/png', 'image/webp'].includes(mime)),
     } : undefined
     const audioModes = [...new Set(profile.parameters.audio?.values?.filter((value): value is boolean => typeof value === 'boolean') ?? [])]
     return [{ profileId: profile.profileId, configVersion: profile.configVersion, kind: 'video' as const,
@@ -437,7 +438,7 @@ export const videoMockReferenceSchema = z.object({
   width: z.number().int().positive().max(4096),
   height: z.number().int().positive().max(4096),
 }).strict()
-export const videoRealReferenceSchema = videoMockReferenceSchema.extend({ mock: z.literal(false) }).strict()
+export const videoRealReferenceSchema = videoMockReferenceSchema.extend({ mock: z.literal(false), mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']) }).strict()
 export const videoReferenceSchema = z.discriminatedUnion('mock', [videoMockReferenceSchema, videoRealReferenceSchema])
 
 export const videoMockProfilesResponseSchema = z.object({

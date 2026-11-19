@@ -12,8 +12,31 @@ Windows x64、macOS x64/arm64 构建的组件随平台产物合并，发布前�
 
 - 推送与 `package.json` 版本一致的 `v<version>` 或 `client-v<version>` 标签：构建、校验并进入生产发布环境。推荐使用 `v<version>`，例如 `v0.5.1`。
 - GitHub Actions 手动运行：`publish=false` 时只构建和汇总包；`publish=true` 时进入生产发布环境。
+- `transfer` 默认选择 `server-pull`（服务器主动下载）；只有手动选择 `ssh` 才使用原来的 SSH/rsync 上传。推送版本标签时也默认使用 `server-pull`。
 
-流水线在 macOS runner 构建 macOS ARM64/x64 DMG 与 ZIP，在 Windows runner 构建 Windows x64 NSIS EXE；Ubuntu runner 汇总并强制校验 10 个安装包及 blockmap。发布阶段先上传版本目录，再远程校验 SHA256，最后更新 `latest.yml` 和 `latest-mac.yml`。
+流水线在 macOS runner 构建 macOS ARM64/x64 DMG 与 ZIP，在 Windows runner 构建 Windows x64 NSIS EXE；Ubuntu runner 汇总并强制校验 10 个安装包及 blockmap。打包平台、缓存与完整性检查保持不变。
+
+### 默认发布路径：服务器主动下载
+
+1. Actions 合并三平台文件、合并 macOS 清单、校验安装包和九个连接器组件，并生成带版本说明的更新清单。
+2. `server-pull-release.mjs --prepare` 将已验证的文件整理为单独的 GitHub Artifact，不再次压缩安装包；产物名称包含本次运行 ID 和重试次数。
+3. 发布 job 以自身的临时 `github.token` 获取该产物的信息及临时下载地址，校验产物所属运行、提交、大小及 GitHub SHA256。只有该 job 增加 `actions: read`，无需新增长期 GitHub Token Secret。
+4. SSH 只传递小型脚本及发布指令。服务器用 Python 3 标准库和 curl 下载产物，支持断点续传；单次最多下载 300 秒，最多四次，重试时重新获取临时地址。GitHub Token 不发送到服务器，临时地址只经 stdin 传递，不打印、不写入磁盘。
+5. 服务器校验整个归档的 SHA256，限制 ZIP 路径、条目类型、文件数量和大小，再校验版本身份及每个文件的大小和 SHA256。只接受本次发布的文件，拒绝符号链接、越界路径和缺失组件。
+6. 先发布版本目录和内容寻址的连接器组件，保留旧更新清单；文件完整后才原子替换单份 `latest.yml`、`latest-mac.yml`。两份清单不是一次文件系统操作，切换失败会恢复之前的两份清单。
+7. 服务器通过匿名公开 HTTPS 实际下载五个安装包并核验大小和 SHA512，下载九个连接器组件并核验大小和 SHA256，同时核对公开清单内容；全部通过后才向 Actions 返回发布成功。失败或取消时恢复旧更新清单，已完整上传的版本文件保留供排查和重试。
+
+额外的汇总下载产物只保留三天，减少重复占用 GitHub 存储；原始三平台产物仍按原配置保留十四天。临时下载地址过期会重新申请，但已被 GitHub 清理的产物无法继续下载。
+
+服务器需要 Linux、Python 3.10+、curl 以及发布目录写入权限；预检会检查这些条件和剩余磁盘空间。当前下载服务器已具备这些条件，不需要依赖或重启业务 Docker 容器。
+
+私有缓存默认保存在 `/www/sep/.sep-client-releases/<版本>-<运行ID>-<ArtifactID>/`，目录权限为 700。可通过 Environment Variable `SEP_RELEASE_WORK_ROOT` 调整到公开下载目录以外的专用路径；已有目录必须归 SSH 用户所有且权限为 700，脚本不会修改任意已有目录的权限。缓存包含续传数据、发布事务、旧清单备份及发布结果，不会清理历史客户端版本或历史连接器组件。已完成发布的私有下载归档需要按运维保留策略定期清理，清理前先确认没有运行中的发布及回退需要。
+
+Actions 保持 SSH 连接并发送心跳，关闭连接或超过 45 秒没有心跳时服务器会在后续检查点取消操作；清单切换后取消会执行回退。强制杀进程、主机断电等不可恢复中断仍需根据私有事务和备份检查现场，不能将两份清单理解为跨文件原子事务。
+
+### 手动备用：SSH 上传
+
+在 Actions 中选择 Run workflow，设置 `publish=true`、`transfer=ssh`，即可使用原来的上传脚本。该方式不自动降级触发，避免默认下载失败后悄悄进入极慢的大文件上传。原有 Secrets、版本目录保护及更新清单最后发布规则保留。
 
 Windows 的 `npm ci` 使用 CMD，并在安装进程中清除继承的 `PSModulePath`。钉钉 CLI 的安装脚本会经 Node/CMD 启动 `powershell.exe`；清除后由 Windows PowerShell 构造系统模块路径，避免误加载 PowerShell 7 的 Archive 模块导致 `Expand-Archive` 失败。依赖安装脚本仍正常执行。
 

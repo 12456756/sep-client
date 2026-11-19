@@ -396,6 +396,24 @@ export class ConversationExecutor {
     this.conversationAdapters.clear()
   }
 
+  closeBrowsers(): Promise<void> {
+    return Promise.all([...this.conversationAdapters.values()].map(adapter => adapter.closeBrowser())).then(() => undefined)
+  }
+
+  closeBrowser(taskId: string): Promise<void> {
+    const scope = this.options.taskManager.getCurrentUserScope()
+    if (!scope) return Promise.resolve()
+    return this.conversationAdapters.get(`${scope.enterpriseId}:${scope.memberId}:${taskId}`)?.closeBrowser() ?? Promise.resolve()
+  }
+
+  async releaseTaskResources(taskId: string, scope: { enterpriseId: string; memberId: string }): Promise<void> {
+    const key = `${scope.enterpriseId}:${scope.memberId}:${taskId}`
+    const adapter = this.conversationAdapters.get(key)
+    this.conversationAdapters.delete(key)
+    this.conversationStores.delete(key)
+    await adapter?.dispose()
+  }
+
   private async continueAs(
     taskId: string,
     prompt: string,

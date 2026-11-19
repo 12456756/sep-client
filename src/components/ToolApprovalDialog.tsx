@@ -70,7 +70,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       return
     }
     let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
-    if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
+    if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。员工将在原页面继续操作。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
     if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
     if (resubmission) message = isVideo
       ? '原任务是否受理及计费尚未确认，可能仍在生成。仍要创建新的视频任务？新旧任务可能分别生成并计费，原任务状态仍会保留。'

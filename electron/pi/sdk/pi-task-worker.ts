@@ -190,6 +190,7 @@ export class PiTaskWorker {
         },
         reportPolicyEvent: (type, data) => this.emit(type, data),
       }
+      this.checkCancellation()
       const creating = this.sessionAdapter
         ? this.sessionAdapter.open(sessionConfig)
         : this.runtime.createSession(sessionConfig)
@@ -331,6 +332,7 @@ export class PiTaskWorker {
     this.cancelled = true
     this.resolveCancellation()
     this.tokenManager.stop()
+    const closingBrowser = this.sessionAdapter?.closeBrowser()
     if (this.active && this.sessionAdapter && !this.session && !this.setupCleanup) {
       // Queue cleanup now, before a resumed turn can enqueue another shared-session open.
       // Do not await unabortable session creation on the cancellation critical path.
@@ -338,7 +340,7 @@ export class PiTaskWorker {
         log.error('cancelled setup cleanup failed', { taskId: this.context.taskId, runId: this.context.runId, error: String(error) })
       })
     }
-    await this.session?.abort()
+    try { await this.session?.abort() } finally { await closingBrowser }
   }
 
   async discardCurrentTurnFromContext(): Promise<void> {

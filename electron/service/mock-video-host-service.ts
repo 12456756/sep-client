@@ -531,12 +531,12 @@ export class MockVideoHostService {
           const problem = mediaReferenceProblem(references, profile.referenceSupport ?? {
             maxCount: Math.min(profile.capabilities.maxReferenceCount, rule?.maxCount ?? profile.capabilities.maxReferenceCount),
             maxInputBytes: Math.min(profile.capabilities.maxInputBytes, rule?.maxInputBytes ?? profile.capabilities.maxInputBytes),
-            mimeTypes: rule ? rule.mimeTypes.filter(mime => mime === 'image/png') : ['image/png'],
+            mimeTypes: rule ? rule.mimeTypes.filter(mime => ['image/jpeg', 'image/png', 'image/webp'].includes(mime)) : ['image/png'],
           })
           if (problem) throw new AppError('INVALID_ARGUMENT', { message: problem })
           for (const reference of references) {
             const uploaded = videoReferenceSchema.parse(await context.uploadReference(taskId, toolName, reference.bytes, signal))
-            if (uploaded.mock !== this.options.mock || uploaded.sha256.toLowerCase() !== reference.sha256.toLowerCase() || uploaded.byteLength !== reference.bytes.byteLength || Date.parse(uploaded.expiresAt) <= this.now()) throw new AppError('INVALID_STATE')
+            if (uploaded.mock !== this.options.mock || uploaded.mimeType !== reference.mime || uploaded.sha256.toLowerCase() !== reference.sha256.toLowerCase() || uploaded.byteLength !== reference.bytes.byteLength || Date.parse(uploaded.expiresAt) <= this.now()) throw new AppError('INVALID_STATE')
             referenceIds.push(uploaded.referenceId)
           }
         }

@@ -12,6 +12,14 @@ on:
         required: true
         default: false
         type: boolean
+      transfer:
+        description: Server download (recommended), or manual SSH upload fallback
+        required: true
+        default: server-pull
+        type: choice
+        options:
+          - server-pull
+          - ssh
 
 permissions:
   contents: read
@@ -82,10 +90,16 @@ jobs:
           SEP_UPLOAD_SSH_KEY_BASE64: ${{ secrets.SEP_UPLOAD_SSH_KEY_BASE64 }}
           SEP_UPLOAD_KNOWN_HOSTS: ${{ secrets.SEP_UPLOAD_KNOWN_HOSTS }}
           SEP_UPLOAD_PORT: ${{ secrets.SEP_UPLOAD_PORT || '22' }}
+          SEP_RELEASE_TRANSFER: ${{ inputs.transfer || 'server-pull' }}
+          SEP_RELEASE_WORK_ROOT: ${{ vars.SEP_RELEASE_WORK_ROOT || '/www/sep/.sep-client-releases' }}
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
-          node scripts/upload-download-update.mjs --preflight "$version"
+          if [ "$SEP_RELEASE_TRANSFER" = ssh ]; then
+            node scripts/upload-download-update.mjs --preflight "$version"
+          else
+            node scripts/server-pull-release.mjs --preflight "$version"
+          fi
 
   build-mac:
     name: Build macOS (${{ matrix.arch }})
@@ -200,6 +214,12 @@ jobs:
           retention-days: 14
 
   publish:
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 60
+    env:
+      SEP_RELEASE_TRANSFER: ${{ inputs.transfer || 'server-pull' }}
     needs: [validate, preflight, build-mac, build-win]
     if: >-
       always() && needs.validate.result == 'success'
@@ -260,8 +280,34 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+      - name: Prepare verified server download bundle
+        if: (github.event_name == 'push' || inputs.publish == true) && env.SEP_RELEASE_TRANSFER == 'server-pull'
+        run: node scripts/server-pull-release.mjs --prepare release-source release-prepared release-server-pull
+      - name: Save verified server download bundle
+        id: server-pull-artifact
+        if: (github.event_name == 'push' || inputs.publish == true) && env.SEP_RELEASE_TRANSFER == 'server-pull'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sep-client-server-pull-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-server-pull/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+      - name: Download and publish from the server
+        if: (github.event_name == 'push' || inputs.publish == true) && env.SEP_RELEASE_TRANSFER == 'server-pull'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEP_PULL_ARTIFACT_ID: ${{ steps.server-pull-artifact.outputs.artifact-id }}
+          SEP_UPLOAD_HOST: ${{ secrets.SEP_UPLOAD_HOST || '121.37.128.126' }}
+          SEP_UPLOAD_USER: ${{ secrets.SEP_UPLOAD_USER || 'root' }}
+          SEP_UPLOAD_ROOT: ${{ secrets.SEP_UPLOAD_ROOT || '/www/sep/downloads/sep-client/stable' }}
+          SEP_UPLOAD_SSH_KEY_BASE64: ${{ secrets.SEP_UPLOAD_SSH_KEY_BASE64 }}
+          SEP_UPLOAD_KNOWN_HOSTS: ${{ secrets.SEP_UPLOAD_KNOWN_HOSTS }}
+          SEP_UPLOAD_PORT: ${{ secrets.SEP_UPLOAD_PORT || '22' }}
+          SEP_RELEASE_WORK_ROOT: ${{ vars.SEP_RELEASE_WORK_ROOT || '/www/sep/.sep-client-releases' }}
+        run: node scripts/server-pull-release.mjs --publish "$SEP_PULL_ARTIFACT_ID" release-server-pull
       - name: Upload client files and publish manifests last
-        if: github.event_name == 'push' || inputs.publish == true
+        if: (github.event_name == 'push' || inputs.publish == true) && env.SEP_RELEASE_TRANSFER == 'ssh'
         env:
           SEP_UPLOAD_HOST: ${{ secrets.SEP_UPLOAD_HOST || '121.37.128.126' }}
           SEP_UPLOAD_USER: ${{ secrets.SEP_UPLOAD_USER || 'root' }}
@@ -272,5 +318,5 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: node scripts/upload-download-update.mjs release-source release-prepared stable
       - name: Verify the public update feed
-        if: github.event_name == 'push' || inputs.publish == true
+        if: (github.event_name == 'push' || inputs.publish == true) && env.SEP_RELEASE_TRANSFER == 'ssh'
         run: node scripts/test-update-feed.mjs https://sep.longdaoec.com/sep-client/stable/ --require-all-platforms --timeout-ms 120000

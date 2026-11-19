@@ -48,21 +48,36 @@ test('release assembles once and gates production access and upload for each run
     assert.equal(steps[index].if, undefined)
   }
   assert.equal(steps[uploadIndex].run, 'node scripts/upload-download-update.mjs release-source release-prepared stable')
-  const archive = steps.find(step => step.uses === 'actions/upload-artifact@v4')
+  const archive = steps.find(step => step.with?.name === 'sep-client-release-${{ github.run_id }}')
+  const pullArchive = steps.find(step => step.id === 'server-pull-artifact')
+  const pull = steps.find(step => step.name === 'Download and publish from the server')
   const publicCheck = steps.find(step => step.name === 'Verify the public update feed')
   assert.ok(steps.indexOf(publicCheck) > uploadIndex)
-  assert.equal(steps.filter(step => step.uses === 'actions/upload-artifact@v4').length, 1)
-  for (const [event, publish, expected, preflight] of [
-    ['push', undefined, true, 'success'], ['workflow_dispatch', true, true, 'success'],
-    ['workflow_dispatch', false, false, 'skipped'],
+  assert.equal(steps.filter(step => step.uses === 'actions/upload-artifact@v4').length, 2)
+  assert.equal(pullArchive.with['compression-level'], 0)
+  assert.equal(pullArchive.with['retention-days'], 3)
+  assert.equal(pullArchive.with.path, 'release-server-pull/')
+  assert.equal(pullArchive.with.name, 'sep-client-server-pull-${{ github.run_id }}-${{ github.run_attempt }}')
+  assert.ok(steps.indexOf(pullArchive) < steps.indexOf(pull))
+  assert.equal(pull.env.GH_TOKEN, '${{ github.token }}')
+  assert.equal(pull.env.SEP_PULL_ARTIFACT_ID, '${{ steps.server-pull-artifact.outputs.artifact-id }}')
+  assert.equal(job.permissions['actions'], 'read')
+  assert.equal(workflow.on.workflow_dispatch.inputs.transfer.default, 'server-pull')
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.transfer.options, ['server-pull', 'ssh'])
+  for (const [event, publish, expected, preflight, transfer] of [
+    ['push', undefined, true, 'success', undefined], ['workflow_dispatch', true, true, 'success', 'server-pull'],
+    ['workflow_dispatch', true, true, 'success', 'ssh'], ['workflow_dispatch', false, false, 'skipped', 'server-pull'],
   ]) {
-    const context = { github: { event_name: event }, inputs: { publish }, always: () => true,
+    const context = { github: { event_name: event }, inputs: { publish, transfer }, always: () => true,
+      env: { SEP_RELEASE_TRANSFER: transfer || 'server-pull' },
       needs: Object.fromEntries(job.needs.map(name => [name, { result: name === 'preflight' ? preflight : 'success' }])) }
     const evaluate = value => runInNewContext(value.replace(/^\$\{\{\s*|\s*\}\}$/g, ''), context, { timeout: 1000 })
     assert.equal(evaluate(job.if), true)
     assert.equal(evaluate(job.environment.name), expected ? 'sep-download-production' : 'sep-download-validation')
-    assert.equal(evaluate(steps[uploadIndex].if), expected)
-    assert.equal(evaluate(publicCheck.if), expected)
+    assert.equal(evaluate(steps[uploadIndex].if), expected && transfer === 'ssh')
+    assert.equal(evaluate(publicCheck.if), expected && transfer === 'ssh')
+    assert.equal(evaluate(pullArchive.if), expected && transfer !== 'ssh')
+    assert.equal(evaluate(pull.if), expected && transfer !== 'ssh')
     assert.equal(evaluate(archive.if), !expected)
     for (const dependency of job.needs) {
       for (const result of ['failure', 'cancelled']) {

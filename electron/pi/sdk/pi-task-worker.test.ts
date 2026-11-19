@@ -941,6 +941,29 @@ it('cleans a cancelled shared-session setup before admitting the next turn', asy
   } finally { await adapter.dispose() }
 })
 
+it('never opens a shared browser lease after cancellation during connector setup', async () => {
+  let release!: () => void
+  let entered!: () => void
+  const ready = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<undefined>(resolve => { release = () => resolve(undefined) })
+  let sessions = 0
+  const adapter = new SharedPiSession({ async createSession() { sessions++; return new FakeSession() } })
+  const worker = new PiTaskWorker({
+    context: { ...context(await makeDirectory()), resolveConnectorBinding: async () => { entered(); return gate } },
+    sessionAdapter: adapter, getRefreshToken: () => 'test', onAuthenticationRequired: () => {},
+    onApprovalRequest: async () => false, onEvent: () => {}, createTokenManager: () => new FakeTokenManager(),
+  })
+  const pending = worker.run('cancel during setup')
+  const rejected = assert.rejects(pending, /cancelled/)
+  try {
+    await ready
+    await worker.abort()
+    release()
+    await rejected
+    assert.equal(sessions, 0, 'cancelled setup must not revive a browser owner')
+  } finally { release(); await worker.dispose(); await adapter.dispose() }
+})
+
 
 for (const recover of [true, false]) {
   it(`real SDK returns unknown-tool errors to the model and ${recover ? 'allows correction' : 'allows correction after four identical invalid batches'}`, { timeout: 20000 }, async () => {
