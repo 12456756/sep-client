@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 export const CONVERSATION_QUEUE_LIMIT = 10
+const skipToken = z.string().regex(/^[a-f0-9]{64}$/)
 export const conversationQueueItemSchema = z.object({
   id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   prompt: z.string().trim().min(1),
@@ -11,6 +12,7 @@ export const conversationQueueItemSchema = z.object({
 export const conversationQueueInputSchema = z.discriminatedUnion('action', [
   z.object({ taskId: z.string().min(1), action: z.literal('get') }).strict(),
   z.object({ taskId: z.string().min(1), action: z.literal('resume') }).strict(),
+  z.object({ taskId: z.string().min(1), action: z.literal('skip'), skipToken }).strict(),
   z.object({ taskId: z.string().min(1), action: z.literal('prioritize'), entryId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/) }).strict(),
   z.object({
     taskId: z.string().min(1), action: z.literal('recover'),
@@ -21,6 +23,8 @@ export type ConversationQueueInput = z.infer<typeof conversationQueueInputSchema
 export const conversationQueueViewSchema = z.object({
   preparing: z.boolean().optional(),
   paused: z.boolean(),
+  skipToken: skipToken.optional(),
+  skipped: z.boolean().optional(),
   items: z.array(conversationQueueItemSchema),
   failed: conversationQueueItemSchema.nullable(),
 })

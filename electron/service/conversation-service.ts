@@ -230,6 +230,7 @@ export class ConversationService {
     if (type.state !== 'resolved' || type.kind !== 'conversation') throw new AppError('INVALID_ARGUMENT')
     const current = requireScope(this.deps.scope)
     if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    if (action === 'skip') return this.deps.queue.skip(taskId, input.skipToken)
     if (action === 'resume') await this.deps.queue.resume(taskId)
     if (action === 'prioritize') {
       await this.deps.queue.prioritize(taskId, input.entryId)

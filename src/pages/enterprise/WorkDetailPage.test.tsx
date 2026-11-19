@@ -378,7 +378,7 @@ describe('compact failure notice', () => {
     const mounted = mountDetail(item);
     const notice = () => {
       const action = mounted.find(element => typeof element.type === 'function' && element.type.name === 'NeedsYou');
-      return (action.type as (props: unknown) => React.ReactElement)(action.props);
+      return (action.type as (props: unknown) => React.ReactElement | null)(action.props);
     };
     for (const retryState of ['unavailable', 'unconfirmed'] as const) {
       const media = mounted.find(element => element.type === MediaArtifactsPanel);
@@ -387,7 +387,7 @@ describe('compact failure notice', () => {
       const html = renderToStaticMarkup(notice());
       assert.match(html, /请勿重复提交|勿重复提交/);
       assert.doesNotMatch(html, /请重试|重试任务/);
-      const action = React.Children.toArray((notice().props as { children: React.ReactNode }).children)
+      const action = React.Children.toArray((notice()?.props as { children: React.ReactNode }).children)
         .find((child): child is React.ReactElement<{ onClick: () => void }> => React.isValidElement(child) && child.type === 'button');
       assert.ok(action);
       action.props.onClick();
@@ -396,6 +396,14 @@ describe('compact failure notice', () => {
       (mounted.find(element => element.props['aria-label'] === '关闭详情面板').props.onClick as () => void)();
       mounted.render();
     }
+    const conversation = mounted.find(element => typeof element.props.onSkippedChange === 'function');
+    (conversation.props.onSkippedChange as (value: boolean) => void)(true);
+    mounted.render();
+    assert.match(renderToStaticMarkup(notice()), /查看原任务/);
+    const media = mounted.find(element => element.type === MediaArtifactsPanel);
+    (media.props.onSummary as (value: unknown) => void)({ images: 1, videos: 0, error: null, retryState: 'clear' });
+    mounted.render();
+    assert.equal(notice(), null);
     mounted.unmount();
   });
 });

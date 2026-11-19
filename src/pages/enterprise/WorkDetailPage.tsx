@@ -69,6 +69,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const [panel, setPanel] = useState<Panel>(null);
   const inspector = useRef<HTMLDialogElement | null>(null);
   const [mediaSummary, setMediaSummary] = useState<MediaArtifactsSummary>({ images: null, videos: null, error: null, retryState: 'checking' });
+  const [conversationSkipped, setConversationSkipped] = useState(false);
   const handleMediaSummary = useCallback((summary: typeof mediaSummary) => setMediaSummary(summary), []);
   const noConversationResults = mediaSummary.images === 0 && mediaSummary.videos === 0 && !mediaSummary.error;
   const showEmptyResults = work.deliverables.length === 0 && (isConversation ? noConversationResults : !work.arrangementExecution?.media?.length);
@@ -177,11 +178,11 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
       <div className="ent-wk-detail">
         {/* 主轴：两种工作类型都以内容为主体，内部滚动 */}
         <div className="ent-wk-detail-main">
-          <NeedsYou work={work} workspace={workspace} mediaRetryState={isConversation ? mediaSummary.retryState : 'clear'} onViewResults={() => openInspector('results')} />
+          <NeedsYou work={work} workspace={workspace} mediaRetryState={isConversation ? mediaSummary.retryState : 'clear'} conversationSkipped={conversationSkipped} onViewResults={() => openInspector('results')} />
           {work.kind === 'flow' ? <FailedNodeActions work={work} busy={workspace.busy} onRetry={workspace.retryWork} /> : null}
 
           {isConversation ? <section className="ent-chat-panel" aria-label="工作对话">
-            <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} />
+            <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} onSkippedChange={setConversationSkipped} />
           </section> : <ArrangementTranscript work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey}
             busy={workspace.busy} onStop={workspace.stopWork} onResults={() => openInspector('results')} />}
         </div>
@@ -246,8 +247,8 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
 }
 
 /** 等待确认、失败与终止后的恢复操作始终留在主对话区。 */
-function NeedsYou({ work, workspace, mediaRetryState, onViewResults }: {
-  work: WorkItem; workspace: EnterpriseWorkspace; mediaRetryState: MediaRetryState; onViewResults: () => void;
+function NeedsYou({ work, workspace, mediaRetryState, conversationSkipped, onViewResults }: {
+  work: WorkItem; workspace: EnterpriseWorkspace; mediaRetryState: MediaRetryState; conversationSkipped: boolean; onViewResults: () => void;
 }) {
 
   const execution = work.arrangementExecution;
@@ -281,6 +282,8 @@ function NeedsYou({ work, workspace, mediaRetryState, onViewResults }: {
       {!checking && <button type="button" className="ent-btn sm" onClick={onViewResults}>查看原任务</button>}
     </div>;
   }
+
+  if (conversationSkipped) return null;
 
   if (work.status === 'failed') {
     if (work.kind === 'flow' && execution?.nodes.some(node => node.status === 'failed')) return null;

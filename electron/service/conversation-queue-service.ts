@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { ClientTask } from '../../src/shared/types'
 import { CONVERSATION_QUEUE_LIMIT, type ConversationQueueView } from '../../src/shared/conversation-queue'
 import type { ConversationQueueEntry, ConversationQueueRecord, ConversationQueueStorePort } from '../data/conversation-queue-store'
@@ -120,15 +120,32 @@ export class ConversationQueueService {
     })
   }
 
-  private viewOf(record: ConversationQueueRecord): ConversationQueueView {
+  private skippedRun(record: ConversationQueueRecord, task: ClientTask): boolean {
+    return !!task.lastRunId && task.lastRunId === record.skippedRunId
+  }
+
+  private skipToken(record: ConversationQueueRecord, task: ClientTask): string | undefined {
+    if (!record.paused || !task.lastRunId || task.activeRunId || this.initialStarts.has(task.id)
+      || this.options.isBusy?.(task.id) || task.executionHealth === 'start-failed'
+      || record.entries.some(entry => entry.status === 'active')) return undefined
+    const pending = record.entries.filter(entry => entry.status === 'failed' || entry.status === 'waiting')
+    if (!pending.some(entry => entry.status === 'failed') && (this.skippedRun(record, task)
+      || !['failed', 'interrupted', 'paused'].includes(task.status))) return undefined
+    return createHash('sha256').update(JSON.stringify([record.owner, task.id, task.lastRunId, pending.map(entry => [entry.id, entry.runId, entry.status])])).digest('hex')
+  }
+
+  private viewOf(record: ConversationQueueRecord, task: ClientTask): ConversationQueueView {
     const visible = (entry: ConversationQueueEntry) => ({ id: entry.id, prompt: entry.prompt, createdAt: entry.createdAt, attachmentNames: entry.attachmentNames,
       ...(entry.recoveryConfirmationRequired ? { recoveryConfirmationRequired: true } : {}) })
     const failed = record.entries.find(entry => entry.status === 'failed')
-    return { preparing: this.initialStarts.has(record.taskId), paused: record.paused, items: record.entries.filter(entry => entry.status === 'waiting').map(visible), failed: failed ? visible(failed) : null }
+    const skipToken = this.skipToken(record, task)
+    return { preparing: this.initialStarts.has(record.taskId), paused: record.paused, items: record.entries.filter(entry => entry.status === 'waiting').map(visible), failed: failed ? visible(failed) : null,
+      ...(skipToken ? { skipToken } : {}),
+      ...(!failed && !task.activeRunId && this.skippedRun(record, task) ? { skipped: true } : {}) }
   }
 
   view(taskId: string): Promise<ConversationQueueView> {
-    return this.access(taskId, async record => this.viewOf(record))
+    return this.access(taskId, async (record, task) => this.viewOf(record, task))
   }
 
   async enqueue(taskId: string, input: { id: string; prompt: string; requestKey?: string }, prepare: () => Promise<Partial<Prepared>>): Promise<ConversationQueueView & { queued: boolean }> {
@@ -137,7 +154,7 @@ export class ConversationQueueService {
       const duplicate = record.entries.find(entry => entry.id === input.id)
       if (duplicate) {
         if (duplicate.prompt !== input.prompt || duplicate.requestKey !== input.requestKey) throw new AppError('INVALID_ARGUMENT')
-        return { ...this.viewOf(record), queued: duplicate.status === 'waiting' }
+        return { ...this.viewOf(record, task), queued: duplicate.status === 'waiting' }
       }
       if (record.entries.filter(entry => entry.status === 'waiting').length >= CONVERSATION_QUEUE_LIMIT) throw new AppError('CONVERSATION_QUEUE_FULL')
       const prepared = await prepare()
@@ -149,7 +166,7 @@ export class ConversationQueueService {
       record.entries.push({ ...prepared, ...input, runId: input.id, createdAt: Date.now(), status: 'waiting', attachmentNames: prepared.attachmentNames ?? [] })
       await this.options.store.save(record.owner, record)
       assert()
-      return { ...this.viewOf(record), queued }
+      return { ...this.viewOf(record, task), queued }
     })
     if (!lifecycle.aborted) void this.drain(taskId).catch(error => {
       if (!lifecycle.aborted) log.warn('queue scheduling failed', { taskId, error })
@@ -199,7 +216,7 @@ export class ConversationQueueService {
       const priorityInterrupt = record.priorityInterruptRunId === runId && task.status === 'interrupted'
       if (record.priorityInterruptRunId === runId) delete record.priorityInterruptRunId
       if (priorityInterrupt) record.paused = false
-      else if (['failed', 'interrupted'].includes(task.status)) record.paused = true
+      else if (!this.skippedRun(record, task) && ['failed', 'interrupted'].includes(task.status)) record.paused = true
       await this.options.store.save(record.owner, record)
       assert()
       await this.advance(record, task, assert, signal)
@@ -213,8 +230,10 @@ export class ConversationQueueService {
       const recovery = options.messageId !== undefined || options.confirmed !== undefined
       if (recovery && (!failed?.recoveryConfirmationRequired || failed.id !== options.messageId || options.confirmed !== true)) throw new AppError('INVALID_STATE')
       if (failed?.recoveryConfirmationRequired && !recovery) throw new AppError('RECOVERY_CONFIRMATION_REQUIRED')
+      const skipped = !failed && this.skippedRun(record, task)
+      if (skipped && options.retryOriginal) throw new AppError('INVALID_STATE', { message: '这轮已跳过，请发送新消息继续对话。' })
       const unstarted = task.status === 'pending' && !task.lastRunId && task.executionHealth !== 'start-failed'
-      const retryOriginal = !unstarted && !failed && (['failed', 'interrupted'].includes(task.status) || task.executionHealth === 'start-failed'
+      const retryOriginal = !skipped && !unstarted && !failed && (['failed', 'interrupted'].includes(task.status) || task.executionHealth === 'start-failed'
         || options.retryOriginal && !record.entries.some(item => item.status === 'waiting'))
       if (failed || retryOriginal) {
         await this.options.assertReplayAllowed?.(record.owner, task)
@@ -239,6 +258,21 @@ export class ConversationQueueService {
         return
       }
       await this.advance(record, task, assert, signal, !!failed)
+    })
+  }
+
+  skip(taskId: string, expectedToken: string): Promise<ConversationQueueView> {
+    return this.access(taskId, async (record, task, assert) => {
+      if (this.skipToken(record, task) !== expectedToken || !task.lastRunId) {
+        throw new AppError('INVALID_STATE', { message: '当前对话状态已变化，请查看队列后重新操作。' })
+      }
+      for (const entry of record.entries) if (entry.status === 'waiting' || entry.status === 'failed') entry.status = 'cancelled'
+      record.skippedRunId = task.lastRunId
+      record.paused = false
+      delete record.priorityInterruptRunId
+      await this.options.store.save(record.owner, record)
+      assert()
+      return this.viewOf(record, task)
     })
   }
 
