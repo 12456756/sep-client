@@ -114,7 +114,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
         {list(groups.active, '进行中的定时任务')}
         {pendingDefinitions.length ? <><h3>待完成</h3>{list(pendingDefinitions, '待完成的定时任务')}</> : null}
         <details className="ent-sch-nav-fold" open><summary>已暂停<ChevronDown size={14} /><small>{groups.paused.length || ''}</small></summary>{list(groups.paused, '已暂停的定时任务')}</details>
-        {groups.history.length ? <details className="ent-sch-nav-fold" open><summary>历史记录<ChevronDown size={14} /><small>{groups.history.length}</small></summary>{list(groups.history, '定时任务历史', true)}</details> : null}
+        {groups.history.length ? <details className="ent-sch-nav-fold"><summary>历史记录<ChevronDown size={14} /><small>{groups.history.length}</small></summary>{list(groups.history, '定时任务历史', true)}</details> : null}
         {search.trim() && ![...groups.active, ...groups.paused, ...pendingDefinitions, ...groups.history].some(matches) ? <p className="ent-sch-search-empty">没有匹配的任务</p> : null}
         {hasCreations ? <button type="button" className="ent-sch-nav-new" aria-current={creationsView ? 'page' : undefined} onClick={() => workspace.replaceRoute({ name: 'scheduled', view: 'creations' })}>创建进度</button> : null}
       </div>
