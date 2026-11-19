@@ -39,6 +39,7 @@ export const localVideoJobSchema = z.object({
   downloadMs: z.number().int().nonnegative().optional(),
   specFailure: videoSpecFailureSchema.optional(),
   failure: mediaFailureSchema.optional(),
+  submissionFailure: mediaFailureSchema.optional(),
   error: z.string().max(256).nullable(), createdAt: z.number().int().nonnegative(), updatedAt: z.number().int().nonnegative(),
 }).strict().superRefine((job, context) => {
   if (job.request.quoteId !== job.quote.quoteId || job.quote.status !== 'quoted' || job.updatedAt < job.createdAt ||

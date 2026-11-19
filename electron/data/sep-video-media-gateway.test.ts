@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoRequestSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 import { SEP_MEDIA_MOCK_PNG_BASE64 } from '../common/platform/sep-media-gateway-contract'
-import { SepMockVideoGateway, SepVideoGatewayError } from './sep-video-media-gateway'
+import { SepMockVideoGateway, SepRealVideoGateway, SepVideoGatewayError } from './sep-video-media-gateway'
 import { AppError } from '../errors/app-error'
 
 const signal = new AbortController().signal
@@ -35,6 +35,18 @@ function gateway(fetcher: typeof fetch) {
     return 'test-employment-token'
   }, fetch: fetcher })
 }
+
+test('real HTTP 200 preserves partial video outputs and valid per-output reasons', async () => {
+  const receipt = { ...fixture.receipt, mock: false, billingStatus: 'SETTLED', status: 'PARTIAL_SUCCEEDED', pollAfterMs: null,
+    outputs: [fixture.output], recovery: { canQuery: false, canCancel: false, canDownload: true },
+    outputErrors: [{ index: 1, code: 'CONTENT_REJECTED', message: 'private provider body' }, { index: 2, code: 123 }, { index: 99, code: 'INVALID_ARGUMENT' }] }
+  const adapter = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: 'sub-1',
+    token: async () => 'test-token', fetch: async () => json(receipt) })
+  const result = await adapter.getReceipt(receipt.receiptId, signal)
+  assert.equal(result.status, 'PARTIAL_SUCCEEDED')
+  assert.deepEqual(result.outputs, receipt.outputs)
+  assert.deepEqual(result.outputErrors, [{ index: 1, code: 'CONTENT_REJECTED' }])
+})
 async function collect(stream: AsyncIterable<Uint8Array>): Promise<Buffer> {
   const chunks: Uint8Array[] = []
   for await (const chunk of stream) chunks.push(chunk)

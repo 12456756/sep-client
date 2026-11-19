@@ -58,6 +58,7 @@ function render(element: React.ReactElement): string {
 type Overrides = {
   view?: VideoTaskView | null; references?: MediaAssetView[]; busy?: boolean; pending?: string | null
   notice?: { message: string; tone: 'error' | 'success' } | null; error?: string | null
+  presentation?: 'full' | 'results'
 }
 function panel(patch: Overrides = {}): string {
   return render(React.createElement(VideoTaskContent, {
@@ -87,7 +88,7 @@ test('saved conversation video output uses inline playback and folder reveal', (
   assert.doesNotMatch(html, /预览视频成果|导出视频成果/)
 })
 
-test('saved videos keep measured metadata and billing details without mismatch warnings', () => {
+test('saved videos show the measured metadata, billing and specification mismatch without blocking delivery', () => {
   const actual = { ...output, width: 1344, height: 768, durationSeconds: 4.458333 }
   const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [job({
     protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 },
@@ -101,7 +102,8 @@ test('saved videos keep measured metadata and billing details without mismatch w
   assert.match(html, /导出视频成果 1/)
   assert.match(html, /实付 ¥28\.800000/)
   assert.doesNotMatch(html, /尚无视频任务/)
-  assert.doesNotMatch(html, /不一致|不符|OUTPUT_SPEC_MISMATCH/)
+  assert.match(html, /实际产物与约定规格不一致/)
+  assert.doesNotMatch(html, /生成失败|OUTPUT_SPEC_MISMATCH/)
 })
 
 test('real terminal billing stays visible and resumable while preserving measured output metadata', () => {
@@ -274,6 +276,18 @@ test('output specification mismatches remain visible in task data without automa
   const mismatch = job({ generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', billingStatus: 'SETTLED', error: 'OUTPUT_SPEC_MISMATCH' })
   assert.equal(videoTaskIssue([mismatch], 'notice'), null)
   assert.equal(videoTaskIssue([mismatch]), null)
+  assert.match(videoTaskIssue([{ ...mismatch, saveStatus: 'SAVE_FAILED', failure: { code: 'VIDEO_INTEGRITY_MISMATCH', stage: 'video-save' } }])!, /视频保存.*内容与平台记录不一致/)
+})
+
+test('shows a successful video, the failed item and the independent acceptance in compact results', () => {
+  const partial = job({ generationStatus: 'PARTIAL_SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVED',
+    outputs: [output], savedOutputIds: [output.outputId], acceptance: 'unknown',
+    outputErrors: [{ index: 1, code: 'CONTENT_REJECTED' }] })
+  const html = panel({ view: { mock: true, runtime, jobs: [partial] }, presentation: 'results' })
+  assert.match(html, /第 2 项：生成内容被审核拒绝/)
+  assert.match(html, /规格验收尚未确认/)
+  assert.match(html, /视频成果1\.mp4/)
+  assert.doesNotMatch(html, /规格匹配|重新保存|CONTENT_REJECTED/)
 })
 
 test('definitive business rejection shows its cause without recovery or regeneration actions', () => {

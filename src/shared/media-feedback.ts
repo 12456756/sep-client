@@ -11,6 +11,7 @@ export interface MediaIssueState {
   error: string | null
   upstreamError?: MediaUpstreamError
   failure?: MediaFailure
+  submissionFailure?: MediaFailure
   outputErrors?: { index: number; code: string }[]
   canRetrySave?: boolean
   canResumeTracking?: boolean
@@ -93,27 +94,38 @@ export function mediaIssueMessage(job: MediaIssueState, kind: 'image' | 'video')
   // An unconfirmed submission must never be presented as a proven rejection.
   const reason = failureReason(job)
   const receiptReason = job.upstreamError ? mediaUpstreamReason(job.upstreamError.body) : null
+  const outputReasons = outputFailureReasons(job)
   if (job.generationStatus === 'SUBMISSION_UNKNOWN') {
     const advice = job.error === 'QUERY_UNAVAILABLE' || job.canResumeTracking === false
       ? '当前无法查询原任务，请联系平台管理员核实，勿重复提交' : '请查询原任务，勿重复提交'
-    const reasons = [receiptReason, reason].filter(Boolean).join('；')
+    const initialReason = job.submissionFailure ? failureReason({ ...job, failure: job.submissionFailure, error: null }) : null
+    const reasons = [...new Set([receiptReason, initialReason, reason].filter(Boolean))].join('；')
     return `${name}提交结果尚未确认${reasons ? `；已知异常：${reasons}` : ''}；${advice}`
   }
-  if (job.generationStatus === 'RESULT_EXPIRED' || job.error === 'RESULT_EXPIRED') return `${name}结果已过期，无法重新下载`
-  if ((job.canRetrySave === false || job.canDownload === false) && ['MISSING', 'SAVE_FAILED'].includes(job.saveStatus)) return `${reason ? `${reason}；` : ''}原结果当前不可下载，请联系平台管理员。`
+  const generationIssue = ['FAILED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) && receiptReason
+    ? `${job.generationStatus === 'PARTIAL_SUCCEEDED' ? `部分${name}` : name}生成失败：${receiptReason}` : ''
+  if (job.generationStatus === 'RESULT_EXPIRED' || job.error === 'RESULT_EXPIRED') {
+    return [generationIssue, outputReasons, `${name}结果已过期，无法重新下载`].filter(Boolean).join('；')
+  }
+  if ((job.canRetrySave === false || job.canDownload === false) && ['MISSING', 'SAVE_FAILED'].includes(job.saveStatus)) {
+    return [generationIssue, outputReasons, reason, '原结果当前不可下载，请联系平台管理员。'].filter(Boolean).join('；')
+  }
   const recoveryCode = job.failure?.source === 'upstream' ? undefined : job.failure?.businessCode ?? job.failure?.code ?? job.error
-  const outputReasons = outputFailureReasons(job)
   if (job.failure && reason) {
     const advice = job.saveStatus === 'SAVE_FAILED'
       ? `${job.failure.reasonCode === 'ENOSPC' || job.failure.reasonCode === 'EDQUOT' ? '请清理磁盘空间后' : ['EACCES', 'EPERM', 'EROFS'].includes(job.failure.reasonCode ?? '') ? '请检查保存目录的读写权限后' : '请'}重新保存原结果`
       : mediaRecoveryAdvice(recoveryCode)
-    const generationIssue = ['FAILED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) && receiptReason
-      ? `${job.generationStatus === 'PARTIAL_SUCCEEDED' ? `部分${name}` : name}生成失败：${receiptReason}；` : ''
-    return `${generationIssue}${reason}${outputReasons ? `；${outputReasons}` : ''}${job.generationStatus === 'PARTIAL_SUCCEEDED' ? '；已生成的成果可继续使用' : ''}；${advice}，勿重复生成。`
+    return `${generationIssue ? `${generationIssue}；` : ''}${reason}${outputReasons ? `；${outputReasons}` : ''}${job.generationStatus === 'PARTIAL_SUCCEEDED' ? '；已生成的成果可继续使用' : ''}；${advice}，勿重复生成。`
   }
   if (job.upstreamError && ['FAILED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
     const upstreamReason = receiptReason ?? '生成服务返回异常，尚未提供可识别的具体原因'
     return `${job.generationStatus === 'PARTIAL_SUCCEEDED' ? `部分${name}生成失败` : `${name}生成失败`}：${upstreamReason}${outputReasons ? `；${outputReasons}` : ''}；${job.generationStatus === 'PARTIAL_SUCCEEDED' ? '已生成的成果可继续使用；' : ''}请联系平台管理员。`
+  }
+  if (outputReasons && ['FAILED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
+    const details = [reason, outputReasons].filter(Boolean).join('；')
+    return job.generationStatus === 'PARTIAL_SUCCEEDED'
+      ? `部分${name}未生成成功；${details}；已生成的成果可继续使用。`
+      : `${name}生成失败；${details}；${mediaRecoveryAdvice(job.error)}。`
   }
   if (job.error === 'MEDIA_FORBIDDEN') return `当前账号没有${name}生成权限，请联系企业管理员开通权限。`
   if (job.error && Object.hasOwn(MEDIA_BUSINESS_MESSAGES, job.error)) return MEDIA_BUSINESS_MESSAGES[job.error]

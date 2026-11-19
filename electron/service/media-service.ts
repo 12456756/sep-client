@@ -141,6 +141,7 @@ export class MediaService {
       ...(job.downloadMs !== undefined ? { downloadMs: job.downloadMs } : {}),
       error: this.publicJobError(job.errorCode ?? job.error), ...(job.upstreamError ? { upstreamError: job.upstreamError } : {}), createdAt: job.createdAt, updatedAt: job.updatedAt,
       ...(job.failure ? { failure: mediaFailureSchema.parse(job.failure) } : {}),
+      ...(job.submissionFailure ? { submissionFailure: mediaFailureSchema.parse(job.submissionFailure) } : {}),
       ...(job.outputErrors?.length ? { outputErrors: job.outputErrors.filter(item => mediaFailureCodeSchema.safeParse(item.code).success) } : {}),
       assets: jobAssets.map(asset => this.viewAsset(asset)), canRetrySave,
       canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job)
@@ -529,11 +530,16 @@ export class MediaService {
       || (job.receiptId && job.receiptId !== receipt.receiptId) || new Set(receipt.outputs.map(output => output.outputId)).size !== receipt.outputs.length
       || (job.input.protocolVersion !== 3 && job.input.parameters.count !== undefined && receipt.outputs.length > job.input.parameters.count)) throw new AppError('INVALID_ARGUMENT')
     const priorMismatch = job.errorCode === 'OUTPUT_SPEC_MISMATCH'
+    const sameGeneration = !!job.receiptId && terminal.has(job.generationStatus) &&
+      (job.generationStatus === receipt.status || receipt.status === 'RESULT_EXPIRED')
     job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'; job.generationStatus = receipt.status
     job.outputs = receipt.outputs; job.billingStatus = receipt.billingStatus
     job.actualSpec = receipt.actualSpec
-    job.recovery = receipt.recovery; job.errorCode = receipt.errorCode; job.outputErrors = receipt.outputErrors
-    job.upstreamError = safeMediaUpstreamError(receipt.upstreamError)
+    job.recovery = receipt.recovery; job.errorCode = receipt.errorCode
+    job.outputErrors = sameGeneration && !receipt.outputErrors?.length ? job.outputErrors : receipt.outputErrors
+    job.upstreamError = safeMediaUpstreamError(receipt.upstreamError) ?? (sameGeneration ? job.upstreamError : undefined)
+    job.submissionFailure = receipt.status === 'SUBMISSION_UNKNOWN'
+      ? job.submissionFailure ?? (job.failure?.stage === 'image-submit' ? job.failure : undefined) : undefined
     job.failure = undefined
     if (priorMismatch) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
     if (job.input.protocolVersion === 3 && receipt.actualSpec && job.input.requestedSpec && Object.entries(job.input.requestedSpec).some(([key, requested]) => {
@@ -661,6 +667,7 @@ export class MediaService {
         } catch (error) {
           if (parent.aborted) throw parent.reason
           if (!(error instanceof AppError && error.code === 'NOT_FOUND' && !job.receiptId && job.failure)) {
+            if (job.failure?.stage === 'image-submit') job.submissionFailure ??= job.failure
             job.failure = mediaJobFailure(error, job.saveStatus === 'SAVING' ? 'image-save' : 'image-query')
           }
           if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) {

@@ -276,6 +276,7 @@ export interface ArrangementMediaSummary {
   operation: ArrangementMediaOperation
   jobId: string
   phase: ArrangementMediaPhase
+  issue?: string
   lastQueriedAt?: number
   providerWaitMs?: number
   downloadMs?: number

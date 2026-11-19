@@ -181,3 +181,22 @@ it('uses preserved structured reasons for safe query feedback without exposing r
   assert.match(message, /图片查询.*不支持指定尺寸.*原任务/)
   assert.doesNotMatch(message, /123|Private transport detail|Unsupported image dimensions/)
 })
+
+it('keeps image output failures visible when originals are no longer downloadable', () => {
+  const state = { generationStatus: 'PARTIAL_SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVE_FAILED', error: 'DOWNLOAD_UNAVAILABLE',
+    canRetrySave: false, outputErrors: [{ index: 1, code: 'CONTENT_REJECTED' }] } as const
+  const job = { ...state, outputErrors: [...state.outputErrors] }
+  const unavailable = mediaIssueMessage(job, 'image')!
+  assert.match(unavailable, /第 2 项：生成内容被审核拒绝.*原结果当前不可下载/)
+  assert.doesNotMatch(unavailable, /重新保存|重新生成/)
+  assert.match(mediaIssueMessage({ ...job, generationStatus: 'RESULT_EXPIRED' }, 'image')!, /第 2 项.*已过期/)
+})
+
+it('continues inspecting known details under an unmapped platform envelope without exposing raw text', () => {
+  const message = mediaIssueMessage({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: null,
+    upstreamError: { status: 200, body: { source: 'platform', code: 'NEW_PLATFORM_WRAPPER', details: {
+      error: { code: 1234, message: 'Unsupported resolution' }, internal: 'secret internal detail',
+    }, sepDiagnostics: [{ code: 'AUTH_REQUIRED' }] } } }, 'video')!
+  assert.match(message, /视频生成失败.*不支持指定分辨率/)
+  assert.doesNotMatch(message, /1234|Unsupported resolution|internal|授权失效/)
+})

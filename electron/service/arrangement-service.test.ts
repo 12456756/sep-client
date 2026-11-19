@@ -154,6 +154,7 @@ describe('arrangement media stage projection', () => {
         const job = {
           ...(kind === 'image' ? { generationStatus } : { receipt: { status: generationStatus, billingStatus: 'PENDING' } }),
           trackingStatus: stage === 'interrupted' ? 'INTERRUPTED' : 'ACTIVE',
+          ...(stage === 'interrupted' ? { failure: { code: 'NETWORK_TIMEOUT', stage: `${kind}-query`, message: 'private network path' } } : {}),
           saveStatus: saved ? 'SAVED' : stage === 'saving' ? 'SAVING' : 'PENDING',
           lastQueriedAt: 42, providerWaitMs: 30, downloadMs: 10,
         }
@@ -172,6 +173,10 @@ describe('arrangement media stage projection', () => {
         const media = (await service.getExecution('task'))!.media![0]!
         const expected = { queued: 'submitted', running: 'tracking', saving: 'saving', saved: 'materializing', delivered: 'ready', 'delivered-expired': 'ready', interrupted: 'blocked', 'delivery-failed': 'blocked', 'delivery-interrupted': 'blocked', 'delivery-stopped': 'blocked' }
         assert.equal(media.phase, expected[stage])
+        if (stage === 'interrupted') {
+          assert.match(media.issue!, /查询：请求超时/)
+          assert.doesNotMatch(JSON.stringify(media), /private network path|NETWORK_TIMEOUT/)
+        }
         assert.equal(media.lastQueriedAt, 42)
         assert.equal(media.providerWaitMs, 30)
         assert.equal(media.downloadMs, 10)

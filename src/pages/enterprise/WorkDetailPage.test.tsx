@@ -175,6 +175,10 @@ it('keeps pending media visible but removes delivery status after final acceptan
   try {
   const media = [{ nodeId: 'node-a', nodeRunId: 'run-a', kind: 'image' as const, operation: 'generate' as const, phase: 'ready' as const, jobId: 'job-a', outputs: [{ artifactId: 'asset-a', status: 'saved' as const }], inputs: [], pendingActions: [] }];
   const pending = renderToStaticMarkup(React.createElement(ArrangementMediaPanel, { media, deliverables: [] }));
+  const blocked = renderToStaticMarkup(React.createElement(ArrangementMediaPanel, {
+    media: [{ ...media[0], phase: 'blocked', issue: '图片查询：请求超时' }], deliverables: [],
+  }));
+  assert.match(blocked, /交付受阻：图片查询：请求超时/);
   assert.match(pending, /正在整理交付/);
   const done = renderToStaticMarkup(React.createElement(ArrangementMediaPanel, { media, deliverables: [{ id: 'final', nodeId: 'node-a', name: 'mug.png', path: '/work/mug.png', note: '' }] }));
   assert.equal(done, '');

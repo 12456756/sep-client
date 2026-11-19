@@ -115,10 +115,9 @@ export function mediaUpstreamReason(value: unknown, depth = 0): string | null {
     const nested = item.error && typeof item.error === 'object' && !Array.isArray(item.error) ? item.error as Record<string, unknown> : item
     const code = typeof nested.code === 'string' ? nested.code.toUpperCase() : typeof item.code === 'string' ? item.code.toUpperCase() : null
     const source = nested.source ?? item.source
-    if ((source === 'platform' || source === 'sep') && code) {
-      return mediaErrorReason(code)
-    }
-    if (code && Object.hasOwn(UPSTREAM_CODES, code)) return UPSTREAM_CODES[code]
+    const platform = source === 'platform' || source === 'sep'
+    const reason = code && (platform ? mediaErrorReason(code) : Object.hasOwn(UPSTREAM_CODES, code) ? UPSTREAM_CODES[code] : null)
+    if (reason) return reason
     for (const child of [item.error, item.body, item.reason, item.detail, item.details, item.errors]) {
       const reason = mediaUpstreamReason(child, depth + 1)
       if (reason) return reason

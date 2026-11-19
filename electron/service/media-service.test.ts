@@ -17,6 +17,7 @@ import { inspectMediaImage } from '../data/media-image'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { ScopePath } from '../data/scope-path'
 import { mediaJobActions } from '../../src/shared/media-view'
+import { mediaIssueMessage } from '../../src/shared/media-feedback'
 import type { LocalMediaAsset, LocalMediaJob } from '../domain/media'
 import { AppError } from '../errors/app-error'
 import { config } from '../common/config'
@@ -1385,6 +1386,30 @@ describe('MediaService local delivery and original-request recovery', () => {
     await f.service.resume('task-a', first.jobId)
     await assert.rejects(f.service.waitForRun('task-a', first.runId))
     assert.equal(posts, 1)
+  })
+
+  it('keeps the image submit cause after subsequent queries time out without submitting again', async context => {
+    const f = await fixture({}, new MockMediaGateway({ submitResponseLost: true }))
+    const submit = f.gateway.submit.bind(f.gateway)
+    const post = context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+      await submit(...args).catch(() => undefined)
+      throw new AppError('SERVICE_UNAVAILABLE', { details: { source: 'upstream', businessCode: 'PROVIDER_ACCOUNT_DISABLED' } })
+    })
+    const query = context.mock.method(f.gateway, 'findReceipt', async () => { throw new DOMException('Query timed out', 'TimeoutError') })
+    const first = await f.service.generateTaskMedia('task-a', input())
+    await assert.rejects(f.service.waitForRun('task-a', first.runId))
+    const restored = await new MediaStore(f.root).getJob(owner, 'task-a', first.jobId)
+    assert.equal(restored?.failure?.stage, 'image-query')
+    assert.equal(restored?.submissionFailure?.businessCode, 'PROVIDER_ACCOUNT_DISABLED')
+    const view = (await f.service.getTaskMedia('task-a')).jobs[0]!
+    assert.match(mediaIssueMessage(view, 'image')!, /提交结果尚未确认.*图片提交：生成供应商账号已停用.*图片查询：请求超时.*勿重复提交/)
+    query.mock.restore()
+    await f.service.resume('task-a', first.jobId)
+    await f.service.waitForRun('task-a', first.runId)
+    const confirmed = await f.store.getJob(owner, 'task-a', first.jobId)
+    assert.equal(confirmed?.generationStatus, 'SUCCEEDED')
+    assert.equal(confirmed?.submissionFailure, undefined)
+    assert.equal(post.mock.callCount(), 1)
   })
 
   it('recovers NOT_SENT jobs as not submitted and never automatically generates them', async () => {

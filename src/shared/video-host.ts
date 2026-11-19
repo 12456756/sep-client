@@ -82,6 +82,9 @@ export interface VideoJobView {
   error: string | null
   upstreamError?: MediaUpstreamError
   failure?: MediaFailure
+  submissionFailure?: MediaFailure
+  outputErrors?: { index: number; code: string }[]
+  canDownload?: boolean
   outputs: VideoOutput[]
   /** Verified local outputs; supports partial save without hiding existing files. */
   savedOutputIds?: string[]

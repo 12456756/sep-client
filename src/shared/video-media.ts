@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoActualSpecSchema, videoRequestedSpecSchema, type VideoRequestedSpec } from './media-spec-contract'
 import { MAX_MEDIA_REFERENCE_BYTES, MAX_MEDIA_REFERENCES, mediaReferenceSupportSchema, type MediaReferenceSupport } from './media-references'
 import { mediaUpstreamErrorSchema } from './media-upstream-error'
+import { mediaFailureCodeSchema } from './media-failure'
 import { readSepRuntimeV3Metadata, sepRuntimeV3ProfileMetadata, sepRuntimeV3Schema, type SepRuntimeV3ProfileMetadata } from './sep-runtime-v3-contract'
 
 /** Persist only validated public specification diagnostics, never upstream free text. */
@@ -310,6 +311,20 @@ export const videoOutputSchema = z.object({
 }).strict()
 export type VideoOutput = z.infer<typeof videoOutputSchema>
 
+const videoOutputErrorSchema = z.object({ index: z.number().int().min(0).max(3), code: mediaFailureCodeSchema }).strip()
+export const videoOutputErrorsSchema = z.array(videoOutputErrorSchema).max(4)
+
+// Optional diagnostics must not invalidate the receipt or discard successful outputs.
+const videoReceiptOutputErrorsSchema = z.preprocess(value => {
+  if (!Array.isArray(value)) return undefined
+  const items = new Map<number, z.infer<typeof videoOutputErrorSchema>>()
+  for (const candidate of value.slice(0, 32)) {
+    const entry = videoOutputErrorSchema.safeParse(candidate)
+    if (entry.success && !items.has(entry.data.index)) items.set(entry.data.index, entry.data)
+  }
+  return items.size ? [...items.values()].sort((a, b) => a.index - b.index) : undefined
+}, videoOutputErrorsSchema.optional()).optional()
+
 const videoReceiptBaseSchema = z.object({
   receiptId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
   clientRequestId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
@@ -319,6 +334,7 @@ const videoReceiptBaseSchema = z.object({
   status: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED', 'SUBMISSION_UNKNOWN']),
   pollAfterMs: z.number().int().nonnegative().nullable(),
   outputs: z.array(videoOutputSchema).max(4),
+  outputErrors: videoReceiptOutputErrorsSchema,
   errorCode: z.string().nullable(),
   upstreamError: mediaUpstreamErrorSchema.optional(),
   recovery: z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict(),

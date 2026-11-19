@@ -38,7 +38,7 @@ const jobSchema = z.object({
   lastQueriedAt: timestamp.optional(),
   providerWaitMs: timestamp.optional(), downloadMs: timestamp.optional(),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(), upstreamError: mediaUpstreamErrorSchema.optional(),
-  failure: mediaFailureSchema.optional(),
+  failure: mediaFailureSchema.optional(), submissionFailure: mediaFailureSchema.optional(),
   attempts: z.number().int().nonnegative(), error: z.string().max(20_000).nullable(), createdAt: timestamp, updatedAt: timestamp,
 }).strict().superRefine((job, context) => {
   const { request, input, profile, quote } = job

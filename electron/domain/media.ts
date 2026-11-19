@@ -109,6 +109,7 @@ export interface LocalMediaJob {
   recovery?: MediaReceipt['recovery']
   errorCode?: MediaReceipt['errorCode']
   failure?: MediaFailure
+  submissionFailure?: MediaFailure
   outputErrors?: MediaReceipt['outputErrors']
   upstreamError?: MediaUpstreamError
   /** Last provider status query, retained for recovery diagnostics. */

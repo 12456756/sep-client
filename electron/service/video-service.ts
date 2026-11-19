@@ -64,7 +64,7 @@ export class VideoService {
     if ((job.executionMode ?? 'mock') !== this.mode) throw new AppError('PERMISSION_DENIED')
     return job
   }
-  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'failure' | 'specFailure' | 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error' | 'lastQueriedAt' | 'providerWaitMs' | 'downloadMs'>>): Promise<LocalVideoJob> {
+  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'failure' | 'submissionFailure' | 'specFailure' | 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error' | 'lastQueriedAt' | 'providerWaitMs' | 'downloadMs'>>): Promise<LocalVideoJob> {
     return this.store.updateJob(this.scope, job.taskId, job.jobId, previous => ({ ...previous, ...fields, updatedAt: Math.max(this.now(), previous.updatedAt) }))
   }
 
@@ -139,7 +139,14 @@ export class VideoService {
       if (!receiptMatchesRequest(previous, receipt) || (previous.receipt && previous.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')
       if (previous.receipt && terminal.has(previous.receipt.status) && !terminal.has(receipt.status)) return previous
       const isTerminal = terminal.has(receipt.status)
-      return { ...previous, receipt, specFailure: undefined, failure: undefined, submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode,
+      const prior = previous.receipt
+      const sameGeneration = prior && terminal.has(prior.status) && (prior.status === receipt.status || receipt.status === 'RESULT_EXPIRED')
+      const next = sameGeneration ? { ...receipt, outputErrors: receipt.outputErrors ?? prior.outputErrors,
+        upstreamError: receipt.upstreamError ?? prior.upstreamError } : receipt
+      const unknown = receipt.status === 'SUBMISSION_UNKNOWN'
+      const submissionFailure = unknown ? previous.submissionFailure ?? (previous.failure?.stage === 'video-submit' ? previous.failure : undefined) : undefined
+      return { ...previous, receipt: next, specFailure: unknown ? previous.specFailure : undefined, failure: undefined, submissionFailure,
+        submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode,
         ...(isTerminal && previous.providerWaitMs === undefined ? { providerWaitMs: Math.max(0, this.now() - previous.createdAt) } : {}),
         updatedAt: Math.max(this.now(), previous.updatedAt) }
     })
@@ -218,7 +225,8 @@ export class VideoService {
             ? await abortableVideo(this.gateway.getReceipt(job.receipt.receiptId, signal), signal)
             : await abortableVideo(this.gateway.findReceipt(job.request.clientRequestId, signal), signal)
         } catch (error) {
-          return this.update(job, { ...interrupted(error, 'VIDEO_QUERY_INTERRUPTED'), failure: mediaJobFailure(error, 'video-query'), lastQueriedAt: queriedAt })
+          return this.update(job, { ...interrupted(error, 'VIDEO_QUERY_INTERRUPTED'), failure: mediaJobFailure(error, 'video-query'),
+            submissionFailure: job.submissionFailure ?? (job.failure?.stage === 'video-submit' ? job.failure : undefined), lastQueriedAt: queriedAt })
         }
         if (!receipt) return this.update(job, { trackingStatus: 'INTERRUPTED', error: job.error ?? 'SUBMISSION_UNKNOWN', lastQueriedAt: queriedAt })
         signal.throwIfAborted()

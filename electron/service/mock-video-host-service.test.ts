@@ -147,7 +147,7 @@ test('real host approves actual CNY quote, freezes mode, saves and reopens witho
   await reopened.stopAll()
 })
 
-test('video host ignores persisted specification mismatch without changing saved outputs or billing', async () => {
+test('video host projects persisted specification mismatch independently of saved outputs and billing', async () => {
   const f = await realSetup()
   try {
     const job = await f.host.generate('task-a', input())
@@ -157,6 +157,7 @@ test('video host ignores persisted specification mismatch without changing saved
       error: 'OUTPUT_SPEC_MISMATCH', receipt: { ...previous.receipt!, acceptance: 'mismatched', deliveryStatus: 'mismatched' } }))
     const view = (await f.host.getTaskVideo('task-a')).jobs[0]
     assert.equal(view.error, null)
+    assert.equal(view.acceptance, 'mismatched')
     assert.equal(view.generationStatus, 'SUCCEEDED')
     assert.equal(view.saveStatus, 'SAVED')
     assert.equal(view.actualCostCny, saved.actualCostCny)
