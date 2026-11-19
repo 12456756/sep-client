@@ -626,9 +626,9 @@
 .ent-talk { display: flex; max-height: 400px; flex-direction: column; gap: 14px; margin-bottom: 12px; overflow-y: auto; }
 .ent-talk-sys { margin: 0; padding: 8px 11px; border-radius: var(--ent-radius-sm); background: var(--ent-panel-subtle); color: var(--ent-ink-2); font-size: var(--ent-fs-note); line-height: 1.7; }
 .ent-say { display: flex; max-width: 82%; flex-direction: column; gap: 5px; }
-.ent-say p { margin: 0; padding: 10px 14px; border-radius: 12px 12px 12px 4px; background: #f5f5f7; color: var(--ent-ink); font-size: var(--ent-fs-body); line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ent-say > p { margin: 0; padding: 10px 14px; border-radius: 12px 12px 12px 4px; background: #f5f5f7; color: var(--ent-ink); font-size: var(--ent-fs-body); line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ent-say.user { align-items: flex-end; margin-left: auto; }
-.ent-say.user p { border-radius: 12px 12px 4px 12px; background: var(--ent-brand-soft); }
+.ent-say.user > p { border-radius: 12px 12px 4px 12px; background: var(--ent-brand-soft); }
 /* 连续同一位员工说话只在第一条写名字，不然名字比内容还密。 */
 .ent-say-who { display: inline-flex; align-items: center; gap: 7px; color: var(--ent-ink-2); font-size: var(--ent-fs-body); font-weight: 600; }
 

@@ -1,5 +1,5 @@
 import { Eye, LoaderCircle } from 'lucide-react'
-import { Component, useState, type ComponentType, type ReactNode } from 'react'
+import { Component, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { operationFailure } from '../../shared/arrangement-feedback'
 import { supportsDocumentPreview, type DocumentPreviewRequest } from '../../shared/document-preview'
@@ -20,11 +20,16 @@ class PreviewBoundary extends Component<{ children: ReactNode; onClose(): void; 
 export function DocumentPreviewButton(props: Props) {
   const previewId = 'fileId' in props ? props.fileId : `${props.nodeId}:${props.deliverableId}`
   const { capture } = useOperationFeedback(`${props.taskId}:${previewId}`)
+  const trigger = useRef<HTMLButtonElement>(null)
   const [Dialog, setDialog] = useState<ComponentType<DocumentPreviewDialogProps> | null>(null)
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
   if (!supportsDocumentPreview(props.format)) return null
+  const close = () => {
+    setOpen(false)
+    trigger.current?.focus({ preventScroll: true })
+  }
   const show = async () => {
     const notice = capture()
     setError(false)
@@ -37,9 +42,9 @@ export function DocumentPreviewButton(props: Props) {
     finally { if (notice.isCurrent()) setLoading(false) }
   }
   return <>
-    <button type="button" className="ent-btn sm" title={error ? '预览加载失败，点击重试' : '预览文档'} aria-label={`预览文档：${props.name}`} disabled={loading} onClick={() => void show()}>
+    <button ref={trigger} type="button" className="ent-btn sm" title={error ? '预览加载失败，点击重试' : '预览文档'} aria-label={`预览文档：${props.name}`} disabled={loading} onClick={() => void show()}>
       {loading ? <LoaderCircle size={14} className="animate-spin" /> : <Eye size={14} />}<span>{error ? '重试' : '预览'}</span>
     </button>
-    {Dialog && open ? <PreviewBoundary onFailure={() => capture().show(operationFailure('documentPreview'))} onClose={() => setOpen(false)}><Dialog {...props} onClose={() => setOpen(false)} /></PreviewBoundary> : null}
+    {Dialog && open ? <PreviewBoundary onFailure={() => capture().show(operationFailure('documentPreview'))} onClose={close}><Dialog {...props} onClose={close} /></PreviewBoundary> : null}
   </>
 }
