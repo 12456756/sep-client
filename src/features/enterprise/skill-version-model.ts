@@ -23,7 +23,7 @@ export function buildSkillVersions(skill: SkillLibraryItem): SkillVersionEntry[]
   const entries: SkillVersionEntry[] = skill.localVersions.map(local => {
     const version = skill.versions.find(version => version.id === local.uploadedVersion?.id) ?? local.uploadedVersion;
     const aliases = [local.idempotencyKey, ...(version ? [version.id] : [])];
-    return { id: local.idempotencyKey, aliases, label: local.request.changeSummary || '个人修改版', status: localSkillVersionStatus(skill, local), createdAt: local.createdAt, local, version,
+    return { id: local.idempotencyKey, aliases, label: local.request.changeSummary?.trim() || '个人修改版', status: localSkillVersionStatus(skill, local), createdAt: local.createdAt, local, version,
       usable: skill.usableVersionIds.includes(local.idempotencyKey), parentVersionId: version?.id ?? local.request.parentVersionId,
       usedBy: bindings.filter(binding => binding.selectedVersionId !== null && aliases.includes(binding.selectedVersionId)).map(binding => binding.subscriptionId) };
   });

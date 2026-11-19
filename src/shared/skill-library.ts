@@ -40,6 +40,16 @@ export interface SkillLibraryItem {
   localVersions: LocalSkillSubmission[]
 }
 
+export const SKILL_VERSION_NAME_TAKEN = '已有同名个人版本，请使用其他版本名称。'
+
+export function hasPersonalSkillVersionName(item: Pick<SkillLibraryItem, 'localVersions' | 'versions'>, name: string, excludeKey?: string): boolean {
+  const normalized = name.trim()
+  if (!normalized) return false
+  const excludedRemoteId = item.localVersions.find(local => local.idempotencyKey === excludeKey)?.uploadedVersion?.id
+  return item.localVersions.some(local => local.idempotencyKey !== excludeKey && local.request.changeSummary?.trim() === normalized) ||
+    item.versions.some(version => version.scope === 'PERSONAL' && version.id !== excludedRemoteId && version.changeSummary?.trim() === normalized)
+}
+
 export interface SaveSkillInput {
   request: PersonalSkillVersionRequest
   idempotencyKey: string

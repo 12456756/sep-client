@@ -28,6 +28,25 @@ test('local upload is one row with aliases, latest review, and local availabilit
   assert.deepEqual(entry.usedBy, ['a', 'b']);
   assert.equal(unifiedSkillVersion(rejected)?.id, 'local');
 });
+
+test('legacy same-name versions retain their short names and independent IDs while uploaded aliases remain one entry', () => {
+  const older = { ...local, request: { ...local.request, changeSummary: '版本1' }, createdAt: '2026-11-12T02:40:04Z' };
+  const newer = { ...older, idempotencyKey: 'local-new', uploadedVersion: { ...uploaded, id: 'uploaded-new' }, createdAt: '2026-11-19T08:32:44Z' };
+  const item: SkillLibraryItem = { ...skill, versions: [approved, uploaded, newer.uploadedVersion], localVersions: [older, newer],
+    usableVersionIds: [...skill.usableVersionIds, newer.idempotencyKey], bindings: skill.bindings.map(binding => ({ ...binding, selectedVersionId: newer.uploadedVersion.id })) };
+  const entries = buildSkillVersions(item);
+  const personal = entries.filter(entry => entry.local);
+  assert.equal(personal.length, 2);
+  assert.deepEqual(personal.map(entry => entry.label), ['版本1', '版本1']);
+  assert.deepEqual(buildSkillSelectionOptions(item).slice(1).map(entry => entry.label), ['版本1', '版本1']);
+  assert.equal(findSkillVersion(entries, 'uploaded-new')?.id, newer.idempotencyKey);
+  assert.equal(unifiedSkillSelection(item)?.id, newer.idempotencyKey);
+  assert.equal(initialSkillViewingVersion(item), newer.idempotencyKey);
+  assert.equal(older.request.changeSummary, '版本1');
+  assert.equal(newer.request.changeSummary, '版本1');
+  assert.deepEqual(buildSkillVersions({ ...item, localVersions: [newer, older], versions: [...item.versions].reverse() }), entries);
+});
+
 test('mixed and unavailable usage do not create false uniformity, source only selects viewing', () => {
   const mixed = { ...skill, bindings: skill.bindings.map((binding, index) => ({ ...binding, selectedVersionId: index ? 'enterprise' : 'local' })) };
   assert.equal(unifiedSkillVersion(mixed), undefined);

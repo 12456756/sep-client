@@ -4,11 +4,18 @@ import type { SaveSkillResult, SkillLibraryItem } from '../../shared/skill-libra
 import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../shared/skill-library';
 import type { SkillRewriteInput, SkillRewriteResult } from '../../shared/skill-rewrite';
 import { classifySkillLoadError, formatSkillRateLimitMessage, type SkillLoadError, type SkillLoadErrorKind } from './skill-load-state';
+import { SkillRewriteSession } from './skill-rewrite-session';
 
-/** Server metadata and durable local versions only. No browser-side skill copies. */
+/** Server metadata, durable local versions and in-memory editing sessions. */
 export function useSkillLibrary(scopeKey: string, enabled = true) {
-  const identity = useMemo(() => ({ scopeKey, active: true }), [scopeKey]);
+  const identity = useMemo(() => ({ scopeKey, active: true, rewriteSessions: new Map<string, SkillRewriteSession>() }), [scopeKey]);
   useLayoutEffect(() => { identity.active = true; return () => { identity.active = false; }; }, [identity]);
+  const rewriteSessions = identity.rewriteSessions;
+  const getSkillRewriteSession = useCallback((capabilityId: string): SkillRewriteSession => {
+    let session = rewriteSessions.get(capabilityId);
+    if (!session) { session = new SkillRewriteSession(() => identity.active); rewriteSessions.set(capabilityId, session); }
+    return session;
+  }, [rewriteSessions, identity]);
   const [skills, setSkills] = useState<SkillLibraryItem[]>([]);
   const [stateScopeKey, setStateScopeKey] = useState(scopeKey);
   const [skillsLoading, setLoading] = useState(enabled);
@@ -195,9 +202,10 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
     const saved = result.data;
     generation.current += 1;
     setLoading(false);
-    // The durable save succeeded; a failed metadata refresh must not hide the new version.
+    // A successful save also persists the personal selection for every binding.
     setSkills(current => current.map(item => item.capability.id !== request.capabilityId ? item : saved.item ?? {
       ...item,
+      bindings: item.bindings.map(binding => ({ ...binding, selectionMode: 'personal', selectedVersionId: saved.idempotencyKey })),
       versions: saved.version ? [...item.versions.filter(version => version.id !== saved.version!.id), saved.version] : item.versions,
       usableVersionIds: [...new Set([...item.usableVersionIds, idempotencyKey])],
       localVersions: [...item.localVersions.filter(local => local.idempotencyKey !== idempotencyKey), {
@@ -231,6 +239,7 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
     refreshSkills,
     previewSkillSource,
     rewriteSkillSource,
+    getSkillRewriteSession,
     cancelSkillRewrite,
     selectSkillVersion,
     saveSkillSource,

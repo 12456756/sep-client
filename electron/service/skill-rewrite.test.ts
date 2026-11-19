@@ -44,7 +44,7 @@ async function fixture(rewrite: SkillRewritePort['rewrite'] = async () => output
     switchScope: (value: TaskOwnerScope | null) => { scope = value }, denyModel: () => { allowed = false } }
 }
 
-test('rewriting preserves all metadata, only saving creates a version, and saving does not select it', async () => {
+test('rewriting preserves all metadata without selecting a version, and saving automatically selects the new source', async () => {
   const f = await fixture(async request => {
     assert.equal(request.subscriptionId, 'sub')
     assert.equal(request.skillName, 'Report')
@@ -55,10 +55,14 @@ test('rewriting preserves all metadata, only saving creates a version, and savin
   assert.equal(result.content, metadata + output.body.replace(/\n/g, '\r\n'))
   assert.deepEqual(await f.submissions.list(owner, 'cap'), [])
   assert.equal(f.uploaded(), 0)
+  assert.equal(await f.versions.selected(owner, 'sub', 'cap'), null)
   const saved = await f.service.save({ idempotencyKey: 'rewrite-save-00000001', request: { capabilityId: 'cap', parentVersionId: 'v1', content: result.content, changeSummary: 'Sources' } })
   assert.equal(saved.uploaded, false)
   assert.equal((await f.submissions.list(owner, 'cap'))[0].request.content, result.content)
-  assert.equal(await f.versions.selected(owner, 'sub', 'cap'), null)
+  const selected = await f.versions.selected(owner, 'sub', 'cap')
+  assert.ok(selected)
+  assert.equal((await f.versions.load(owner, 'sub', 'cap', selected))?.content, result.content)
+  assert.equal(saved.item?.bindings[0].selectedVersionId, saved.idempotencyKey)
 })
 
 test('unauthorized capability, version and model never reach generation', async () => {

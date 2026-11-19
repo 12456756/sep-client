@@ -1,5 +1,5 @@
 import { ArrowUp, Check, ClipboardList, GitCompareArrows, ListChecks, LoaderCircle, MessageSquare, Pencil, RefreshCw, ShieldCheck, Sparkles, Square, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { IconHint } from '../IconHint';
 import { ModelSelector } from '../ModelSelector';
 import { ComposerResizeHandle } from '../ComposerResizeHandle';
@@ -11,6 +11,8 @@ import type { SkillRewriteInput, SkillRewriteResult } from '../../../shared/skil
 import { SkillRewriteComparison } from './SkillRewriteComparison';
 import type { SkillDraftChange, SkillManualEdit } from '../../../features/enterprise/skill-draft-history';
 import { SkillEditRecord } from './SkillEditRecord';
+import type { AdjustmentRecord, RewriteRound, SkillRewriteSession } from '../../../features/enterprise/skill-rewrite-session';
+import { effectiveRewriteStatus } from '../../../features/enterprise/skill-rewrite-session';
 
 interface Props {
   content: string;
@@ -22,22 +24,8 @@ interface Props {
   undoHead?: Pick<SkillDraftChange, 'id' | 'kind'>;
   manualEdits: readonly SkillManualEdit[];
   onUndo(id: string): boolean;
-  onGeneratingChange(generating: boolean): void;
+  session: SkillRewriteSession;
 }
-
-type RoundStatus = 'generating' | 'pending' | 'accepted' | 'ignored' | 'superseded' | 'undone' | 'stale' | 'failed' | 'cancelled';
-interface RewriteRound {
-  kind: 'rewrite';
-  id: string;
-  prompt: string;
-  source: string;
-  revision: number;
-  model: string;
-  status: RoundStatus;
-  result?: SkillRewriteResult;
-  error?: string;
-}
-type AdjustmentRecord = RewriteRound | (SkillManualEdit & { kind: 'manual' });
 
 const shortcuts = [
   { label: '补充要求', icon: ShieldCheck, prompt: '请补充以下工作要求：' },
@@ -49,15 +37,11 @@ const statusLabels = {
   undone: '已撤销本轮采纳', stale: '草稿已更新，请基于当前内容重新生成', cancelled: '已停止生成',
 };
 const changeLabels = { add: '新增', change: '调整', remove: '删除' };
-const effectiveStatus = (round: RewriteRound, revision: number): RoundStatus => round.status === 'pending' && round.revision !== revision ? 'stale' : round.status;
-
-export function SkillRewriteComposer({ content, revision, disabled, onRewrite, onCancel, onApply, undoHead, manualEdits, onUndo, onGeneratingChange }: Props): React.JSX.Element {
-  const [prompt, setPrompt] = useState('');
-  const [rounds, setRounds] = useState<AdjustmentRecord[]>([]);
-  const [modelId, setModelId] = useState('');
-  const [generating, setGenerating] = useState(false);
-  const [cancelError, setCancelError] = useState('');
-  const active = useRef<string | null>(null);
+export function SkillRewriteComposer({ content, revision, disabled, onRewrite, onCancel, onApply, undoHead, manualEdits, onUndo, session }: Props): React.JSX.Element {
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const { prompt, rounds, modelId, cancelError } = state;
+  const generating = Boolean(state.activeRequestId);
+  const setRounds = (update: (rounds: AdjustmentRecord[]) => AdjustmentRecord[]): void => session.setRounds(update);
   const input = useRef<HTMLTextAreaElement>(null);
   const composer = useRef<HTMLDivElement>(null);
   const history = useRef<HTMLDivElement>(null);
@@ -69,7 +53,7 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
   const rewriteNumbers = new Map(rounds.filter(round => round.kind === 'rewrite').map((round, index) => [round.id, index + 1]));
 
   useEffect(() => {
-    setRounds(current => {
+    session.setRounds(current => {
       const edits = new Map(manualEdits.map(edit => [edit.id, edit]));
       const known = new Set(current.map(item => item.id));
       return [
@@ -77,14 +61,7 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
         ...manualEdits.filter(edit => !known.has(edit.id)).map(edit => ({ ...edit, kind: 'manual' as const })),
       ];
     });
-  }, [manualEdits]);
-
-  useEffect(() => () => {
-    const requestId = active.current;
-    active.current = null;
-    if (requestId) void onCancel(requestId).catch(() => undefined);
-    onGeneratingChange(false);
-  }, [onCancel, onGeneratingChange]);
+  }, [manualEdits, session]);
   useEffect(() => {
     const panel = history.current;
     const last = panel?.lastElementChild;
@@ -93,47 +70,16 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
 
   const preview = async (request = prompt, previousModelId?: string): Promise<void> => {
     const model = previousModelId && models.includes(previousModelId) ? previousModelId : selectedModel;
-    if (disabled || active.current || !model || !request.trim() || !content.trim()) return;
+    if (disabled || generating || !model || !request.trim() || !content.trim()) return;
     const round: RewriteRound = { kind: 'rewrite', id: crypto.randomUUID(), prompt: request.trim(), source: content, revision, model, status: 'generating' };
-    const previous: SkillRewriteInput['history'] = rounds.flatMap(item => {
-      if (item.kind !== 'rewrite') return [];
-      const status = effectiveStatus(item, revision);
-      return item.result && status !== 'generating' && status !== 'failed' && status !== 'cancelled'
-        ? [{ prompt: item.prompt, content: item.result.content, status }] : [];
-    }).slice(-3);
-    active.current = round.id;
-    setGenerating(true); onGeneratingChange(true); setCancelError('');
-    setRounds(current => [...current, round]); setPrompt('');
     input.current?.focus();
-    try {
-      const result = await onRewrite({ requestId: round.id, content, prompt: round.prompt, modelId: model, history: previous });
-      if (active.current !== round.id) return;
-      if (result.requestId !== round.id) throw new Error('改写结果与本轮请求不匹配，请重试');
-      setRounds(current => current.map(item => item.kind !== 'rewrite' ? item : item.id === round.id ? { ...item, result, status: 'pending' }
-        : item.status === 'pending' ? { ...item, status: 'superseded' } : item));
-    } catch (cause) {
-      if (active.current === round.id) setRounds(current => current.map(item => item.kind === 'rewrite' && item.id === round.id
-        ? { ...item, status: 'failed', error: cause instanceof Error ? cause.message : '生成失败，请重试' } : item));
-    } finally {
-      if (active.current === round.id) {
-        active.current = null; setGenerating(false); onGeneratingChange(false);
-      }
-    }
+    await session.generate(round, onRewrite);
   };
   const cancel = async (): Promise<void> => {
-    const requestId = active.current;
-    if (!requestId) return;
-    try {
-      await onCancel(requestId);
-      if (active.current !== requestId) return;
-      active.current = null; setGenerating(false); onGeneratingChange(false);
-      setRounds(current => current.map(item => item.kind === 'rewrite' && item.id === requestId ? { ...item, status: 'cancelled' } : item));
-    } catch (cause) {
-      setCancelError(cause instanceof Error ? cause.message : '停止失败，请重试');
-    }
+    await session.cancel(onCancel);
   };
   const accept = (round: RewriteRound): void => {
-    if (disabled || generating || !round.result || effectiveStatus(round, revision) !== 'pending') return;
+    if (disabled || generating || !round.result || effectiveRewriteStatus(round, revision) !== 'pending') return;
     if (!onApply(round.revision, round.result.content, round.id)) return;
     setRounds(current => current.map(item => item.kind === 'rewrite' && item.id === round.id ? { ...item, status: 'accepted' } : item));
     input.current?.focus();
@@ -157,7 +103,7 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
           </article>;
         }
         const number = rewriteNumbers.get(round.id)!;
-        const status = effectiveStatus(round, revision);
+        const status = effectiveRewriteStatus(round, revision);
         const canUndo = undoHead?.id === round.id && content === round.result?.content;
         const undoHint = canUndo ? '撤销本轮采纳' : undoHead?.kind === 'manual' ? '请先撤销手动编辑' : '请先撤销后续修改';
         return <article className="skill-chat-round" key={round.id} aria-label={`第 ${number} 轮调整`}>
@@ -183,10 +129,10 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
     <div className="skill-chat-input-area">
       {catalog.error ? <p className="skill-error" role="alert">{catalog.error}{catalog.retry ? <button className="skill-text-button" type="button" onClick={catalog.retry}>重试</button> : null}</p> : !models.length ? <p className="skill-caption" role="status">暂无可用模型</p> : null}
       {cancelError ? <p className="skill-error" role="alert">{cancelError}</p> : null}
-      <div className="skill-rewrite-shortcuts" aria-label="快捷调整要求">{shortcuts.map(item => <button type="button" key={item.label} disabled={disabled} onClick={() => { setPrompt(item.prompt); input.current?.focus(); }}><item.icon size={13} aria-hidden />{item.label}</button>)}</div>
+      <div className="skill-rewrite-shortcuts" aria-label="快捷调整要求">{shortcuts.map(item => <button type="button" key={item.label} disabled={disabled} onClick={() => { session.update({ prompt: item.prompt }); input.current?.focus(); }}><item.icon size={13} aria-hidden />{item.label}</button>)}</div>
       <div ref={composer} className="skill-rewrite-composer">
-        <textarea ref={input} value={prompt} rows={1} maxLength={8_000} aria-label="技能调整要求" placeholder="描述你的调整要求…" disabled={disabled} onChange={event => setPrompt(event.target.value)} onKeyDown={event => { if (isSubmitEnter(event, event.nativeEvent.isComposing)) { event.preventDefault(); void preview(); } }} />
-        <div className="skill-rewrite-tools"><div className="skill-rewrite-model"><ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={disabled || generating} onChange={setModelId} /></div>{generating ? <IconHint label="停止生成" side="top"><button type="button" className="skill-rewrite-send" aria-label="停止生成" onClick={() => void cancel()}><Square size={14} aria-hidden /></button></IconHint> : <IconHint label="发送调整要求" side="top"><button type="button" className="skill-rewrite-send" aria-label="发送调整要求" disabled={disabled || !selectedModel || !prompt.trim() || !content.trim()} onClick={() => void preview()}><ArrowUp size={18} aria-hidden /></button></IconHint>}</div>
+        <textarea ref={input} value={prompt} rows={1} maxLength={8_000} aria-label="技能调整要求" placeholder="描述你的调整要求…" disabled={disabled} onChange={event => session.update({ prompt: event.target.value })} onKeyDown={event => { if (isSubmitEnter(event, event.nativeEvent.isComposing)) { event.preventDefault(); void preview(); } }} />
+        <div className="skill-rewrite-tools"><div className="skill-rewrite-model"><ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={disabled || generating} onChange={modelId => session.update({ modelId })} /></div>{generating ? <IconHint label="停止生成" side="top"><button type="button" className="skill-rewrite-send" aria-label="停止生成" onClick={() => void cancel()}><Square size={14} aria-hidden /></button></IconHint> : <IconHint label="发送调整要求" side="top"><button type="button" className="skill-rewrite-send" aria-label="发送调整要求" disabled={disabled || !selectedModel || !prompt.trim() || !content.trim()} onClick={() => void preview()}><ArrowUp size={18} aria-hidden /></button></IconHint>}</div>
         <ComposerResizeHandle inputRef={input} resizeTargetRef={composer} />
       </div>
     </div>

@@ -10,7 +10,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import type { SkillVersionStore } from '../data/skill-version-store'
 import type { SkillSubmissionStore } from '../data/skill-submission-store'
 import type { LocalSkillSubmission, SaveSkillInput, SaveSkillResult, SkillLibraryItem, SkillLibraryQuery, SkillLibrarySnapshot } from '../../src/shared/skill-library'
-import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../src/shared/skill-library'
+import { FOLLOW_PLATFORM_SKILL_VERSION, hasPersonalSkillVersionName, SKILL_VERSION_NAME_TAKEN } from '../../src/shared/skill-library'
 import { skillRewriteInputSchema, skillRewriteOutputSchema, splitSkillRewriteSource, type SkillRewriteInput, type SkillRewriteResult } from '../../src/shared/skill-rewrite'
 import type { SkillRewritePort } from '../domain/skill-rewrite'
 
@@ -332,10 +332,16 @@ export class SkillLibraryService {
     const { scope, item } = await this.authorizeLocalSave(input.request.capabilityId)
     if (!item.versions.some(version => version.id === input.request.parentVersionId)) throw new AppError('INVALID_ARGUMENT', { message: '来源版本不可见或不属于该技能。' })
     this.checkScope(scope)
-    const existing = (await this.options.submissions.list(scope, input.request.capabilityId)).find(value => value.idempotencyKey === input.idempotencyKey)
+    const submissions = await this.options.submissions.list(scope, input.request.capabilityId)
+    const existing = submissions.find(value => value.idempotencyKey === input.idempotencyKey)
+    if (!existing && hasPersonalSkillVersionName({ ...item, localVersions: submissions }, input.request.changeSummary ?? '')) {
+      throw new AppError('INVALID_ARGUMENT', { message: SKILL_VERSION_NAME_TAKEN })
+    }
     const record: LocalSkillSubmission = { ...existing, ...input, createdAt: existing?.createdAt ?? new Date().toISOString() }
     await this.options.submissions.save(scope, record)
     const result = await this.upload(scope, record)
+    this.checkScope(scope)
+    await this.applySelection({ capabilityId: input.request.capabilityId, versionId: input.idempotencyKey })
     return { ...result, item: await this.updateLocalSnapshot(scope, input.request.capabilityId) }
   }
 
