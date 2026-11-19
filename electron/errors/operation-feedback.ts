@@ -165,6 +165,9 @@ export function operationFeedback(error: unknown, operation: FeedbackOperation, 
   if (error instanceof AuthenticationRequiredError) return { code: 'AUTH_REQUIRED', statusCode: 401, message: '登录状态已失效，请重新登录' }
   if (error instanceof AuthApiError) {
     const statusCode = error.statusCode
+    if (error.error.diagnostic?.source === 'upstream' && (statusCode === 401 || statusCode === 403)) {
+      return { code: 'SERVICE_UNAVAILABLE', statusCode, message: '上游服务拒绝了访问凭据或授权，请联系平台管理员。' }
+    }
     if (statusCode === 401) return { code: 'AUTH_REQUIRED', statusCode, message: '登录验证未通过，请重新登录' }
     if (statusCode === 403) return { code: 'PERMISSION_DENIED', statusCode, message: operation === 'workRetry' ? '当前无法处理本次重试，请稍后再试。' : `${FEEDBACK_OPERATIONS[operation]}请求被平台拒绝，请检查账号权限；如需开通权限，请联系平台管理员。` }
     if (statusCode === 429) return { code: 'RATE_LIMITED', statusCode, message: '请求过于频繁，请稍后重试' }

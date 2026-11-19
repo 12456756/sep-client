@@ -1,4 +1,5 @@
 import { AuthenticationRequiredError } from './authentication-required-error'
+import { AuthApiError } from './platform-api'
 
 export interface RefreshTokenRotationResponse {
   refreshToken: string
@@ -75,6 +76,7 @@ export function runSharedRefreshTokenRotation<T extends RefreshTokenRotationResp
 }
 
 function isUnauthorized(error: unknown): boolean {
+  if (error instanceof AuthApiError) return error.isUnauthorized
   return error instanceof AuthenticationRequiredError || (
     typeof error === 'object' && error !== null &&
     'statusCode' in error && error.statusCode === 401

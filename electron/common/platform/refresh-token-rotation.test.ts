@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
+import { AuthApiError } from './platform-api'
 import {
   RefreshTokenRotationQueue,
   registerSharedRefreshTokenRotation,
@@ -13,6 +14,17 @@ function gate<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe('refresh token rotation', () => {
+  it('does not invalidate the rotation queue for an upstream 401', async () => {
+    let token = 'refresh-current'
+    const queue = new RefreshTokenRotationQueue(() => token, value => { token = value })
+    const error = new AuthApiError({ statusCode: 401, message: 'Invalid API key', diagnostic: { source: 'upstream' } })
+    await assert.rejects(queue.run(async () => { throw error }), value => value === error)
+    await queue.run(async current => {
+      assert.equal(current, 'refresh-current')
+      return { refreshToken: 'refresh-next' }
+    })
+    assert.equal(token, 'refresh-next')
+  })
   it('serializes concurrent consumers and gives each request the latest persisted token', async () => {
     let currentToken = 'refresh-0'
     const requestTokens: string[] = []

@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { it } from 'node:test'
+import { AuthApiError } from './platform-api'
 import type { NotificationUpdate } from '../../../src/shared/notification-contracts'
 import { NotificationSocket } from './notification-socket'
 import type { NotificationSocketOptions } from './notification-socket'
@@ -48,6 +49,22 @@ function gate<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: 
 }
 
 async function flush(): Promise<void> { for (let i = 0; i < 8; i++) await Promise.resolve() }
+
+it('does not refresh or clear desktop login for an upstream token-acquisition 401', async () => {
+  const calls: (boolean | undefined)[] = []
+  const h = harness({ getAccessToken: async force => {
+    calls.push(force)
+    throw new AuthApiError({ statusCode: 401, message: 'Invalid API key', diagnostic: { source: 'upstream' } })
+  } })
+  h.transport.start()
+  await flush()
+  assert.deepEqual(calls, [false])
+  assert.equal(h.authenticationRequired, 0)
+  h.clock.tick(1000)
+  await flush()
+  assert.deepEqual(calls, [false, false])
+  h.transport.stop()
+})
 
 function harness(options: Partial<NotificationSocketOptions> = {}) {
   const clock = new FakeClock()

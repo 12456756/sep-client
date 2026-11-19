@@ -1,6 +1,6 @@
 import { logger } from '../logger'
 import { AuthenticationRequiredError } from './authentication-required-error'
-import { refreshAccessToken, type LoginResponse } from './platform-api'
+import { AuthApiError, refreshAccessToken, type LoginResponse } from './platform-api'
 import { RefreshTokenRotationQueue, registerSharedRefreshTokenRotation } from './refresh-token-rotation'
 import {
   clearCredentials,
@@ -110,7 +110,8 @@ export class AuthSessionManager {
       return response.accessToken
     }).catch(error => {
       if (revision !== this.sessionRevision) throw new AuthenticationRequiredError()
-      if (error instanceof AuthenticationRequiredError || (error && typeof error === 'object' && (error as { statusCode?: number }).statusCode === 401)) {
+      if (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError ? error.isUnauthorized
+        : error && typeof error === 'object' && (error as { statusCode?: number }).statusCode === 401)) {
         // Keep this login's revision until its controller completes invalidation.
         this.clearState()
         throw new AuthenticationRequiredError()

@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { parseRetryAfter, readApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
+import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
 import { LoginFeedbackError, isTransportTimeout } from './login-error'
 import {
   notificationPageSchema, notificationQuerySchema, notificationCategoryQuerySchema,
@@ -184,6 +186,7 @@ export interface ApiError {
   requestId?: string
   timestamp?: string
   path?: string
+  diagnostic?: ApiDiagnostic
 }
 
 type AuthApiResource =
@@ -219,11 +222,11 @@ export class AuthApiError extends Error {
   }
 
   get isUnauthorized(): boolean {
-    return this.error.statusCode === 401
+    return this.error.statusCode === 401 && this.error.diagnostic?.source !== 'upstream'
   }
 
   get isForbidden(): boolean {
-    return this.error.statusCode === 403
+    return this.error.statusCode === 403 && this.error.diagnostic?.source !== 'upstream'
   }
 
   get isNetworkError(): boolean {
@@ -232,30 +235,24 @@ export class AuthApiError extends Error {
 }
 
 async function parseError(response: Response, resource?: AuthApiResource): Promise<AuthApiError> {
-  const retryHeader = response.headers.get('Retry-After')?.trim()
-  const retryDelay = retryHeader ? Number(retryHeader) : NaN
-  const retryAfterMs = retryHeader && !Number.isFinite(retryDelay) ? Date.parse(retryHeader) - Date.now() : retryDelay * 1000
-  const retry = Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? { retryAfterMs: Math.ceil(retryAfterMs) } : {}
-  try {
-    const value = await response.json() as Partial<ApiError>
-    return new AuthApiError({
-      statusCode: resource === 'login' ? response.status : typeof value.statusCode === 'number' ? value.statusCode : response.status,
-      message: typeof value.message === 'string' ? value.message : response.statusText,
-      requestId: value.requestId,
-      timestamp: value.timestamp,
-      path: value.path,
-      ...retry,
-    }, resource)
-  } catch {
-    return new AuthApiError({ statusCode: response.status, message: response.statusText, ...retry }, resource)
-  }
+  const diagnostic = await readApiDiagnostic(response, resource)
+  const retryAfterMs = parseRetryAfter(response.headers.get('Retry-After'))
+  const body = diagnostic.body && typeof diagnostic.body === 'object' && !Array.isArray(diagnostic.body) ? diagnostic.body : {}
+  return new AuthApiError({
+    statusCode: response.status,
+    message: resource === 'login' && typeof body.message === 'string' ? body.message : diagnostic.message ?? '未返回可读原因',
+    requestId: diagnostic.sepRequestId, diagnostic,
+    ...(typeof body.timestamp === 'string' ? { timestamp: body.timestamp } : {}),
+    ...(typeof body.path === 'string' ? { path: body.path } : {}),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  }, resource)
 }
 
 async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource, signal?: AbortSignal): Promise<T> {
   const boundedRead = ['notifications', 'skills', 'subscriptions', 'model-catalog'].includes(resource)
   const failTransport = (error: unknown): never => {
     if (boundedRead && !signal?.aborted && (error instanceof TypeError || isTransportTimeout(error))) {
-      throw new AuthApiError({ statusCode: 0, message: 'Platform read connection failed or timed out' }, resource, { cause: error })
+      throw new AuthApiError({ statusCode: 0, message: 'Platform read connection failed or timed out', diagnostic: transportApiDiagnostic(error, resource) }, resource, { cause: error })
     }
     throw error
   }

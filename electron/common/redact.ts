@@ -36,12 +36,12 @@ export function redactOptionalText(value: string | undefined | null): string | n
  * 深度脱敏任意值。键名命中敏感词直接替换，字符串走 redactText，
  * 数组与对象限量限深——日志与事件载荷都不该无界增长。
  */
-export function redactValue(value: unknown, depth = 0, key = '', limits: { maxDepth?: number; maxArrayLength?: number } = {}): unknown {
+export function redactValue(value: unknown, depth = 0, key = '', limits: { maxDepth?: number; maxArrayLength?: number; secrets?: readonly string[] } = {}): unknown {
   // This exact numeric diagnostic is a count, never an authentication token.
   if (key === 'estimatedThinkingTokens' && typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value
   if (SENSITIVE_KEY.test(key)) return '[redacted]'
   if (value === null || typeof value === 'boolean' || typeof value === 'number') return value
-  if (typeof value === 'string') return redactText(value)
+  if (typeof value === 'string') return redactText(limits.secrets?.reduce((result, secret) => secret ? result.replaceAll(secret, '[redacted]') : result, value) ?? value)
   if (typeof value !== 'object') return undefined
   if (depth >= (limits.maxDepth ?? MAX_DEPTH)) return '[max-depth]'
   if (value instanceof Error) {

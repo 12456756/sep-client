@@ -6,7 +6,7 @@ import { compileFunction } from 'node:vm'
 import * as ts from 'typescript'
 import { AuthenticationRequiredError } from './authentication-required-error'
 import { RefreshTokenRotationQueue } from './refresh-token-rotation'
-import type { LoginResponse, RefreshResponse } from './platform-api'
+import { AuthApiError, type LoginResponse, type RefreshResponse } from './platform-api'
 import type { AuthMeta } from './credential-vault'
 import type { AuthSessionManager } from './auth-session-manager'
 
@@ -21,7 +21,7 @@ function setup() {
   const dependencies: Record<string, unknown> = {
     '../logger': { logger: { child: () => ({ warn: () => {} }) } },
     './authentication-required-error': { AuthenticationRequiredError },
-    './platform-api': { refreshAccessToken: () => { started(); return refresh } },
+    './platform-api': { AuthApiError, refreshAccessToken: () => { started(); return refresh } },
     './refresh-token-rotation': { RefreshTokenRotationQueue, registerSharedRefreshTokenRotation: () => {} },
     './credential-vault': {
       saveRefreshToken: (token: string) => { savedToken = token }, getRefreshToken: () => savedToken,
@@ -51,6 +51,18 @@ function response(memberId: string, suffix: string): LoginResponse {
 }
 
 describe('authentication session isolation', () => {
+  it('keeps the desktop session when refresh returns an upstream 401', async () => {
+    const harness = setup()
+    const current = response('member-a', 'current')
+    harness.session.setLogin(current)
+    const error = new AuthApiError({ statusCode: 401, message: 'Invalid API key', diagnostic: { source: 'upstream' } }, 'refresh')
+    const rejected = assert.rejects(harness.session.getValidAccessToken(true), value => value === error)
+    await harness.ready
+    harness.reject(error)
+    await rejected
+    assert.equal(harness.session.getMeta()?.memberId, current.user.id)
+    assert.equal(harness.saved().token, current.refreshToken)
+  })
   for (const sameAccount of [false, true]) {
     for (const outcome of ['success', 'unauthorized'] as const) {
       it(`keeps a new ${sameAccount ? 'same-account' : 'different-account'} login after an old refresh ${outcome}`, async () => {

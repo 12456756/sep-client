@@ -6,6 +6,7 @@
  * 改的只是"谁负责翻译"——由 error-mapper 一处统一翻译。
  */
 import type { LogFields } from '../common/logger'
+import type { ApiDiagnostic } from '../../src/shared/api-diagnostic'
 import { ERROR_CODES, type ErrorCode } from './error-codes'
 
 export interface AppErrorOptions {
@@ -15,6 +16,8 @@ export interface AppErrorOptions {
   cause?: unknown
   /** 英文技术上下文，只进日志，**绝不进 IPC 载荷**。 */
   details?: LogFields
+  /** Separately sanitized before crossing IPC; cause/details remain log-only. */
+  diagnostic?: ApiDiagnostic
 }
 
 export class AppError extends Error {
@@ -22,6 +25,7 @@ export class AppError extends Error {
   /** 用户可见的中文文案。message 与它一致，便于 catch 后直接读。 */
   readonly userMessage: string
   readonly details: LogFields | undefined
+  readonly diagnostic: ApiDiagnostic | undefined
 
   constructor(code: ErrorCode, options: AppErrorOptions = {}) {
     const userMessage = options.message ?? ERROR_CODES[code].message
@@ -30,6 +34,7 @@ export class AppError extends Error {
     this.code = code
     this.userMessage = userMessage
     this.details = options.details
+    this.diagnostic = options.diagnostic
   }
 }
 
