@@ -65,13 +65,13 @@ describe('ClientMonitorApi', () => {
     }
   })
 
-  it('exposes only exact known 403 reasons and retains HTTP and Retry-After metadata', async () => {
+  it('shows controlled Chinese for known 403 reasons and retains HTTP diagnostics', async () => {
     for (const [message, reason] of [
-      ['Missing Origin or Referer header', 'Missing Origin or Referer header'],
-      ['Invalid Origin or Referer header', 'Invalid Origin or Referer header'],
-      ['Origin https://web.example not allowed. CSRF protection.', 'Origin not allowed. CSRF protection.'],
-      ['Subscription unavailable', 'Subscription unavailable'],
-      ['没有有效的员工使用授权', '没有有效的员工使用授权'],
+      ['Missing Origin or Referer header', '平台拒绝了工作记录同步来源，请联系平台管理员。'],
+      ['Invalid Origin or Referer header', '平台拒绝了工作记录同步来源，请联系平台管理员。'],
+      ['Origin https://web.example not allowed. CSRF protection.', '平台拒绝了工作记录同步来源，请联系平台管理员。'],
+      ['Subscription unavailable', '员工使用授权不可用，请联系企业管理员。'],
+      ['没有有效的员工使用授权', '员工使用授权不可用，请联系企业管理员。'],
     ]) {
       const api = new ClientMonitorApi({
         webOrigin: 'https://web.example', getAccessToken: async () => 'token',
@@ -79,7 +79,9 @@ describe('ClientMonitorApi', () => {
       })
       await assert.rejects(api.updateStatus('mirror', { status: 'RUNNING' }), (error: unknown) => {
         assert.ok(error instanceof ClientMonitorApiError)
-        assert.equal(error.message, 'SEP monitor HTTP 403: ' + reason)
+        assert.equal(error.message, reason)
+        assert.ok(error.diagnostic?.body)
+        assert.doesNotMatch(JSON.stringify(error.diagnostic), /remote-secret/)
         assert.equal(error.statusCode, 403)
         assert.equal(error.retryAfterMs, 7000)
         assert.equal(error.isRetryable, false)
@@ -88,13 +90,12 @@ describe('ClientMonitorApi', () => {
     }
   })
 
-  it('discards unknown, malformed, oversized and lookalike 403 bodies', async () => {
+  it('retains bounded unknown error evidence without reflecting it into the message', async () => {
     for (const body of [
       'Bearer remote-secret', '{broken',
       JSON.stringify({ message: 'Missing Origin or Referer header Bearer remote-secret' }),
-      JSON.stringify({ message: 'Origin https://other.example not allowed. CSRF protection.' }),
       JSON.stringify({ message: ['Subscription unavailable', 'remote-secret'] }),
-      JSON.stringify({ message: 'Subscription unavailable', private: 'x'.repeat(5000) }),
+      JSON.stringify({ message: 'Subscription unavailable', private: 'x'.repeat(70_000) }),
     ]) {
       const api = new ClientMonitorApi({
         webOrigin: 'https://web.example', getAccessToken: async () => 'token',
@@ -103,7 +104,8 @@ describe('ClientMonitorApi', () => {
       await assert.rejects(api.updateStatus('mirror', { status: 'RUNNING' }), (error: unknown) => {
         assert.ok(error instanceof ClientMonitorApiError)
         assert.equal(error.statusCode, 403)
-        assert.equal(error.message, 'SEP monitor HTTP 403')
+        assert.equal(error.message, '工作记录同步失败，请联系平台管理员。')
+        assert.ok(error.diagnostic)
         return true
       })
     }
@@ -163,7 +165,7 @@ describe('ClientMonitorApi', () => {
       return true
     })
   })
-  it('parses Retry-After seconds and HTTP dates without reading error bodies', async () => {
+  it('parses Retry-After seconds and HTTP dates while retaining error evidence', async () => {
     for (const [header, expected] of [['12', 12000], ['Thu, 08 Oct 2026 00:01:00 GMT', 60000]] as const) {
       const api = new ClientMonitorApi({
         now: () => Date.parse('2026-10-08T00:00:00Z'),

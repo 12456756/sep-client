@@ -86,7 +86,7 @@ export class KnowledgeService {
       return result as KnowledgeData<R['action']>
     } catch (error) {
       if (signal.aborted) throw new KnowledgeApiError(499)
-      if (error instanceof KnowledgeApiError && error.statusCode === 401 && sameOwner()) this.options.onAuthenticationRequired?.()
+      if (error instanceof KnowledgeApiError && error.isUnauthorized && sameOwner()) this.options.onAuthenticationRequired?.()
       throw error
     } finally { this.active.delete(request.requestId) }
   }

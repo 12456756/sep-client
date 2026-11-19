@@ -169,7 +169,10 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
       globalThis.fetch = async () => { calls++; return response(error, status) }
       await assert.rejects(() => api.createPersonalSkillVersion({ capabilityId: 'cap', parentVersionId: 'v', content: 'text' }, 'valid-key-1234567', 'access'), cause => {
         assert.ok(cause instanceof api.AuthApiError)
-        assert.deepEqual(cause.error, error)
+        const { diagnostic, ...legacyError } = cause.error
+        assert.deepEqual(legacyError, error)
+        assert.equal(diagnostic?.httpStatus, status)
+        assert.deepEqual(diagnostic?.body, error)
         return true
       })
       assert.equal(calls, 1)

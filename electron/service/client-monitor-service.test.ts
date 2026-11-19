@@ -6,6 +6,7 @@ import type { ClientMonitorApiPort, ClientTaskEventRequest, ClientTaskHeartbeatR
 import { ClientMonitorApiError } from '../common/platform/client-monitor-api'
 import { ClientMonitorService } from './client-monitor-service'
 import { createHash } from 'node:crypto'
+import { setLogSink, type LogRecord } from '../common/logger'
 
 const scope: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
@@ -42,6 +43,23 @@ function service(store: MemoryStore, api: ClientMonitorApiPort, options: Partial
 }
 
 describe('ClientMonitorService', () => {
+  it('retains a conflicting operation and records its sanitized diagnostic', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    const records: LogRecord[] = []
+    const restore = setLogSink(record => records.push(record))
+    api.createTask = async () => { throw new ClientMonitorApiError('工作记录同步失败。', 409, undefined, {
+      httpStatus: 409, body: { message: 'Immutable event conflict', apiKey: 'private-key' }, sepRequestId: 'sync-id',
+    }) }
+    const monitor = service(store, api, { now: () => 100 })
+    try {
+      await monitor.taskQueued(queued('run-1'))
+      assert.ok(store.records.get('task-a')?.pending.some(operation => operation.kind === 'create'))
+      const record = records.find(item => item.message === 'client monitor pending operation retained')
+      assert.match(JSON.stringify(record?.fields.diagnostic), /Immutable event conflict|sync-id/)
+      assert.doesNotMatch(JSON.stringify(records), /private-key/)
+    } finally { await monitor.stop(); restore() }
+  })
+
   it('previews local repair and content differences without sending, saving or starting recovery', async () => {
     const store = new MemoryStore(); const api = new FakeApi()
     const endedAt = '2026-10-10T00:00:01.000Z'

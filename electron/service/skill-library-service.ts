@@ -108,7 +108,7 @@ export class SkillLibraryService {
         const delay = error.error.retryAfterMs
         session.blockedUntil = Math.max(session.blockedUntil, this.now() + (delay && Number.isFinite(delay) && delay > 0 ? delay : DEFAULT_RETRY_AFTER_MS))
       }
-      if (invalidateAuthorization && error instanceof AuthApiError && [401, 403].includes(error.statusCode)) {
+      if (invalidateAuthorization && error instanceof AuthApiError && (error.isUnauthorized || error.isForbidden)) {
         session.denied = true
         session.catalogs.clear()
         session.snapshot = { items: [], skippedCount: 0 }

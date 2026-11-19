@@ -14,6 +14,7 @@ import { imageAspectRatio } from '../../src/shared/media-spec'
 import { imageReferenceSupport, mediaReferenceProblem, type MediaReferenceInfo } from '../../src/shared/media-references'
 import { imageEffectiveSpecMatches, isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
 import { logger } from '../common/logger'
+import { safeMediaUpstreamError } from '../common/media-upstream-error'
 import { AppError } from '../errors/app-error'
 import { mediaJobFailure } from '../errors/media-job-error'
 import { mediaFailureCodeSchema, mediaFailureSchema } from '../../src/shared/media-failure'
@@ -531,7 +532,8 @@ export class MediaService {
     job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'; job.generationStatus = receipt.status
     job.outputs = receipt.outputs; job.billingStatus = receipt.billingStatus
     job.actualSpec = receipt.actualSpec
-    job.recovery = receipt.recovery; job.errorCode = receipt.errorCode; job.outputErrors = receipt.outputErrors; job.upstreamError = receipt.upstreamError
+    job.recovery = receipt.recovery; job.errorCode = receipt.errorCode; job.outputErrors = receipt.outputErrors
+    job.upstreamError = safeMediaUpstreamError(receipt.upstreamError)
     job.failure = undefined
     if (priorMismatch) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
     if (job.input.protocolVersion === 3 && receipt.actualSpec && job.input.requestedSpec && Object.entries(job.input.requestedSpec).some(([key, requested]) => {

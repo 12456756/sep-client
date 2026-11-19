@@ -1,4 +1,5 @@
 import WebSocket from 'ws'
+import { AuthApiError } from './platform-api'
 import { notificationSocketMessageSchema } from '../../../src/shared/notification-contracts'
 import type { NotificationUpdate } from '../../../src/shared/notification-contracts'
 
@@ -57,6 +58,7 @@ function textPayload(value: unknown): string | undefined {
 }
 
 function isUnauthorized(value: unknown): boolean {
+  if (value instanceof AuthApiError) return value.isUnauthorized
   return typeof value === 'object' && value !== null && (
     ('statusCode' in value && value.statusCode === 401) || ('status' in value && value.status === 401)
   )

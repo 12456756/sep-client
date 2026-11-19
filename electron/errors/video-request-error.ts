@@ -1,8 +1,9 @@
 import { AppError } from './app-error'
 import { isVideoSubmissionRejectionCode, videoErrorMessage } from '../../src/shared/video-errors'
 import { isErrorCode, type ErrorCode } from './error-codes'
+import type { ApiDiagnostic } from '../../src/shared/api-diagnostic'
 
-export type VideoRequestStage = 'video-authorization' | 'video-quote' | 'video-submit'
+export type VideoRequestStage = 'video-authorization' | 'video-quote' | 'video-submit' | 'video-query' | 'video-save'
 export type VideoErrorSource = 'platform' | 'upstream' | null
 
 export interface VideoRequestErrorOptions {
@@ -13,6 +14,7 @@ export interface VideoRequestErrorOptions {
   source?: VideoErrorSource
   requestId?: string | null
   message?: string
+  diagnostic?: ApiDiagnostic
 }
 
 function safeId(value: string | null | undefined): string | null {
@@ -32,10 +34,11 @@ export class VideoRequestError extends AppError {
     const statusCode = options.statusCode ?? 0
     const expectedStatus = businessCode === 'INSUFFICIENT_FUNDS' || businessCode === 'VIDEO_BUDGET_EXCEEDED' ? 402 : businessCode === 'QUOTE_EXPIRED' || businessCode === 'VIDEO_CONCURRENCY_LIMIT' ? 409 : 0
     const definite = options.stage === 'video-submit' && options.source === 'platform' && safeId(options.requestId) !== null && statusCode === expectedStatus && isVideoSubmissionRejectionCode(businessCode)
-    const mapped: ErrorCode = statusCode === 401 ? 'AUTH_REQUIRED' : statusCode === 403 ? 'PERMISSION_DENIED' : statusCode === 404 ? 'NOT_FOUND' : statusCode === 400 ? 'INVALID_ARGUMENT' : statusCode === 409 || statusCode === 410 ? 'INVALID_STATE' : statusCode === 429 ? 'RATE_LIMITED' : options.gatewayCode === 'VIDEO_NETWORK_ERROR' ? 'NETWORK_ERROR' : options.gatewayCode === 'VIDEO_INVALID_REQUEST' ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
+    const mapped: ErrorCode = statusCode === 401 ? 'AUTH_REQUIRED' : statusCode === 403 ? 'PERMISSION_DENIED' : statusCode === 404 ? 'NOT_FOUND' : statusCode === 400 || statusCode === 422 ? 'INVALID_ARGUMENT' : statusCode === 409 || statusCode === 410 ? 'INVALID_STATE' : statusCode === 429 ? 'RATE_LIMITED' : options.gatewayCode === 'VIDEO_NETWORK_ERROR' ? 'NETWORK_ERROR' : options.gatewayCode === 'VIDEO_INVALID_REQUEST' ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
     const code: ErrorCode = options.source === 'upstream' ? 'SERVICE_UNAVAILABLE' : businessCode !== null && isErrorCode(businessCode) ? businessCode : mapped
     super(code, {
-      message: options.message ?? videoErrorMessage(businessCode) ?? `SEP video request failed (${options.gatewayCode}).`,
+      message: videoErrorMessage(businessCode) ?? '视频服务请求失败，请联系平台管理员。',
+      diagnostic: options.diagnostic,
       details: { resource: 'video', gatewayCode: options.gatewayCode, statusCode, ...(options.source ? { source: options.source } : {}), ...(options.source === 'upstream' && options.message ? { upstreamMessage: options.message } : {}), ...(options.stage ? { stage: options.stage } : {}), ...(safeId(options.requestId) ? { requestId: safeId(options.requestId)! } : {}), ...(businessCode ? { businessCode } : {}) },
     })
     this.name = options.gatewayCode === 'VIDEO_ABORTED' ? 'AbortError' : 'VideoRequestError'

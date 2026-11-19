@@ -73,6 +73,7 @@ export interface IpcError {
   statusCode?: number
   code?: string
   retryAfterMs?: number
+  diagnostic?: import('./api-diagnostic').ApiDiagnostic
 }
 
 export interface IpcCommandResult {

@@ -29,8 +29,10 @@ import type { FeedbackOperation } from '../../src/shared/arrangement-feedback'
 import { isMediaSpecError, type MediaSpecFailureContext } from '../../src/shared/media-spec-contract'
 import { mediaSpecToolFailureFrom } from './media-tool-error'
 import { transportKind } from '../common/transport-error'
+import { safeApiDiagnostic } from '../common/platform/api-diagnostic'
+import type { ApiDiagnostic } from '../../src/shared/api-diagnostic'
 
-/** 送到渲染进程的错误信封。message 是中文，绝不含技术细节。 */
+/** Popup copy stays separate from optional sanitized transport evidence. */
 export interface IpcErrorEnvelope extends MediaSpecFailureContext {
   code: ErrorCode
   message: string
@@ -40,6 +42,7 @@ export interface IpcErrorEnvelope extends MediaSpecFailureContext {
   requestId?: string
   retryAfterMs?: number
   reason?: LoginFeedbackReason
+  diagnostic?: ApiDiagnostic
 }
 
 export interface IpcFailure {
@@ -80,12 +83,27 @@ function envelope(code: ErrorCode, message?: string): IpcErrorEnvelope {
 function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
   if (error.isNetworkError && error.statusCode === 0) return envelope('NETWORK_ERROR', transportKind(error) === 'timeout' ? '网络连接超时，请稍后重试。' : undefined)
   if (error.statusCode === 408) return envelope('NETWORK_ERROR', '网络连接超时，请稍后重试。')
+  if (error.resource === 'skills' && error.statusCode === 409 && error.error.diagnostic?.source !== 'upstream'
+    && error.error.diagnostic?.code === 'SKILL_ARTIFACT_BLOCKED') {
+    const body = error.error.diagnostic.body
+    const top = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+    const nested = top.error && typeof top.error === 'object' && !Array.isArray(top.error) ? top.error : top
+    const reasons: Record<string, string> = { INVALID_ENTRY: '技能入口文件无效', PACKAGE_REQUIRED: '此技能需要完整技能包',
+      PACKAGE_UNAVAILABLE: '技能包暂不可用', PACKAGE_CONTENT_MISMATCH: '技能包内容与批准版本不一致' }
+    const reason = typeof nested.reason === 'string' && Object.hasOwn(reasons, nested.reason) ? reasons[nested.reason] : '技能包暂不允许安装'
+    return envelope('INVALID_STATE', `${reason}，请联系平台管理员。`)
+  }
   // 技能缺失要与"员工不存在"区分开：前者管理员发布一下就能好，后者不能。
-  if (error.statusCode === 401) return envelope('INVALID_CREDENTIALS')
+  if ([401, 403].includes(error.statusCode) && error.error.diagnostic?.source === 'upstream') {
+    return envelope('SERVICE_UNAVAILABLE', '上游服务拒绝了访问凭据或授权，请联系平台管理员。')
+  }
+  if (error.isUnauthorized) return envelope('INVALID_CREDENTIALS')
   if (error.statusCode === 403) return envelope('PERMISSION_DENIED', '当前操作请求被拒绝，请检查账号权限；如需帮助，请联系平台管理员。')
   if (error.statusCode === 404) return envelope('NOT_FOUND')
   if (error.statusCode === 429) return { ...envelope('RATE_LIMITED'), ...(error.error.retryAfterMs ? { retryAfterMs: error.error.retryAfterMs } : {}) }
   if (error.statusCode >= 500) return envelope('SERVICE_UNAVAILABLE')
+  if (error.statusCode === 400 || error.statusCode === 422) return envelope('INVALID_ARGUMENT')
+  if (error.statusCode === 409) return envelope('CONFLICT', '当前操作与平台状态冲突，请刷新后重试。')
   return envelope('INTERNAL_ERROR')
 }
 
@@ -98,6 +116,17 @@ function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
  */
 export function toEnvelope(error: unknown, context: { authenticated?: boolean; feedbackOperation?: FeedbackOperation } = {}): IpcErrorEnvelope {
   const result = mapEnvelope(error, context)
+  const diagnostic = safeApiDiagnostic(error instanceof AuthApiError ? error.error.diagnostic
+    : error instanceof AppError || error instanceof KnowledgeApiError ? error.diagnostic : undefined)
+  if (diagnostic) {
+    result.diagnostic = diagnostic
+    if (diagnostic.sepRequestId) result.requestId = diagnostic.sepRequestId
+    if (diagnostic.retryable !== undefined) result.retryable = diagnostic.retryable
+  }
+  if (error instanceof AuthApiError) {
+    result.statusCode = error.statusCode
+    if (error.error.retryAfterMs !== undefined) result.retryAfterMs = error.error.retryAfterMs
+  }
   return context.feedbackOperation ? { ...result, ...operationFeedback(error, context.feedbackOperation, result) } : result
 }
 
@@ -105,9 +134,10 @@ function mapEnvelope(error: unknown, context: { authenticated?: boolean }): IpcE
   if (error instanceof LoginFeedbackError) return { ...LOGIN_FEEDBACK[error.reason], reason: error.reason }
   if (error instanceof KnowledgeApiError) {
     const status = error.statusCode
-    const code: ErrorCode = status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED'
+    const code: ErrorCode = error.diagnostic?.source === 'upstream' ? 'SERVICE_UNAVAILABLE' : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED'
       : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 0 || status === 408 ? 'NETWORK_ERROR'
-      : status >= 500 ? 'SERVICE_UNAVAILABLE' : status === 400 || status === 413 || status === 415 ? 'INVALID_ARGUMENT' : 'INVALID_STATE'
+      : status >= 500 ? 'SERVICE_UNAVAILABLE' : status === 400 || status === 413 || status === 415 || status === 422 ? 'INVALID_ARGUMENT'
+      : status === 409 ? 'CONFLICT' : 'INVALID_STATE'
     return { ...envelope(code, error.message), statusCode: status, platformCode: error.platformCode, requestId: error.requestId, retryAfterMs: error.retryAfterMs }
   }
   if (error instanceof AppError) {
@@ -123,7 +153,7 @@ function mapEnvelope(error: unknown, context: { authenticated?: boolean }): IpcE
       return envelope('INTERNAL_ERROR')
     }
     // Only 401 establishes an expired session; a business 403 does not require re-login.
-    if (context.authenticated && error.statusCode === 401) {
+    if (context.authenticated && error.isUnauthorized) {
       return envelope('AUTH_REQUIRED')
     }
     if (error.resource === 'login') {
@@ -181,12 +211,12 @@ export function failureFrom(error: unknown, context?: { authenticated?: boolean 
  * 映射点：仍然先走 toEnvelope，只是把结果投影回契约允许的集合，越界的收敛为
  * INTERNAL_ERROR，免得给渲染进程一个它 switch 不到的码。
  *
- * `src/shared/types.ts` 属渲染进程契约，本轮不改；若将来把两个 union 并成
- * ErrorCode，这个函数就该删掉。
+ * 诊断字段独立保留，分类窄化不能删除平台实际返回的状态和原因。
  */
 const AUTH_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'AUTH_REQUIRED', 'INVALID_ARGUMENT', 'INVALID_CREDENTIALS', 'ACCOUNT_DISABLED',
   'STORAGE_UNAVAILABLE', 'NETWORK_ERROR', 'RATE_LIMITED', 'SERVICE_UNAVAILABLE', 'INTERNAL_ERROR',
+  'PERMISSION_DENIED', 'NOT_FOUND', 'CONFLICT', 'INVALID_STATE',
 ])
 
 export function toAuthEnvelope(error: unknown): AuthError {
@@ -196,9 +226,11 @@ export function toAuthEnvelope(error: unknown): AuthError {
   return {
     code: code as AuthError['code'],
     message: code === result.code ? result.message : spec.message,
-    statusCode: code === result.code ? result.statusCode : spec.status,
-    ...(spec.retryable ? { retryable: true } : {}),
+    statusCode: result.statusCode,
+    ...(result.retryable === undefined ? {} : { retryable: result.retryable }),
     ...(result.reason ? { reason: result.reason } : {}),
+    ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
+    ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
   }
 }
 

@@ -7,6 +7,7 @@ import type { KnowledgeSelection } from './knowledge-selection'
 import type { LoginFeedbackReason } from './login-feedback'
 import type { ArrangementBlockingIssue } from './arrangement-feedback'
 import type { MediaSpecFailureContext } from './media-spec-contract'
+import type { ApiDiagnostic } from './api-diagnostic'
 
 // ──────────────────────────── Auth ─────────────────────────────
 
@@ -41,6 +42,7 @@ export type AuthErrorCode =
   | 'STORAGE_UNAVAILABLE'
   | 'AUTH_REQUIRED'
   | 'INTERNAL_ERROR'
+  | 'PERMISSION_DENIED' | 'NOT_FOUND' | 'CONFLICT' | 'INVALID_STATE'
 
 export interface AuthError {
   code: AuthErrorCode
@@ -48,6 +50,8 @@ export interface AuthError {
   statusCode: number
   retryable?: boolean
   reason?: LoginFeedbackReason
+  retryAfterMs?: number
+  diagnostic?: ApiDiagnostic
 }
 
 export interface AuthResult<T> {
@@ -183,6 +187,7 @@ export type TaskErrorCode =
 export interface TaskError extends MediaSpecFailureContext {
   code: TaskErrorCode
   message: string
+  diagnostic?: ApiDiagnostic
 }
 
 export interface TaskListResult {

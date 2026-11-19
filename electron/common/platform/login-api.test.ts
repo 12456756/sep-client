@@ -5,6 +5,21 @@ import { toAuthEnvelope } from '../../errors/error-mapper'
 
 const request = { email: 'test@example.test', password: 'fixture', fingerprint: 'fixture', platform: 'win32' }
 
+it('keeps credential rejection classification when the HTTP envelope also contains an error label', async () => {
+  const original = globalThis.fetch
+  const body = { statusCode: 401, error: 'Unauthorized', message: '邮箱或密码错误' }
+  try {
+    globalThis.fetch = async () => Response.json(body, { status: 401 })
+    await assert.rejects(login(request), (error: unknown) => {
+      const result = toAuthEnvelope(error)
+      assert.equal(result.reason, 'credentials')
+      assert.deepEqual(result.diagnostic?.body, body)
+      assert.match(result.diagnostic?.message ?? '', /Unauthorized/)
+      return true
+    })
+  } finally { globalThis.fetch = original }
+})
+
 it('validates a successful login and preserves the documented legacy expiry field', async () => {
   const original = globalThis.fetch
   const response = { accessToken: 'fixture-access', refreshToken: 'fixture-refresh', refreshTokenExpiresIn: 3600,

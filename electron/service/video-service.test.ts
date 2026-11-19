@@ -56,12 +56,14 @@ describe('VideoService mock submission, disk recovery and original delivery', ()
 
   it('persists unregistered submit diagnostics across missing-receipt recovery and clears them on confirmation', async context => {
     const f = await fixture()
+    const diagnostic = { httpStatus: 502, source: 'upstream', code: 123, body: { error: { code: 123, message: 'Specific rejection',
+      details: [{ width: 1300 }] }, sepDiagnostics: [{ stage: 'billing', message: 'Lookup failed' }] }, computeRequestId: 'compute-id' }
     const submit = f.gateway.submit.bind(f.gateway)
     let posts = 0
     context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
       posts++
       await submit(...args)
-      throw new AppError('SERVICE_UNAVAILABLE', { details: { stage: 'video-submit', businessCode: 'UPSTREAM_TIMEOUT',
+      throw new AppError('SERVICE_UNAVAILABLE', { diagnostic, details: { stage: 'video-submit', businessCode: 'UPSTREAM_TIMEOUT',
         statusCode: 503, requestId: 'req-persisted', source: 'upstream', upstreamMessage: 'Supplier account disabled', rawResponse: 'private raw body' } })
     })
     const missing = context.mock.method(f.gateway, 'findReceipt', async () => null)
@@ -74,6 +76,7 @@ describe('VideoService mock submission, disk recovery and original delivery', ()
     assert.equal(restored.failure?.requestId, 'req-persisted')
     assert.equal(restored.failure?.httpStatus, 503)
     assert.equal(restored.failure?.message, 'Supplier account disabled')
+    assert.deepEqual(restored.failure?.diagnostic, diagnostic)
     assert.doesNotMatch(JSON.stringify(restored.failure), /private|rawResponse/)
     await assert.rejects(reopened.submit('task-a', job.jobId), /already/)
     missing.mock.restore()
@@ -757,7 +760,8 @@ for (const states of [
     assert.deepEqual(recovered.request, first.request); assert.deepEqual(recovered.quote, first.quote)
     await assert.rejects(restored.submit('task-a', first.jobId), /already/)
     assert.equal(quotes, 1); assert.equal(submissions, 1); assert.equal(queries, 1)
-    assert.doesNotMatch(JSON.stringify(recovered), /private-secret|private\.invalid|apiKey|Bearer/)
+    assert.doesNotMatch(JSON.stringify(recovered), /private-secret|private\.invalid/)
+    assert.match(JSON.stringify(recovered.failure?.diagnostic), /\[redacted\]/)
     recoveredReceipt = { mock: false, receiptId: 'recovered-v3-receipt', clientRequestId: first.request.clientRequestId,
       profileId: first.request.profileId, configVersion: first.request.configVersion, operation: first.request.operation,
       protocolVersion: 3, semanticHashVersion: 3, specRevision: 2, effectiveSpec: requestedSpec,

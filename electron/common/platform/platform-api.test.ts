@@ -25,6 +25,36 @@ function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
+describe('platform HTTP error preservation', () => {
+  it('preserves plain text and numeric error codes instead of replacing the reason', async () => {
+    for (const body of ['Stale client run', { code: 123, message: 'Unsupported image dimensions', details: { width: 1300 } }]) {
+      globalThis.fetch = async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), {
+        status: 409, headers: { 'Content-Type': typeof body === 'string' ? 'text/plain' : 'application/json', 'X-Request-ID': 'sep-id' },
+      })
+      await assert.rejects(api.getSubscriptions('access'), error => {
+        assert.ok(error instanceof api.AuthApiError)
+        assert.equal(error.statusCode, 409)
+        assert.equal(error.error.requestId, 'sep-id')
+        assert.deepEqual(error.error.diagnostic?.body, body)
+        assert.match(error.message, typeof body === 'string' ? /Stale client run/ : /Unsupported image dimensions/)
+        return true
+      })
+    }
+  })
+  it('uses the received HTTP status and distinguishes an upstream 401', async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ statusCode: 200, code: 'INVALID_API_KEY', message: 'Invalid API key' }), {
+      status: 401, headers: { 'Content-Type': 'application/json', 'X-SEP-Error-Source': 'upstream' },
+    })
+    await assert.rejects(api.getSubscriptions('access'), error => {
+      assert.ok(error instanceof api.AuthApiError)
+      assert.equal(error.statusCode, 401)
+      assert.equal(error.isUnauthorized, false)
+      assert.equal(error.error.diagnostic?.code, 'INVALID_API_KEY')
+      return true
+    })
+  })
+})
+
 describe('employee runtime skill artifact negotiation errors', () => {
   for (const status of [401, 403, 404, 409]) {
     it(`preserves HTTP ${status} without a legacy retry`, async () => {
@@ -529,7 +559,10 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
       globalThis.fetch = async () => { calls++; return response(error, status) }
       await assert.rejects(() => api.createPersonalSkillVersion({ capabilityId: 'cap', parentVersionId: 'v', content: 'text' }, 'valid-key-1234567', 'access'), cause => {
         assert.ok(cause instanceof api.AuthApiError)
-        assert.deepEqual(cause.error, error)
+        const { diagnostic, ...legacyError } = cause.error
+        assert.deepEqual(legacyError, error)
+        assert.equal(diagnostic?.httpStatus, status)
+        assert.deepEqual(diagnostic?.body, error)
         return true
       })
       assert.equal(calls, 1)

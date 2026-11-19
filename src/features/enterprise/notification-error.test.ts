@@ -4,6 +4,13 @@ import { notificationCooldownDelay, notificationErrorMessage, notificationRetryD
 import { assertNotificationCommand } from './notification-state'
 
 describe('notification user-facing errors', () => {
+  it('keeps upstream 401 evidence without presenting it as desktop login expiry', () => {
+    let error: unknown
+    try { assertNotificationCommand({ success: false, error: { statusCode: 401, code: 'SERVICE_UNAVAILABLE',
+      message: 'Upstream unavailable', diagnostic: { source: 'upstream', message: 'Invalid API key' } } }) } catch (cause) { error = cause }
+    assert.match(notificationErrorMessage(error), /上游服务授权异常/)
+    assert.doesNotMatch(notificationErrorMessage(error), /重新登录/)
+  })
   it('explains permission, transport and service failures without exposing backend messages', () => {
     assert.match(notificationErrorMessage({ code: 'PERMISSION_DENIED', statusCode: 403 }), /权限/)
     assert.doesNotMatch(notificationErrorMessage({ statusCode: 403 }), /登录/)

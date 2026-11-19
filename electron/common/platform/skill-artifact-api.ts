@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer'
 import { config } from '../config'
 import { logger } from '../logger'
 import { AuthApiError } from './platform-api'
+import { parseRetryAfter, readApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
 import {
   skillArtifactAvailableSchema, skillArtifactParamsSchema,
   skillArtifactDownloadPath, type AvailableDescriptor,
@@ -36,31 +37,44 @@ function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+async function artifactError(response: Response, accessToken: string, options: SkillArtifactDownloadOptions): Promise<AuthApiError> {
+  const diagnostic = await readApiDiagnostic(response, 'skill-artifact', { maxBytes: 64 * 1024, signal: options.signal, secrets: [accessToken] })
+  options.signal?.throwIfAborted()
+  options.assertCurrent?.()
+  return new AuthApiError({ statusCode: response.status, message: '技能包下载失败，请联系平台管理员。',
+    requestId: diagnostic.sepRequestId, retryAfterMs: parseRetryAfter(response.headers.get('Retry-After')), diagnostic }, 'skills')
+}
+
 async function fetchArtifact(expected: AvailableDescriptor, accessToken: string, options: SkillArtifactDownloadOptions): Promise<Response> {
   let waited = 0
   for (let attempt = 0; ; attempt++) {
     options.signal?.throwIfAborted()
     options.assertCurrent?.()
-    const response = await fetch(`${config.SEP_BASE_URL}${expected.downloadPath}`, {
+    let response: Response
+    try { response = await fetch(`${config.SEP_BASE_URL}${expected.downloadPath}`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${accessToken}` },
       credentials: 'omit',
       redirect: 'error',
       signal: options.signal,
-    })
+    }) } catch (error) {
+      options.signal?.throwIfAborted()
+      options.assertCurrent?.()
+      throw new AuthApiError({ statusCode: 0, message: '技能包下载网络连接失败，请检查网络。',
+        diagnostic: transportApiDiagnostic(error, 'skill-artifact', [accessToken]) }, 'skills')
+    }
     if (response.status !== 429 || response.redirected) return response
-    // Release the rejected response before waiting; never read upstream error bodies.
-    await response.body?.cancel().catch(() => {})
+    const error = await artifactError(response, accessToken, options)
     options.signal?.throwIfAborted()
     options.assertCurrent?.()
     const delayMs = retryDelay(response.headers.get('Retry-After'), attempt)
     if (attempt >= MAX_RATE_LIMIT_RETRIES || !Number.isFinite(delayMs) || waited + delayMs > MAX_RETRY_WAIT_MS) {
-      throw new AuthApiError({ statusCode: 429, message: '技能下载限流，自动等待重试仍未成功或等待时间超限，请稍后重试。' }, 'skills')
+      throw error
     }
     waited += delayMs
     logger.child('skill-artifact').warn('skill artifact rate limited; waiting before retry', {
       capabilityId: expected.capabilityId, versionId: expected.versionId,
-      statusCode: 429, retry: attempt + 1, maxRetries: MAX_RATE_LIMIT_RETRIES, delayMs,
+      statusCode: 429, retry: attempt + 1, maxRetries: MAX_RATE_LIMIT_RETRIES, delayMs, diagnostic: error.error.diagnostic,
     })
     await waitForRetry(delayMs, options.signal)
   }
@@ -83,8 +97,7 @@ export async function downloadSkillArtifact(subscriptionId: string, artifact: Av
       throw new Error('Skill artifact redirects are forbidden.')
     }
     if (!response.ok) {
-      // Preserve the HTTP authority and never retry through a legacy content endpoint.
-      throw new AuthApiError({ statusCode: response.status, message: 'Skill artifact download rejected.' }, 'skills')
+      throw await artifactError(response, accessToken, options)
     }
     if (response.status !== 200) throw new Error('Invalid skill artifact response status.')
     const mime = response.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase()
@@ -118,10 +131,10 @@ export async function downloadSkillArtifact(subscriptionId: string, artifact: Av
     return Buffer.concat(chunks, byteLength)
   } finally {
     if (reader) {
-      await reader.cancel().catch(() => {})
+      void reader.cancel().catch(() => {})
       reader.releaseLock()
     } else {
-      await response.body?.cancel().catch(() => {})
+      void response.body?.cancel().catch(() => {})
     }
   }
 }
