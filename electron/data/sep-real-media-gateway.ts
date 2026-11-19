@@ -20,7 +20,7 @@ const profileSchema = z.object({ profileId: id, kind: z.literal('image'), displa
   capabilities: z.object({ supportsReferenceImage: z.boolean(), maxOutputs: z.number().int().min(1).max(8),
     sizes: z.array(z.enum(['1024x1024', '1536x1024', '1024x1536'])).min(1).max(3), maxWidth: z.number().int().positive(), maxHeight: z.number().int().positive() }).strict() }).strict()
 const profilesSchema = z.object({ mock: z.literal(false), protocolVersion: z.literal(1), persistence: z.literal('database'), profiles: z.array(profileSchema).max(64) }).strict()
-const referenceSchema = z.object({ mock: z.literal(false), referenceId: id, expiresAt: date, mimeType: z.literal('image/png'),
+const referenceSchema = z.object({ mock: z.literal(false), referenceId: id, expiresAt: date, mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
   byteLength: z.number().int().positive().max(5 * 1024 * 1024), sha256: z.string().regex(/^[a-f0-9]{64}$/),
   width: z.number().int().positive().max(4096), height: z.number().int().positive().max(4096) }).strict()
 const money = z.string().regex(/^\d+\.\d{6}$/)
@@ -107,6 +107,7 @@ export class SepRealMediaGateway implements MediaGatewayPort {
     const extension = input.mime === 'image/jpeg' ? 'jpg' : input.mime === 'image/webp' ? 'webp' : 'png'
     form.set('file', new Blob([input.bytes], { type: input.mime }), `reference.${extension}`)
     const raw = await this.json(subscriptionId, '/references', 'POST', form, referenceSchema, signal)
+    if (raw.mimeType !== inspected.mime) throw new AppError('SERVICE_UNAVAILABLE', { details: { resource: 'image', stage: 'image-reference', gatewayCode: 'IMAGE_INTEGRITY_MISMATCH' } })
     return { referenceId: raw.referenceId, sha256: raw.sha256, expiresAt: Date.parse(raw.expiresAt) }
   }
 

@@ -105,18 +105,21 @@ class SepVideoGateway implements VideoGatewayPort {
   }
 
   async uploadReference(bytes: Uint8Array, signal: AbortSignal) {
-    if (this.options.mock ? !referenceBytes.equals(bytes) : bytes.length < 24 || bytes.length > 10 * 1024 * 1024 || !Buffer.from(bytes.subarray(0, 8)).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST')
+    if (this.options.mock ? !referenceBytes.equals(bytes) : bytes.length < 24 || bytes.length > 10 * 1024 * 1024) throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST')
     let dimensions: { width: number; height: number }
+    let mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
     try {
       const image = inspectMediaImage(bytes)
-      if (image.mime !== 'image/png' || image.width > 4096 || image.height > 4096) throw new Error()
+      if (image.width > 4096 || image.height > 4096) throw new Error()
       dimensions = image
+      mimeType = image.mime
     } catch { throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST') }
     const hash = createHash('sha256').update(bytes).digest('hex')
     const body = new FormData()
-    body.append('file', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), 'video-reference.png')
+    const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
+    body.append('file', new Blob([new Uint8Array(bytes)], { type: mimeType }), `video-reference.${extension}`)
     const result = await this.json('/references', 'POST', body, videoReferenceSchema, signal)
-    if (result.sha256.toLowerCase() !== hash || result.byteLength !== bytes.length || result.width !== dimensions.width || result.height !== dimensions.height || !this.options.mock && Date.parse(result.expiresAt) <= Date.now() || this.options.mock && (result.sha256.toLowerCase() !== SEP_MEDIA_MOCK_PNG_SHA256 || result.width !== 1 || result.height !== 1)) throw new SepVideoGatewayError('VIDEO_INTEGRITY_MISMATCH')
+    if (result.sha256.toLowerCase() !== hash || result.byteLength !== bytes.length || result.width !== dimensions.width || result.height !== dimensions.height || result.mimeType !== mimeType || !this.options.mock && Date.parse(result.expiresAt) <= Date.now() || this.options.mock && (result.sha256.toLowerCase() !== SEP_MEDIA_MOCK_PNG_SHA256 || result.width !== 1 || result.height !== 1)) throw new SepVideoGatewayError('VIDEO_INTEGRITY_MISMATCH')
     return result
   }
 

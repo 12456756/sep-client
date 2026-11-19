@@ -7,6 +7,7 @@ import { videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema 
 import { SEP_MEDIA_MOCK_PNG_BASE64 } from '../common/platform/sep-media-gateway-contract'
 import { config } from '../common/config'
 import { SepMockVideoGateway, SepRealVideoGateway, SepVideoGatewayError } from './sep-video-media-gateway'
+import { referenceImages } from './media-reference.test-helper'
 
 const signal = new AbortController().signal
 const bytes = Buffer.from('non-fixture video output')
@@ -136,6 +137,23 @@ test('real PNG upload is bounded and verifies the returned byte hash and dimensi
   assert.equal((await adapter.uploadReference(png, signal)).mock, false)
   wrongHash = true
   await assert.rejects(adapter.uploadReference(png, signal), { gatewayCode: 'VIDEO_INTEGRITY_MISMATCH' })
+})
+
+for (const image of referenceImages) test(`video reference upload preserves ${image.mime} and rejects inconsistent MIME metadata`, async () => {
+  let wrongMime = false
+  const adapter = gateway(async (_url, init) => {
+    assert.ok(init?.body instanceof FormData)
+    const file = init.body.get('file') as Blob & { name: string }
+    assert.equal(file.type, image.mime)
+    assert.equal(file.name, `video-reference.${image.extension}`)
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), image.bytes)
+    return json({ mock: false, referenceId: 'reference-real', expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      mimeType: wrongMime ? (image.mime === 'image/png' ? 'image/jpeg' : 'image/png') : image.mime,
+      byteLength: image.bytes.length, sha256: createHash('sha256').update(image.bytes).digest('hex'), width: 1, height: 1 })
+  })
+  assert.equal((await adapter.uploadReference(image.bytes, signal)).mimeType, image.mime)
+  wrongMime = true
+  await assert.rejects(adapter.uploadReference(image.bytes, signal), { gatewayCode: 'VIDEO_INTEGRITY_MISMATCH' })
 })
 
 test('real video quote supplies the configured web origin independently of the API origin', async () => {

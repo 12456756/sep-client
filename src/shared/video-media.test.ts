@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import * as fixture from './fixtures/media-video-v1.json'
 import * as v2Fixture from './fixtures/media-video-v2.json'
 import { sepRuntimeV3Fixture } from './fixtures/sep-media-runtime-v3'
-import { videoAllowedAudioModes, videoOutputSchema, videoProfileSchema, videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema, videoRuntimeSchema, videoQuoteResponseSchema } from './video-media'
+import { videoAllowedAudioModes, videoOutputSchema, videoProfileSchema, videoReceiptSchema, videoReferenceSchema, videoRequestSchema, videoRequestWithIdentitySchema, videoRuntimeSchema, videoQuoteResponseSchema } from './video-media'
 
 for (const maxCount of [9, 30, 40]) test(`current V3 video retains operation reference limits up to ${maxCount}`, () => {
   const runtime = sepRuntimeV3Fixture('video')
@@ -31,6 +31,38 @@ test('current V3 video supports multiple required references within client safet
   const parsed = videoRuntimeSchema.parse(runtime)
   assert.equal(parsed.tools.includes('video_from_image'), false)
   assert.ok(parsed.tools.includes('video_generate'))
+})
+
+test('V3 video preserves all supported reference image MIME types', () => {
+  const runtime = sepRuntimeV3Fixture('video')
+  const profile = runtime.profiles[0]!
+  const mimeTypes = ['image/jpeg', 'image/png', 'image/webp']
+  profile.adapter.referenceSupport.mimeTypes = mimeTypes
+  profile.referenceRules[1]!.mimeTypes = mimeTypes
+  const parsed = videoRuntimeSchema.parse(runtime)
+  const normalizedProfile = parsed.profiles[0]!
+  assert.ok('referenceSupport' in normalizedProfile && normalizedProfile.referenceSupport)
+  assert.deepEqual(normalizedProfile.referenceSupport.mimeTypes, mimeTypes)
+  assert.ok(parsed.tools.includes('video_from_image'))
+  for (const mimeType of mimeTypes) {
+    assert.equal(videoReferenceSchema.safeParse({ mock: false, referenceId: 'ref', expiresAt: '2026-12-01T00:00:00.000Z', mimeType,
+      byteLength: 1, sha256: 'a'.repeat(64), width: 1, height: 1 }).success, true)
+  }
+})
+
+for (const mimeType of ['image/jpeg', 'image/webp', 'image/gif']) test(`V3 video gates image generation by client-supported MIME ${mimeType}`, () => {
+  const runtime = sepRuntimeV3Fixture('video')
+  runtime.profiles[0]!.adapter.referenceSupport.mimeTypes = [mimeType]
+  runtime.profiles[0]!.referenceRules[1]!.mimeTypes = [mimeType]
+  const parsed = videoRuntimeSchema.parse(runtime)
+  assert.equal(parsed.tools.includes('video_from_image'), mimeType !== 'image/gif')
+})
+
+test('video upload metadata rejects unsupported formats and retains the PNG-only mock contract', () => {
+  const reference = { mock: false, referenceId: 'ref', expiresAt: '2026-12-01T00:00:00.000Z',
+    mimeType: 'image/png', byteLength: 1, sha256: 'a'.repeat(64), width: 1, height: 1 }
+  for (const mimeType of ['image/gif', 'image/svg+xml', 'image/heic']) assert.equal(videoReferenceSchema.safeParse({ ...reference, mimeType }).success, false)
+  for (const mimeType of ['image/jpeg', 'image/webp']) assert.equal(videoReferenceSchema.safeParse({ ...reference, mock: true, mimeType }).success, false)
 })
 
 test('SEP V3 video runtime normalizes advisory hints and round-trips without inventing audio defaults', () => {

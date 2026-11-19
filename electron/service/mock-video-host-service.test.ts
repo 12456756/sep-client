@@ -17,6 +17,7 @@ import { AppError } from '../errors/app-error'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
 import { MOCK_MEDIA_PNG } from '../data/mock-media-gateway'
+import { referenceImages } from '../data/media-reference.test-helper'
 
 test('V3 video uploads all selected references before one quote and one submission', async () => {
   const f = await realSetup()
@@ -47,11 +48,14 @@ test('V3 video uploads all selected references before one quote and one submissi
   } finally { await host.stopAll(); await f.host.stopAll() }
 })
 
-for (const count of [9, 30]) for (const fallback of [false, true]) test(`current V3 video submits ${count} references in order (fallback=${fallback})`, async () => {
+for (const image of referenceImages) for (const count of [9, 30]) for (const fallback of [false, true]) test(`current V3 video submits ${count} ${image.mime} references in order (fallback=${fallback})`, async () => {
   const f = await realSetup()
+  const bytes = image.bytes, sha256 = createHash('sha256').update(bytes).digest('hex')
   const wire = sepRuntimeV3Fixture('video')
   wire.profiles[0]!.adapter.referenceSupport.maxCount = count
+  wire.profiles[0]!.adapter.referenceSupport.mimeTypes = [image.mime]
   wire.profiles[0]!.referenceRules[1]!.maxCount = count
+  wire.profiles[0]!.referenceRules[1]!.mimeTypes = [image.mime]
   f.state.runtime = videoRuntimeSchema.parse(wire)
   const profile = f.state.runtime.profiles[0]!
   assert.ok('referenceSupport' in profile)
@@ -61,7 +65,7 @@ for (const count of [9, 30]) for (const fallback of [false, true]) test(`current
   const host = new MockVideoHostService({ ...f.options,
     readReference: async (_scope, _task, id) => { reads.push(id); return { bytes, sha256 } },
     gateway: () => ({ ...f.options.gateway(scope),
-      uploadReference: async () => ({ mock: false, referenceId: `ref-${++uploads}`, expiresAt: new Date(Date.now() + 60_000).toISOString(), mimeType: 'image/png', byteLength: bytes.length, sha256, width: 1, height: 1 }),
+      uploadReference: async uploaded => { assert.deepEqual(uploaded, bytes); return { mock: false, referenceId: `ref-${++uploads}`, expiresAt: new Date(Date.now() + 60_000).toISOString(), mimeType: image.mime, byteLength: bytes.length, sha256, width: 1, height: 1 } },
       quote: async request => { stages.push(request.referenceIds); return { quoteId: 'quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.100000', currency: 'CNY', protocolVersion: 3, specRevision: 1, effectiveSpec: request.parameters } },
       submit: async request => { stages.push(request.referenceIds); return videoReceiptSchema.parse({ ...fixture.receipt, mock: false, protocolVersion: 3, specRevision: request.specRevision, effectiveSpec: request.requestedSpec, billingStatus: 'RESERVED', receiptId: 'receipt', clientRequestId: request.clientRequestId, profileId: request.profileId, configVersion: request.configVersion, operation: request.operation }) },
     }) })

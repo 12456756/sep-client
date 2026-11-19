@@ -234,6 +234,14 @@ describe('video IPC contract', () => {
     }
   })
 
+  it('allows JPEG, PNG and WebP video reference selection', async () => {
+    const importing = harness({ open: { canceled: false, filePaths: ['/native/reference.jpeg'] } })
+    assert.deepEqual(await importing.invoke(INVOKE_CHANNELS.VIDEO_IMPORT_REFERENCES, taskId), { success: true, data: ['asset-a'] })
+    const dialogCall = importing.calls.find(call => call.method === 'showOpenDialog')
+    assert.deepEqual((dialogCall?.args[1] as { filters?: Array<{ extensions?: string[] }> }).filters?.[0]?.extensions,
+      ['png', 'jpg', 'jpeg', 'webp'])
+  })
+
   it('returns mapped plain IPC errors without authenticated flags or host details', async () => {
     const video = { getReferences: async () => { throw new Error('private path /Users/private/video.mp4') } }
     const test = harness({ video })
