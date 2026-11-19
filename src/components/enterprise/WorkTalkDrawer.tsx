@@ -21,6 +21,7 @@ import { withComposerConnector } from '../../features/enterprise/composer-connec
 import { ContextUsageIndicator } from '../workspace/ContextUsageIndicator';
 import { ModelSelector } from './ModelSelector';
 import { ConversationEmployeePicker } from './ConversationEmployeePicker';
+import { mediaRetryNotice, type MediaRetryState } from '../../shared/media-retry';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -47,9 +48,10 @@ interface ConversationProps {
   work: WorkItem;
   workspace: EnterpriseWorkspace;
   onClose?: () => void;
+  mediaRetryState?: MediaRetryState;
 }
 
-export function WorkConversation({ work, workspace, onClose }: ConversationProps) {
+export function WorkConversation({ work, workspace, onClose, mediaRetryState = 'clear' }: ConversationProps) {
   const queued = useConversationQueue(work.id, workspace.attachmentScopeKey);
   const inheritedSessions = useContext(ConversationSessionsContext);
   const [localSessions] = useState(() => createConversationSessions(sessionId => { void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined); }));
@@ -110,7 +112,9 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
     : workspace.myEmployees.find(item => item.id === work.currentEmployeeId)?.allowedModels ?? [];
   const modelLocked = workspace.busy || sending || queued.busy || isReplying || queued.queue.items.length > 0 || !!queued.queue.failed;
   const hasStreamingReply = work.messages.some(message => message.id === `${work.id}-streaming`);
-  const statusText = work.status === 'completed' ? '本轮回复已完成，可继续提问'
+  const blockedRetry = mediaRetryState !== 'clear' && (!!queued.queue.failed || work.status === 'failed' || work.status === 'paused');
+  const statusText = blockedRetry && !isReplying ? mediaRetryNotice(mediaRetryState)
+    : work.status === 'completed' ? '本轮回复已完成，可继续提问'
     : work.status === 'paused' ? '工作已终止，已收到的内容仍保留'
       : work.status === 'failed' ? '本轮回复中断，请查看提示后重试'
         : work.status === 'waiting-user' ? '等待你的确认'
@@ -195,8 +199,8 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
             <summary>等待处理 {queued.queue.items.length}/10{queued.queue.paused ? ' · 已暂停' : ''}</summary>
             {queued.queue.failed ? <p>未完成：{queued.queue.failed.prompt}</p> : null}
             <ol>{queued.queue.items.map(item => <li key={item.id}><span>{item.prompt}{item.attachmentNames.length ? <small>附件：{item.attachmentNames.join('、')}</small> : null}</span>{work.isActive && !queued.queue.paused ? <button type="button" className="ent-btn sm ghost" disabled={queued.busy} onClick={() => void queued.prioritize(item.id)}>优先执行</button> : null}</li>)}</ol>
-            {queued.queue.failed?.recoveryConfirmationRequired ? <p>会话文件已损坏，需要确认后根据任务历史重建上下文。</p> : null}
-            {queued.queue.paused ? <button type="button" className="ent-btn sm" disabled={queued.busy || work.isActive} onClick={() => void (queued.queue.failed?.recoveryConfirmationRequired ? queued.recover() : queued.resume())}>{queued.queue.failed?.recoveryConfirmationRequired ? '重建会话并继续' : queued.queue.failed || work.status === 'failed' ? '重试并继续' : '继续处理'}</button> : null}
+            {!blockedRetry && queued.queue.failed?.recoveryConfirmationRequired ? <p>会话文件已损坏，需要确认后根据任务历史重建上下文。</p> : null}
+            {queued.queue.paused && !blockedRetry ? <button type="button" className="ent-btn sm" disabled={queued.busy || work.isActive} onClick={() => void (queued.queue.failed?.recoveryConfirmationRequired ? queued.recover() : queued.resume())}>{queued.queue.failed?.recoveryConfirmationRequired ? '重建会话并继续' : queued.queue.failed || work.status === 'failed' ? '重试并继续' : '继续处理'}</button> : null}
             {over ? <button type="button" className="ent-btn sm ghost" disabled={workspace.busy} onClick={() => void workspace.stopWork(work.id, '用户终止了这项工作')}>终止</button> : null}
           </details> : null}
           {hasNewContent ? <button type="button" className="ent-btn sm ent-new-content" onClick={scrollToLatest}>
@@ -214,7 +218,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 {...speech.inputProps}
                 className="ent-ask-input"
                 value={draft}
-                placeholder={queued.queue.paused ? '可继续添加信息，点击继续处理后依次执行' : isReplying ? '补充信息将排队依次处理' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
+                placeholder={queued.queue.paused ? blockedRetry ? '新消息将排队，当前队列已暂停' : '可继续添加信息，点击继续处理后依次执行' : isReplying ? '补充信息将排队依次处理' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
                 aria-label="给员工的下一句话"
                 onChange={event => { setDraft(event.target.value); setEditorVersion(version => version + 1); }}
                 onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}

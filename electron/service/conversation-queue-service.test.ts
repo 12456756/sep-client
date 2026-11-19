@@ -8,6 +8,7 @@ import { ConversationQueueService } from './conversation-queue-service'
 import type { ClientTask } from '../../src/shared/types'
 import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
 import { conversationQueueInputSchema } from '../../src/shared/conversation-queue'
+import { AppError } from '../errors/app-error'
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'conversation-queue-'))
@@ -282,6 +283,37 @@ test('empty-queue retry admission failure restores the pause and preserves the e
     assert.deepEqual(f.started, [])
   } finally { service.stop(); await f.cleanup() }
 })
+
+for (const kind of ['original', 'failed message'] as const) {
+  test(`unconfirmed media blocks replay of the ${kind} without changing the queue`, async () => {
+    const f = await fixture()
+    const owner = { memberId: 'member', enterpriseId: 'enterprise' }
+    let blocked = true
+    const service = new ConversationQueueService({ ...f.options, assertReplayAllowed: async (scope, task) => {
+      assert.deepEqual(scope, owner)
+      assert.equal(task.id, 'task')
+      if (blocked) throw new AppError('MEDIA_REPLAY_BLOCKED')
+    } })
+    try {
+      f.task.status = 'failed'; f.task.activeRunId = null; f.task.lastRunId = 'initial'
+      if (kind === 'failed message') await f.store.save(owner, { version: 1, taskId: 'task', owner, paused: true, entries: [{
+        id: 'old-message', runId: 'original-run', prompt: 'original request', status: 'failed', createdAt: 1,
+        attachmentNames: [], recoveryConfirmationRequired: true,
+      }] })
+      await service.view('task')
+      const before = await f.store.get(owner, 'task')
+      const options = kind === 'original' ? { retryOriginal: true } : { messageId: 'old-message', confirmed: true as const }
+      await assert.rejects(service.resume('task', options), { code: 'MEDIA_REPLAY_BLOCKED' })
+      assert.deepEqual(await f.store.get(owner, 'task'), before)
+      assert.equal(f.task.activeRunId, null)
+      assert.deepEqual(f.started, [])
+      blocked = false
+      await service.resume('task', options)
+      assert.ok(f.task.activeRunId)
+      assert.deepEqual(f.started, kind === 'original' ? [] : ['old-message'])
+    } finally { service.stop(); await f.cleanup() }
+  })
+}
 
 test('submission distinguishes an idle send from a running task with an empty queue', async () => {
   const f = await fixture()

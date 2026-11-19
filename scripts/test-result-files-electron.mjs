@@ -8,16 +8,18 @@ import { _electron } from 'playwright-core'
 import { createServer } from 'vite'
 
 const directory = await realpath(await mkdtemp(join(tmpdir(), 'sep-result-electron-')))
-const screenshotDirectory = process.env.SEP_RESULT_TEST_OUTPUT || 'output/playwright'
+const screenshotDirectory = process.env.SEP_RESULT_TEST_OUTPUT || join(directory, 'screenshots')
 let electron
 let server
 const errors = []
+const loadFailures = []
 let reactUrl = ''
 let domUrl = ''
 try {
   await build({ entryPoints: ['scripts/fixtures/result-files-main.ts'], bundle: true, platform: 'node', format: 'cjs',
     external: ['electron'], outfile: join(directory, 'main.cjs'), logLevel: 'silent' })
-  server = await createServer({ configFile: 'vite.preview.config.ts', logLevel: 'error', server: { port: 0, strictPort: false },
+  server = await createServer({ configFile: 'vite.preview.config.ts', logLevel: 'error', cacheDir: join(directory, 'vite-cache'),
+    server: { port: 0, strictPort: false },
     plugins: [{ name: 'result-test-page', configureServer(vite) {
       vite.middlewares.use('/__result-test', (_request, response) => {
         response.setHeader('content-type', 'text/html')
@@ -46,6 +48,11 @@ try {
   } })
   const page = await electron.firstWindow()
   page.on('pageerror', error => errors.push(error.message))
+  page.on('response', response => {
+    if (response.url().startsWith(`${origin}/`) && response.status() >= 400) {
+      loadFailures.push(`${response.status()} ${new URL(response.url()).pathname}`)
+    }
+  })
   await page.getByRole('button', { name: '查看产出结果', exact: true }).click()
   await page.getByRole('img', { name: 'product.png', exact: true }).waitFor()
   await page.waitForFunction(() => document.querySelector('img')?.naturalWidth > 0 && document.querySelector('video')?.readyState >= 2)
@@ -124,6 +131,15 @@ try {
   const resultDialog = page.locator('.ent-wk-inspector')
   const resultCards = resultDialog.locator('.result-file-card')
   const resultVideo = resultDialog.locator('video')
+  const imageResults = resultDialog.getByRole('region', { name: '图片成果', exact: true })
+  const videoResults = resultDialog.getByRole('region', { name: '视频成果', exact: true })
+  await imageResults.getByRole('alert').filter({ hasText: /部分图片未生成成功.*第 2 项：生成内容被审核拒绝.*已生成的成果可继续使用/ }).waitFor({ timeout: 8_000 })
+  await imageResults.getByRole('alert').filter({ hasText: /图片生成失败.*第 1 项：生成供应商当前繁忙/ }).waitFor({ timeout: 8_000 })
+  await videoResults.getByRole('alert').filter({ hasText: /部分视频未生成成功.*第 2 项：生成供应商响应超时.*已生成的成果可继续使用/ }).waitFor({ timeout: 8_000 })
+  await videoResults.getByRole('alert').filter({ hasText: /^视频生成失败：生成内容未通过安全审核/ }).waitFor({ timeout: 8_000 })
+  assert.equal(await imageResults.getByRole('alert').count(), 2)
+  assert.equal(await videoResults.getByRole('alert').count(), 2)
+  assert.doesNotMatch(await resultDialog.innerText(), /ContentModerationFailed|UPSTREAM_FAILED|fixture-private-provider-detail|正在下载|保存失败|没有取得更具体的原因/)
   await page.waitForFunction(() => document.querySelector('.ent-wk-inspector .result-file-card img')?.naturalWidth > 0 && document.querySelector('.ent-wk-inspector video')?.readyState >= 2)
   assert.equal(await resultCards.count(), 2)
   assert.equal(await resultDialog.getByRole('button', { name: /^(预览|导出)(视频|图片)?/ }).count(), 0)
@@ -170,13 +186,26 @@ try {
   await page.waitForFunction(async url => (await fetch(url)).status === 404, conversationSource)
   await page.getByRole('button', { name: '查看产出结果', exact: true }).click()
   await page.waitForFunction(() => document.querySelector('.ent-wk-inspector video')?.readyState >= 2)
+  assert.equal(await resultDialog.getByRole('alert').count(), 4, 'persisted errors survive reopening the results panel')
   const finalSource = await resultVideo.getAttribute('src')
   await page.evaluate(() => window.resultTest.logout())
   assert.equal(await page.evaluate(async url => (await fetch(url)).status, finalSource), 404)
+  for (const [kind, label] of [['image', '图片'], ['video', '视频']]) {
+    await page.goto(`${origin}/__result-test?replay=${kind}`)
+    const banner = page.locator('[aria-label="任务失败"]')
+    await banner.getByText(/媒体提交结果尚未确认.*勿重复提交/).waitFor()
+    await page.locator('.ent-conversation-status').getByText(/勿重复提交/).waitFor()
+    await page.locator('.ent-conversation-queue > summary').click()
+    assert.equal(await page.getByRole('button', { name: /重试任务|重试并继续|重建会话并继续|重新执行/ }).count(), 0)
+    await banner.getByRole('button', { name: '查看原任务', exact: true }).click()
+    await page.getByRole('region', { name: '产出结果', exact: true }).getByText(new RegExp(`${label}提交结果尚未确认`)).first().waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+  }
+  assert.deepEqual((await page.evaluate(() => window.resultTest.state())).blockedRequests, [])
   assert.deepEqual(errors, [])
-  console.log('PASS Electron arrangement and historical conversation results: visible first frame, image zoom, native video fullscreen/exit, playback/seek, Range, reveal identity, narrow layout, release and logout')
+  console.log('PASS Electron results: specific failures and replay guards for images and videos; preview, playback, Range, reveal, narrow layout, release and logout; no generation requests')
 } catch (error) {
-  console.error(errors)
+  console.error({ errors, loadFailures })
   const page = electron?.windows()[0]
   if (page) console.error((await page.locator('body').innerText()).slice(0, 2500))
   throw error

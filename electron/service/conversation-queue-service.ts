@@ -16,6 +16,7 @@ interface Options {
   isBusy?(taskId: string): boolean
   start(taskId: string, entry: ConversationQueueEntry, signal: AbortSignal): Promise<void>
   retry(taskId: string, signal: AbortSignal): Promise<void>
+  assertReplayAllowed?(owner: TaskOwnerScope, task: ClientTask): Promise<void>
   interruptCurrent?(taskId: string, runId: string): Promise<void>
   startInitial?(taskId: string, signal: AbortSignal): Promise<void>
   onInitialFailure?(taskId: string, error: unknown, scope: TaskOwnerScope, signal: AbortSignal): Promise<void>
@@ -211,8 +212,15 @@ export class ConversationQueueService {
       const failed = record.entries.find(item => item.status === 'failed')
       const recovery = options.messageId !== undefined || options.confirmed !== undefined
       if (recovery && (!failed?.recoveryConfirmationRequired || failed.id !== options.messageId || options.confirmed !== true)) throw new AppError('INVALID_STATE')
+      if (failed?.recoveryConfirmationRequired && !recovery) throw new AppError('RECOVERY_CONFIRMATION_REQUIRED')
+      const unstarted = task.status === 'pending' && !task.lastRunId && task.executionHealth !== 'start-failed'
+      const retryOriginal = !unstarted && !failed && (['failed', 'interrupted'].includes(task.status) || task.executionHealth === 'start-failed'
+        || options.retryOriginal && !record.entries.some(item => item.status === 'waiting'))
+      if (failed || retryOriginal) {
+        await this.options.assertReplayAllowed?.(record.owner, task)
+        assert()
+      }
       if (failed?.recoveryConfirmationRequired) {
-        if (!recovery) throw new AppError('RECOVERY_CONFIRMATION_REQUIRED')
         failed.mode = 'confirm_rebuild'
         failed.confirmed = true
         delete failed.recoveryConfirmationRequired
@@ -221,12 +229,11 @@ export class ConversationQueueService {
       record.paused = false
       await this.options.store.save(record.owner, record)
       assert()
-      if (task.status === 'pending' && !task.lastRunId && task.executionHealth !== 'start-failed') {
+      if (unstarted) {
         this.scheduleInitial(taskId)
         return
       }
-      if (!failed && (['failed', 'interrupted'].includes(task.status) || task.executionHealth === 'start-failed'
-        || options.retryOriginal && !record.entries.some(item => item.status === 'waiting'))) {
+      if (retryOriginal) {
         try { await this.options.retry(taskId, signal); assert() }
         catch (error) { assert(); record.paused = true; await this.options.store.save(record.owner, record); throw error }
         return

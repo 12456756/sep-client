@@ -154,6 +154,7 @@ export class TaskService {
       if (conversation && plan?.conversation?.kind !== 'general') await this.requireAuthorizedEmployee(task.subscriptionId)
       await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}), ...(inputReply ? { inputReply } : {}) })
     } catch (error) {
+      if (error instanceof AppError && error.code === 'MEDIA_REPLAY_BLOCKED') throw error
       try { await this.deps.taskManager.recordStartFailure?.(taskId, describeError(error)) } catch { /* preserve the original retry error */ }
       throw error
     }

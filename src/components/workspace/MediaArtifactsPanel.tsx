@@ -6,6 +6,7 @@ import { mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLab
 import { videoRuntimeSchema } from '../../shared/video-media'
 import { imageReferenceSupport, mediaReferenceProblem } from '../../shared/media-references'
 import { VideoTaskPanel } from './VideoArtifactsPanel'
+import { mediaRetryState, type MediaJobSummary, type MediaRetryState } from '../../shared/media-retry'
 import { useMediaParameterPreferences } from './media-preference-scope'
 import { imageRequestedSpecSchema, type ImageRequestedSpec, type MediaParameterSources } from '../../shared/media-spec-contract'
 
@@ -282,7 +283,7 @@ function imageResultFile(asset: MediaAssetView): WorkDeliverable {
   return { id: asset.localAssetId, name: `图片成果.${asset.mime.split('/')[1] || 'bin'}`, path: '', note: '', format: asset.mime.split('/')[1], sourceArtifact: { kind: 'image', artifactId: asset.localAssetId, sha256: '' } }
 }
 
-function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
+function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: MediaJobSummary) => void; presentation?: 'full' | 'results' }) {
   const [view, setView] = useState<MediaTaskView | null>(null)
   const [videoReferenceAvailable, setVideoReferenceAvailable] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -406,7 +407,8 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
   const outputCount = savedImageOutputCount(taskId, view, jobs, Boolean(error))
   const taskIssue = mediaTaskIssue(jobs)
   const summaryError = error || taskIssue
-  useEffect(() => { onSummary?.({ outputs: outputCount, error: summaryError }) }, [onSummary, outputCount, summaryError])
+  const retryState = mediaRetryState(jobs.map(job => job.generationStatus), view !== null, Boolean(error))
+  useEffect(() => { onSummary?.({ outputs: outputCount, error: summaryError, retryState }) }, [onSummary, outputCount, summaryError, retryState])
   const busy = pending !== null
   const feedback = { pending }
   if (!visible) return null
@@ -434,13 +436,17 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
   </section>
 }
 
-export function MediaArtifactsPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { images: number | null; videos: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
-  const [imageSummary, setImageSummary] = useState<{ outputs: number | null; error: string | null }>({ outputs: null, error: null })
-  const [videoSummary, setVideoSummary] = useState<{ outputs: number | null; error: string | null }>({ outputs: null, error: null })
+export interface MediaArtifactsSummary { images: number | null; videos: number | null; error: string | null; retryState: MediaRetryState }
+const initialSummary: MediaJobSummary = { outputs: null, error: null, retryState: 'checking' }
+
+export function MediaArtifactsPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: MediaArtifactsSummary) => void; presentation?: 'full' | 'results' }) {
+  const [imageSummary, setImageSummary] = useState(initialSummary)
+  const [videoSummary, setVideoSummary] = useState(initialSummary)
   const imageCount = imageSummary.outputs
   const videoCount = videoSummary.outputs
   const mediaError = imageSummary.error || videoSummary.error
-  useEffect(() => { onSummary?.({ images: imageCount, videos: videoCount, error: mediaError }) }, [imageCount, mediaError, onSummary, videoCount])
-  const onImageSummary = useCallback((summary: { outputs: number | null; error: string | null }) => setImageSummary(summary), [])
-  return <><MediaTaskPanel key={taskId} taskId={taskId} visible={visible} onSummary={onImageSummary} presentation={presentation} /><VideoTaskPanel taskId={taskId} visible={visible} onSummary={setVideoSummary} presentation={presentation} /></>
+  const states = [imageSummary.retryState, videoSummary.retryState]
+  const retryState = states.includes('unconfirmed') ? 'unconfirmed' : states.includes('unavailable') ? 'unavailable' : states.includes('checking') ? 'checking' : 'clear'
+  useEffect(() => { onSummary?.({ images: imageCount, videos: videoCount, error: mediaError, retryState }) }, [imageCount, mediaError, onSummary, retryState, videoCount])
+  return <><MediaTaskPanel key={taskId} taskId={taskId} visible={visible} onSummary={setImageSummary} presentation={presentation} /><VideoTaskPanel taskId={taskId} visible={visible} onSummary={setVideoSummary} presentation={presentation} /></>
 }

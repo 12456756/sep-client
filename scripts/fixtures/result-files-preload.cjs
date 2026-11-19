@@ -16,7 +16,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onAttachmentPaste: () => () => {},
   getTaskTimeline: async () => ({ success: true, data: [] }),
   listTaskRuns: async () => ({ success: true, runs: [] }),
-  conversationQueue: async () => ({ success: true, queue: { paused: false, items: [], failed: null } }),
+  conversationQueue: async ({ taskId, action }) => {
+    if (action !== 'get') throw new Error('Result fixture must not replay a conversation')
+    const replay = taskId.startsWith('conversation-replay-')
+    return { success: true, queue: { paused: replay, items: [], failed: replay ? { id: 'failed-message', prompt: '原生成请求',
+      attachmentNames: [], createdAt: 1, recoveryConfirmationRequired: taskId === 'conversation-replay-video' } : null } }
+  },
   onTaskUpdated: () => () => {},
   onPiEvent: () => () => {},
 })

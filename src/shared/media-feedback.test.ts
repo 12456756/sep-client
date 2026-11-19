@@ -150,6 +150,13 @@ it('shows a receipt reason alongside submission uncertainty without exposing tec
   }
 })
 
+it('shows the structured moderation failure behind a generic video receipt error', () => {
+  const message = mediaIssueMessage({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: 'UPSTREAM_FAILED',
+    upstreamError: { status: 200, body: { error: { code: 'ContentModerationFailed', message: 'private provider detail' } } } }, 'video')!
+  assert.match(message, /^视频生成失败：生成内容未通过安全审核/)
+  assert.doesNotMatch(message, /ContentModerationFailed|private provider detail|UPSTREAM_FAILED|重新生成|未扣费|已退款/)
+})
+
 it('recognizes known reasons inside wrappers and arrays even when the error code is numeric', () => {
   const message = mediaIssueMessage({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: null,
     upstreamError: { status: 200, body: [{ error: { code: 123, message: 'Invalid parameters', reason: 'Unsupported image dimensions', details: { width: 1300 } } }] } }, 'video')!

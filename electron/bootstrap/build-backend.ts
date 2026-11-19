@@ -79,6 +79,8 @@ import { VideoRunService } from '../service/video-run-service'
 import { ConversationVideoRunService } from '../service/conversation-video-run-service'
 import { ConversationMediaService } from '../service/conversation-media-service'
 import { AppError } from '../errors/app-error'
+import { videoSubmissionRejected } from '../domain/video-media'
+import { isMediaSubmissionUnconfirmed, MEDIA_RETRY_READ_FAILED } from '../../src/shared/media-retry'
 import { ScopePath } from '../data/scope-path'
 import { DocumentPreviewService } from '../service/document-preview-service'
 import { DocumentPreviewStore } from '../data/document-preview-store'
@@ -412,6 +414,16 @@ class BackendRuntime {
         const runtime = await this.getTaskRuntime()
         signal.throwIfAborted()
         await runtime.retryTask(taskId, { conversation: true, signal })
+      },
+      assertReplayAllowed: async (owner, task) => {
+        const unconfirmed = await Promise.all([
+          mediaStore.listJobs(owner, task.id).then(jobs => jobs.some(job => isMediaSubmissionUnconfirmed(job.generationStatus))),
+          videoStore && task.subscriptionId
+            ? videoStore.listJobs({ ...owner, subscriptionId: task.subscriptionId }, task.id).then(jobs => jobs.some(job =>
+              isMediaSubmissionUnconfirmed(job.receipt?.status) || !job.receipt && job.submission !== 'NOT_SENT' && !videoSubmissionRejected(job)))
+            : false,
+        ]).catch(cause => { throw new AppError('MEDIA_REPLAY_BLOCKED', { message: MEDIA_RETRY_READ_FAILED, cause }) })
+        if (unconfirmed.some(Boolean)) throw new AppError('MEDIA_REPLAY_BLOCKED')
       },
       onFailure: (taskId, entry, error, scope, subscriptionId) => this.renderer.taskEvent(runtimeFailureEvent({ taskId, runId: entry.runId, subscriptionId, owner: scope }, error)),
     })

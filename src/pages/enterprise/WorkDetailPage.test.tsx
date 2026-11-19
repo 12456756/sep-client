@@ -16,6 +16,7 @@ import { ArrangementSteps } from '../../components/enterprise/arrange/Arrangemen
 import { ArrangementTranscriptView } from '../../components/enterprise/arrange/ArrangementTranscript';
 import { buildArrangementTranscript } from '../../features/enterprise/arrangement-transcript';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
+import * as mediaRetry from '../../shared/media-retry';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
 import { useResultFilePreview } from '../../features/enterprise/use-result-file-preview';
@@ -50,6 +51,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/WorkIndicators': { WorkStatusIcon: () => null, WorkTypeTag: () => null },
   '../../components/enterprise/WorkSkills': { WorkSkills: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
+  '../../shared/media-retry': mediaRetry,
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
   '../../components/workspace/ResultFileCard': { ResultFileCard },
@@ -303,22 +305,21 @@ function mountDetail(item: WorkItem = work, overrides: Partial<EnterpriseWorkspa
 }
 
 describe('compact failure notice', () => {
-  it('uses the same reason and icon-only retry for conversation and flow failures', () => {
-    for (const kind of ['conversation', 'flow'] as const) {
-      const html = renderDetail({ ...work, kind, status: 'failed', stopReason: '视频服务暂时不可用' });
-      assert.equal((html.match(/aria-label="任务失败"/g) ?? []).length, 1);
-      assert.match(html, /class="ent-failure-reason" title="视频服务暂时不可用">视频服务暂时不可用<\/p>/);
-      assert.match(html, /data-hint="重试任务"/);
-      assert.match(html, /<button[^>]*aria-label="重试任务"[^>]*><svg/);
-      assert.doesNotMatch(html, /重新试一次|中断原因：/);
-    }
+  it('uses the failure reason and icon-only retry for flow failures', () => {
+    const html = renderDetail({ ...work, kind: 'flow', status: 'failed', stopReason: '视频服务暂时不可用' });
+    assert.equal((html.match(/aria-label="任务失败"/g) ?? []).length, 1);
+    assert.match(html, /class="ent-failure-reason" title="视频服务暂时不可用">视频服务暂时不可用<\/p>/);
+    assert.match(html, /data-hint="重试任务"/);
+    assert.match(html, /<button[^>]*aria-label="重试任务"[^>]*><svg/);
+    assert.doesNotMatch(html, /重新试一次|中断原因：/);
   });
 
   it('retains the complete long reason and falls back to the next user action', () => {
     const reason = '视频提交超时，'.repeat(80);
-    assert.match(renderDetail({ ...work, status: 'failed', stopReason: reason }), new RegExp(`title="${reason}"`));
-    assert.match(renderDetail({ ...work, status: 'failed', nextUserAction: '请检查视频服务连接' }), /class="ent-failure-reason"[^>]*>请检查视频服务连接<\/p>/);
-    assert.match(renderDetail({ ...work, status: 'failed' }), /class="ent-failure-reason"[^>]*>任务执行失败<\/p>/);
+    const failed = { ...work, kind: 'flow' as const, status: 'failed' as const };
+    assert.match(renderDetail({ ...failed, stopReason: reason }), new RegExp(`title="${reason}"`));
+    assert.match(renderDetail({ ...failed, nextUserAction: '请检查视频服务连接' }), /class="ent-failure-reason"[^>]*>请检查视频服务连接<\/p>/);
+    assert.match(renderDetail(failed), /class="ent-failure-reason"[^>]*>任务执行失败<\/p>/);
   });
 
   it('combines failed nodes into one frame without a duplicate task-failure banner', () => {
@@ -344,7 +345,12 @@ describe('compact failure notice', () => {
       const item: WorkItem = { ...work, kind, status: 'failed', arrangementExecution: kind === 'flow'
         ? { activeRunId: null, status: 'failed', updatedAt: 1, nodes: [{ nodeId: 'video', status: 'failed', finalFiles: [] }] }
         : undefined };
-      const mounted = mountDetail(item, { retryWork });
+      const mounted = mountDetail(item, { retryWork, busy: true });
+      if (kind === 'conversation') {
+        const media = mounted.find(element => element.type === MediaArtifactsPanel);
+        (media.props.onSummary as (value: unknown) => void)({ images: 0, videos: 0, error: null, retryState: 'clear' });
+        mounted.render();
+      }
       const actions = mounted.find(element => typeof element.type === 'function' && element.type.name === (kind === 'flow' ? 'FailedNodeActions' : 'NeedsYou'));
       const buttons: React.ReactElement<Record<string, unknown>>[] = [];
       const visit = (nodes: React.ReactNode) => React.Children.forEach(nodes, child => {
@@ -358,11 +364,39 @@ describe('compact failure notice', () => {
       });
       visit(actions);
       assert.equal(buttons.length, 1);
+      assert.equal(buttons[0]!.props.disabled, true);
       (buttons[0]!.props.onClick as () => void)();
       assert.deepEqual(calls.at(-1), kind === 'flow' ? [work.id, 'video'] : [work.id]);
       mounted.unmount();
-      assert.match(renderDetail(item, { busy: true }), /aria-label="重试(?:任务|此节点：video)"[^>]*disabled=""/);
     }
+  });
+
+  it('hides replay while media state is unverified and links unconfirmed submissions to the results panel', () => {
+    const item: WorkItem = { ...work, status: 'failed', stopReason: '工作运行失败，请重试' };
+    assert.match(renderDetail(item), /正在核实媒体任务状态/);
+    assert.doesNotMatch(renderDetail(item), /请重试|aria-label="重试任务"/);
+    const mounted = mountDetail(item);
+    const notice = () => {
+      const action = mounted.find(element => typeof element.type === 'function' && element.type.name === 'NeedsYou');
+      return (action.type as (props: unknown) => React.ReactElement)(action.props);
+    };
+    for (const retryState of ['unavailable', 'unconfirmed'] as const) {
+      const media = mounted.find(element => element.type === MediaArtifactsPanel);
+      (media.props.onSummary as (value: unknown) => void)({ images: 1, videos: 0, error: '媒体异常', retryState });
+      mounted.render();
+      const html = renderToStaticMarkup(notice());
+      assert.match(html, /请勿重复提交|勿重复提交/);
+      assert.doesNotMatch(html, /请重试|重试任务/);
+      const action = React.Children.toArray((notice().props as { children: React.ReactNode }).children)
+        .find((child): child is React.ReactElement<{ onClick: () => void }> => React.isValidElement(child) && child.type === 'button');
+      assert.ok(action);
+      action.props.onClick();
+      mounted.render();
+      assert.equal(mounted.dialog.open, true);
+      (mounted.find(element => element.props['aria-label'] === '关闭详情面板').props.onClick as () => void)();
+      mounted.render();
+    }
+    mounted.unmount();
   });
 });
 

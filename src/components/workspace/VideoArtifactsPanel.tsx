@@ -10,6 +10,7 @@ import { mediaSpecMetadataSchema, videoActualSpecSchema, videoRequestedSpecSchem
 import { isVideoSubmissionRejectionCode } from '../../shared/video-errors'
 import { mediaUpstreamErrorSchema } from '../../shared/media-upstream-error'
 import { mediaFailureSchema } from '../../shared/media-failure'
+import { mediaRetryState, type MediaJobSummary } from '../../shared/media-retry'
 
 
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
@@ -262,12 +263,13 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, onClose, onExpor
   </dialog>
 }
 
-function VideoTaskController({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
+function VideoTaskController({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: MediaJobSummary) => void; presentation?: 'full' | 'results' }) {
   const [view, setView] = useState<VideoTaskView | null>(null)
   const [pending, setPending] = useState<Command | null>(null)
   const { capture } = useOperationFeedback(taskId)
   const queryFailure = useRef(false)
   const [error, setError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
   const [preview, setPreview] = useState<OutputSelection | null>(null)
   const alive = useRef(false)
   const lifetime = useRef(0)
@@ -288,10 +290,11 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
         if (!queryFailure.current) { queryFailure.current = true; notice.show(message) }
         return
       }
-      if (result.data === null) { setView(null); setPreview(null); setError(null); return }
+      if (result.data === null) { setView(null); setPreview(null); setError(null); setLoaded(true); queryFailure.current = false; return }
       const next = safeView(result.data, taskId)
       if (!next) { setView(null); setPreview(null); setError('视频任务数据不完整或执行模式不匹配，请刷新任务；持续失败请联系平台管理员。'); if (!queryFailure.current) { queryFailure.current = true; notice.show('视频任务数据不完整或执行模式不匹配，请刷新任务；持续失败请联系平台管理员。') }; return }
       setView(next)
+      setLoaded(true)
       setError(null)
       queryFailure.current = false
     } catch {
@@ -312,6 +315,7 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
       if (active) timer = setTimeout(() => { void poll() }, POLL_INTERVAL)
     }
     if (typeof window.electronAPI?.getTaskVideo === 'function') void poll()
+    else setLoaded(true)
     return () => { alive.current = false; active = false; lifetime.current = epoch + 1; if (timer) clearTimeout(timer) }
   }, [refresh])
 
@@ -348,9 +352,10 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
   const outputCount = savedOutputCount
   const taskIssue = videoTaskIssue(view?.jobs ?? [])
   const summaryError = error || taskIssue
+  const retryState = mediaRetryState(view?.jobs.map(job => job.generationStatus) ?? [], loaded, Boolean(error))
   useEffect(() => {
-    onSummary?.({ outputs: outputCount, error: summaryError })
-  }, [onSummary, outputCount, summaryError])
+    onSummary?.({ outputs: outputCount, error: summaryError, retryState })
+  }, [onSummary, outputCount, summaryError, retryState])
   return <>
     {visible ? <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending} presentation={presentation}
       onAction={(job, action) => { void run(action, api => action === 'resume' ? api.resumeVideoTracking({ taskId, jobId: job.jobId }) : api.retryVideoSave({ taskId, jobId: job.jobId })) }}
@@ -359,7 +364,7 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
   </>
 }
 
-export function VideoTaskPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
+export function VideoTaskPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: MediaJobSummary) => void; presentation?: 'full' | 'results' }) {
   return <VideoTaskController key={taskId} taskId={taskId} visible={visible} onSummary={onSummary} presentation={presentation} />
 }
 
