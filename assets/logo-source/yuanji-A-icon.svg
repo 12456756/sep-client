@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="title desc">
+  <title id="title">元机AI 方案 A · 元点环 · 图标</title>
+  <desc id="desc">两段对称圆弧围合一枚方芯，象征本源与不息运转</desc>
+  <path d="M56.71 22.64 A42 42 0 0 1 105.36 71.29" fill="none" stroke="#2B5CFF" stroke-width="11" stroke-linecap="round"/>
+  <path d="M71.29 105.36 A42 42 0 0 1 22.64 56.71" fill="none" stroke="#00C9A7" stroke-width="11" stroke-linecap="round"/>
+  <rect x="50" y="50" width="28" height="28" rx="7" fill="#2B5CFF"/>
+  <circle cx="64" cy="64" r="4.5" fill="#FFFFFF"/>
+</svg>

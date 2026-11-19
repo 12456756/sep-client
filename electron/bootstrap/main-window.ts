@@ -33,7 +33,7 @@ export function createMainWindow({ onClosed, speech, showOnReady = true }: MainW
     minHeight: 640,
     center: true,
     show: false,
-    title: '硅基员工平台',
+    title: '元机AI',
     icon: appIcon,
     backgroundColor: '#f7f8fc',
     autoHideMenuBar: true,

@@ -1,7 +1,7 @@
 {
   "name": "longsilicon",
   "version": "0.5.4",
-  "description": "硅基员工平台客户端",
+  "description": "元机AI客户端",
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
@@ -155,7 +155,7 @@
         ]
       }
     ],
-    "productName": "硅基员工平台",
+    "productName": "元机AI",
     "copyright": "Copyright © 2026 龙道集团",
     "directories": {
       "output": "dist"

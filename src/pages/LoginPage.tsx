@@ -245,10 +245,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     <main className="login-page">
       <div className="login-container">
         <div className="login-card">
-          <section className="login-brand-panel" aria-label="硅基员工平台">
+          <section className="login-brand-panel" aria-label="元机AI">
             <img className="login-brand-watermark" src={logoImage} alt="" aria-hidden="true" />
             <div className="login-brand-content">
-              <img className="login-brand-image" src={logoImage} alt="硅基员工平台标志" />
+              <img className="login-brand-image" src={logoImage} alt="元机AI标志" />
               <h1>让每一位员工，<br /><span>都有一个 AI 同行者</span></h1>
               <p className="login-brand-description">连接知识、工具与行动<br />让想法走向交付，让协作自然发生。</p>
             </div>
@@ -263,7 +263,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             <div className="login-form-shell">
               <header className="login-card-header">
                 <p className="login-form-eyebrow">欢迎回来</p>
-                <h2 className="login-title">登录硅基员工平台</h2>
+                <h2 className="login-title">登录元机AI</h2>
                 <p className="login-subtitle">进入你的数字员工工作台</p>
               </header>
 

@@ -64,7 +64,7 @@ function SkillImportSessionPage({ state, onClose, onConfirm, onSelectRoot, onRem
 
   return <main className="skill-import-page">
     <header className="skill-import-topbar">
-      <div className="skill-import-brand"><img src={logoImage} alt="" /><span>硅基员工平台</span><i /><span>本机 Skills 导入</span></div>
+      <div className="skill-import-brand"><img src={logoImage} alt="" /><span>元机AI</span><i /><span>本机 Skills 导入</span></div>
       <div className="skill-import-top-actions">
         <button type="button" className="skill-import-icon-button" onClick={onCheckForUpdate} title="检查更新" aria-label="检查更新"><RefreshCw size={16} /></button>
         <button type="button" className="skill-import-icon-button" onClick={() => setShowDevices(value => !value)} title="设备授权管理" aria-label="设备授权管理"><KeyRound size={16} /></button>

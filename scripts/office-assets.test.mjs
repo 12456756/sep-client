@@ -33,7 +33,7 @@ test('local and signed macOS builds preserve only the pinned Office executable s
     const ignored = file => build.mac.signIgnore.some(pattern => new RegExp(pattern).test(file))
     assert.equal(build.afterSign, 'scripts/office-after-sign.cjs')
     for (const arch of ['arm64', 'x64']) {
-      assert.equal(ignored(`/tmp/硅基员工平台.app/Contents/Resources/office/officecli-mac-${arch}`), true)
+      assert.equal(ignored(`/tmp/元机AI.app/Contents/Resources/office/officecli-mac-${arch}`), true)
     }
     for (const file of ['Contents/MacOS/Client', 'Contents/Resources/office/other',
       'Contents/Resources/office/officecli-mac-arm64.backup', 'Contents/Resources/other/officecli-mac-arm64']) {
@@ -70,7 +70,7 @@ for (const arch of ['arm64', 'x64']) {
     if (!existsSync(join('resources/office', asset.file))) { t.skip('Pinned target binary is not prepared'); return }
     const root = await mkdtemp(join(tmpdir(), 'sep-office-sign-'))
     t.after(() => rm(root, { recursive: true, force: true }))
-    const app = join(root, '硅基员工平台.app')
+    const app = join(root, '元机AI.app')
     const resources = join(app, 'Contents/Resources')
     await mkdir(join(resources, 'office'), { recursive: true })
     await mkdir(join(app, 'Contents/MacOS'), { recursive: true })
@@ -81,7 +81,7 @@ for (const arch of ['arm64', 'x64']) {
       await cp(join('resources/office', name), join(resources, 'office', name))
     }
     const context = { appOutDir: root, electronPlatformName: 'darwin', arch: arch === 'arm64' ? 3 : 1,
-      packager: { projectDir: resolve('.'), appInfo: { productFilename: '硅基员工平台' } } }
+      packager: { projectDir: resolve('.'), appInfo: { productFilename: '元机AI' } } }
     await afterOfficePack(context)
     const pkg = JSON.parse(await readFile('package.json', 'utf8'))
     const config = createBuilderConfig(pkg.build, 'beta')

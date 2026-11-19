@@ -1,5 +1,5 @@
 ---
-name: SEP 硅基员工平台
+name: SEP 元机AI
 description: 面向企业协作的硅基员工桌面工作台
 colors:
   brand-red: "#ae383d"
@@ -56,7 +56,7 @@ components:
     textColor: "{colors.ink}"
     rounded: "{rounded.lg}"
 
-# Design System: SEP 硅基员工平台
+# Design System: SEP 元机AI
 
 ## Overview
 
