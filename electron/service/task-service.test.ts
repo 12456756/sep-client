@@ -464,7 +464,9 @@ it('archives media tasks without deleting their history and filters them from th
   const archived = new Set<string>()
   let deletions = 0
   const hidden: string[] = []
+  const released: string[] = []
   const service = harness({
+    releaseTaskResources: async (id: string, receivedScope: TaskOwnerScope) => { assert.deepEqual(receivedScope, scope); released.push(id) },
     taskManager: { async getTask() { return task }, async getAllTasks() { return [task] }, async deleteTask() { deletions++; return true },
       hideTaskRecord(id: string, receivedScope: unknown) { assert.deepEqual(receivedScope, scope); hidden.push(id) } },
     media: {
@@ -475,6 +477,7 @@ it('archives media tasks without deleting their history and filters them from th
   await service.delete(task.id)
   assert.equal(deletions, 0)
   assert.deepEqual(hidden, [task.id])
+  assert.deepEqual(released, [task.id])
   assert.deepEqual(await service.list(), [])
   assert.equal((await service.get(task.id)).id, task.id)
 })
@@ -501,7 +504,9 @@ it('preserves ordinary task deletion and the running-task guard when media is ab
   let allowed = true
   let activeRunId: string | null = 'run-a'
   let deletions = 0
+  let releases = 0
   const service = harness({
+    releaseTaskResources: async (id: string, receivedScope: TaskOwnerScope) => { assert.equal(id, task.id); assert.deepEqual(receivedScope, scope); releases++ },
     taskManager: {
       async deleteTask() { deletions++; return allowed },
       async getTask() { return { ...task, activeRunId } },
@@ -514,4 +519,5 @@ it('preserves ordinary task deletion and the running-task guard when media is ab
   activeRunId = null
   await assert.rejects(service.delete(task.id), { code: 'INVALID_STATE', message: '工作状态已变化，无法删除，请刷新后重试。' })
   assert.equal(deletions, 3)
+  assert.equal(releases, 1, 'failed deletion must not release a running task browser')
 })

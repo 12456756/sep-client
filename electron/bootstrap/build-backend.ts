@@ -416,6 +416,7 @@ class BackendRuntime {
       onFailure: (taskId, entry, error, scope, subscriptionId) => this.renderer.taskEvent(runtimeFailureEvent({ taskId, runId: entry.runId, subscriptionId, owner: scope }, error)),
     })
     this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate,
+      releaseTaskResources: async (taskId, scope) => { await this.runtime.peek()?.releaseTaskResources(taskId, scope) },
       media: this.media, runSnapshots: mediaStore, conversationQueue: this.conversationQueue })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans, queue: this.conversationQueue })
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)

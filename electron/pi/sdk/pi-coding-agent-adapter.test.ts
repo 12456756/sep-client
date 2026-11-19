@@ -449,15 +449,15 @@ describe('browser instructions in real provider requests', () => {
 
 describe('built-in browser handoff with the real Pi SDK', () => {
   for (const approvalMode of ['auto-approve', 'confirm-each'] as const) {
-    it(`waits for human completion once in full-local ${approvalMode}`, async t => {
+    it(`rejects a blank-window handoff in full-local ${approvalMode}`, async t => {
       if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
         t.skip('Requires default browser configuration.'); return
       }
       const { approvals, bodies } = await mediaSession({ mcpServers: undefined, enableCommonTools: true,
         toolPolicy: { ...readOnlyPolicy, preset: 'full-local', approvalMode },
       }, { name: BROWSER_MODE_TOOL, input: { mode: 'visible' } })
-      assert.equal(approvals, 1, 'completion is required even when normal tool approval is automatic')
-      assert.match(messageText(bodies[1].messages.find(message => message.role === 'tool')!.content), /denied or expired/)
+      assert.equal(approvals, 0, 'do not request login completion for a blank browser')
+      assert.match(messageText(bodies[1].messages.find(message => message.role === 'tool')!.content), /No target website is open/)
     })
   }
 })

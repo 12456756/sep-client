@@ -706,6 +706,7 @@ const PUBLIC_SIGNATURES = [
   'async interruptConversation(taskId: string, expectedRunId: string): Promise<void> {',
   'async cancelTask(taskId: string, reason?: string): Promise<void> {',
   'async stopAll(): Promise<void> {',
+  'releaseTaskResources(taskId: string, scope:',
   'async stopArrangement(taskId: string, reason?: string): Promise<void> {',
   'respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {',
 ]
@@ -727,7 +728,7 @@ describe('TaskRuntime public surface', () => {
       declared.sort(),
       [
         'cancelTask', 'confirmArrangementNodes', 'continueConversation', 'executeTask', 'getContextUsage', 'hasConversationRun', 'interruptConversation', 'pauseTask',
-        'respondToApproval', 'retryTask', 'stopAll', 'stopArrangement', 'switchConversationEmployee',
+        'releaseTaskResources', 'respondToApproval', 'retryTask', 'stopAll', 'stopArrangement', 'switchConversationEmployee',
       ],
       'public method set changed: runtime must expose only the documented methods',
     )

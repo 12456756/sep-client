@@ -720,7 +720,7 @@ export class TaskRuntime {
     const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
-      await Promise.all([this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
+      await Promise.all([this.media?.stopTask(taskId), this.video?.stopTask(taskId), this.conversationExecutor.closeBrowser(taskId)])
       const task = await this.taskManager.getTask(taskId)
       if (task?.status === TaskStatus.PENDING && task.activeRunId) {
         await this.taskManager.pauseTask(taskId)
@@ -732,7 +732,7 @@ export class TaskRuntime {
     active.control = 'pause'
     active.abortController?.abort()
     this.approvals.denyRun(active.runId)
-    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
+    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId), this.conversationExecutor.closeBrowser(taskId)])
     await active.completion
   }
 
@@ -742,7 +742,7 @@ export class TaskRuntime {
     active.control = 'priority-interrupt'
     active.abortController?.abort()
     this.approvals.denyRun(active.runId)
-    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
+    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId), this.conversationExecutor.closeBrowser(taskId)])
     await active.completion
   }
 
@@ -770,7 +770,7 @@ export class TaskRuntime {
     const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
-      await Promise.all([this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
+      await Promise.all([this.media?.stopTask(taskId), this.video?.stopTask(taskId), this.conversationExecutor.closeBrowser(taskId)])
       const task = await this.taskManager.getTask(taskId)
       if (task?.activeRunId && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED) {
         await this.taskManager.settleTaskRun(taskId, task.activeRunId, TaskStatus.PAUSED, stopReason)
@@ -784,6 +784,7 @@ export class TaskRuntime {
     active.control = 'cancel'
     active.controlReason = stopReason
     active.abortController?.abort()
+    const closingBrowser = this.conversationExecutor.closeBrowser(taskId)
     await this.enqueueEvent({
       taskId,
       runId: active.runId,
@@ -794,11 +795,12 @@ export class TaskRuntime {
       data: null,
     })
     this.approvals.denyRun(active.runId)
-    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
+    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId), closingBrowser])
     await active.completion
   }
 
   async stopAll(): Promise<void> {
+    const closingBrowsers = this.conversationExecutor.closeBrowsers()
     for (const controller of this.arrangementPreparations.values()) controller.abort()
     if (this.lifecycleAuditTimer) clearInterval(this.lifecycleAuditTimer)
     this.lifecycleAuditTimer = null
@@ -832,7 +834,12 @@ export class TaskRuntime {
       await Promise.all([active.worker.abort(), this.media?.stopTask(active.taskId), this.video?.stopTask(active.taskId)])
       await active.completion
     }))])
+    await closingBrowsers
     await this.conversationExecutor.disposeSessions()
+  }
+
+  releaseTaskResources(taskId: string, scope: import('../data/scope-path').TaskOwnerScope): Promise<void> {
+    return this.conversationExecutor.releaseTaskResources(taskId, scope)
   }
 
   respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {

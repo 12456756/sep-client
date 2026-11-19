@@ -99,11 +99,29 @@ describe('SharedPiSession', () => {
     assert.equal(sessions[0].aborted, 1)
     assert.equal(sessions[0].disposed, 1)
     assert.equal(configs[1].resumeSessionFile, 'task-session.jsonl')
+    assert.ok(configs[0].browserOwner)
+    assert.equal(configs[0].browserOwner, configs[1].browserOwner, 'employees share the conversation browser owner')
     second.emit({ type: 'agent_end', data: {} })
     assert.deepEqual(events, ['turn_start', 'agent_end'])
     unsubscribe()
     await adapter.dispose()
     await adapter.dispose()
     assert.equal(sessions[1].disposed, 1)
+  })
+
+  it('retains the browser owner across round resets and isolates other conversations', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const runtime: PiAgentRuntime = { createSession: async config => { configs.push(config); return new FakeSession('session') } }
+    const config: PiAgentSessionConfig = { runId: 'run', modelId: 'm', gatewayUrl: 'g', workspaceDir: 'w', agentDir: 'a', sessionDir: 's', getAccessToken: async () => 'x', authorizeTool: async () => false }
+    const first = new SharedPiSession(runtime)
+    const other = new SharedPiSession(runtime)
+    try {
+      await first.open(config)
+      await first.reset()
+      await first.open(config)
+      await other.open(config)
+      assert.equal(configs[0].browserOwner, configs[1].browserOwner)
+      assert.notEqual(configs[0].browserOwner, configs[2].browserOwner)
+    } finally { await first.dispose(); await other.dispose() }
   })
 })

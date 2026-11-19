@@ -1,4 +1,5 @@
 import type { PiAgentEvent, PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
+import { SharedBrowserOwner } from './pi-browser-owner'
 
 /**
  * 为一个任务维护一个持久化 Pi 会话。
@@ -15,6 +16,7 @@ export class SharedPiSession {
   private listener: ((event: PiAgentEvent) => void) | null = null
   private disposed = false
   private operation: Promise<void> = Promise.resolve()
+  private readonly browserOwner = new SharedBrowserOwner()
 
   constructor(private readonly runtime: PiAgentRuntime) {}
 
@@ -29,10 +31,12 @@ export class SharedPiSession {
   async open(config: PiAgentSessionConfig): Promise<PiAgentSession> {
     return this.enqueue(async () => {
       if (this.disposed) throw new Error('Shared Pi session adapter has been disposed.')
+      this.browserOwner.resume()
       if (this.session && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision) return this.session
       if (this.session) await this.disposeCurrent()
       const session = await this.runtime.createSession({
         ...config,
+        browserOwner: this.browserOwner,
         resumeSessionFile: this.sessionFile ?? config.resumeSessionFile,
       })
       this.session = session
@@ -48,9 +52,10 @@ export class SharedPiSession {
   async switchEmployee(config: PiAgentSessionConfig): Promise<PiAgentSession> {
     return this.enqueue(async () => {
       if (this.disposed) throw new Error('Shared Pi session adapter has been disposed.')
+      this.browserOwner.resume()
       const resumeSessionFile = this.sessionFile ?? config.resumeSessionFile
       await this.disposeCurrent()
-      const session = await this.runtime.createSession({ ...config, resumeSessionFile: resumeSessionFile ?? undefined })
+      const session = await this.runtime.createSession({ ...config, browserOwner: this.browserOwner, resumeSessionFile: resumeSessionFile ?? undefined })
       this.session = session
       this.modelId = config.modelId
       this.vision = config.vision ?? null
@@ -77,13 +82,16 @@ export class SharedPiSession {
   }
 
   async dispose(): Promise<void> {
+    const closingBrowser = this.browserOwner.dispose()
     await this.enqueue(async () => {
       if (this.disposed) return
       this.disposed = true
-      await this.disposeCurrent()
+      try { await this.disposeCurrent() } finally { await closingBrowser }
       this.listener = null
     })
   }
+
+  closeBrowser(): Promise<void> { return this.browserOwner.revoke() }
 
   private bindSessionEvents(session: PiAgentSession): void {
     this.unsubscribeSession?.()

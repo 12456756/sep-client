@@ -8,6 +8,7 @@ import { BROWSER_MODE_TOOL, BrowserModeSession, createHostMcpRuntime } from './p
 import { createPlaywrightMcpServer } from './pi-playwright-mcp'
 import type { McpRuntime } from './pi-mcp-client'
 import { ToolApprovals } from '../../runtime/run-approvals'
+import { SharedBrowserOwner } from './pi-browser-owner'
 
 async function fixture() {
   let posts = 0
@@ -25,6 +26,11 @@ async function fixture() {
     response.end('<title>Browser modes</title><label>Name<input id="name"></label><label>Password<input id="password" type="password"></label><form method="POST"><button>Submit</button></form><p>Public query content</p>')
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  // Windows can allocate a Chromium-blocked ephemeral port in the 6665-6669 range.
+  while ([6000, 6665, 6666, 6667, 6668, 6669, 6697, 10080].includes((server.address() as { port: number }).port)) {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  }
   const address = server.address()
   assert.ok(address && typeof address !== 'string')
   return { url: `http://127.0.0.1:${address.port}`, posts: () => posts,
@@ -47,7 +53,7 @@ describe('background browser and manual window', () => {
       const page = await context.newPage()
       await page.goto(http.url)
       const cdp = await context.newCDPSession(page)
-      assert.match((await cdp.send('Browser.getVersion')).userAgent, /Headless/)
+      assert.doesNotMatch((await cdp.send('Browser.getVersion')).userAgent, /Headless/)
       await cdp.detach()
       await page.evaluate(`(async () => {
         document.cookie = 'session=fixture; path=/'
@@ -69,9 +75,15 @@ describe('background browser and manual window', () => {
       assert.equal(await page.evaluate(() => sessionStorage.getItem('session-login')), 'session-fixture')
       const second = await context.newPage()
       await second.goto(http.url + '/second')
+      await page.locator('#name').fill('unsaved input')
+      await page.evaluate('window.fixtureHeap = { retained: true }')
       assert.equal(await session.setMode('visible'), true)
-      assert.equal(context.browser()?.isConnected(), false)
+      assert.equal(context.browser()?.isConnected(), true)
       const visible = await session.getContext()
+      assert.equal(visible, context, 'visibility must not replace the browser context')
+      assert.equal(visible.pages()[0], page)
+      assert.equal(await page.locator('#name').inputValue(), 'unsaved input')
+      assert.equal(await page.evaluate('window.fixtureHeap.retained'), true)
       assert.deepEqual(visible.pages().map(tab => tab.url()), [http.url + '/', http.url + '/second'])
       const target = visible.pages()[0]
       const headedCdp = await visible.newCDPSession(target)
@@ -89,8 +101,7 @@ describe('background browser and manual window', () => {
         };
       })`), 'indexed-fixture')
       await target.evaluate(() => sessionStorage.setItem('session-login', 'human-updated'))
-      await target.reload()
-      assert.equal(await target.evaluate(() => sessionStorage.getItem('session-login')), 'human-updated', 'migration script must not overwrite later human changes')
+      assert.equal(await target.evaluate(() => sessionStorage.getItem('session-login')), 'human-updated')
       assert.equal(await session.setMode('visible'), false)
       assert.equal(await session.setMode('background'), true)
       assert.equal(await (await session.getContext()).pages()[0].evaluate(() => sessionStorage.getItem('session-login')), 'human-updated')
@@ -99,7 +110,7 @@ describe('background browser and manual window', () => {
     await assert.rejects(session.getContext(), /closed/)
   })
 
-  it('keeps the old browser usable when migration is cancelled', { timeout: 30_000 }, async () => {
+  it('keeps the current browser usable when visibility is cancelled before starting', { timeout: 30_000 }, async () => {
     const session = new BrowserModeSession()
     try {
       const context = await session.getContext()
@@ -111,24 +122,34 @@ describe('background browser and manual window', () => {
   })
 
   for (const action of ['cancel', 'dispose'] as const) {
-    it(`cleans a replacement browser when ${action} happens during a real navigation`, { timeout: 30_000 }, async () => {
+    it(`cleans a native visibility operation on ${action}`, { timeout: 30_000 }, async () => {
       const http = await fixture()
-      const session = new BrowserModeSession()
+      let enter!: () => void
+      let finish!: () => void
+      let blocked = false
+      const ready = new Promise<void>(resolve => { enter = resolve })
+      const session = new BrowserModeSession(() => ({
+        setVisible: async () => {
+          if (blocked) { enter(); await new Promise<void>(resolve => { finish = resolve }) }
+          return true
+        }, dispose: async () => undefined,
+      }))
       const cancellation = new AbortController()
       try {
         const context = await session.getContext()
         const page = await context.newPage()
         await page.goto(http.url)
-        const gate = http.holdNextGet()
+        blocked = true
         const changing = session.setMode('visible', cancellation.signal)
         const rejected = assert.rejects(changing)
-        await gate.pending
+        await ready
         if (action === 'cancel') cancellation.abort()
         else {
           const disposing = session.dispose()
+          finish()
           await disposing
-          gate.release()
         }
+        if (action === 'cancel') finish()
         await rejected
         if (action === 'cancel') {
           assert.equal(await session.getContext(), context)
@@ -193,9 +214,65 @@ describe('background browser and manual window', () => {
     finally { await runtime.dispose() }
   })
 
+  it('retains actual pages and selected tabs across employee runtime disposal, with fresh handoff callbacks', { timeout: 60_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-shared-browser-'))
+    const http = await fixture()
+    const owner = new SharedBrowserOwner()
+    let firstApproval = 0
+    let secondApproval = 0
+    let first: McpRuntime | undefined
+    let second: McpRuntime | undefined
+    try {
+      first = await createHostMcpRuntime([createPlaywrightMcpServer()], root, true, undefined, async () => { firstApproval++; return false }, owner)
+      const firstCall = (name: string, input: Record<string, unknown>) => first!.tools.find(tool => tool.name.endsWith('__' + name))!.execute('first', input, undefined)
+      await firstCall('browser_navigate', { url: http.url })
+      await firstCall('browser_tabs', { action: 'new', url: http.url + '/employee-shared' })
+      await firstCall('browser_tabs', { action: 'select', index: 1 })
+      await first.dispose()
+      second = await createHostMcpRuntime([createPlaywrightMcpServer()], root, true, undefined, async () => { secondApproval++; return true }, owner)
+      const secondCall = (name: string, input: Record<string, unknown>) => second!.tools.find(tool => tool.name.endsWith('__' + name))!.execute('second', input, undefined)
+      await assert.rejects(firstCall('browser_snapshot', {}), /lease/i)
+      assert.match((await secondCall('browser_tabs', { action: 'list' })).content[0].text, /- 1: \(current\).*employee-shared/)
+      assert.match((await secondCall('browser_snapshot', {})).content[0].text, /Public query content/)
+      assert.equal((await secondCall('browser_set_mode', { mode: 'visible' })).details.isError, false)
+      assert.equal(firstApproval, 0)
+      assert.equal(secondApproval, 1)
+      await owner.revoke()
+      await assert.rejects(secondCall('browser_snapshot', {}), /lease/i)
+    } finally { await first?.dispose(); await second?.dispose(); await owner.dispose(); await http.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('keeps the same page when native hiding is unavailable', { timeout: 30_000 }, async () => {
+    const session = new BrowserModeSession(() => ({ setVisible: async visible => visible, dispose: async () => undefined }))
+    try {
+      const context = await session.getContext()
+      const page = await context.newPage()
+      assert.equal(session.backgroundHidden, false)
+      await session.setMode('visible')
+      await session.setMode('background')
+      assert.equal(await session.getContext(), context)
+      assert.equal(context.pages()[0], page)
+      assert.equal(session.backgroundHidden, false)
+    } finally { await session.dispose() }
+  })
+
+  it('reports loss after the user closes the final window rather than recreating a blank page', { timeout: 30_000 }, async () => {
+    const session = new BrowserModeSession()
+    try {
+      const context = await session.getContext()
+      const page = await context.newPage()
+      await page.close()
+      await assert.rejects(session.getContext(), /state were lost/)
+      assert.equal(session.unavailable, true)
+      await session.close()
+      assert.notEqual(await session.getContext(), context)
+    } finally { await session.dispose() }
+  })
+
   for (const action of ['deny', 'timeout', 'cancel', 'dispose'] as const) {
     it(`closes a pending manual handoff on ${action} without allowing more browser work`, { timeout: 30_000 }, async () => {
       const root = await mkdtemp(join(tmpdir(), 'sep-browser-handoff-'))
+      const http = await fixture()
       const cancellation = new AbortController()
       let requested!: () => void
       const ready = new Promise<void>(resolve => { requested = resolve })
@@ -208,6 +285,7 @@ describe('background browser and manual window', () => {
         return new Promise<boolean>(resolve => { complete = resolve })
       })
       try {
+        await runtime.tools.find(tool => tool.name.endsWith('__browser_navigate'))!.execute('navigate', { url: http.url }, undefined)
         const tool = runtime.tools.find(tool => tool.name === BROWSER_MODE_TOOL)!
         const pending = tool.execute('handoff', { mode: 'visible' }, cancellation.signal)
         await ready
@@ -219,7 +297,7 @@ describe('background browser and manual window', () => {
         assert.equal(snapshot.details.isError, true)
         if (action === 'timeout') assert.equal(approvals.respond({ requestId, approved: true }), false, 'expired completion cannot be accepted late')
         else complete(true)
-      } finally { approvals.denyAll(); await runtime.dispose(); await rm(root, { recursive: true, force: true }) }
+      } finally { approvals.denyAll(); await runtime.dispose(); await http.close(); await rm(root, { recursive: true, force: true }) }
     })
   }
 })
