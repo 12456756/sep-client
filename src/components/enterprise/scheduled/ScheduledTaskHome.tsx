@@ -5,7 +5,7 @@ import scheduledClock from '../../../assets/scheduled-clock.png'
 import type { ScheduledDefinition } from '../../../shared/scheduled-tasks'
 import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterpriseWorkspace'
 import type { ScheduledTasksModel } from '../../../features/enterprise/use-scheduled-tasks'
-import { recurrenceLabel, scheduledHomeGroups } from '../../../features/enterprise/scheduled-task-model'
+import { definitionLabel, recurrenceLabel, scheduledHomeGroups } from '../../../features/enterprise/scheduled-task-model'
 import { authorizedScheduledModels, emptyScheduledTaskDraft, SCHEDULE_EXAMPLES } from '../../../features/enterprise/scheduled-task-home'
 import type { ScheduledCreation, ScheduledCreationRequest } from '../../../shared/scheduled-creation'
 import { creationAccepted } from '../../../features/enterprise/scheduled-task-client'
@@ -94,9 +94,10 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
   const creationDefinitions = new Set(data?.creations?.filter(item => item.stage !== 'cancelled').map(item => item.definitionId))
   const pendingDefinitions = groups.pending.filter(item => !creationDefinitions.has(item.id))
   const matches = (item: ScheduledDefinition) => `${item.input.name} ${item.input.goal}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
-  const list = (items: ScheduledDefinition[], label: string) => items.length ? <section className="ent-sch-nav-group" aria-label={label}>
-    {items.filter(matches).map(item => <button type="button" className="ent-sch-nav-task" aria-current={selectedDefinition?.id === item.id ? 'page' : undefined} key={item.id} onClick={() => workspace.navigate({ name: 'scheduled', taskId: item.id, view: !item.plan && !item.enabled ? 'edit' : 'history' })}>
-      <strong>{item.input.name}</strong><span>{recurrenceLabel(item)}</span>
+  const list = (items: ScheduledDefinition[], label: string, inHistory = false) => items.length ? <section className="ent-sch-nav-group" aria-label={label}>
+    {items.filter(matches).map(item => <button type="button" className="ent-sch-nav-task" aria-current={selectedDefinition?.id === item.id ? 'page' : undefined} key={item.id} onClick={() => workspace.navigate({ name: 'scheduled', taskId: item.id, view: !inHistory && !item.plan && !item.enabled ? 'edit' : 'history' })}>
+      <span className="ent-sch-nav-task-title"><strong>{item.input.name}</strong>{inHistory && <span className="ent-sch-state">{definitionLabel(item, inHistory)}</span>}</span>
+      <span className="ent-sch-nav-task-recurrence">{recurrenceLabel(item)}</span>
     </button>)}
   </section> : null
   const hasCreations = Boolean(data?.creations?.length || pending.length)
@@ -113,13 +114,13 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
         {list(groups.active, '进行中的定时任务')}
         {pendingDefinitions.length ? <><h3>待完成</h3>{list(pendingDefinitions, '待完成的定时任务')}</> : null}
         <details className="ent-sch-nav-fold" open><summary>已暂停<ChevronDown size={14} /><small>{groups.paused.length || ''}</small></summary>{list(groups.paused, '已暂停的定时任务')}</details>
-        {groups.history.length ? <details className="ent-sch-nav-fold" open><summary>历史记录<ChevronDown size={14} /><small>{groups.history.length}</small></summary>{list(groups.history, '定时任务历史')}</details> : null}
+        {groups.history.length ? <details className="ent-sch-nav-fold" open><summary>历史记录<ChevronDown size={14} /><small>{groups.history.length}</small></summary>{list(groups.history, '定时任务历史', true)}</details> : null}
         {search.trim() && ![...groups.active, ...groups.paused, ...pendingDefinitions, ...groups.history].some(matches) ? <p className="ent-sch-search-empty">没有匹配的任务</p> : null}
         {hasCreations ? <button type="button" className="ent-sch-nav-new" aria-current={creationsView ? 'page' : undefined} onClick={() => workspace.replaceRoute({ name: 'scheduled', view: 'creations' })}>创建进度</button> : null}
       </div>
     </aside>
     <section ref={mainPane} className={`ent-sch-main-pane${home ? ' ent-sch-compose-pane' : ''}`} aria-label="定时任务内容">
-      {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{creationsView ? hasCreations ? <ScheduledCreationList model={model} onResume={resume} onOpen={open} /> : <p role="status">暂无创建进度。</p> : selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
+      {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{creationsView ? hasCreations ? <ScheduledCreationList model={model} onResume={resume} onOpen={open} /> : <p role="status">暂无创建进度。</p> : selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} inHistory={groups.history.some(item => item.id === selectedDefinition.id)} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
       <div className="ent-sch-home-content" tabIndex={0} aria-label="定时任务创建区">
         <div className="ent-sch-welcome"><img className="ent-sch-clock" src={scheduledClock} width={80} height={80} alt="" /><h2>安排任务</h2>
         <section className="ent-sch-examples" aria-label="定时任务示例"><h3>常用任务</h3>
