@@ -18,6 +18,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import { ScopePath } from '../data/scope-path'
 import { mediaJobActions } from '../../src/shared/media-view'
 import { mediaIssueMessage } from '../../src/shared/media-feedback'
+import { IMAGE_MISSING_TARGET_MESSAGE } from '../../src/shared/media-failure'
 import type { LocalMediaAsset, LocalMediaJob } from '../domain/media'
 import { AppError } from '../errors/app-error'
 import { config } from '../common/config'
@@ -172,6 +173,7 @@ async function realFixture(initial: {
   status?: 'SUCCEEDED' | 'PARTIAL_SUCCEEDED' | 'FAILED'
   canQuery?: boolean
   lostSubmit?: boolean
+  submitRejection?: { code: string; status: number; source: string }
 } = {}) {
   const state = { billingStatus: initial.billingStatus ?? 'RECONCILING', status: initial.status ?? 'SUCCEEDED',
     canQuery: initial.canQuery ?? true, queryFailure: 0, clientRequestId: '' }
@@ -207,6 +209,13 @@ async function realFixture(initial: {
         assert.equal(state.clientRequestId, '', 'Generation must never be resubmitted.')
         state.clientRequestId = String(body?.clientRequestId)
         if (initial.lostSubmit) throw new Error('Simulated lost submission response')
+        if (initial.submitRejection) {
+          const { code, status, source } = initial.submitRejection
+          return new Response(JSON.stringify({ error: { code, type: 'invalid_request_error', upstream_status: status,
+            message: 'Private upstream rejection text' } }), { status, headers: {
+            'Content-Type': 'application/json', 'X-SEP-Error-Source': source, 'X-Request-Id': 'req-image-rejection',
+          } })
+        }
         return json(receipt(), 202)
       }
       if (method === 'GET' && (path === '/requests/real-receipt' || path === `/requests/by-client-id/${state.clientRequestId}`)) {
@@ -360,6 +369,68 @@ describe('real media billing recovery and canonical sizes', () => {
     assert.equal(view.saveStatus, 'SAVE_FAILED')
     assert.equal(view.assets.length, 0)
     assert.equal(view.error, 'MEDIA_FAILED')
+    assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+  })
+
+  it('records a structured upstream missing-target rejection without polling, downloading or resubmitting', async () => {
+    const f = await realFixture({ submitRejection: { code: 'upstream_missing_image_target', status: 400, source: 'upstream' } })
+    const view = await f.generate()
+    assert.equal(view.generationStatus, 'FAILED')
+    assert.equal(view.trackingStatus, 'STOPPED')
+    assert.equal(view.billingStatus, 'UNKNOWN')
+    assert.equal(view.canResumeTracking, false)
+    assert.equal(view.canRetrySave, false)
+    assert.equal(mediaJobActions(view, false).redo, false)
+    assert.equal(mediaIssueMessage(view, 'image'), IMAGE_MISSING_TARGET_MESSAGE)
+    const saved = (await f.store.getJob(owner, 'task-a', view.jobId))!
+    assert.equal(saved.generationStatus, 'FAILED')
+    assert.equal(saved.submission, 'MAYBE_SENT')
+    assert.equal(saved.receiptId, null)
+    assert.equal(saved.failure?.httpStatus, 400)
+    assert.equal(saved.failure?.diagnostic?.code, 'upstream_missing_image_target')
+    assert.equal(saved.failure?.diagnostic?.sepRequestId, 'req-image-rejection')
+    assert.deepEqual(saved.failure?.diagnostic?.body, { error: { code: 'upstream_missing_image_target', type: 'invalid_request_error',
+      upstream_status: 400, message: 'Private upstream rejection text' } })
+
+    const restarted = new MediaService(f.options)
+    services.push(restarted)
+    // Exercise the old on-disk representation with no receipt and an unsuccessful follow-up query.
+    const legacy = { ...saved, jobId: 'legacy-rejection', runId: 'legacy-run', clientRequestId: 'legacy-request',
+      request: { ...saved.request, clientRequestId: 'legacy-request' }, generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED',
+      failure: { code: 'SERVICE_UNAVAILABLE', stage: 'image-query' }, submissionFailure: saved.failure } satisfies LocalMediaJob
+    await f.store.saveJob(owner, legacy)
+    await restarted.resumePending()
+    const task = await restarted.getTaskMedia('task-a')
+    const legacyView = task.jobs.find(job => job.jobId === legacy.jobId)!
+    assert.equal(legacyView.generationStatus, 'FAILED')
+    assert.equal(mediaIssueMessage(legacyView, 'image'), IMAGE_MISSING_TARGET_MESSAGE)
+    for (const jobId of [view.jobId, legacy.jobId]) {
+      const runId = `recover-${jobId}`
+      await restarted.prepareRun({ taskId: 'task-a', runId, subscriptionId: f.employee.subscriptionId,
+        employee: f.employee, requestApproval: f.options.requestApproval, recoverJobIds: [jobId] })
+      await restarted.resume('task-a', jobId)
+      await assert.rejects(restarted.redo('task-a', jobId), code('INVALID_ARGUMENT'))
+      await assert.rejects(restarted.waitForRun('task-a', runId, { recoverOriginal: true }), error => {
+        assert.deepEqual(runtimeFeedback(error), { code: 'IMAGE_MISSING_TARGET', message: IMAGE_MISSING_TARGET_MESSAGE })
+        return true
+      })
+    }
+    assert.deepEqual(f.calls.map(({ method, path }) => `${method} ${path}`), ['POST /quotes', 'POST /requests'])
+    assert.equal(f.calls[1]!.body?.operation, 'generate')
+    assert.deepEqual(f.calls[1]!.body?.referenceIds, [])
+  })
+
+  for (const rejection of [
+    { code: 'another_error', status: 400, source: 'upstream' },
+    { code: 'upstream_missing_image_target', status: 400, source: 'sep' },
+    { code: 'upstream_missing_image_target', status: 503, source: 'upstream' },
+  ]) it(`keeps submit outcome unknown for ${rejection.source} ${rejection.status} ${rejection.code}`, async () => {
+    const f = await realFixture({ submitRejection: rejection })
+    f.state.queryFailure = 404
+    const view = await f.generate()
+    assert.equal(view.generationStatus, 'SUBMISSION_UNKNOWN')
+    assert.match(mediaIssueMessage(view, 'image')!, /提交结果尚未确认/)
+    await waitUntil(async () => f.calls.some(call => call.path === `/requests/by-client-id/${f.state.clientRequestId}`))
     assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
   })
 

@@ -144,6 +144,24 @@ describe('arrangement attachment ownership', () => {
 })
 
 describe('arrangement media stage projection', () => {
+  it('shows the missing-reference rejection for a legacy image job without exposing diagnostics', async () => {
+    const service = new ArrangementService(serviceDeps({
+      arrangementCheckpoints: { async get() { return { activeRunId: 'run', updatedAt: 50,
+        state: { status: 'running', nodes: [{ nodeId: 'node', status: 'running' }] } } } },
+      arrangementMediaLinks: { async list() { return [{ nodeId: 'node', nodeRunId: 'run', subscriptionId: 'sub', kind: 'image',
+        operation: 'generate', jobId: 'job', inputs: [], outputs: [], materializations: [] }] } },
+      arrangementMediaAssets: { async outputs() { return [] } },
+      mediaStore: { async getJob() { return { submission: 'MAYBE_SENT', receiptId: null, generationStatus: 'SUBMISSION_UNKNOWN',
+        trackingStatus: 'ACTIVE', saveStatus: 'PENDING', submissionFailure: { code: 'SERVICE_UNAVAILABLE', stage: 'image-submit',
+          source: 'upstream', httpStatus: 400, diagnostic: { code: 'upstream_missing_image_target', message: 'private upstream text' } } } } },
+    }))
+    const media = (await service.getExecution('task'))!.media![0]!
+    assert.equal(media.phase, 'blocked')
+    assert.deepEqual(media.pendingActions, [])
+    assert.match(media.issue!, /没有收到参考图.*纯文生图请只描述画面/)
+    assert.doesNotMatch(JSON.stringify(media), /尚未确认|upstream_missing_image_target|private upstream text/)
+  })
+
   for (const kind of ['image', 'video'] as const) {
     for (const stage of ['queued', 'running', 'saving', 'saved', 'delivered', 'delivered-expired', 'interrupted', 'delivery-failed', 'delivery-interrupted', 'delivery-stopped'] as const) {
       it(`projects live ${kind} ${stage} state rather than stale link outputs or billing`, async () => {

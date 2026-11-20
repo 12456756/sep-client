@@ -678,6 +678,32 @@ describe('trusted media host tools with the real Pi SDK', () => {
     assert.match(continuation, /2048x3072/)
     assert.match(continuation, /effectiveSpec/)
   })
+  it('only offers an image format correction for a confirmed unsubmitted adapter rejection', async () => {
+    for (const submissionState of ['not_submitted', 'unknown']) {
+      const result = new AppError('ADAPTER_FIELD_UNMAPPED', { details: {
+        field: 'outputFormat', source: 'adapter', stage: 'image-quote', recovery: 'revise_request', submissionState,
+      } })
+      const { bodies } = await mediaSession({}, { name: 'media_generate_image', input: generationInput }, result)
+      const toolResult = JSON.parse(messageText(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content))
+      assert.equal(toolResult.error.code, 'ADAPTER_FIELD_UNMAPPED')
+      if (submissionState === 'not_submitted') {
+        assert.match(toolResult.error.message, /模型自行填写.*重新报价一次/)
+        assert.match(toolResult.error.message, /用户明确要求上游原生格式.*等待用户决定/)
+      } else {
+        assert.doesNotMatch(toolResult.error.message, /重新报价/)
+      }
+    }
+  })
+  it('rejects an upstream PNG format in the model tool arguments before invoking the image host', async () => {
+    const { bodies, executions, approvals } = await mediaSession({}, { name: 'media_generate_image', input: {
+      creativeBrief: '周年纪念海报', protocolVersion: 3, specRevision: 1,
+      requestedSpec: { size: '1024x1536', count: 1, quality: 'high', outputFormat: 'image/png' },
+      parameterSources: { size: 'model', count: 'model', quality: 'model' },
+    } })
+    assert.deepEqual(executions, [])
+    assert.equal(approvals, 0)
+    assert.match(messageText(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content), /outputFormat/)
+  })
   it('keeps request documents distinct across sessions sharing the same run ID', async () => {
     const entries: ModelTraceEntry[] = []
     const config = { modelTrace: async (entry: ModelTraceEntry) => { entries.push(entry) } }

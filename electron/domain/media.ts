@@ -3,7 +3,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaGenerationStatus, MediaProfile, MediaSaveStatus, MediaTrackingStatus } from '../../src/shared/media'
 import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
 import type { MediaUpstreamError } from '../../src/shared/media-upstream-error'
-import type { MediaFailure } from '../../src/shared/media-failure'
+import { isImageMissingTargetRejection, type MediaFailure } from '../../src/shared/media-failure'
 export type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaJobView, MediaProfile } from '../../src/shared/media'
 
 export interface MediaOutput {
@@ -134,6 +134,12 @@ export interface MediaRunSnapshot {
   capabilities: MediaCapabilities | null
   runtimeSnapshot?: EmployeeRuntimeSnapshot
   createdAt: number
+}
+
+export function missingImageTargetFailure(job: LocalMediaJob): MediaFailure | undefined {
+  // Older jobs may have saved the rejection separately before an unsuccessful query.
+  if (job.submission !== 'MAYBE_SENT' || job.receiptId || !['FAILED', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)) return undefined
+  return [job.failure, job.submissionFailure].find(isImageMissingTargetRejection)
 }
 
 export type ImageReplacementDecision = 'approved' | 'declined'

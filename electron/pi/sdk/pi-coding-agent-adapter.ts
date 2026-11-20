@@ -63,6 +63,7 @@ import type { McpRuntime } from './pi-mcp-client'
 import { BROWSER_MODE_TOOL, createHostMcpRuntime } from './pi-browser-runtime'
 import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
+import { buildMediaExecutionPrompt } from './media-execution-prompts'
 import { GatewayRetryWait } from './gateway-retry-wait'
 import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnapshot } from './model-request-tracker'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
@@ -110,8 +111,19 @@ function mediaInputValidationFailure(error: z.ZodError) {
   const issue = error.issues.find(item => (item.path[0] === 'parameters' || item.path[0] === 'requestedSpec') && fields.has(String(item.path[1])))
   const conflict = error.issues.some(item => item.code === 'custom' && /conflict|contradictory/i.test(item.message))
   return mediaToolFailureFrom(new AppError(conflict ? 'SPEC_CONFLICT' : 'INVALID_ARGUMENT', { details: {
-    source: 'client', stage: 'input-validation', ...(issue ? { field: `${String(issue.path[0])}.${String(issue.path[1])}` } : {}),
+    source: 'client', stage: 'input-validation', submissionState: 'not_submitted', billingState: 'not_reserved',
+    recovery: 'revise_request', ...(issue ? { field: `${String(issue.path[0])}.${String(issue.path[1])}` } : {}),
   } }))
+}
+
+function invalidMediaSource(input: { requestedSpec?: object; parameterSources?: object }, fields: readonly string[]) {
+  const submitted = new Set(Object.entries(input.requestedSpec ?? {}).filter(([, value]) => value !== undefined).map(([field]) => field))
+  const field = Object.keys(input.parameterSources ?? {}).find(key => !fields.includes(key) || !submitted.has(key))
+  if (!field) return undefined
+  return mediaToolFailure('SPEC_CONFLICT', '只为 requestedSpec 中实际提交的字段标注来源；保留用户的明确要求。', {
+    field: `parameterSources.${field}`, source: 'client', stage: 'input-validation',
+    submissionState: 'not_submitted', billingState: 'not_reserved', recovery: 'revise_request', retryable: false,
+  })
 }
 
 function registeredVideoNames(config: PiAgentSessionConfig): VideoToolName[] {
@@ -208,6 +220,7 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
     frameRate: Type.Optional(Type.Number({ exclusiveMinimum: 0, maximum: Number.MAX_SAFE_INTEGER })), audio: Type.Optional(Type.Boolean()),
     outputFormat: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   }, { additionalProperties: false })
+  const specFields = Object.keys(parameters.properties)
   return names.map(name => {
     const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
     return {
@@ -220,7 +233,7 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
           profileId: Type.Optional(profileId), operation: Type.Optional(Type.Literal(operation)),
           localAssetIds: name === 'video_from_image' ? Type.Array(id, { minItems: 1, maxItems: 32 }) : Type.Optional(Type.Array(id, { maxItems: 0 })),
           creativeBrief: Type.String({ minLength: 1, maxLength: 4000 }), parameters: Type.Optional(parameters),
-          requestedSpec: Type.Optional(parameters), ...mediaDecisionToolProperties(),
+          requestedSpec: Type.Optional(parameters), ...mediaDecisionToolProperties(specFields),
         }, { additionalProperties: false }),
       async execute(_toolCallId, input, signal) {
         const failure = (message: string) => ({ content: [{ type: 'text' as const, text: message }], details: { isError: true } })
@@ -230,6 +243,8 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
           const parsed = name === 'video_get_job' ? videoToolJobInputSchema.safeParse(input) : videoToolGenerationInputSchema.safeParse(input)
           if (!parsed.success) return failure(JSON.stringify(mediaInputValidationFailure(parsed.error)))
           if ('creativeBrief' in parsed.data) {
+            const sourceError = invalidMediaSource(parsed.data, specFields)
+            if (sourceError) return failure(JSON.stringify(sourceError))
             const count = parsed.data.localAssetIds.length
             const invalidReferences = name === 'video_from_image'
               ? parsed.data.protocolVersion === 3 ? count < 1 : count !== 1
@@ -313,7 +328,10 @@ function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown
       reasonCode: z.string().max(96).optional(), submissionState: z.string().max(32).optional(), billingState: z.string().max(32).optional(), retryable: z.boolean().optional(),
       alternatives: z.array(z.union([imageRequestedSpecSchema, videoRequestedSpecSchema])).max(8).optional(),
     }) }).safeParse(result)
-    if (parsed.success) return { value: mediaToolFailure(parsed.data.error.code, parsed.data.error.message, parsed.data.error), isError: true }
+    if (parsed.success) {
+      const failure = mediaToolFailure(parsed.data.error.code, parsed.data.error.message, parsed.data.error)
+      return { value: name === 'media_generate_image' ? imageToolFailure(failure) : failure, isError: true }
+    }
     throw new Error('Invalid media business error.')
   }
   const value = name === 'media_get_capabilities'
@@ -328,7 +346,14 @@ function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown
   return { value: redactValue(value, 0, '', { maxDepth: 8, maxArrayLength: 128 }), isError: false }
 }
 
-function mediaDecisionToolProperties() {
+function imageToolFailure(value: ReturnType<typeof mediaToolFailure>): ReturnType<typeof mediaToolFailure> {
+  const error = value.error
+  if (error.code !== 'ADAPTER_FIELD_UNMAPPED' || error.source !== 'adapter' || error.submissionState !== 'not_submitted'
+    || error.recovery !== 'revise_request' || !['outputFormat', 'requestedSpec.outputFormat'].includes(error.field ?? '')) return value
+  return mediaToolFailure(error.code, '图片通道不能指定原生输出格式，本次未提交。若该字段是模型自行填写的，移除该字段及其来源后可重新报价一次，保留最终交付格式。若用户明确要求上游原生格式，先说明限制并等待用户决定。', error)
+}
+
+function mediaDecisionToolProperties(fields: readonly string[]) {
   const source = Type.Union([
     Type.Literal('user'), Type.Literal('model'), Type.Literal('upstream'),
     Type.Object({ source: Type.Union([Type.Literal('user'), Type.Literal('model'), Type.Literal('upstream')]), decisionRef: Type.String({ minLength: 1, maxLength: 256 }) }, { additionalProperties: false }),
@@ -337,9 +362,7 @@ function mediaDecisionToolProperties() {
     requirementId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
     protocolVersion: Type.Optional(Type.Literal(3)),
     specRevision: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
-    parameterSources: Type.Optional(Type.Object(Object.fromEntries([
-      'width', 'height', 'aspectRatio', 'size', 'count', 'quality', 'durationSeconds', 'resolution', 'frameRate', 'audio', 'outputFormat',
-    ].map(key => [key, Type.Optional(source)])), { additionalProperties: false })),
+    parameterSources: Type.Optional(Type.Object(Object.fromEntries(fields.map(key => [key, Type.Optional(source)])), { additionalProperties: false })),
   }
 }
 
@@ -361,6 +384,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
     size: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
     quality: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   }, { additionalProperties: false })
+  const specFields = Object.keys(requestedSpec.properties)
   const parameters = {
     media_get_capabilities: Type.Object({}, { additionalProperties: false }),
     media_generate_image: Type.Object({
@@ -368,7 +392,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
       operation: Type.Optional(Type.Union([Type.Literal('generate'), Type.Literal('edit')])),
       localAssetIds: Type.Optional(Type.Array(id, { maxItems: 32 })),
       creativeBrief: Type.String({ minLength: 1, maxLength: 20_000 }),
-      parameters: Type.Optional(spec), requestedSpec: Type.Optional(requestedSpec), ...mediaDecisionToolProperties(),
+      parameters: Type.Optional(spec), requestedSpec: Type.Optional(requestedSpec), ...mediaDecisionToolProperties(specFields),
     }, { additionalProperties: false }),
     media_replace_images: Type.Object({ jobIds: Type.Array(id, { minItems: 1, maxItems: 16, uniqueItems: true }) }, { additionalProperties: false }),
     media_get_job: Type.Object({ jobId: id }, { additionalProperties: false }),
@@ -393,11 +417,16 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
         if (!parsed.success) return {
           content: [{ type: 'text', text: JSON.stringify(mediaInputValidationFailure(parsed.error)) }], details: { isError: true },
         }
+        if ('creativeBrief' in parsed.data) {
+          const sourceError = invalidMediaSource(parsed.data, specFields)
+          if (sourceError) return { content: [{ type: 'text', text: JSON.stringify(sourceError) }], details: { isError: true } }
+        }
         if (signal?.aborted) throw new Error('Cancelled media call.')
         const result = safeMediaResult(name, await config.mediaTools!.execute(name, parsed.data, signal))
         return { content: [{ type: 'text', text: JSON.stringify(result.value) }], details: { isError: result.isError } }
       } catch (error) {
-        const value = mediaToolFailureFrom(error, signal?.aborted)
+        const failure = mediaToolFailureFrom(error, signal?.aborted)
+        const value = name === 'media_generate_image' ? imageToolFailure(failure) : failure
         return {
           content: [{ type: 'text', text: JSON.stringify(value) }],
           details: { isError: true },
@@ -1195,6 +1224,8 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     } }
     try {
       const employeePrompt = !config.useNativeSystemPrompt && config.employeeProfile ? buildEmployeeSystemPrompt(config.employeeProfile) : undefined
+      const mediaPrompt = buildMediaExecutionPrompt(registeredMediaNames(config).includes('media_generate_image'),
+        registeredVideoNames(config).some(name => name !== 'video_get_job'), config.arrangementNodeId !== undefined)
       // Append once for both native and custom prompts; the SDK skips tool guidelines for custom prompts.
       const browserPrompt = mcp.tools.some(tool => tool.name === 'mcp__playwright__browser_snapshot')
         ? ['浏览器使用规则：', ...PLAYWRIGHT_GUIDELINES, ...(mcp.builtinBrowser ? PLAYWRIGHT_HANDOFF_GUIDELINES : [])].join('\n')
@@ -1217,8 +1248,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
         systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
           : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,
-        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt || browserPrompt || common.unavailable.length
+        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt || mediaPrompt || browserPrompt || common.unavailable.length
           ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : []),
+            ...(mediaPrompt ? [mediaPrompt] : []),
             ...(browserPrompt ? [browserPrompt] : []),
             ...(common.unavailable.length ? ['The built-in Office capability is unavailable for this session. Do not claim it was used or install another executable.'] : [])]
           : undefined,

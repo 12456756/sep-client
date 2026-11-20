@@ -5,6 +5,7 @@ import type { MediaAssetView, MediaJobView, MediaTaskView } from '../../src/shar
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { LocalMediaJob, MediaCapabilities, MediaGatewayPort, MediaGenerationInput, MediaReceipt, MediaStorePort } from '../domain/media'
+import { missingImageTargetFailure } from '../domain/media'
 import type { MediaHostTools, MediaJobCreated, MediaToolName } from '../domain/media-tools'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
 import { mediaReplacementInputSchema, mediaToolGenerationInputSchema } from '../../src/shared/media-host'
@@ -18,7 +19,7 @@ import { logger } from '../common/logger'
 import { safeMediaUpstreamError } from '../common/media-upstream-error'
 import { AppError } from '../errors/app-error'
 import { mediaJobFailure } from '../errors/media-job-error'
-import { mediaFailureCodeSchema, mediaFailureSchema } from '../../src/shared/media-failure'
+import { IMAGE_MISSING_TARGET_MESSAGE, isImageMissingTargetRejection, mediaFailureCodeSchema, mediaFailureSchema } from '../../src/shared/media-failure'
 import { transportKind } from '../errors/operation-feedback'
 import { requireScope, type ScopeSource } from './scope-guard'
 import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
@@ -54,7 +55,7 @@ interface RunInput {
 interface Activity { taskId: string; controller: AbortController; promise: Promise<void> }
 
 function imageSubmissionUnconfirmed(job: LocalMediaJob): boolean {
-  return job.submission !== 'NOT_SENT' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
+  return job.submission !== 'NOT_SENT' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus) && !missingImageTargetFailure(job)
 }
 
 function canGenerateImages(policy: TaskToolPolicy | undefined): boolean {
@@ -136,6 +137,8 @@ export class MediaService {
     return (job.billingStatus === 'RESERVED' || job.billingStatus === 'RECONCILING') && job.recovery?.canQuery === true
   }
   private viewJob(job: LocalMediaJob, assets: MediaAssetView[]): MediaJobView {
+    const rejection = missingImageTargetFailure(job)
+    if (rejection) job = { ...job, generationStatus: 'FAILED', trackingStatus: 'STOPPED', failure: rejection, errorCode: undefined, error: rejection.code }
     const jobAssets = assets.filter(asset => asset.jobId === job.jobId)
     const missingOutput = job.outputs.some(output => !jobAssets.some(asset => asset.outputId === output.outputId && asset.status === 'SAVED'))
     const saveStatus = job.saveStatus === 'SAVED' && missingOutput ? 'MISSING' : job.saveStatus
@@ -154,8 +157,8 @@ export class MediaService {
       ...(job.submissionFailure ? { submissionFailure: mediaFailureSchema.parse(job.submissionFailure) } : {}),
       ...(job.outputErrors?.length ? { outputErrors: job.outputErrors.filter(item => mediaFailureCodeSchema.safeParse(item.code).success) } : {}),
       assets: jobAssets.map(asset => this.viewAsset(asset)), canRetrySave,
-      canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job)
-        : job.recovery?.canQuery !== false && (!!job.receiptId || job.profile.capabilities.recoverByRequestId),
+      canResumeTracking: !rejection && (terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job)
+        : job.recovery?.canQuery !== false && (!!job.receiptId || job.profile.capabilities.recoverByRequestId)),
       canCancelUpstream: job.recovery?.canCancel !== false && job.profile.capabilities.cancel && !!job.receiptId && !terminal.has(job.generationStatus) }
   }
   private publicJobError(error: string | null): string | null {
@@ -259,7 +262,7 @@ export class MediaService {
       const job = await this.options.store.getJob(scope, input.taskId, jobId)
       if (!job || job.subscriptionId !== input.subscriptionId || job.submission === 'NOT_SENT') continue
       recovered.push(jobId)
-      if (!(job.generationStatus === 'SUCCEEDED' || job.generationStatus === 'PARTIAL_SUCCEEDED') || job.saveStatus !== 'SAVED') {
+      if (!missingImageTargetFailure(job) && (!(job.generationStatus === 'SUCCEEDED' || job.generationStatus === 'PARTIAL_SUCCEEDED') || job.saveStatus !== 'SAVED')) {
         await this.resume(input.taskId, jobId)
       }
     }
@@ -382,7 +385,7 @@ export class MediaService {
       }))
       check()
       const eligible = originals.filter(job => !decisions.has(job.jobId) && job.runId !== runId &&
-        job.submission !== 'NOT_SENT' && job.generationStatus === 'SUBMISSION_UNKNOWN')
+        job.generationStatus === 'SUBMISSION_UNKNOWN' && imageSubmissionUnconfirmed(job))
       if (!eligible.length) throw new AppError('CONFLICT', { message: '没有可替换的图片任务。已处理或本轮刚提交的任务不会重复请求确认，请查看原任务。' })
 
       const request = { taskId, runId, subscriptionId, toolName: 'media_generate_image',
@@ -567,13 +570,20 @@ export class MediaService {
         this.acceptReceipt(job, await this.network(scope, parent, s => gateway.submit(binding.subscriptionId, job!.request, s), this.options.submissionTimeoutMs ?? 190_000))
       } catch (error) {
         this.invalidateCapabilities(scope, taskId, epoch, error)
-        job.generationStatus = 'SUBMISSION_UNKNOWN'
         job.failure = mediaJobFailure(error, 'image-submit')
         job.error = job.failure.code
+        if (isImageMissingTargetRejection(job.failure)) {
+          job.generationStatus = 'FAILED'
+          job.trackingStatus = 'STOPPED'
+          job.updatedAt = Date.now()
+        } else {
+          job.generationStatus = 'SUBMISSION_UNKNOWN'
+        }
       }
       // Persistence failure must not rewrite a confirmed receipt into an unknown submission.
       await this.options.store.saveJob(scope, job)
       this.assert(scope, epoch)
+      if (missingImageTargetFailure(job)) return this.viewJob(job, [])
       const submitted = job
       let saved!: () => void
       const initialSave = new Promise<void>(resolve => { saved = resolve })
@@ -813,6 +823,7 @@ export class MediaService {
     let trackingStarted = false
     try {
       const { job } = await this.job(taskId, jobId)
+      if (missingImageTargetFailure(job)) return
       if (controller.signal.aborted || stopVersion !== (this.taskStops.get(taskKey) ?? 0)) {
         job.trackingStatus = epoch !== this.epoch && controller.signal.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
         job.updatedAt = Date.now()
@@ -844,6 +855,7 @@ export class MediaService {
   async retrySave(taskId: string, jobId: string): Promise<void> { await this.resume(taskId, jobId, true) }
   async redo(taskId: string, jobId: string): Promise<MediaJobView> {
     const { job } = await this.job(taskId, jobId)
+    if (missingImageTargetFailure(job)) throw new AppError('INVALID_ARGUMENT', { message: IMAGE_MISSING_TARGET_MESSAGE })
     if (!terminal.has(job.generationStatus)) throw new AppError('INVALID_STATE', { message: '原请求尚未结束或提交状态不明，不能重做。' })
     return this.generateTaskMedia(taskId, job.input)
   }
@@ -910,6 +922,9 @@ export class MediaService {
         if (!saved) pending.push(job)
       }
       if (!pending.length) return
+      if (!options.allowIncomplete && pending.some(missingImageTargetFailure)) {
+        throw new ArrangementMediaRecoveryError('image-missing-target', new Error('Upstream rejected the image submission because it found no image target.'))
+      }
       if (!options.allowIncomplete && pending.some(job => ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus))) {
         if (options.recoverOriginal) {
           const phase = pending.some(job => job.generationStatus === 'RESULT_EXPIRED') ? 'expired' : 'generation'
@@ -999,7 +1014,7 @@ export class MediaService {
         }
         continue
       }
-      if ((job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED') && !this.activities.has(key)) this.recoveryQueue.set(key, { taskId: job.taskId, jobId: job.jobId })
+      if ((job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED') && !missingImageTargetFailure(job) && !this.activities.has(key)) this.recoveryQueue.set(key, { taskId: job.taskId, jobId: job.jobId })
     }
     await this.drainRecoveryQueue()
   }

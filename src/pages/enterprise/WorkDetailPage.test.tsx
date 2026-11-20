@@ -16,6 +16,7 @@ import { ArrangementSteps } from '../../components/enterprise/arrange/Arrangemen
 import { ArrangementTranscriptView } from '../../components/enterprise/arrange/ArrangementTranscript';
 import { buildArrangementTranscript } from '../../features/enterprise/arrangement-transcript';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
+import { IMAGE_MISSING_TARGET_MESSAGE } from '../../shared/media-failure';
 import * as mediaRetry from '../../shared/media-retry';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
@@ -347,6 +348,23 @@ describe('compact failure notice', () => {
       assert.match(html, new RegExp(`aria-label="重试此节点：${id}"`));
       assert.match(html, new RegExp(`data-hint="重试任务：${id}"`));
     }
+  });
+
+  it('uses blocked media diagnostics for the matching failed node before the historical task reason', () => {
+    const unknown = '图片提交结果尚未确认；请查询原任务，勿重复提交';
+    const fallback = '历史任务摘要：图片或视频提交结果尚未确认';
+    const media = { nodeId: 'poster', nodeRunId: 'run-a', kind: 'image' as const, operation: 'generate' as const,
+      phase: 'blocked' as const, jobId: 'job-a', inputs: [], outputs: [], pendingActions: [], issue: IMAGE_MISSING_TARGET_MESSAGE };
+    const flow: WorkItem = { ...work, kind: 'flow', status: 'failed', stopReason: fallback,
+      arrangementExecution: { activeRunId: null, status: 'failed', updatedAt: 1,
+        nodes: ['poster', 'unknown', 'other'].map(nodeId => ({ nodeId, status: 'failed', finalFiles: [] })),
+        media: [{ ...media, nodeId: 'other', phase: 'ready', issue: '不属于阻塞的媒体提示' },
+          { ...media, nodeId: 'unknown', jobId: 'job-unknown', issue: unknown }, media, { ...media, jobId: 'job-duplicate' }] } };
+    const html = renderDetail(flow);
+    assert.ok(html.includes(`title="poster：${IMAGE_MISSING_TARGET_MESSAGE}"`));
+    assert.ok(html.includes(`title="unknown：${unknown}"`));
+    assert.ok(html.includes(`title="other：${fallback}"`));
+    assert.doesNotMatch(html, /title="poster：历史任务摘要|title="other：不属于阻塞的媒体提示/);
   });
 
   it('preserves task and node retry targets and disables retry while busy', () => {

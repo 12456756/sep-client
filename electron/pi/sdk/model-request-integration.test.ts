@@ -12,6 +12,11 @@ import { setLogLevel, setLogSink, type LogRecord } from '../../common/logger'
 import type { ModelTraceEntry } from '../../domain/model-trace'
 import { redactModelTraceText } from '../../common/redact'
 import { AppError } from '../../errors/app-error'
+import { MediaStore } from '../../data/media-store'
+import { MOCK_MEDIA_CAPABILITIES, MockMediaGateway } from '../../data/mock-media-gateway'
+import { MediaService } from '../../service/media-service'
+import { IMAGE_MISSING_TARGET_MESSAGE } from '../../../src/shared/media-failure'
+import type { MediaToolName } from '../../domain/media-tools'
 
 import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
 import { sessionContextUsage } from './pi-context-usage'
@@ -20,7 +25,12 @@ import type { ContextUsage } from '../../../src/shared/context-usage'
 let restoreLog: (() => void) | undefined
 afterEach(() => { restoreLog?.(); restoreLog = undefined; setLogLevel('debug') })
 
-interface RequestBody { messages: Array<{ role: string; content: string }>; max_tokens?: number; max_completion_tokens?: number }
+interface RequestBody {
+  messages: Array<{ role: string; content: string }>
+  tools?: Array<{ function: { name: string; parameters: { properties: Record<string, { properties: Record<string, unknown> }> } } }>
+  max_tokens?: number
+  max_completion_tokens?: number
+}
 
 const gatewayRequestSchema = z.object({
   model: z.string(),
@@ -47,6 +57,13 @@ function answer(response: ServerResponse, text: string, promptTokens = 10): void
 
 function chunk(response: ServerResponse, delta: Record<string, unknown>, finishReason: string | null = null): void {
   response.write(`data: ${JSON.stringify({ id: 'test', object: 'chat.completion.chunk', model: 'model', choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`)
+}
+
+function callMediaTool(response: ServerResponse, id: string, name: MediaToolName, input: unknown): void {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+  chunk(response, { role: 'assistant', tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: JSON.stringify(input) } }] })
+  chunk(response, {}, 'tool_calls')
+  response.end('data: [DONE]\n\n')
 }
 
 async function fixture(t: TestContext, handle: (body: RequestBody, response: ServerResponse, root: string) => void,
@@ -164,6 +181,165 @@ describe('real SDK model request awareness', () => {
       assert.doesNotMatch(system, /OLD_EMPLOYEE_OVERRIDE|OLD_DISCOVERED_OVERRIDE|employee_profile|responsibility_judgment|当前节点执行情况|自动编排规划 Agent|expert coding assistant/)
     }
     assert.deepEqual(f.payloadErrors, [])
+  })
+
+  for (const arrangement of [false, true]) {
+    it(`sends the same image contract and permits a corrected poster call in ${arrangement ? 'a structured node' : 'an employee conversation'}`, async t => {
+      const poster = { operation: 'generate', localAssetIds: [], creativeBrief: '龙道集团二十周年海报，主题为数智向新',
+        protocolVersion: 3, specRevision: 1, requestedSpec: { size: '1024x1536', count: 1, quality: 'high' },
+        parameterSources: { size: 'model', count: 'model', quality: 'model' } }
+      const executions: unknown[] = []
+      let steps = 0
+      const f = await fixture(t, (_body, response) => {
+        if (++steps > 2) { answer(response, 'done'); return }
+        const input = steps === 1 ? { ...poster, parameterSources: { ...poster.parameterSources, height: 'model' } } : poster
+        callMediaTool(response, `poster-${steps}`, 'media_generate_image', input)
+      }, undefined, {
+        ...(arrangement ? { useNativeSystemPrompt: true, arrangementNodeId: 'poster-node', transformSystemPrompt: translatePiNativeSystemPrompt,
+          fixedSystemPrompt: '交付清单：deliverables/longdao-20th-anniversary-poster.png' } : { systemPrompt: '员工职责：设计海报。' }),
+        mediaTools: { names: ['media_generate_image'], async execute(_name, input) {
+          executions.push(input)
+          return { jobId: 'job-a', taskId: 'task-a', runId: 'run', profileId: 'profile-a', operation: 'generate',
+            parameters: poster.requestedSpec, generationStatus: 'QUEUED', trackingStatus: 'ACTIVE', saveStatus: 'PENDING',
+            billingStatus: 'pending', error: null, createdAt: 1, updatedAt: 1, assets: [], canCancelUpstream: false }
+        } },
+      })
+      await f.session.prompt('生成海报，交付文件为 longdao-20th-anniversary-poster.png。')
+      assert.deepEqual(executions, [poster])
+      assert.equal(f.requests.length, 3)
+      for (const request of f.requests) {
+        const system = request.messages.find(message => message.role === 'system')!.content
+        assert.equal(system.split('【图片生成与交付】').length, 2)
+        assert.match(system, /最终交付格式和上游生成规格是两件事/)
+        assert.equal(system.includes('【后续对话中的重新生成】'), !arrangement)
+        const spec = request.tools?.find(tool => tool.function.name === 'media_generate_image')?.function.parameters.properties
+        assert.ok(spec)
+        assert.deepEqual(Object.keys(spec.requestedSpec.properties).sort(), Object.keys(spec.parameterSources.properties).sort())
+        assert.equal(Object.hasOwn(spec.requestedSpec.properties, 'outputFormat'), false)
+      }
+      const rejection = JSON.parse(f.requests[1].messages.find(message => message.role === 'tool')!.content)
+      assert.equal(rejection.error.field, 'parameterSources.height')
+      assert.equal(rejection.error.submissionState, 'not_submitted')
+      assert.equal(rejection.error.recovery, 'revise_request')
+      assert.deepEqual(f.payloadErrors, [])
+      t.diagnostic('scripted generation attempts=2 host generation calls=1; rejected input never reaches the host')
+    })
+
+    for (const scenario of ['recoverable-unknown', 'unqueryable-unknown', 'missing-reference'] as const) {
+      it(`carries ${scenario} through the real Pi loop in ${arrangement ? 'a structured node' : 'an employee conversation'}`, { timeout: 15_000 }, async t => {
+        const scope = { memberId: 'member-test', enterpriseId: 'enterprise-test' }
+        const binding = { taskId: 'task-a', runId: 'run', subscriptionId: 'employee-test' }
+        const recoverable = scenario === 'recoverable-unknown'
+        const missingReference = scenario === 'missing-reference'
+        const gateway = new MockMediaGateway({ submitResponseLost: !missingReference, initialStatus: 'SUCCEEDED' })
+        if (missingReference) t.mock.method(gateway, 'submit', async (...args: Parameters<typeof gateway.submit>) => {
+          gateway.calls.submit.push({ subscriptionId: args[0], request: args[1] })
+          throw new AppError('SERVICE_UNAVAILABLE', { details: { statusCode: 400, source: 'upstream' },
+            diagnostic: { code: 'upstream_missing_image_target', message: 'private simulated rejection' } })
+        })
+        const capabilities = structuredClone(MOCK_MEDIA_CAPABILITIES)
+        capabilities.profiles[0]!.capabilities.recoverByRequestId = scenario !== 'unqueryable-unknown'
+        const employee = { subscriptionId: binding.subscriptionId, modelId: 'model', gatewayUrl: 'mock://no-network', media: capabilities }
+        const input = { operation: 'generate', localAssetIds: [], creativeBrief: 'Original product concept',
+          parameters: { aspectRatio: '1:1', size: 'small', count: 1, quality: 'standard' } }
+        const attempted: MediaToolName[] = [], executed: MediaToolName[] = []
+        const mediaOutcome = z.object({ jobId: z.string(), generationStatus: z.string(), saveStatus: z.string(),
+          billingStatus: z.string(), canResumeTracking: z.boolean().optional(), issue: z.string().optional(), assets: z.array(z.unknown()) })
+        const readResult = (body: RequestBody) => {
+          const content = body.messages.filter(message => message.role === 'tool').at(-1)?.content
+          try { return content ? mediaOutcome.parse(JSON.parse(content)) : undefined } catch { return undefined }
+        }
+        const finalTexts: string[] = []
+        let step = 0
+        const f = await fixture(t, (body, response) => {
+          step++
+          if (step === 1) {
+            attempted.push('media_generate_image')
+            callMediaTool(response, 'original-image', 'media_generate_image', input)
+            return
+          }
+          const result = readResult(body)
+          if (step === 2 && result?.generationStatus === 'SUBMISSION_UNKNOWN' && result.canResumeTracking) {
+            attempted.push('media_get_job')
+            callMediaTool(response, 'read-original', 'media_get_job', { jobId: result.jobId })
+            return
+          }
+          const text = result?.generationStatus === 'SUCCEEDED' && result.saveStatus === 'SAVED' && result.assets.length === 1
+            ? '原任务的 PNG 已保存。' : result?.issue ?? '未取得可交付图片。'
+          finalTexts.push(text)
+          answer(response, text)
+        }, undefined, {
+          ...(arrangement ? { useNativeSystemPrompt: true, arrangementNodeId: 'image-node', transformSystemPrompt: translatePiNativeSystemPrompt,
+            fixedSystemPrompt: '交付清单：deliverables/picture.png' } : { systemPrompt: '员工职责：生成商品图片。' }),
+          mediaTools: { names: ['media_generate_image', 'media_get_job', ...(!arrangement ? ['media_replace_images' as const] : [])],
+            async execute(name, raw, signal) {
+              assert.ok(host)
+              executed.push(name)
+              // The model reads local state once, after the client tracker has settled.
+              if (name === 'media_get_job') await service.waitForRun(binding.taskId, binding.runId)
+              return host.execute(name, raw, signal)
+            },
+          },
+        })
+        const store = new MediaStore(join(f.root, 'media-state'))
+        const approve = async () => true
+        const service = new MediaService({ scope: { currentScope: () => scope }, store, gateway,
+          getTask: async () => ({ subscriptionId: binding.subscriptionId }), authorize: async () => employee,
+          requestApproval: approve, pollFloorMs: 1, maxAttempts: 1 })
+        t.after(() => service.stopAll())
+        const host = await service.prepareRun({ ...binding, employee, requestApproval: approve, allowImageReplacement: !arrangement })
+
+        await f.session.prompt('生成一张商品概念图，最终交付 PNG。')
+        assert.deepEqual(f.payloadErrors, [])
+        const expectedCalls = recoverable ? ['media_generate_image', 'media_get_job'] : ['media_generate_image']
+        assert.deepEqual(attempted, expectedCalls)
+        assert.deepEqual(executed, expectedCalls)
+        assert.equal(gateway.calls.quote.length, 1)
+        const [submission] = gateway.calls.submit
+        assert.equal(gateway.calls.submit.length, 1)
+        assert.deepEqual(gateway.calls.findReceipt.map(call => call.clientRequestId), recoverable ? [submission!.request.clientRequestId] : [])
+        assert.equal(gateway.calls.getReceipt.length, 0)
+        assert.equal(gateway.calls.content.length, recoverable ? 1 : 0)
+        assert.equal(gateway.calls.uploadReference.length, 0)
+        assert.equal(gateway.calls.cancel.length, 0)
+        const initial = readResult(f.requests[1]!)
+        assert.equal(initial?.generationStatus, missingReference ? 'FAILED' : 'SUBMISSION_UNKNOWN')
+        assert.equal(initial?.saveStatus, 'PENDING')
+        assert.equal(initial?.billingStatus, 'UNKNOWN')
+        assert.equal(initial?.canResumeTracking, recoverable)
+
+        if (recoverable) {
+          const saved = readResult(f.requests[2]!)
+          assert.equal(saved?.jobId, initial?.jobId)
+          assert.equal(saved?.saveStatus, 'SAVED')
+          const assets = await store.listAssets(scope, binding.taskId)
+          assert.deepEqual(assets.map(asset => asset.mime), ['image/png'])
+          assert.deepEqual(finalTexts, ['原任务的 PNG 已保存。'])
+        } else {
+          assert.equal((await store.listAssets(scope, binding.taskId)).length, 0)
+          assert.deepEqual(finalTexts, [initial?.issue])
+          if (missingReference) {
+            assert.equal(initial?.issue, IMAGE_MISSING_TARGET_MESSAGE)
+            assert.doesNotMatch(JSON.stringify(f.requests[1]!.messages), /private simulated rejection/)
+          } else {
+            assert.match(initial?.issue ?? '', /提交结果尚未确认/)
+            assert.match(initial?.issue ?? '', /无法查询原任务|勿重复提交/)
+          }
+        }
+        t.diagnostic(`model=${attempted.join(',')} quotes=1 submits=1 original-lookups=${gateway.calls.findReceipt.length} saved=${gateway.calls.content.length}`)
+      })
+    }
+  }
+
+  it('does not inject generation guidance for a read-only media tool set', async t => {
+    const f = await fixture(t, (_body, response) => answer(response, 'done'), undefined, {
+      mediaTools: { names: ['media_get_job'], execute: async () => assert.fail('No tool call expected') },
+    })
+    await f.session.prompt('查看原海报的状态。')
+    const request = f.requests[0]
+    assert.ok(request.tools?.some(tool => tool.function.name === 'media_get_job'))
+    const system = request.messages.find(message => message.role === 'system')!.content
+    assert.doesNotMatch(system, /【图片生成与交付】|【媒体规格与执行规则】/)
   })
 
   it('passes recovered local text to the next model request without rerunning tools', { timeout: 30_000 }, async t => {

@@ -169,6 +169,7 @@ export class PiTaskWorker {
         videoTools: this.context.videoTools,
         employeeProfile: this.context.employeeProfile,
         fixedSystemPrompt: this.context.fixedSystemPrompt,
+        arrangementNodeId: this.context.arrangementNodeId,
         onModelRequest: this.onModelRequest ? async kind => {
           this.checkCancellation()
           const progress = await this.onModelRequest!(kind)

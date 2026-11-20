@@ -69,6 +69,7 @@ interface Scenario {
   confirmation?: boolean
   textVideo?: boolean
   imageGateway?: MockMediaGatewayOptions
+  imageCannotQuery?: boolean
   videoScenario?: MockVideoScenario
   denyApproval?: boolean
   foreignMapping?: boolean
@@ -142,6 +143,8 @@ async function fixture(scenario: Scenario = {}) {
   }
   await plans.save(scope, plan)
   const imageGateway = new MockMediaGateway(scenario.imageGateway), videoGateway = new MockVideoMediaGateway(scenario.videoScenario)
+  const imageCapabilities = structuredClone(MOCK_MEDIA_CAPABILITIES)
+  if (scenario.imageCannotQuery) imageCapabilities.profiles[0]!.capabilities.recoverByRequestId = false
   const started: string[] = [], approvals: ToolAuthorizationRequest[] = [], uploads: string[] = []
   const authorization = { calls: 0, denyAt: 0 }
   let held = false, holdUsed = false
@@ -153,7 +156,7 @@ async function fixture(scenario: Scenario = {}) {
   } : videoFixture.runtime)
   const employee = (id: string, modelId?: string): EmployeeRuntimeConfig => ({
     subscriptionId: id, modelId: modelId ?? 'image-model', gatewayUrl: 'mock://no-network',
-    ...(id === 'image-employee' ? { media: MOCK_MEDIA_CAPABILITIES } : !scenario.missingVideoCapability ? { video: runtimeVideo } : {}),
+    ...(id === 'image-employee' ? { media: imageCapabilities } : !scenario.missingVideoCapability ? { video: runtimeVideo } : {}),
   })
   async function compose(currentManager: TaskManager) {
     const getTask = (id: string) => currentManager.getTask(id)
@@ -401,7 +404,32 @@ test('backend E2E: lost image submission response is recovered using its origina
   const task = await f.settled()
   assert.equal(task?.status, TaskStatus.COMPLETED, task?.error ?? undefined)
   assert.equal(f.imageGateway.calls.submit.length, 1)
-  assert.ok(f.imageGateway.calls.findReceipt.length > 0)
+  assert.deepEqual(f.imageGateway.calls.findReceipt.map(call => call.clientRequestId), [f.imageGateway.calls.submit[0]!.request.clientRequestId])
+  assert.deepEqual(await readFile(join(f.workspace, 'deliverables/picture.png')), MOCK_MEDIA_PNG)
+})
+
+test('backend E2E: unqueryable image submission blocks delivery and dependent work', async () => {
+  const f = await fixture({ imageGateway: { submitResponseLost: true }, imageCannotQuery: true, hostDelivery: true })
+  await f.runtime.executeTask(f.task.id)
+  const task = await f.settled()
+  assert.equal(task?.status, TaskStatus.PAUSED)
+  assert.match(task?.error ?? '', /提交结果尚未确认/)
+  const [job, ...otherJobs] = await f.images.listJobs(scope, f.task.id)
+  assert.equal(otherJobs.length, 0)
+  assert.equal(job?.generationStatus, 'SUBMISSION_UNKNOWN')
+  assert.equal(job?.billingStatus, 'UNKNOWN')
+  assert.equal(job?.saveStatus, 'PENDING')
+  assert.deepEqual(f.started, ['image'])
+  assert.equal(f.imageGateway.calls.quote.length, 1)
+  assert.equal(f.imageGateway.calls.submit.length, 1)
+  assert.equal(f.imageGateway.calls.findReceipt.length + f.imageGateway.calls.getReceipt.length, 0)
+  assert.equal(f.imageGateway.calls.content.length, 0)
+  assert.equal(f.videoGateway.calls.submit, 0)
+  assert.deepEqual(await f.images.listAssets(scope, f.task.id), [])
+  await assert.rejects(readFile(join(f.workspace, 'deliverables/picture.png')), { code: 'ENOENT' })
+  const checkpoint = await f.checkpoints.get(scope, f.task.id)
+  assert.ok(checkpoint)
+  assert.notEqual(checkpoint.state.nodes.find(node => node.nodeId === 'image')?.status, 'completed')
 })
 
 test('backend E2E: lost video submission response queries the original frozen request', async () => {

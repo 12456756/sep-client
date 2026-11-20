@@ -68,6 +68,7 @@ export interface PiAgentSessionConfig {
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
   /** Host-owned instructions retained outside compacted conversation history. */
   fixedSystemPrompt?: string
+  arrangementNodeId?: string
   /** Must durably record the attempt before resolving; failures must prevent provider I/O. */
   onModelRequest?: (kind: ModelRequestKind) => Promise<ModelRequestProgress>
   /** Controls prompt text only; request counting, persistence and logs remain enabled. */

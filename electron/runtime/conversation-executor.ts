@@ -21,7 +21,6 @@ import { ConversationRecoveryError } from './conversation-recovery-error'
 import { withApprovedSkillReadPaths } from './run-skill-policy'
 import { runSkillDisplay } from '../common/run-skill-display'
 import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
-import { MEDIA_SPEC_EXECUTION_PROMPT } from './media-execution-prompts'
 import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, TaskWorkerPort } from './run-types'
 import type { AttachmentInputPort, ResolvedAttachmentInput } from '../domain/attachment-input'
 import type { ConversationMediaPort } from '../domain/conversation-media'
@@ -302,7 +301,6 @@ export class ConversationExecutor {
         workerPrompt += `\n\n【本任务成果目录】客户端未能创建普通文件的成果目录。本轮需要通过文件工具保存普通文件时，请尝试在工作目录下创建“${artifactDirectory.relativePath}”，并将普通文件放入该目录；只能使用这个固定路径，不要改用其他目录。若创建失败，继续完成可在对话中交付的工作，不要反复重试创建目录。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
       }
       if (mediaTools?.names.length || videoTools?.names.length) workerPrompt += `\n\n${CONVERSATION_MEDIA_DELIVERY_PROMPT}`
-      if (mediaTools?.names.includes('media_generate_image') || videoTools?.names.some(name => name !== 'video_get_job')) workerPrompt += `\n\n${MEDIA_SPEC_EXECUTION_PROMPT}`
       if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
       const legacyWordSources = resolvedAttachments.flatMap(item => item.mediaType === LEGACY_WORD_MIME && item.readPath

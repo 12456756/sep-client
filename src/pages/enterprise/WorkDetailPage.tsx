@@ -482,14 +482,21 @@ function Process({ work }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
 }
 
 function FailedNodeActions({ work, busy, onRetry }: { work: WorkItem; busy: boolean; onRetry: (workId: string, nodeId: string) => Promise<void> }) {
-  const failed = work.arrangementExecution?.nodes.filter(node => node.status === 'failed') ?? [];
+  const execution = work.arrangementExecution;
+  const failed = execution?.nodes.filter(node => node.status === 'failed') ?? [];
   if (!failed.length) return null;
   const titles = new Map(work.steps.map(step => [step.id, step.title]));
   return (
     <section className="ent-flow-act danger ent-failure-notice ent-failed-node-actions" aria-label="失败节点操作">
       {failed.map(node => {
         const title = titles.get(node.nodeId) ?? node.nodeId;
-        const reason = work.status === 'failed' ? work.stopReason?.trim() || work.nextUserAction?.trim() : null;
+        const issues = new Set<string>();
+        for (const item of execution?.media ?? []) {
+          const issue = item.issue?.trim();
+          if (item.nodeId === node.nodeId && item.phase === 'blocked' && issue) issues.add(issue);
+        }
+        const reason = issues.size ? [...issues].join('；')
+          : work.status === 'failed' ? work.stopReason?.trim() || work.nextUserAction?.trim() : null;
         return <FailureRetryRow key={node.nodeId} reason={`${title}：${reason || '节点执行失败'}`}
           hint={`重试任务：${title}`} label={`重试此节点：${title}`} busy={busy} onRetry={() => void onRetry(work.id, node.nodeId)} />;
       })}
