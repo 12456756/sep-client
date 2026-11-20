@@ -4,6 +4,8 @@ import type { SiliconEmployee, WorkItem, WorkMessage } from '../../features/ente
 import { useArrangementTranscript } from '../../features/enterprise/use-arrangement-transcript'
 import { buildConversationReplies, buildConversationTranscript, type ConversationRunTranscript } from '../../features/enterprise/conversation-transcript'
 import { ConversationProcessView } from './ConversationProcess'
+import { DiagnosticExport } from './DiagnosticExport'
+import type { ElectronAPI } from '../../shared/ipc'
 import { EmployeeFace } from './EmployeeFace'
 import { MessageContent } from './MessageContent'
 import { groupConversationResults, type ConversationResult } from '../../features/enterprise/conversation-results'
@@ -30,21 +32,22 @@ function ConversationMessagesContent({ work, employees, scopeKey, preparing, med
   const transcript = useArrangementTranscript(work.id, scopeKey)
   const runs = useMemo(() => buildConversationTranscript(transcript.events), [transcript.events])
   return <><ConversationMessagesView work={work} employees={employees} preparing={preparing} runs={runs} media={media.results}
-    loading={transcript.loading} error={transcript.error} onReload={transcript.reload} />
+    loading={transcript.loading} error={transcript.error} onReload={transcript.reload} onExportDiagnostic={window.electronAPI?.exportWorkDiagnostic} />
     {media.error ? <div className="ent-conversation-results-error" role="alert"><span>{media.error}</span><button type="button" className="ent-btn sm ghost" onClick={media.retry}><RotateCcw size={14} />重新读取</button></div> : null}</>
 }
 
-export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, media = [] }: Omit<Props, 'scopeKey' | 'mediaState'> & {
+export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, onExportDiagnostic, media = [] }: Omit<Props, 'scopeKey' | 'mediaState'> & {
   media?: ConversationResult[]
   runs: readonly ConversationRunTranscript[]
   loading: boolean
   error: string | null
   onReload: () => void
+  onExportDiagnostic?: ElectronAPI['exportWorkDiagnostic']
 }) {
   const { showMenu, menu } = useContentCopy()
   const items = buildConversationReplies(work, preparing)
   const results = groupConversationResults(work, items, media)
-  const byRun = new Map(runs.map(run => [run.runId, run.entries]))
+  const byRun = new Map(runs.map(run => [run.runId, run]))
   const lastReply = [...items].reverse().find(item => item.kind === 'reply')
   return <>{items.map(item => {
     if (item.kind === 'message') {
@@ -64,7 +67,8 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
     const first = item.messages[0]
     const employeeId = first?.employeeId || work.currentEmployeeId
     const employeeName = first?.employeeName || work.currentEmployeeName
-    const entries = item.runId ? byRun.get(item.runId) ?? [] : []
+    const run = item.runId ? byRun.get(item.runId) : undefined
+    const entries = run?.entries ?? []
     const hasContent = item.messages.some(message => message.content.trim())
     const replyResults = results.get(item.id)
     const processError = item.id === lastReply?.id ? error : null
@@ -73,10 +77,12 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
       {item.runId && (entries.length > 0 || loading || processError) ? <ConversationProcessView entries={entries} active={item.active} loading={loading} error={processError} onReload={onReload} /> : null}
       {!hasContent && !replyResults?.length && (!entries.length || !item.active) ? <div className="ent-conversation-reply-status" role="status">
         {item.active ? <LoaderCircle size={14} className="ent-spin" aria-hidden /> : null}
-        {item.active ? '正在进行…' : '本轮未返回回复'}
+        {item.active ? '正在进行…' : run?.diagnosticAvailable ? '本轮执行失败' : '本轮未返回回复'}
       </div> : null}
       {item.messages.filter(message => message.content.trim()).map(message => <MessageContent key={message.id} content={message.content} />)}
       <ConversationResultCards taskId={work.id} results={replyResults} />
+      {!item.active && item.runId && run?.diagnosticAvailable && onExportDiagnostic ?
+        <DiagnosticExport input={{ taskId: work.id, runId: item.runId }} onExport={onExportDiagnostic} /> : null}
       <MessageTime message={{ createdAt: first?.createdAt ?? item.createdAt }} />
     </div>
   })}<ConversationResultCards taskId={work.id} results={results.get('unassigned')} />

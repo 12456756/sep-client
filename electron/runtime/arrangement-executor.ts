@@ -50,6 +50,12 @@ import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, typ
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import type { ModelTraceFactory } from '../domain/model-trace'
+import type { DiagnosticPhase } from '../domain/arrangement-diagnostic'
+import { describeArrangementFailure } from '../errors/arrangement-diagnostic'
+import { trackModelFailureEvidence } from './model-failure-evidence'
+import { trackMediaToolFailureEvidence } from './media-tool-failure-evidence'
+import { withTimeout } from '../common/with-timeout'
+import type { WorkFailureCapture } from '../service/arrangement-diagnostic-service'
 import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 import { arrangementClarificationSchema, type ArrangementInputRequest, type ArrangementInputReply } from '../../src/shared/arrangement-input'
 
@@ -78,6 +84,7 @@ export interface ArrangementExecutionOptions {
   media?: MediaRunPort
   video?: VideoRunPort
   arrangementMedia?: ArrangementMediaPort
+  arrangementDiagnostics?: WorkFailureCapture
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
 }
@@ -488,7 +495,9 @@ export class ArrangementExecutor {
     saveReplacement: (replacement: ArrangementEmployeeReplacement) => Promise<void>,
   ): Promise<NodeExecutionResult> {
     const nodeRunId = randomUUID()
-    const modelTrace = this.options.createModelTrace?.({ taskId, runId: nodeRunId, title: plan.goal, phase: `节点：${node.title}` })
+    const trace = this.options.createModelTrace?.({ taskId, runId: nodeRunId, title: plan.goal, phase: `节点：${node.title}` })
+    const modelEvidence = this.options.arrangementDiagnostics ? trackModelFailureEvidence(trace) : undefined
+    const modelTrace = modelEvidence?.record ?? trace
     const workspaceDir = plan.workspace.path ?? this.options.workspaceRoot
     const paths = this.options.scope && this.options.taskRunStore
       ? this.options.taskRunStore.getPaths(this.options.scope, taskId, nodeRunId)
@@ -510,6 +519,8 @@ export class ArrangementExecutor {
     let accepted = !structured
     let mediaSession: ArrangementMediaSession | undefined
     let terminalMediaFailure: unknown
+    let diagnosticPhase: DiagnosticPhase = 'node-setup'
+    const mediaEvidence = this.options.arrangementDiagnostics ? trackMediaToolFailureEvidence() : undefined
     let inputRequired: ArrangementInputRequest | undefined
     const missingSpecTools = new Map<string, ArrangementInputRequest>()
     const executionNode = { ...node, ...(node.mediaRequirements ? { mediaRequirements: node.mediaRequirements.map(requirement => ({ ...requirement,
@@ -633,6 +644,7 @@ export class ArrangementExecutor {
       }
       checkControl()
       if (structured && delivery.issues.length) prompt += `\n\n${buildArrangementDeliveryCorrection(delivery.issues, node)}`
+      diagnosticPhase = 'input-read'
       const nodeAttachmentRefs = (node.inputRefs ?? []).flatMap(ref => ref.kind === 'attachment' ? [ref.attachment] : [])
       const attachmentInputs = this.options.scope && nodeAttachmentRefs.length && this.options.attachmentInputs
         ? await this.options.attachmentInputs.resolveTaskInputs(this.options.scope, taskId, nodeAttachmentRefs)
@@ -643,6 +655,7 @@ export class ArrangementExecutor {
           ? [{ name: item.displayName, path: item.readPath }] : [])
         if (legacyWordSources.length) prompt += `\n\n【旧版 Word 附件只读路径】\n${JSON.stringify(legacyWordSources)}\n仅当任务要求编辑该附件时，通过 Office 工具 import-doc 将对应路径导入工作区中的新 DOCX 副本。导入前需要确认，不修改附件原件；要交付 DOC 时用 export-doc 生成新文件。`
       }
+      diagnosticPhase = 'run-persistence'
       if (this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.create(this.options.scope, {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
@@ -654,6 +667,7 @@ export class ArrangementExecutor {
       const toolPolicy = { ...withApprovedSkillReadPaths(toToolPolicy(plan.permissions, workspaceDir), employee)!,
         readableDeliveryPaths: dependencies.flatMap(dependency => dependency.files.flatMap(file => file.readPath ? [file.readPath] : [])),
         readableAttachmentPaths: attachmentInputs?.attachments.flatMap(item => item.readPath ? [item.readPath] : []) ?? [] }
+      diagnosticPhase = 'media-setup'
       if (requiresMediaBridge) mediaSession = await this.options.arrangementMedia!.prepareNode({
         taskId, arrangementRunId, nodeRunId, attempt: checkpoint.attempt, planHash: plan.planHash, node,
         signal,
@@ -714,10 +728,11 @@ export class ArrangementExecutor {
       })
       if (mediaSession && (delivery.pendingSubmission || mediaSession.readyForTracking())) {
         const result = await deliveryValidation.resume()
-        if (result.status === 'failed') throw result.error
+        if (result.status === 'failed') { diagnosticPhase = result.stage; throw result.error }
         if (result.status === 'correction') prompt += '\n\n' + result.continueWith
         if (result.status === 'accepted') {
           output = result.submission.summary
+          diagnosticPhase = 'run-persistence'
           if (created && this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
           return { ok: true, nodeId: node.id, output, completion: { type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id,
             nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
@@ -726,6 +741,7 @@ export class ArrangementExecutor {
       }
       let mediaHandoffUsed = mediaSession?.readyForTracking() === true
       const describeSkillRead = runSkillDisplay(employee.runtimeSnapshot)
+      diagnosticPhase = 'model-execution'
       worker = this.options.createWorker({
         context: {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
@@ -748,7 +764,8 @@ export class ArrangementExecutor {
             fixedSystemPrompt: buildArrangementNodeSystemPrompt(plan, executionNode, dependencies, employee, knowledgeContext) +
               (mediaSession ? `\n【已授权媒体输入与原任务】\n${mediaSession.inputPrompt}\n媒体最终文件由主进程根据 mediaDeliverables 自动保存，勿自行写入或覆盖计划中的媒体路径。不要等待或轮询媒体任务；恢复时使用原任务，不重新生成。` : ''),
           } : { systemPrompt: employee.systemPrompt }),
-          mediaTools, videoTools, toolPolicy,
+          mediaTools: mediaEvidence ? mediaEvidence.wrap(mediaTools) : mediaTools,
+          videoTools: mediaEvidence ? mediaEvidence.wrap(videoTools) : videoTools, toolPolicy,
           ...(attachmentInputs?.images.length ? { inputImages: attachmentInputs.images.map(image => ({ data: Buffer.from(image.bytes).toString('base64'), mimeType: image.mediaType })) } : {}),
         },
         getRefreshToken: this.options.getRefreshToken,
@@ -770,7 +787,7 @@ export class ArrangementExecutor {
           }
           if (!structured) return
           const result = await deliveryValidation.settle(response)
-          if (result.status === 'failed') throw result.error
+          if (result.status === 'failed') { diagnosticPhase = result.stage; throw result.error }
           if (result.status === 'accepted') {
             output = result.submission.summary
             accepted = true
@@ -804,10 +821,12 @@ export class ArrangementExecutor {
           }
         },
         onSessionCreated: async session => {
+          diagnosticPhase = 'session-persistence'
           if (this.options.scope && this.options.taskRunStore) {
             await this.options.taskRunStore.setSession(this.options.scope, taskId, nodeRunId, session)
             if (session.sessionFile) await saveSessionRun(nodeRunId)
           }
+          diagnosticPhase = 'model-execution'
         },
       })
       this.activeWorkers.set(nodeRunId, worker)
@@ -828,13 +847,16 @@ export class ArrangementExecutor {
       } catch (error) {
         runError = error
       }
-      if (terminalMediaFailure !== undefined) throw terminalMediaFailure
+      if (terminalMediaFailure !== undefined) { diagnosticPhase = 'media-wait'; throw terminalMediaFailure }
       if (inputRequired) throw new ArrangementInputRequiredError(inputRequired)
       if (runError !== undefined) throw runError
+      diagnosticPhase = 'media-wait'
       if (!this.abortRequested && !signal.aborted) await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId, { signal }), this.options.video?.waitForRun(taskId, nodeRunId, { signal })])
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
       checkControl()
+      diagnosticPhase = 'decision'
       if (!accepted) throw new DeliveryExecutionError('节点未经过最终交付校验，不能确认完成。')
+      diagnosticPhase = 'run-persistence'
       if (this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
       const completion: ArrangementNodeEvent = {
         type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
@@ -860,12 +882,27 @@ export class ArrangementExecutor {
       logger.child('arrangement-executor').warn('node execution failed', { taskId, arrangementRunId, nodeId: node.id, nodeRunId,
         interrupted, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
       const { message, terminal } = resolveArrangementNodeFailure(error, interrupted, terminalMediaFailure !== undefined)
+      let diagnosticAvailable = false
+      if (!interrupted && this.options.scope && this.options.arrangementDiagnostics) {
+        try {
+          const capture = this.options.arrangementDiagnostics.record(this.options.scope, { taskId, nodeId: node.id, nodeRunId,
+            failedAt: Date.now(), attempt: checkpoint.attempt, phase: diagnosticPhase, ...describeArrangementFailure(error),
+            modelRequest: diagnosticPhase === 'model-execution' ? modelEvidence?.evidence() : undefined,
+            modelHistory: modelEvidence?.history(), toolFailures: modelEvidence?.toolFailures(), mediaToolFailures: mediaEvidence?.history() },
+          { subscriptionId: node.subscriptionId, recoveredJobIds: mediaSession?.recoverJobIds,
+            videoJobIds: this.options.video?.diagnosticJobIds?.(taskId, nodeRunId) })
+          await withTimeout(capture, 2_000, 'arrangement node diagnostic capture')
+          diagnosticAvailable = true
+        } catch {
+          logger.child('arrangement-executor').warn('node diagnostic could not be stored', { taskId, nodeRunId })
+        }
+      }
       if (created && this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, interrupted ? 'interrupted' : 'failed', message).catch(() => undefined)
       }
       const failure: ArrangementNodeEvent = {
         type: 'arrangement_node_failed', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
-        attempt: checkpoint.attempt, data: { ...metadata(), output: output || null, error: message,
+        attempt: checkpoint.attempt, data: { ...metadata(), output: output || null, error: message, ...(diagnosticAvailable ? { diagnosticAvailable } : {}),
           status: interrupted ? this.stopRequested ? 'CANCELLED' : 'PAUSED' : 'FAILED', completedAt: new Date().toISOString() },
       }
       return { ok: false, nodeId: node.id, error: message, terminal, failure,

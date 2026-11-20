@@ -1522,6 +1522,8 @@ describe('MediaService local delivery and original-request recovery', () => {
     const confirmed = await f.store.getJob(owner, 'task-a', first.jobId)
     assert.equal(confirmed?.generationStatus, 'SUCCEEDED')
     assert.equal(confirmed?.submissionFailure, undefined)
+    assert.equal(confirmed?.diagnosticErrors?.entries[0]?.stage, 'image-submit')
+    assert.ok(confirmed?.diagnosticErrors?.entries.some(entry => entry.stage === 'image-query'))
     assert.equal(post.mock.callCount(), 1)
   })
 

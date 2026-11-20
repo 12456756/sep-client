@@ -895,7 +895,10 @@ class PiCodingAgentSession implements PiAgentSession {
         const fields = { taskTitle: config.taskTitle, nodeTitle: config.nodeTitle, toolName: event.toolName, elapsedMs,
           ...(!started ? { success: !event.isError } : {}) }
         log.info(started ? 'tool execution started' : 'tool execution completed', fields)
-        void config.modelTrace?.({ phase: '', kind: 'tool', text: `${started ? '工具开始' : '工具结束'}\n${readableTraceValue({ ...fields, ...event })}` }).catch(() => undefined)
+        void config.modelTrace?.({ phase: '', kind: 'tool', text: `${started ? '工具开始' : '工具结束'}\n${readableTraceValue({ ...fields, ...event })}`,
+          metrics: !started && event.isError ? { 失败工具: event.toolName, 工具调用标识: event.toolCallId, 工具耗时毫秒: elapsedMs,
+            工具失败分类: classifyToolFailure(event.toolName, event.result),
+            工具错误信息: redactModelTraceText(toolResultText(event.result)).slice(0, 8192) } : undefined }).catch(() => undefined)
         if (!started) toolStarts.delete(event.toolCallId)
       }
       if (config && /^(auto_retry_|compaction_|summarization_retry_scheduled)/.test(event.type)) {
@@ -1172,6 +1175,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
             metrics: { 总耗时毫秒: elapsedMs, 首个SDK流事件毫秒: timings.firstEventMs, 首次思考毫秒: timings.firstThinkingMs, 首次正文毫秒: timings.firstTextMs,
               响应结束时间: new Date().toISOString(), 发送状态: sent ? '已发送' : '未发送',
               响应头耗时毫秒: headersMs, 平台请求标识: platformRequestId, 响应状态码: providerStatus, 结束原因: response.stopReason,
+              SDK错误信息: response.errorMessage ? redactModelTraceText(response.errorMessage).slice(0, 8192) : undefined,
               输入Token: usage.input, 输出Token: usage.output, 缓存读取Token: usage.cacheRead, 缓存写入Token: usage.cacheWrite, 总Token: usage.total } })
         }, () => startedAt, timings => {
           log.info('model stream progress', { ...fields, ...timings })

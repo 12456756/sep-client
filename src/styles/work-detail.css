@@ -132,6 +132,9 @@
 .ent-transcript-operation > span { flex: 1; min-width: 0; }
 .ent-transcript-operation > small { flex-shrink: 0; color: var(--ent-ink-3); font-size: 11px; }
 .ent-transcript-operation.failed, .ent-transcript-failed { color: var(--ent-danger); }
+.ent-transcript-diagnostic { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 4px 0 8px; }
+.ent-transcript-diagnostic small { color: var(--ent-muted); overflow-wrap: anywhere; }
+.ent-transcript-diagnostic small[role='alert'] { color: var(--ent-danger); }
 .ent-transcript-completed, .ent-transcript-waiting { display: flex; align-items: center; gap: 8px; margin: 16px 0 8px; color: var(--ent-brand-ink); font-size: 12px; }
 .ent-transcript-waiting { color: var(--ent-ink-3); }
 .ent-transcript-collapsed { margin: 0 0 10px 27px; color: var(--ent-ink-3); font-size: 12px; }

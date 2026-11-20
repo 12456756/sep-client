@@ -182,6 +182,10 @@ export class ConversationVideoRunService implements VideoRunPort {
     }
   }
 
+  diagnosticJobIds(taskId: string, runId: string): readonly string[] {
+    return [...(this.runs.get(this.key(taskId, runId))?.jobs ?? []), ...(this.base.diagnosticJobIds?.(taskId, runId) ?? [])]
+  }
+
   async stopTask(taskId: string): Promise<void> {
     const runs = [...this.runs.entries()].filter(([, run]) => run.input.taskId === taskId)
     for (const [, run] of runs) run.controller.abort(new Error('Conversation video stopped.'))

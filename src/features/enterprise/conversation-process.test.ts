@@ -9,6 +9,7 @@ import * as icons from 'lucide-react'
 import * as ts from 'typescript'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { ConversationProcessView } from '../../components/enterprise/ConversationProcess'
+import { DiagnosticExport } from '../../components/enterprise/DiagnosticExport'
 import * as transcript from './conversation-transcript'
 import { buildConversationTranscript } from './conversation-transcript'
 import type { WorkItem, WorkMessage } from './types'
@@ -26,6 +27,7 @@ const dependencies: Record<string, unknown> = {
   '../../features/enterprise/use-arrangement-transcript': {},
   '../../features/enterprise/conversation-transcript': transcript,
   './ConversationProcess': { ConversationProcessView },
+  './DiagnosticExport': { DiagnosticExport },
   './EmployeeFace': { EmployeeFace: () => null },
   './MessageContent': { MessageContent: ({ content }: { content: string }) => React.createElement('div', null, content) },
   '../ContentCopyMenu': { useContentCopy: () => ({ showMenu() {}, menu: null }), imageCopyHandlers: () => ({}) },
@@ -110,6 +112,26 @@ test('places folded processes inside their own employee replies across consecuti
   assert.ok(html.indexOf('第二个问题') < html.indexOf('第二轮思考'))
   assert.equal((html.match(/data-conversation-reply=/g) ?? []).length, 2)
   assert.doesNotMatch(html, /<details[^>]+open/)
+})
+
+test('offers diagnostic export only on the failed reply with saved evidence', () => {
+  const messages: WorkMessage[] = ['old', 'failed', 'retry'].map((runId, index) => ({
+    id: `user-${runId}`, role: 'user', content: 'Question', createdAt: index + 1, runId,
+  }))
+  const events: TaskExecutionEvent[] = messages.map(({ runId }, index) => ({ taskId: 'task', runId: runId!, subscriptionId: 'employee',
+    sequence: 1, occurredAt: index + 1, type: runId === 'retry' ? 'run_completed' : 'run_failed',
+    data: { diagnosticAvailable: runId !== 'old', error: 'PRIVATE_FAILURE', text: 'PRIVATE_DETAIL' } }))
+  const runs = buildConversationTranscript(events)
+  assert.deepEqual(runs, [{ runId: 'failed', entries: [], diagnosticAvailable: true }])
+  const html = renderWithFeedback(React.createElement(ConversationMessagesView, {
+    work: { id: 'task', currentEmployeeName: '员工', messages } as WorkItem,
+    employees: [], preparing: false, runs, loading: false, error: null, onReload() {},
+    onExportDiagnostic: async () => ({ success: true }),
+  }))
+  assert.equal((html.match(/导出本次诊断/g) ?? []).length, 1)
+  assert.ok(html.indexOf('data-run-id="failed"') < html.indexOf('导出本次诊断'))
+  assert.ok(html.indexOf('导出本次诊断') < html.indexOf('data-run-id="retry"'))
+  assert.doesNotMatch(html, /PRIVATE_/)
 })
 
 test('keeps image preview space and dimensions visible while preserving ordinary file attachments', () => {

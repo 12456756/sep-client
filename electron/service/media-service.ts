@@ -19,6 +19,7 @@ import { logger } from '../common/logger'
 import { safeMediaUpstreamError } from '../common/media-upstream-error'
 import { AppError } from '../errors/app-error'
 import { mediaJobFailure } from '../errors/media-job-error'
+import { appendMediaDiagnosticError } from '../errors/arrangement-diagnostic'
 import { IMAGE_MISSING_TARGET_MESSAGE, isImageMissingTargetRejection, mediaFailureCodeSchema, mediaFailureSchema } from '../../src/shared/media-failure'
 import { transportKind } from '../errors/operation-feedback'
 import { requireScope, type ScopeSource } from './scope-guard'
@@ -571,6 +572,7 @@ export class MediaService {
       } catch (error) {
         this.invalidateCapabilities(scope, taskId, epoch, error)
         job.failure = mediaJobFailure(error, 'image-submit')
+        job.diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, 'image-submit', error)
         job.error = job.failure.code
         if (isImageMissingTargetRejection(job.failure)) {
           job.generationStatus = 'FAILED'
@@ -702,6 +704,7 @@ export class MediaService {
       } catch (error) {
         if (parent.aborted) throw parent.reason
         job.failure = mediaJobFailure(error, 'image-save')
+        job.diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, 'image-save', error)
         if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) throw error
         log.warn('original image download failed', { taskId: job.taskId, jobId: job.jobId, outputId: output.outputId,
           ...job.failure })
@@ -762,9 +765,11 @@ export class MediaService {
           await this.save(scope, job, parent, options.repair === true)
         } catch (error) {
           if (parent.aborted) throw parent.reason
+          const stage = job.saveStatus === 'SAVING' ? 'image-save' : 'image-query'
+          job.diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, stage, error)
           if (!(error instanceof AppError && error.code === 'NOT_FOUND' && !job.receiptId && job.failure)) {
             if (job.failure?.stage === 'image-submit') job.submissionFailure ??= job.failure
-            job.failure = mediaJobFailure(error, job.saveStatus === 'SAVING' ? 'image-save' : 'image-query')
+            job.failure = mediaJobFailure(error, stage)
           }
           if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) {
             job.trackingStatus = 'AUTH_REQUIRED'; job.error = '请恢复图片任务的读取授权。'; break
@@ -784,7 +789,11 @@ export class MediaService {
         job.trackingStatus = 'STOPPED'
       }
     } catch (error) {
-      if (!parent.aborted && !job.failure) job.failure = mediaJobFailure(error, job.saveStatus === 'SAVING' ? 'image-save' : 'image-query')
+      if (!parent.aborted) {
+        const stage = job.saveStatus === 'SAVING' ? 'image-save' : 'image-query'
+        job.diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, stage, error)
+        job.failure ??= mediaJobFailure(error, stage)
+      }
       const interrupted = epoch !== this.epoch && parent.reason !== explicitStop
       const authRequired = !interrupted && parent.reason !== explicitStop && error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
       job.trackingStatus = authRequired ? 'AUTH_REQUIRED' : interrupted ? 'INTERRUPTED' : 'STOPPED'

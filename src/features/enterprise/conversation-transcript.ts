@@ -10,6 +10,7 @@ export interface ConversationProcessEntry extends TranscriptEntry {
 export interface ConversationRunTranscript {
   runId: string
   entries: ConversationProcessEntry[]
+  diagnosticAvailable?: true
 }
 
 export type ConversationReplyItem =
@@ -64,7 +65,12 @@ export function buildConversationTranscript(source: readonly TaskExecutionEvent[
       continue
     }
     if (type === 'text_delta') { lastThinking.delete(runId); continue }
-    const run = runs.get(runId) ?? { runId, entries: [] }
+    const run: ConversationRunTranscript = runs.get(runId) ?? { runId, entries: [] }
+    if (type === 'run_failed') {
+      run.diagnosticAvailable = true
+      runs.set(runId, run)
+      continue
+    }
     const append = (entry: ConversationProcessEntry) => { run.entries.push(entry); runs.set(runId, run) }
     if (type === 'thinking_delta' && typeof data.text === 'string' && data.text) {
       let entry = lastThinking.get(runId)

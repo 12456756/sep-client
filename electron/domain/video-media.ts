@@ -4,6 +4,7 @@ import { videoOutputSchema, videoReceiptSchema, videoSpecFailureSchema, videoReq
 import type { VideoOutput, VideoReceipt } from '../../src/shared/video-media'
 import { isVideoSubmissionRejectionCode } from '../../src/shared/video-errors'
 import { mediaFailureSchema } from '../../src/shared/media-failure'
+import { mediaDiagnosticErrors } from './arrangement-diagnostic'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec } from '../../src/shared/media-spec-contract'
 
 export const videoLocalIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
@@ -40,6 +41,7 @@ export const localVideoJobSchema = z.object({
   specFailure: videoSpecFailureSchema.optional(),
   failure: mediaFailureSchema.optional(),
   submissionFailure: mediaFailureSchema.optional(),
+  diagnosticErrors: mediaDiagnosticErrors.optional(),
   error: z.string().max(256).nullable(), createdAt: z.number().int().nonnegative(), updatedAt: z.number().int().nonnegative(),
 }).strict().superRefine((job, context) => {
   if (job.request.quoteId !== job.quote.quoteId || job.quote.status !== 'quoted' || job.updatedAt < job.createdAt ||

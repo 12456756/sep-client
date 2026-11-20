@@ -141,6 +141,7 @@ export const INVOKE_CHANNELS = {
   ARRANGE_GET_CONTEXT: 'arrange:get-context',
   ARRANGE_GET_PLAN: 'arrange:get-plan',
   ARRANGE_GET_EXECUTION: 'arrange:get-execution',
+  WORK_EXPORT_DIAGNOSTIC: 'work:export-diagnostic',
   ARRANGE_PREVIEW_DOCUMENT: 'arrange:preview-document',
   WORK_SAVE_WORD_COPY: 'work:save-word-copy',
   WORK_OPEN_DELIVERABLE: 'work:open-deliverable',

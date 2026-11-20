@@ -105,6 +105,7 @@ export interface TaskRuntimeOptions {
   video?: VideoRunPort
   conversationVideo?: VideoRunPort
   arrangementMedia?: ArrangementMediaPort
+  arrangementDiagnostics?: import('../service/arrangement-diagnostic-service').WorkFailureCapture
   conversationMedia?: ConversationMediaPort
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
@@ -129,6 +130,7 @@ export class TaskRuntime {
   private readonly media: MediaRunPort | undefined
   private readonly video: VideoRunPort | undefined
   private readonly arrangementMedia: ArrangementMediaPort | undefined
+  private readonly arrangementDiagnostics: TaskRuntimeOptions['arrangementDiagnostics']
   private readonly knowledgeSearch: KnowledgeSearchPort | undefined
   private readonly attachmentInputs: AttachmentInputPort | undefined
   private readonly findEmployeeReplacement: TaskRuntimeOptions['findEmployeeReplacement']
@@ -191,6 +193,7 @@ export class TaskRuntime {
     this.media = options.media
     this.video = options.video
     this.arrangementMedia = options.arrangementMedia
+    this.arrangementDiagnostics = options.arrangementDiagnostics
     this.knowledgeSearch = options.knowledgeSearch
     this.attachmentInputs = options.attachmentInputs
     this.findEmployeeReplacement = options.findEmployeeReplacement
@@ -250,6 +253,8 @@ export class TaskRuntime {
       media: this.media,
       video: options.conversationVideo ?? this.video,
       conversationMedia: options.conversationMedia,
+      workDiagnostics: this.arrangementDiagnostics,
+      createModelTrace: this.createModelTrace,
       knowledgeSearch: this.knowledgeSearch,
       attachmentInputs: this.attachmentInputs,
     })
@@ -1000,6 +1005,7 @@ export class TaskRuntime {
         media: this.media,
         video: this.video,
         arrangementMedia: this.arrangementMedia,
+        arrangementDiagnostics: this.arrangementDiagnostics,
         knowledgeSearch: this.knowledgeSearch,
         attachmentInputs: this.attachmentInputs,
         findReplacement: this.findEmployeeReplacement,

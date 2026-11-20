@@ -448,6 +448,7 @@ function runtimeForArrangement(
   monitor: TaskMonitorPort = silentTaskMonitor,
   onEvent: (event: TaskExecutionEvent) => void = () => {},
   authorizeEmployee?: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>,
+  arrangementDiagnostics?: ConstructorParameters<typeof TaskRuntime>[0]['arrangementDiagnostics'],
 ): TaskRuntime {
   return new TaskRuntime({
     taskManager: manager, taskRunStore: runStore, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
@@ -458,7 +459,7 @@ function runtimeForArrangement(
       assert.ok(!modelId || arrangement.nodes.some(node => node.subscriptionId === subscriptionId && node.modelId === modelId))
       return { ...employee, subscriptionId, modelId: modelId ?? employee.modelId }
     }),
-    createWorker, monitor,
+    createWorker, monitor, arrangementDiagnostics,
   })
 }
 
@@ -639,6 +640,7 @@ describe('TaskRuntime arrangement controls', () => {
     arrangement.nodes[1]!.dependsOn = []
     const checkpoints = new MemoryCheckpointStore()
     const events: TaskExecutionEvent[] = []
+    const diagnostics: Parameters<NonNullable<ConstructorParameters<typeof TaskRuntime>[0]['arrangementDiagnostics']>['record']>[1][] = []
     const attempts: string[] = []
     let release!: () => void
     const peer = new Promise<void>(resolve => { release = resolve })
@@ -647,10 +649,18 @@ describe('TaskRuntime arrangement controls', () => {
       async run() {
         const id = options.context.arrangementNodeId!
         attempts.push(id)
-        if (id === 'node-a' && !failed) { failed = true; throw new Error('Request timed out.') }
+        if (id === 'node-a' && !failed) {
+          failed = true
+          await options.context.modelTrace?.({ phase: '', kind: 'status', requestNumber: 1, text: 'PRIVATE_TRACE',
+            metrics: { 诊断: '{"httpStatus":504,"code":"gateway_timeout","sepRequestId":"request-123","body":"PRIVATE_BODY"}' } })
+          throw new Error('Request timed out.')
+        }
         if (id === 'node-b') await peer
       }, async abort() { release() }, async dispose() {},
-    }), silentTaskMonitor, event => { events.push(event) })
+    }), silentTaskMonitor, event => { events.push(event) }, undefined, { async record(owner, diagnostic) {
+      assert.deepEqual(owner, scope)
+      diagnostics.push(diagnostic)
+    } })
     try {
       await runtime.executeTask(task.id)
       await waitFor(() => checkpoints.value?.state.nodes[0]?.status === 'failed' && attempts.includes('node-b'))
@@ -661,6 +671,17 @@ describe('TaskRuntime arrangement controls', () => {
       assert.equal(events.filter(event => event.type === 'run_failure_notice').length, 1)
       assert.deepEqual(events.find(event => event.type === 'run_failure_notice')?.data, { owner: scope, code: 'MODEL_TIMEOUT' })
       assert.equal(checkpoints.value?.state.nodes[0]?.error, '模型请求超时，请稍后重试')
+      assert.equal(diagnostics.length, 1)
+      assert.equal(diagnostics[0].phase, 'model-execution')
+      assert.equal(diagnostics[0].modelRequest?.requestId, 'request-123')
+      assert.equal(diagnostics[0].modelHistory?.entries[0]?.diagnostic?.body, 'PRIVATE_BODY')
+      assert.equal(diagnostics[0].exception?.entries[0]?.message, 'Request timed out.')
+      assert.doesNotMatch(JSON.stringify(diagnostics), /PRIVATE_TRACE/)
+      const failure = events.find(event => event.type === 'arrangement_node_failed')?.data as Record<string, unknown>
+      assert.equal(failure.diagnosticAvailable, true)
+      assert.ok('nodeRunId' in diagnostics[0])
+      assert.equal(failure.nodeRunId, diagnostics[0].nodeRunId)
+      assert.equal(failure.modelRequest, undefined)
       await runtime.retryTask(task.id, { nodeId: 'node-a' })
       await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
       assert.deepEqual(attempts, ['node-a', 'node-b', 'node-a'])

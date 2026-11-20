@@ -8,6 +8,7 @@ import { WriteChain } from '../data/write-chain'
 import { AppError } from '../errors/app-error'
 import { safeMediaUpstreamError } from '../common/media-upstream-error'
 import { mediaJobFailure } from '../errors/media-job-error'
+import { appendMediaDiagnosticError } from '../errors/arrangement-diagnostic'
 import { VideoRequestError } from '../errors/video-request-error'
 import { transportKind } from '../errors/operation-feedback'
 import { mediaToolFailureFrom } from '../errors/media-tool-error'
@@ -64,7 +65,7 @@ export class VideoService {
     if ((job.executionMode ?? 'mock') !== this.mode) throw new AppError('PERMISSION_DENIED')
     return job
   }
-  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'failure' | 'submissionFailure' | 'specFailure' | 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error' | 'lastQueriedAt' | 'providerWaitMs' | 'downloadMs'>>): Promise<LocalVideoJob> {
+  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'failure' | 'submissionFailure' | 'diagnosticErrors' | 'specFailure' | 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error' | 'lastQueriedAt' | 'providerWaitMs' | 'downloadMs'>>): Promise<LocalVideoJob> {
     return this.store.updateJob(this.scope, job.taskId, job.jobId, previous => ({ ...previous, ...fields, updatedAt: Math.max(this.now(), previous.updatedAt) }))
   }
 
@@ -116,13 +117,14 @@ export class VideoService {
         receipt = await abortableVideo(this.gateway.submit(structuredClone(job.request), signal), signal)
       } catch (error) {
         const failure = mediaJobFailure(error, 'video-submit')
+        const diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, 'video-submit', error, this.now())
         if (error instanceof VideoRequestError && error.definitelyRejected) {
-          return this.update(job, { trackingStatus: 'STOPPED', error: error.businessCode, failure })
+          return this.update(job, { trackingStatus: 'STOPPED', error: error.businessCode, failure, diagnosticErrors })
         }
         // Persist uncertainty, never label a lost response as failure/success or re-submit.
         const specDiagnostic = error instanceof AppError && isMediaSpecError(error.code) ? videoSpecFailureSchema.safeParse(mediaToolFailureFrom(error).error) : undefined
         const specFailure = specDiagnostic?.success ? specDiagnostic.data : undefined
-        return this.update(job, { ...interrupted(error, 'SUBMISSION_UNKNOWN'), failure, ...(specFailure ? { specFailure } : {}) })
+        return this.update(job, { ...interrupted(error, 'SUBMISSION_UNKNOWN'), failure, diagnosticErrors, ...(specFailure ? { specFailure } : {}) })
       }
       // Keep persistence errors separate from network uncertainty: a confirmed
       // receipt write failure must propagate; disk still says MAYBE_SENT.
@@ -168,6 +170,7 @@ export class VideoService {
     let failed = false
     let failure: LocalVideoJob['failure']
     let interruption: Pick<LocalVideoJob, 'trackingStatus' | 'error'> | null = null
+    let diagnosticErrors = job.diagnosticErrors
     for (const output of receipt.outputs) {
       try {
         signal.throwIfAborted()
@@ -189,6 +192,7 @@ export class VideoService {
       } catch (error) {
         failed = true
         failure = mediaJobFailure(error, 'video-save')
+        diagnosticErrors = appendMediaDiagnosticError(diagnosticErrors, 'video-save', error, this.now())
         logger.child('video-service').warn('original video download failed', { taskId: job.taskId, jobId: job.jobId, outputId: output.outputId,
           ...failure })
         if (error instanceof AppError) interruption = interrupted(error, 'VIDEO_SAVE_FAILED')
@@ -197,7 +201,7 @@ export class VideoService {
     }
     // Includes the final manifest write: failures propagate, never return SAVED.
     return this.update(job, { saveStatus: failed ? 'SAVE_FAILED' : 'SAVED', downloadMs: Math.max(0, this.now() - saveStartedAt),
-      failure,
+      failure, diagnosticErrors,
       error: failed ? 'VIDEO_SAVE_FAILED' : receipt.errorCode,
       ...(!failed ? { trackingStatus: tracking(receipt) ? 'ACTIVE' as const : 'STOPPED' as const } : {}), ...(interruption ?? {}) })
   }
@@ -226,6 +230,7 @@ export class VideoService {
             : await abortableVideo(this.gateway.findReceipt(job.request.clientRequestId, signal), signal)
         } catch (error) {
           return this.update(job, { ...interrupted(error, 'VIDEO_QUERY_INTERRUPTED'), failure: mediaJobFailure(error, 'video-query'),
+            diagnosticErrors: appendMediaDiagnosticError(job.diagnosticErrors, 'video-query', error, queriedAt),
             submissionFailure: job.submissionFailure ?? (job.failure?.stage === 'video-submit' ? job.failure : undefined), lastQueriedAt: queriedAt })
         }
         if (!receipt) return this.update(job, { trackingStatus: 'INTERRUPTED', error: job.error ?? 'SUBMISSION_UNKNOWN', lastQueriedAt: queriedAt })

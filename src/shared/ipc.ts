@@ -443,6 +443,7 @@ export interface ElectronAPI {
   getArrangementContext: () => Promise<unknown>
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
   getArrangementExecution: (taskId: string) => Promise<ArrangementExecutionResult>
+  exportWorkDiagnostic: (input: { taskId: string; nodeId: string; nodeRunId: string } | { taskId: string; runId: string }) => Promise<IpcCommandResult & { cancelled?: boolean }>
   previewArrangementDocument: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { data?: DocumentPreview }>
   saveWordCopy: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { cancelled?: boolean }>
   previewResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult & { data?: ResultFilePreview }>

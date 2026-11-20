@@ -159,6 +159,11 @@ describe('IPC contract', () => {
     assert.equal(new Set(ALL_CHANNELS).size, ALL_CHANNELS.length)
   })
 
+  it('exposes work diagnostic export directly in the standard preload', () => {
+    assert.ok(preloadKeys().includes('exportWorkDiagnostic'))
+    assert.equal(INVOKE_CHANNELS.WORK_EXPORT_DIAGNOSTIC, 'work:export-diagnostic')
+  })
+
   it('includes the auto-arrangement planning IPC contract', () => {
     assert.equal(INVOKE_CHANNELS.ARRANGE_PLAN_DRAFT, 'arrange:plan-draft')
     assert.equal(INVOKE_CHANNELS.ARRANGE_CANCEL_PLAN, 'arrange:cancel-plan')

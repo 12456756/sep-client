@@ -50,6 +50,8 @@ import { runtimeFailureEvent } from '../errors/runtime-feedback'
 import { TaskService } from '../service/task-service'
 import { TaskCreationGate } from '../service/task-creation-gate'
 import { ArrangementService } from '../service/arrangement-service'
+import { ArrangementDiagnosticService } from '../service/arrangement-diagnostic-service'
+import { ArrangementDiagnosticStore } from '../data/arrangement-diagnostic-store'
 import { summarizeArrangementMediaTools } from '../domain/arrangement-media-availability'
 import { parseMediaCapabilities } from '../common/platform/media-contract'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
@@ -133,6 +135,7 @@ class BackendRuntime {
   readonly conversations: ConversationService
   readonly conversationQueue: ConversationQueueService
   readonly arrangements: ArrangementService
+  readonly arrangementDiagnostics: ArrangementDiagnosticService
   readonly attachments: AttachmentService
   private readonly attachmentStore: AttachmentStore
   private readonly attachmentExtractionRuntime: LazyAsync<AttachmentExtractionRuntime>
@@ -293,6 +296,13 @@ class BackendRuntime {
     })
 
     const videoStore = config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED ? new VideoStore(userDataDir) : undefined
+    this.arrangementDiagnostics = new ArrangementDiagnosticService({
+      scope: this, clientVersion: app.getVersion(),
+      authorizationRevision: () => this.authSession.getSessionRevision(),
+      store: new ArrangementDiagnosticStore(userDataDir),
+      listImageJobs: (owner, taskId) => mediaStore.listJobs(owner, taskId),
+      listVideoJobs: videoStore ? (owner, taskId, subscriptionId) => videoStore.listJobs({ ...owner, subscriptionId }, taskId) : undefined,
+    })
     if (videoStore) {
       const store = videoStore
       const videoOptions: MockVideoHostOptions = {
@@ -845,6 +855,7 @@ class BackendRuntime {
       video: this.videoRuns,
       conversationVideo: this.conversationVideo,
       arrangementMedia: this.arrangementMedia,
+      arrangementDiagnostics: this.arrangementDiagnostics,
       conversationMedia: this.conversationMedia,
       attachmentInputs: this.attachments,
     })

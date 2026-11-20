@@ -17,12 +17,12 @@ const work: WorkItem = {
   sharedContext: { goal: '', confirmedInputs: [], previousResults: [], userNotes: [] }, stopReason: null, workDir: null,
 }
 
-function render(events: TaskExecutionEvent[] = []) {
+function render(events: TaskExecutionEvent[] = [], props: Partial<React.ComponentProps<typeof ArrangementTranscriptView>> = {}) {
   const previous = Reflect.get(globalThis, 'React')
   Object.defineProperty(globalThis, 'React', { configurable: true, value: React })
   try {
     return renderToStaticMarkup(React.createElement(ArrangementTranscriptView, { work, employees: [],
-      nodes: buildArrangementTranscript(work.steps, events), busy: false, onStop: async () => true, onResults() {} }))
+      nodes: buildArrangementTranscript(work.steps, events), busy: false, onStop: async () => true, onResults() {}, ...props }))
   } finally {
     if (previous === undefined) Reflect.deleteProperty(globalThis, 'React')
     else Object.defineProperty(globalThis, 'React', { configurable: true, value: previous })
@@ -30,6 +30,14 @@ function render(events: TaskExecutionEvent[] = []) {
 }
 
 describe('arrangement process interface', () => {
+  it('shows export only when the failed attempt has a saved diagnostic and a desktop API', () => {
+    const nodes = [{ step: { ...work.steps[0], state: 'failed' as const }, entries: [], diagnosticRunId: 'run-a' }]
+    assert.doesNotMatch(render([], { nodes }), /导出本次诊断/)
+    const onExportDiagnostic = async () => ({ success: true as const })
+    assert.match(render([], { nodes, onExportDiagnostic }), /导出本次诊断/)
+    assert.doesNotMatch(render([], { nodes: [{ ...nodes[0], diagnosticRunId: undefined }], onExportDiagnostic }), /导出本次诊断/)
+    assert.doesNotMatch(render([], { nodes: [{ ...nodes[0], step: work.steps[0] }], onExportDiagnostic }), /导出本次诊断/)
+  })
   it('replaces chat with the original task and parallel node groups', () => {
     const html = render()
     assert.match(html, /Original user goal/)

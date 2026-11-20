@@ -4,6 +4,7 @@ import type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput
 import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
 import type { MediaUpstreamError } from '../../src/shared/media-upstream-error'
 import { isImageMissingTargetRejection, type MediaFailure } from '../../src/shared/media-failure'
+import type { MediaDiagnosticErrors } from './arrangement-diagnostic'
 export type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaJobView, MediaProfile } from '../../src/shared/media'
 
 export interface MediaOutput {
@@ -110,6 +111,7 @@ export interface LocalMediaJob {
   errorCode?: MediaReceipt['errorCode']
   failure?: MediaFailure
   submissionFailure?: MediaFailure
+  diagnosticErrors?: MediaDiagnosticErrors
   outputErrors?: MediaReceipt['outputErrors']
   upstreamError?: MediaUpstreamError
   /** Last provider status query, retained for recovery diagnostics. */

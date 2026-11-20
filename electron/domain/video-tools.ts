@@ -29,6 +29,7 @@ export interface VideoRunPort {
     onTerminalFailure?: (error: unknown) => void | Promise<void>
   }): Promise<VideoHostTools | undefined>
   waitForRun(taskId: string, runId: string, options?: { recoverOriginal?: boolean; signal?: AbortSignal }): Promise<void>
+  diagnosticJobIds?(taskId: string, runId: string): readonly string[]
   stopTask(taskId: string): Promise<void>
   finishRun?(taskId: string, runId: string): Promise<void>
 }

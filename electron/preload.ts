@@ -277,6 +277,7 @@ const electronAPI = {
   getArrangementContext: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_CONTEXT),
   getArrangementPlan: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_PLAN, taskId),
   getArrangementExecution: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_EXECUTION, taskId),
+  exportWorkDiagnostic: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_EXPORT_DIAGNOSTIC, input),
   previewArrangementDocument: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_PREVIEW_DOCUMENT, input),
   saveWordCopy: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_SAVE_WORD_COPY, input),
   previewResultFile: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_PREVIEW, input),
