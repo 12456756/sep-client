@@ -1,4 +1,5 @@
 .document-preview-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 32px)); height: min(880px, calc(100dvh - 32px)); max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); margin: auto; padding: 0; border: 1px solid var(--ent-line); border-radius: 8px; background: var(--ent-panel); color: var(--ent-ink); overflow: hidden; }
+[data-platform='darwin'] .document-preview-dialog { inset-block-start: var(--window-chrome-height); height: min(880px, calc(100dvh - var(--window-chrome-height) - 32px)); }
 .document-preview-dialog[open] { display: flex; flex-direction: column; }
 .document-preview-dialog::backdrop { background: rgb(0 0 0 / 42%); }
 .document-preview-heading, .document-preview-toolbar { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid var(--ent-line); }

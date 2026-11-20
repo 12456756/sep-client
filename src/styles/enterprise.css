@@ -194,12 +194,12 @@
  */
 .ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: var(--work-canvas); }
 /* macOS 窗口按钮留在侧栏顶部，右侧工具栏与它们共用顶部空间。 */
-[data-platform='darwin'] .ent-shell { padding-top: 0; }
+[data-platform='darwin'] .ent-shell { --ent-mac-top-height: 52px; padding-top: 0; }
 /* Windows 使用标题栏覆盖层，侧栏品牌区和右侧全局操作直接进入顶部标题栏区域。 */
 [data-platform='win32'] .ent-shell { padding-top: 0; }
 [data-platform='darwin'] .ent-shell > .ent-side.ent-icon-nav { padding-top: calc(var(--window-chrome-height) + 8px); }
-[data-platform='darwin'] .ent-shell .ent-top { min-height: 52px; }
-:root[data-platform='darwin']:has(.ent-shell) .electron-window-chrome { width: var(--ent-side-w-collapsed); right: auto; }
+[data-platform='darwin'] .ent-shell .ent-top { min-height: var(--ent-mac-top-height); }
+:root[data-platform='darwin'] .electron-window-chrome:has(+ :not([hidden]) > .ent-shell) { width: var(--ent-side-w-collapsed); right: auto; }
 .ent-shell-main { position: relative; isolation: isolate; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: var(--work-canvas); }
 .ent-shell-main > .ent-top, .ent-shell-main > .ent-scroll { position: relative; z-index: 1; }
 /* Global header panels sit above page-local search bars and organization nodes. */
