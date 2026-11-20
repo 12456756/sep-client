@@ -1,14 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { LoaderCircle, Maximize, Paperclip, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { Copy, LoaderCircle, Maximize, Paperclip, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { SiliconEmployee, WorkItem, WorkMessage } from '../../features/enterprise/types'
 import { useArrangementTranscript } from '../../features/enterprise/use-arrangement-transcript'
 import { buildConversationReplies, buildConversationTranscript, type ConversationRunTranscript } from '../../features/enterprise/conversation-transcript'
 import { ConversationProcessView } from './ConversationProcess'
+import { DiagnosticExport } from './DiagnosticExport'
+import type { ElectronAPI } from '../../shared/ipc'
 import { EmployeeFace } from './EmployeeFace'
 import { MessageContent } from './MessageContent'
-import { useConversationMedia } from '../../features/enterprise/conversation-media'
 import { groupConversationResults, type ConversationResult } from '../../features/enterprise/conversation-results'
+import { imageCopyHandlers, useContentCopy, useImagePreviewCopy, type CopyMenuHandler } from '../ContentCopyMenu'
 import { ResultFileCard } from '../workspace/ResultFileCard'
+import { DocumentPreviewButton } from '../workspace/DocumentPreviewButton'
+import { SaveWordCopyButton } from '../workspace/SaveWordCopyButton'
+import { useFileMenuCommands } from '../workspace/file-menu-actions'
 import '../workspace/result-file-card.css'
 
 interface Props {
@@ -16,40 +21,45 @@ interface Props {
   employees: SiliconEmployee[]
   scopeKey: string
   preparing: boolean
+  mediaState: { results: ConversationResult[]; error: string | null; retry: () => void }
 }
 
-export const ConversationMessages = React.memo(function ConversationMessages({ work, employees, scopeKey, preparing }: Props) {
-  return <ConversationMessagesContent key={`${scopeKey}:${work.id}`} work={work} employees={employees} scopeKey={scopeKey} preparing={preparing} />
+export const ConversationMessages = React.memo(function ConversationMessages({ work, employees, scopeKey, preparing, mediaState }: Props) {
+  return <ConversationMessagesContent key={`${scopeKey}:${work.id}`} work={work} employees={employees} scopeKey={scopeKey} preparing={preparing} mediaState={mediaState} />
 })
 
-function ConversationMessagesContent({ work, employees, scopeKey, preparing }: Props) {
+function ConversationMessagesContent({ work, employees, scopeKey, preparing, mediaState: media }: Props) {
   const transcript = useArrangementTranscript(work.id, scopeKey)
-  const media = useConversationMedia(work.id, scopeKey)
   const runs = useMemo(() => buildConversationTranscript(transcript.events), [transcript.events])
   return <><ConversationMessagesView work={work} employees={employees} preparing={preparing} runs={runs} media={media.results}
-    loading={transcript.loading} error={transcript.error} onReload={transcript.reload} />
+    loading={transcript.loading} error={transcript.error} onReload={transcript.reload} onExportDiagnostic={window.electronAPI?.exportWorkDiagnostic} />
     {media.error ? <div className="ent-conversation-results-error" role="alert"><span>{media.error}</span><button type="button" className="ent-btn sm ghost" onClick={media.retry}><RotateCcw size={14} />重新读取</button></div> : null}</>
 }
 
-export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, media = [] }: Omit<Props, 'scopeKey'> & {
+export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, onExportDiagnostic, media = [] }: Omit<Props, 'scopeKey' | 'mediaState'> & {
   media?: ConversationResult[]
   runs: readonly ConversationRunTranscript[]
   loading: boolean
   error: string | null
   onReload: () => void
+  onExportDiagnostic?: ElectronAPI['exportWorkDiagnostic']
 }) {
+  const { showMenu, menu } = useContentCopy()
   const items = buildConversationReplies(work, preparing)
   const results = groupConversationResults(work, items, media)
-  const byRun = new Map(runs.map(run => [run.runId, run.entries]))
+  const byRun = new Map(runs.map(run => [run.runId, run]))
   const lastReply = [...items].reverse().find(item => item.kind === 'reply')
   return <>{items.map(item => {
     if (item.kind === 'message') {
       const message = item.message
       if (message.role === 'system') return <p className="ent-talk-sys" key={item.id}>{message.content}</p>
+      const copyText = (event: React.MouseEvent<HTMLParagraphElement> | React.KeyboardEvent<HTMLParagraphElement>) => {
+        if (message.content.trim()) showMenu(event, { label: '复制文本', run: () => navigator.clipboard.writeText(message.content) })
+      }
       return <div className="ent-say user" key={item.id}>
-        <p>{message.content}</p>
+        <p tabIndex={message.content.trim() ? 0 : undefined} onContextMenu={copyText} onKeyDown={copyText}>{message.content}</p>
         {message.attachments?.length ? <div className="ent-message-attachments" aria-label="本轮附件">{message.attachments.map(attachment =>
-          <MessageAttachment key={`${work.id}:${attachment.attachmentId}:${attachment.sha256}`} taskId={work.id} attachment={attachment} />,
+          <MessageAttachment key={`${work.id}:${attachment.attachmentId}:${attachment.sha256}`} taskId={work.id} attachment={attachment} onCopyMenu={showMenu} />,
         )}</div> : null}
         <MessageTime message={message} />
       </div>
@@ -57,7 +67,8 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
     const first = item.messages[0]
     const employeeId = first?.employeeId || work.currentEmployeeId
     const employeeName = first?.employeeName || work.currentEmployeeName
-    const entries = item.runId ? byRun.get(item.runId) ?? [] : []
+    const run = item.runId ? byRun.get(item.runId) : undefined
+    const entries = run?.entries ?? []
     const hasContent = item.messages.some(message => message.content.trim())
     const replyResults = results.get(item.id)
     const processError = item.id === lastReply?.id ? error : null
@@ -66,13 +77,17 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
       {item.runId && (entries.length > 0 || loading || processError) ? <ConversationProcessView entries={entries} active={item.active} loading={loading} error={processError} onReload={onReload} /> : null}
       {!hasContent && !replyResults?.length && (!entries.length || !item.active) ? <div className="ent-conversation-reply-status" role="status">
         {item.active ? <LoaderCircle size={14} className="ent-spin" aria-hidden /> : null}
-        {item.active ? '正在进行…' : '本轮未返回回复'}
+        {item.active ? '正在进行…' : run?.diagnosticAvailable ? '本轮执行失败' : '本轮未返回回复'}
       </div> : null}
       {item.messages.filter(message => message.content.trim()).map(message => <MessageContent key={message.id} content={message.content} />)}
       <ConversationResultCards taskId={work.id} results={replyResults} />
+      {!item.active && item.runId && run?.diagnosticAvailable && onExportDiagnostic ?
+        <DiagnosticExport input={{ taskId: work.id, runId: item.runId }} onExport={onExportDiagnostic} /> : null}
       <MessageTime message={{ createdAt: first?.createdAt ?? item.createdAt }} />
     </div>
-  })}<ConversationResultCards taskId={work.id} results={results.get('unassigned')} /></>
+  })}<ConversationResultCards taskId={work.id} results={results.get('unassigned')} />
+    {menu}
+  </>
 }
 
 function ConversationResultCards({ taskId, results }: { taskId: string; results?: ConversationResult[] }) {
@@ -88,11 +103,15 @@ function MessageTime({ message }: { message: Pick<WorkMessage, 'createdAt'> }) {
   </time>
 }
 
-function MessageAttachment({ taskId, attachment }: {
+function MessageAttachment({ taskId, attachment, onCopyMenu }: {
   taskId: string
   attachment: NonNullable<WorkMessage['attachments']>[number]
+  onCopyMenu: CopyMenuHandler
 }) {
   const isPreviewableImage = ['image/png', 'image/jpeg', 'image/webp'].includes(attachment.mediaType)
+  const wordFormat = /\.(docx?)$/i.exec(attachment.displayName)?.[1]?.toLowerCase()
+  const documentRequest = { taskId, attachmentId: attachment.attachmentId, sha256: attachment.sha256 }
+  const commands = useFileMenuCommands(documentRequest, attachment.displayName)
   const [preview, setPreview] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
@@ -115,9 +134,11 @@ function MessageAttachment({ taskId, attachment }: {
     return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [taskId, attachment.attachmentId, attachment.sha256, isPreviewableImage, attempt])
 
-  return <span className={`ent-message-attachment${isPreviewableImage ? ' is-image' : ''}`} title={`${attachment.mediaType} · ${attachment.sha256.slice(0, 12)}`}>
+  return <span className={`ent-message-attachment${isPreviewableImage ? ' is-image' : ''}`} title={`${attachment.mediaType} · ${attachment.sha256.slice(0, 12)}`}
+    tabIndex={isPreviewableImage ? undefined : 0} {...imageCopyHandlers(onCopyMenu, undefined, commands)}>
     {isPreviewableImage ? <button type="button" className="ent-message-attachment-preview" disabled={!preview && !failed}
       title={failed ? '重新读取图片' : `查看图片：${attachment.displayName}`} aria-label={failed ? '重新读取图片' : `查看图片：${attachment.displayName}`}
+      {...imageCopyHandlers(onCopyMenu, undefined, commands)}
       onClick={() => failed ? setAttempt(value => value + 1) : setOpened(true)}>
       {preview && !failed ? <img src={preview} alt={attachment.displayName} onError={() => setFailed(true)} />
         : <span className="ent-message-attachment-placeholder" role="status">{failed ? <RotateCcw size={18} aria-hidden /> : <LoaderCircle size={18} className="ent-spin" aria-hidden />}{failed ? '预览不可用' : '图片加载中…'}</span>}
@@ -127,17 +148,25 @@ function MessageAttachment({ taskId, attachment }: {
       <span className="ent-message-attachment-name">{attachment.displayName}</span>
       {isPreviewableImage && attachment.width && attachment.height ? <small>{attachment.width} × {attachment.height}</small> : null}
       <small>{formatAttachmentBytes(attachment.byteLength)}</small>
+      {wordFormat ? <>
+        <DocumentPreviewButton {...documentRequest} name={attachment.displayName} format={wordFormat} version={attachment.sha256} />
+        <SaveWordCopyButton request={documentRequest} name={attachment.displayName} />
+      </> : null}
     </span>
-    {opened && preview && !failed ? <AttachmentImageDialog url={preview} attachment={attachment} onClose={() => setOpened(false)} /> : null}
+    {opened && preview && !failed ? <AttachmentImageDialog taskId={taskId} url={preview} attachment={attachment} onClose={() => setOpened(false)} onError={() => { setOpened(false); setFailed(true) }} /> : null}
   </span>
 }
 
-function AttachmentImageDialog({ url, attachment, onClose }: {
+function AttachmentImageDialog({ taskId, url, attachment, onClose, onError }: {
+  taskId: string
   url: string
   attachment: NonNullable<WorkMessage['attachments']>[number]
   onClose: () => void
+  onError: () => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const commands = useFileMenuCommands({ taskId, attachmentId: attachment.attachmentId, sha256: attachment.sha256 }, attachment.displayName, onClose)
+  const { imageProps, copyButtonProps, menu, triggerProps } = useImagePreviewCopy(url, undefined, commands)
   const [zoom, setZoom] = useState(0)
   const [width, setWidth] = useState(attachment.width ?? 800)
   useEffect(() => {
@@ -147,7 +176,8 @@ function AttachmentImageDialog({ url, attachment, onClose }: {
     return () => { element?.close(); opener?.focus() }
   }, [])
   return <dialog ref={dialog} className="ent-attachment-image-dialog" aria-label={`图片预览：${attachment.displayName}`}
-    onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }}
+    onCancel={event => { event.preventDefault(); onClose() }} onContextMenu={triggerProps.onContextMenu}
+    onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation(); else triggerProps.onKeyDown(event) }}
     onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <header className="ent-attachment-image-heading">
       <div><strong>{attachment.displayName}</strong><small>{attachment.width && attachment.height ? `${attachment.width} × ${attachment.height} · ` : ''}{formatAttachmentBytes(attachment.byteLength)}</small></div>
@@ -156,12 +186,15 @@ function AttachmentImageDialog({ url, attachment, onClose }: {
         <span>{zoom ? `${Math.round(zoom * 100)}%` : '适应'}</span>
         <button type="button" title="放大图片" aria-label="放大图片" disabled={zoom >= 4} onClick={() => setZoom(value => value === 0 ? 1 : Math.min(4, value + 0.25))}><ZoomIn size={18} /></button>
         <button type="button" title="适应窗口" aria-label="适应窗口" onClick={() => setZoom(0)}><Maximize size={18} /></button>
+        <button type="button" {...copyButtonProps}><Copy size={18} aria-hidden /></button>
         <button type="button" title="关闭图片预览" aria-label="关闭图片预览" onClick={onClose} autoFocus><X size={18} /></button>
       </div>
     </header>
     <div className={`ent-attachment-image-viewport${zoom ? ' is-zoomed' : ''}`}>
-      <img src={url} alt={attachment.displayName} style={zoom ? { width: width * zoom } : undefined} onLoad={event => setWidth(event.currentTarget.naturalWidth)} />
+      <img {...imageProps} src={url} alt={attachment.displayName} style={zoom ? { width: width * zoom } : undefined}
+        onLoad={event => { imageProps.onLoad(); setWidth(event.currentTarget.naturalWidth) }} onError={() => { imageProps.onError(); onError() }} />
     </div>
+    {menu}
   </dialog>
 }
 

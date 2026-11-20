@@ -3,14 +3,14 @@ import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, No
 import type { AutoPlanningInput, PlanningRecordChange, PlanningRecordSnapshot, PlanningRecordSummary } from './auto-planning'
 import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
 import type { DocumentPreview, DocumentPreviewRequest } from './document-preview'
-import type { ResultFileRequest, ResultFilePreview } from './result-files'
+import type { ResultFileAction, ResultFileRequest, ResultFilePreview } from './result-files'
 import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from './speech-contracts'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type { ModelCatalogEntry } from './model-catalog-contracts'
 import type { MultimediaSettings } from './multimedia-settings'
-import type { AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentView } from './attachment-contracts'
+import type { AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentPreviewRequest, AttachmentView } from './attachment-contracts'
 import type {
   ComputeAllowance,
   PersonalWallet,
@@ -380,6 +380,7 @@ export interface ElectronAPI {
   onNotificationUpdate: (callback: (event: NotificationUpdate) => void) => () => void
   platform: RuntimePlatform
   windowChrome: WindowChromeRuntime
+  onWindowExpandedChanged: (callback: (expanded: boolean) => void) => () => void
   setWindowTheme: (theme: WindowTheme) => Promise<IpcCommandResult>
   listSkillLibrary: (input?: SkillLibraryQuery) => Promise<IpcCommandResult & { data?: SkillLibraryItem[]; skippedCount?: number; updatedAt?: number; retryAt?: number }>
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: string }>
@@ -388,12 +389,13 @@ export interface ElectronAPI {
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: SkillLibraryItem }>
   savePersonalSkill: (input: SaveSkillInput) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
   retryPersonalSkillUpload: (input: { capabilityId: string; idempotencyKey: string }) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
+  deleteLocalSkillCopy: (input: { capabilityId: string; idempotencyKey: string }) => Promise<IpcCommandResult & { data?: SkillLibraryItem }>
   beginAttachmentImport: (input: { target: AttachmentImportTarget; idempotencyKey?: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession }>
-  selectAttachments: (input: { sessionId: string; operationId?: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession | AttachmentView[] }>
+  selectAttachments: (input: { sessionId: string; operationId?: string; single?: boolean }) => Promise<IpcCommandResult & { cancelled?: boolean; data?: AttachmentImportSession | AttachmentView[] }>
   listAttachments: (input: { sessionId: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession | AttachmentView[] }>
   removeAttachment: (input: { sessionId: string; attachmentId: string; expectedRevision?: number }) => Promise<IpcCommandResult>
   cancelAttachmentImport: (input: { sessionId: string }) => Promise<IpcCommandResult>
-  previewAttachment: (input: { taskId: string; attachmentId: string; sha256: string }) => Promise<IpcCommandResult & { data?: AttachmentPreview }>
+  previewAttachment: (input: AttachmentPreviewRequest) => Promise<IpcCommandResult & { data?: AttachmentPreview }>
   bindAttachmentPaste: (input: { composerId: string; sessionId: string; target: AttachmentImportTarget; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean }) => () => void
   onAttachmentPaste: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
   login: (credentials: LoginRequest) => Promise<LoginResult>
@@ -441,10 +443,13 @@ export interface ElectronAPI {
   getArrangementContext: () => Promise<unknown>
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
   getArrangementExecution: (taskId: string) => Promise<ArrangementExecutionResult>
+  exportWorkDiagnostic: (input: { taskId: string; nodeId: string; nodeRunId: string } | { taskId: string; runId: string }) => Promise<IpcCommandResult & { cancelled?: boolean }>
   previewArrangementDocument: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { data?: DocumentPreview }>
+  saveWordCopy: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { cancelled?: boolean }>
   previewResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult & { data?: ResultFilePreview }>
   releaseResultFilePreview: (input: { url: string }) => Promise<IpcCommandResult>
   revealResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult>
+  runResultFileAction: (input: ResultFileAction) => Promise<IpcCommandResult & { cancelled?: boolean; data?: AttachmentImportSession }>
   openWorkDeliverable: (input: DocumentPreviewRequest) => Promise<IpcCommandResult>
   confirmArrangementNodes: (input: { taskId: string; nodeIds: string[] }) => Promise<IpcCommandResult>
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>

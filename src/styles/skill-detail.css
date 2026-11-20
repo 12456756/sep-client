@@ -10,8 +10,8 @@
 .skill-detail-tabs > button:disabled { cursor:default; opacity:.5; }
 .skill-content-toolbar { margin-bottom:12px; }
 .skill-document { min-width:0; border:1px solid var(--ent-line); border-radius:var(--ent-radius-lg); background:var(--ent-panel); overflow:hidden; }
-.skill-document-empty { padding:28px 20px; color:var(--ent-ink-3); font-size:13px; }
-.skill-reading { padding:22px 26px; overflow-wrap:anywhere; line-height:1.8; font-size:13px; }
+.skill-document-empty { padding:28px 20px; color:var(--ent-ink-3); font-size:var(--ent-fs-body); }
+.skill-reading { padding:22px 26px; overflow-wrap:anywhere; line-height:1.8; font-size:var(--ent-fs-body); }
 .skill-reading > :first-child { margin-top:0; }
 .skill-reading > :last-child { margin-bottom:0; }
 .skill-reading h1 { font-size:21px; }
@@ -50,19 +50,19 @@
 .skill-chat-round:last-child { margin-bottom:0; }
 .skill-chat-user { display:flex; flex-direction:column; align-items:flex-end; gap:7px; margin:0 0 14px 48px; }
 .skill-chat-speaker { color:var(--ent-ink-3); font-size:11px; }
-.skill-chat-user > p { max-width:100%; margin:0; padding:11px 15px; border-radius:8px; background:var(--ent-brand-softer); color:var(--ent-ink); font-size:13px; line-height:1.85; white-space:pre-wrap; overflow-wrap:anywhere; }
+.skill-chat-user > p { max-width:100%; margin:0; padding:11px 15px; border-radius:8px; background:var(--ent-brand-softer); color:var(--ent-ink); font-size:var(--ent-fs-body); line-height:1.85; white-space:pre-wrap; overflow-wrap:anywhere; }
 .skill-chat-assistant { min-width:0; }
 .skill-chat-assistant-heading { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 .skill-chat-assistant-heading > svg { color:var(--ent-brand-ink); }
 .skill-chat-assistant-heading strong { color:var(--ent-ink); font-size:13px; font-weight:600; }
 .skill-chat-assistant-heading > span { color:var(--ent-ink-3); font-size:11px; overflow-wrap:anywhere; }
-.skill-chat-response { margin:8px 0; color:var(--ent-ink-2); font-size:13px; line-height:1.8; }
+.skill-chat-response { margin:8px 0; color:var(--ent-ink-2); font-size:var(--ent-fs-body); line-height:1.8; }
 .skill-chat-pending { color:var(--ent-attention); font-size:11px; }
 .skill-chat-changes { display:grid; gap:12px; margin:14px 0; padding:0; list-style:none; }
 .skill-chat-changes > li { display:flex; align-items:flex-start; gap:12px; }
 .skill-chat-added { flex-shrink:0; padding:2px 6px; border-radius:4px; background:var(--ent-ready-bg); color:var(--ent-ready); font-size:11px; line-height:18px; }
 .skill-chat-changes strong { color:var(--ent-ink); font-size:12px; font-weight:600; }
-.skill-chat-changes p { margin:4px 0 0; color:var(--ent-ink-2); font-size:13px; line-height:1.8; overflow-wrap:anywhere; }
+.skill-chat-changes p { margin:4px 0 0; color:var(--ent-ink-2); font-size:var(--ent-fs-body); line-height:1.8; overflow-wrap:anywhere; }
 .skill-chat-diff > summary { display:flex; align-items:center; gap:6px; width:fit-content; min-height:28px; color:var(--ent-ink-3); font-size:11px; cursor:pointer; list-style:none; }
 .skill-chat-diff > summary::-webkit-details-marker { display:none; }
 .skill-chat-diff > summary:hover { color:var(--ent-brand-ink); }
@@ -80,10 +80,11 @@
 .skill-rewrite-shortcuts button:disabled { opacity:.5; }
 .skill-rewrite-composer { position:relative; display:flex; align-items:center; gap:12px; min-height:92px; max-height:224px; padding:12px 26px 12px 17px; border:1px solid var(--ent-line); border-radius:var(--ent-radius-sm); background:var(--ent-panel); box-shadow:var(--ent-shadow); }
 .skill-rewrite-composer:focus-within { border-color:var(--ent-brand-border); }
-.skill-rewrite-composer > textarea { display:block; align-self:stretch; flex:1; width:100%; min-width:0; min-height:32px; max-height:none; padding:5px 0; resize:none; border:0; color:var(--ent-ink); background:transparent; font-family:inherit; line-height:1.7; font-size:13px; }
-.skill-rewrite-composer > textarea::placeholder { color:var(--ent-ink-3); }
-.skill-rewrite-composer > textarea:focus-visible { outline:1px solid var(--ent-brand-border); outline-offset:3px; border-radius:3px; }
-.skill-rewrite-tools { display:flex; align-self:flex-end; align-items:center; gap:10px; min-width:0; }
+.skill-rewrite-composer > .ent-file-mention-editor { flex:1; align-self:stretch; }
+.skill-rewrite-composer textarea { display:block; width:100%; min-width:0; min-height:32px; max-height:none; padding:5px 0; resize:none; border:0; color:var(--ent-ink); background:transparent; font-family:inherit; line-height:1.7; font-size:var(--ent-fs-composer); }
+.skill-rewrite-composer textarea::placeholder { color:var(--ent-ink-3); }
+.skill-rewrite-composer textarea:focus-visible { outline:1px solid var(--ent-brand-border); outline-offset:3px; border-radius:3px; }
+.skill-rewrite-tools { display:flex; flex:none; align-self:flex-end; align-items:center; gap:10px; min-width:0; }
 .skill-rewrite-model { min-width:0; max-width:240px; }
 .skill-rewrite-model .ent-model-trigger { max-width:100%; }
 .skill-rewrite-model .ent-model-trigger > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -114,9 +115,8 @@
 .skill-rewrite-preview-footer > p { margin:0; color:var(--ent-ink-3); font-size:11px; }
 @container (max-width:639px) {
  .skill-rewrite-composer { flex-direction:column; gap:8px; min-height:102px; padding:12px 26px 12px 12px; }
- .skill-rewrite-composer > textarea { flex:1 1 auto; }
- .skill-rewrite-tools { flex:none; width:100%; justify-content:flex-end; }
- .skill-rewrite-model { max-width:calc(100% - 46px); }
+ .skill-rewrite-composer > .ent-file-mention-editor { flex:1 1 auto; }
+ .skill-rewrite-tools { width:100%; justify-content:flex-end; }
  .skill-rewrite-comparison { grid-template-columns:minmax(0,1fr); gap:12px; }
  .skill-rewrite-comparison pre { height:180px; }
  .skill-chat-user { margin-left:20px; }
@@ -142,7 +142,7 @@
 .skill-dialog-overlay { position:fixed; inset:0; background:var(--ent-overlay); z-index:100; }
 .skill-save-dialog { position:fixed; z-index:101; top:50%; left:50%; transform:translate(-50%,-50%); width:min(460px,calc(100vw - 32px)); max-height:calc(100vh - 40px); overflow:auto; padding:26px; border:1px solid var(--ent-line); border-radius:var(--ent-radius-lg); background:var(--ent-panel); color:var(--ent-ink); box-shadow:0 24px 72px rgb(32 33 38 / 20%); }
 .skill-save-dialog h2 { margin:0; padding-right:16px; font-size:20px; font-weight:600; }
-.skill-save-dialog > p { margin:12px 0 24px; color:var(--ent-ink-2); font-size:13px; line-height:1.8; }
+.skill-save-dialog > p { margin:12px 0 24px; color:var(--ent-ink-2); font-size:var(--ent-fs-body); line-height:1.8; }
 .skill-save-dialog footer { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; margin-top:24px; }
 .skill-dialog-close { position:absolute; top:16px; right:16px; border:0; padding:5px; border-radius:5px; background:transparent; color:var(--ent-ink-3); cursor:pointer; }
 .skill-source-drawer { position:fixed; z-index:101; inset:0 0 0 auto; display:flex; flex-direction:column; width:min(680px,64vw); max-width:100vw; border-left:1px solid var(--ent-line); color:var(--ent-ink); background:var(--ent-panel); box-shadow:var(--ent-shadow-drawer); }
@@ -150,7 +150,7 @@
 .skill-source-drawer-heading .skill-source-back { width:32px; height:32px; flex-shrink:0; margin-top:-4px; }
 .skill-source-drawer-heading > div { min-width:0; }
 .skill-source-drawer-heading h2 { margin:0; color:var(--ent-ink); font-size:17px; font-weight:600; }
-.skill-source-drawer-heading p { margin:8px 0 0; color:var(--ent-ink-3); font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.skill-source-drawer-heading p { margin:8px 0 0; color:var(--ent-ink-3); font-size:var(--ent-fs-body); line-height:1.7; overflow-wrap:anywhere; }
 .skill-source-drawer-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-shrink:0; padding:0 24px 16px; border-bottom:1px solid var(--ent-line); }
 .skill-source-drawer-body { display:flex; flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; }
 .skill-source-drawer-body .skill-reading { min-width:0; width:100%; }

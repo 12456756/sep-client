@@ -16,11 +16,18 @@ import { ArrangementSteps } from '../../components/enterprise/arrange/Arrangemen
 import { ArrangementTranscriptView } from '../../components/enterprise/arrange/ArrangementTranscript';
 import { buildArrangementTranscript } from '../../features/enterprise/arrangement-transcript';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
+import { IMAGE_MISSING_TARGET_MESSAGE } from '../../shared/media-failure';
 import * as mediaRetry from '../../shared/media-retry';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
+import { SaveWordCopyButton } from '../../components/workspace/SaveWordCopyButton';
 import { useResultFilePreview } from '../../features/enterprise/use-result-file-preview';
+import * as contentCopy from '../../components/ContentCopyMenu';
+import * as fileMenuActions from '../../components/workspace/file-menu-actions';
+import { resultFileReleaseSchema } from '../../shared/result-files';
 import type { WorkItem } from '../../features/enterprise/types';
+import { buildWorkItem } from '../../features/enterprise/work-mapping';
+import type { ClientTask } from '../../shared/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import * as workProcess from '../../features/enterprise/work-process';
 import * as vocabulary from '../../features/enterprise/vocabulary';
@@ -31,7 +38,10 @@ const cardFilename = fileURLToPath(new URL('../../components/workspace/ResultFil
 const cardSource = ts.transpileModule(readFileSync(cardFilename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const cardModule = { exports: {} };
 const cardDependencies: Record<string, unknown> = { react: React, 'react/jsx-runtime': jsxRuntime, 'lucide-react': icons,
-  '../../features/enterprise/use-result-file-preview': { useResultFilePreview }, './DocumentPreviewButton': { DocumentPreviewButton }, './result-file-card.css': {} };
+  '../../features/enterprise/use-result-file-preview': { useResultFilePreview }, './DocumentPreviewButton': { DocumentPreviewButton },
+  './SaveWordCopyButton': { SaveWordCopyButton }, '../ContentCopyMenu': contentCopy,
+  './file-menu-actions': fileMenuActions,
+  '../../shared/result-files': { resultFileReleaseSchema }, './result-file-card.css': {} };
 compileFunction(cardSource, ['require', 'exports', 'module'], { filename: cardFilename })((id: string) => { assert.ok(Object.hasOwn(cardDependencies, id), `unexpected card import: ${id}`); return cardDependencies[id] }, cardModule.exports, cardModule);
 const { ResultFileCard, ResultFileMedia, resultFileRequest } = cardModule.exports as typeof import('../../components/workspace/ResultFileCard');
 
@@ -55,6 +65,10 @@ const dependencies: Record<string, unknown> = {
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
   '../../components/workspace/ResultFileCard': { ResultFileCard },
+  '../../components/workspace/file-menu-actions': fileMenuActions,
+  '../../components/enterprise/attachments/FileMentionPicker': { FileMentionChips: () => null, FileMentionPicker: () => null },
+  '../../components/enterprise/attachments/FileMentionEditor': { FileMentionEditor: React.forwardRef<HTMLTextAreaElement, React.ComponentPropsWithoutRef<'textarea'> & { mention: unknown }>(({ mention: _mention, ...props }, ref) => React.createElement('textarea', { ...props, ref })) },
+  '../../components/enterprise/attachments/use-text-reference-composer': { useTextReferenceComposer: () => ({ mention: {} }) },
   '../../components/feedback/use-operation-feedback': { useOperationFeedback },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
@@ -338,6 +352,23 @@ describe('compact failure notice', () => {
     }
   });
 
+  it('uses blocked media diagnostics for the matching failed node before the historical task reason', () => {
+    const unknown = '图片提交结果尚未确认；请查询原任务，勿重复提交';
+    const fallback = '历史任务摘要：图片或视频提交结果尚未确认';
+    const media = { nodeId: 'poster', nodeRunId: 'run-a', kind: 'image' as const, operation: 'generate' as const,
+      phase: 'blocked' as const, jobId: 'job-a', inputs: [], outputs: [], pendingActions: [], issue: IMAGE_MISSING_TARGET_MESSAGE };
+    const flow: WorkItem = { ...work, kind: 'flow', status: 'failed', stopReason: fallback,
+      arrangementExecution: { activeRunId: null, status: 'failed', updatedAt: 1,
+        nodes: ['poster', 'unknown', 'other'].map(nodeId => ({ nodeId, status: 'failed', finalFiles: [] })),
+        media: [{ ...media, nodeId: 'other', phase: 'ready', issue: '不属于阻塞的媒体提示' },
+          { ...media, nodeId: 'unknown', jobId: 'job-unknown', issue: unknown }, media, { ...media, jobId: 'job-duplicate' }] } };
+    const html = renderDetail(flow);
+    assert.ok(html.includes(`title="poster：${IMAGE_MISSING_TARGET_MESSAGE}"`));
+    assert.ok(html.includes(`title="unknown：${unknown}"`));
+    assert.ok(html.includes(`title="other：${fallback}"`));
+    assert.doesNotMatch(html, /title="poster：历史任务摘要|title="other：不属于阻塞的媒体提示/);
+  });
+
   it('preserves task and node retry targets and disables retry while busy', () => {
     const calls: unknown[][] = [];
     const retryWork = async (...args: unknown[]) => { calls.push(args); };
@@ -513,6 +544,25 @@ describe('WorkDetailPage media entry', () => {
     }
   });
 
+  it('opens a scheduled record without mounting the chat queue, even with stale conversation classification', () => {
+    const task: ClientTask = {
+      id: 'scheduled-work', title: 'Create a file', prompt: 'Create a file', status: 'pending', workDir: null,
+      createdAt: 1, startedAt: null, completedAt: null, error: null, files: [], logs: [],
+      ownerId: 'member', ownerEnterpriseId: 'enterprise', subscriptionId: 'employee', activeRunId: null,
+      scheduledOrigin: { definitionId: 'schedule', occurrenceId: 'occurrence' },
+    };
+    const pending = buildWorkItem({ task, employees: [] });
+    const completed = buildWorkItem({ task: { ...task, status: 'completed', startedAt: 1, completedAt: 2,
+      workType: { state: 'resolved', kind: 'conversation' }, files: ['deliverables/20261120-1659.txt'] }, employees: [] });
+    for (const item of [pending, completed]) {
+      assert.deepEqual(item.workType, { state: 'resolved', kind: 'arrangement' });
+      const html = renderDetail(item);
+      assert.doesNotMatch(html, /aria-label="工作对话"/);
+      assert.match(html, /查看产出结果/);
+    }
+    assert.match(renderDetail(completed), /20261120-1659\.txt/);
+  });
+
   it('keeps deletion behind work information and an explicit confirmation', () => {
     const html = renderDetail(work);
     const info = html.indexOf('aria-label="工作信息"');
@@ -569,10 +619,13 @@ describe('WorkDetailPage media entry', () => {
   });
 
   it('offers previews for supported conversation documents without node delivery identities', () => {
-    const html = renderDetail({ ...work, deliverables: ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt', 'zip'].map((format, index) => ({
+    const html = renderDetail({ ...work, deliverables: ['doc', 'docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt', 'zip'].map((format, index) => ({
       id: `${work.id}-file-${index}`, name: `report.${format}`, path: `C:\\work\\report.${format}`, note: '对话成果', format,
     })) })
-    for (const format of ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt']) assert.match(html, new RegExp(`aria-label="预览文档：report\\.${format}"`))
+    for (const format of ['doc', 'docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt']) assert.match(html, new RegExp(`aria-label="预览文档：report\\.${format}"`))
+    assert.match(html, /aria-label="另存为：report\.doc"/)
+    assert.match(html, /aria-label="另存为：report\.docx"/)
+    assert.doesNotMatch(html, /aria-label="另存为：report\.pdf"/)
     assert.doesNotMatch(html, /aria-label="预览文档：report\.zip"/)
     assert.match(html, /打开所在文件夹/)
     assert.doesNotMatch(html, /复制路径/)

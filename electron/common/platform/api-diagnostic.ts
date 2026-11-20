@@ -3,6 +3,8 @@ import { redactText, redactValue } from '../redact'
 
 const MAX_BYTES = 256 * 1024
 const TIMEOUT_MS = 5000
+// Diagnostic envelopes add layers around the provider's own nested body.
+const MAX_DIAGNOSTIC_DEPTH = 16
 const HEADERS = new Set([
   'content-type', 'content-length', 'retry-after', 'x-request-id', 'x-sep-error-source',
   'x-compute-status', 'x-compute-request-id', 'x-client-request-id', 'x-upstream-request-id',
@@ -25,7 +27,7 @@ function sanitize(value: unknown, secrets: readonly string[] = []): unknown {
 function exceedsLimits(value: unknown, depth = 0): boolean {
   if (typeof value === 'string') return value.length > 8192
   if (!value || typeof value !== 'object') return false
-  if (depth >= 5) return true
+  if (depth >= MAX_DIAGNOSTIC_DEPTH) return true
   const entries = Array.isArray(value) ? value : Object.values(value)
   return entries.length > 50 || entries.some(child => exceedsLimits(child, depth + 1))
 }
@@ -37,8 +39,9 @@ export function safeApiDiagnostic(value: unknown, secrets: readonly string[] = [
   const headers = raw.headers && typeof raw.headers === 'object' && !Array.isArray(raw.headers)
     ? Object.fromEntries(Object.entries(raw.headers).filter(([key, entry]) => HEADERS.has(key.toLowerCase()) && typeof entry === 'string')
       .map(([key, entry]) => [key.toLowerCase(), sanitize(entry, secrets)])) : undefined
-  const sanitized: Record<string, unknown> = { ...sanitize(redactValue({ ...raw, headers: undefined }, 0, '', { secrets }), secrets) as Record<string, unknown>,
-    ...(headers ? { headers } : {}), ...(raw.truncated === true || exceedsLimits({ body: raw.body }) ? { truncated: true } : {}) }
+  const evidence = { ...raw, headers: undefined }
+  const sanitized: Record<string, unknown> = { ...sanitize(redactValue(evidence, 0, '', { secrets, maxDepth: MAX_DIAGNOSTIC_DEPTH }), secrets) as Record<string, unknown>,
+    ...(headers ? { headers } : {}), ...(raw.truncated === true || exceedsLimits(evidence) ? { truncated: true } : {}) }
   const valid: Record<string, unknown> = {}
   for (const [key, schema] of Object.entries(apiDiagnosticSchema.shape)) {
     const parsed = schema.safeParse(sanitized[key])

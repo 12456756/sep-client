@@ -1,8 +1,10 @@
 import { lstatSync, realpathSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, extname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { evaluateToolCall, isUnrestrictedToolPolicy, type ToolPolicy } from '../../../pi-extension/guard'
 
 export const OFFICE_TOOL_NAME = 'mcp__officecli__officecli'
+export const OFFICE_EXPORT_DOC = 'export-doc'
+export const OFFICE_IMPORT_DOC = 'import-doc'
 export interface OfficeDecision {
   allowed: boolean
   requiresApproval: boolean
@@ -65,7 +67,8 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
       if (args.slice(1).some(arg => !/^[\w-]+$/.test(arg))) throw new Error('Invalid help argument.')
       return { allowed: true, requiresApproval: false, args, lockPaths: [] }
     }
-    if (!reads.has(verb) && !edits.has(verb)) throw new Error('Unsupported Office command. Use help or supported document commands.')
+    const legacyWord = verb === OFFICE_EXPORT_DOC || verb === OFFICE_IMPORT_DOC
+    if (!reads.has(verb) && !edits.has(verb) && !legacyWord) throw new Error('Unsupported Office command. Use help or supported document commands.')
     const write = edits.has(verb)
     let requiresApproval = false
     const lockPaths: string[] = []
@@ -90,6 +93,29 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
       }
       lockPaths.push(actual)
       return actual
+    }
+    if (legacyWord) {
+      const importing = verb === OFFICE_IMPORT_DOC
+      const sourceExt = importing ? '.doc' : '.docx'
+      const destExt = importing ? '.docx' : '.doc'
+      if (args.length !== 3 || extname(args[2]).toLowerCase() !== destExt) throw new Error('Use import-doc <input.doc> <new-output.docx> or export-doc <input.docx> <new-output.doc>.')
+      for (const path of args.slice(1)) {
+        if (/^[\\/]{2}|[<>"|?*]/.test(path) || [...path].some(char => char.charCodeAt(0) < 32)
+          || path.slice(/^[a-z]:[\\/]/i.test(path) ? 2 : 0).includes(':')) {
+          throw new Error('Use a regular local document path.')
+        }
+      }
+      const source = file(args[1], false)
+      const destination = file(args[2], true)
+      const attachmentSource = importing && policy.readableAttachmentPaths?.some(path => canonicalCandidate(path) === source)
+      if ((!attachmentSource && (extname(args[1]).toLowerCase() !== sourceExt || extname(source).toLowerCase() !== sourceExt))
+        || extname(destination).toLowerCase() !== destExt
+        || [source, destination].some(path => /^[\\/]{2}/.test(parse(path).root))) {
+        throw new Error('Use a supported local Word source and a new local destination.')
+      }
+      try { lstatSync(resolve(policy.workspaceDir, args[2])); throw new Error('The destination already exists; choose a new path.') }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      return { allowed: true, requiresApproval: importing || requiresApproval, args: [verb, source, destination], lockPaths }
     }
     function prop(key: string, value: unknown): string {
       if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') throw new Error('Invalid property value.')

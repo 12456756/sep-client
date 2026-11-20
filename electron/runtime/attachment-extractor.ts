@@ -2,6 +2,8 @@ import { createRequire } from 'node:module'
 import { unzipSync } from 'fflate'
 import { XMLParser } from 'fast-xml-parser'
 import type { AttachmentExtraction } from '../domain/attachment-extraction'
+import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
+import { readLegacyWordText } from './legacy-word-text'
 
 const require = createRequire(import.meta.url)
 const maxText = 100000
@@ -35,6 +37,9 @@ export async function extractAttachment(mediaType: string, bytes: Uint8Array): P
       try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
       catch { text = new TextDecoder('gb18030').decode(bytes); warnings.push('ENCODING_GB18030') }
       if (text.includes('\u0000')) throw new Error('BINARY_TEXT_INPUT')
+    } else if (mediaType === LEGACY_WORD_MIME) {
+      text = await readLegacyWordText(bytes)
+      warnings.push('LAYOUT_AND_EMBEDDED_IMAGES_NOT_EXTRACTED')
     } else if (officeTypes.has(mediaType)) {
       const entries = archive(bytes, officeTypes.get(mediaType)!)
       for (const name of Object.keys(entries).sort((a, b) => a.localeCompare(b, 'en', { numeric: true }))) {

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../shared/attachment-contracts'
+import type { ResultFileRequest } from '../../shared/result-files'
+import type { FileMentionMemory } from '../../shared/file-mention'
 
-type AttachmentApi = Pick<Window['electronAPI'], 'beginAttachmentImport' | 'selectAttachments' | 'listAttachments' | 'removeAttachment' | 'cancelAttachmentImport'> & {
+type AttachmentApi = Pick<Window['electronAPI'], 'beginAttachmentImport' | 'selectAttachments' | 'listAttachments' | 'removeAttachment' | 'cancelAttachmentImport' | 'runResultFileAction'> & {
   bindAttachmentPaste?: (input: { composerId: string; sessionId: string; target: AttachmentImportTarget; isEnabled?: () => boolean; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean }) => () => void
   onAttachmentPaste?: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
 }
@@ -12,6 +14,7 @@ class AttachmentOperationError extends Error {}
 export interface RetainedAttachmentState {
   session: AttachmentImportSession | null
   attachments: AttachmentView[]
+  fileMentions?: FileMentionMemory
 }
 
 export interface AttachmentComposerOptions {
@@ -46,7 +49,7 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
   const pasteHandledRef = useRef(new Set<string>())
   const generatedComposerId = useRef(`composer-${crypto.randomUUID()}`)
   const composerId = target.kind === 'compose' ? target.composerId : generatedComposerId.current
-  const api = window.electronAPI as AttachmentApi
+  const api = (typeof window === 'undefined' ? undefined : window.electronAPI) as AttachmentApi
   const retention = useRef(retainedState)
   retention.current = retainedState
   useLayoutEffect(() => {
@@ -92,7 +95,7 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
 
   // Rebind an existing retained import session without creating another session.
   useEffect(() => {
-    if (!session || !api.bindAttachmentPaste) return
+    if (!session || !api?.bindAttachmentPaste) return
     const dispose = api.bindAttachmentPaste({ composerId, sessionId: session.sessionId, target, isEnabled: () => !disabledRef.current && !busyRef.current, onPasteEdit: input => onPasteEditRef.current?.(input) ?? false })
     bindDispose.current = dispose
     return () => { dispose(); if (bindDispose.current === dispose) bindDispose.current = null }
@@ -100,28 +103,38 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, composerId, identityKey, session])
 
-  const select = useCallback(async () => {
+  const select = useCallback(async (single = false) => {
+    if (disabledRef.current || busyRef.current) return null
+    const identity = identityGeneration.current
     const current = session ?? await begin()
-    if (!current) return
+    if (identity !== identityGeneration.current) return null
+    if (!current) {
+      if (single) throw new AttachmentOperationError('附件会话未就绪，请重试。')
+      return null
+    }
     const requestGeneration = generation.current
     onSelectStartedRef.current?.()
     let selectedItems: AttachmentView[] | null = null
     busyRef.current = true
     setBusy(true)
     try {
-      const result = await api.selectAttachments({ sessionId: current.sessionId })
-      if (requestGeneration !== generation.current) return
+      const result = await api.selectAttachments({ sessionId: current.sessionId, ...(single ? { single: true } : {}) })
+      if (requestGeneration !== generation.current) return null
       if (!result.success) throw new AttachmentOperationError(result.error?.message || '选择附件失败，请联系平台管理员')
       selectedItems = Array.isArray(result.data) ? result.data : result.data?.attachments ?? []
       setAttachments(selectedItems)
+      return result.cancelled ? null : selectedItems
     } catch (cause) {
-      if (requestGeneration !== generation.current) return
-      reportError(cause instanceof AttachmentOperationError ? cause.message : '选择附件失败，请联系平台管理员')
+      if (requestGeneration !== generation.current) return null
+      const message = cause instanceof AttachmentOperationError ? cause.message : '选择附件失败，请联系平台管理员'
+      reportError(message)
       const latest = await api.listAttachments({ sessionId: current.sessionId }).catch(() => null)
       if (requestGeneration === generation.current && latest?.success) {
         selectedItems = Array.isArray(latest.data) ? latest.data : latest.data?.attachments ?? []
         setAttachments(selectedItems)
       }
+      if (single && requestGeneration === generation.current) throw new AttachmentOperationError(message)
+      return null
     } finally {
       if (requestGeneration === generation.current) {
         onSelectFinishedRef.current?.(selectedItems)
@@ -131,9 +144,32 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
     }
   }, [api, begin, session, reportError])
 
+  const addFile = useCallback(async (file: ResultFileRequest): Promise<AttachmentView[] | undefined> => {
+    const identity = identityGeneration.current
+    if (disabledRef.current || busyRef.current) throw new AttachmentOperationError('对话框正在处理，请稍后重试。')
+    const current = session ?? await begin()
+    if (identity !== identityGeneration.current) return
+    if (!current) throw new AttachmentOperationError('附件会话未就绪，请重试。')
+    const requestGeneration = generation.current
+    busyRef.current = true
+    setBusy(true)
+    try {
+      const result = await api.runResultFileAction({ action: 'attach', file, sessionId: current.sessionId })
+      if (requestGeneration !== generation.current) return
+      if (!result.success || !result.data) throw new AttachmentOperationError(result.error?.message || '无法添加附件，请重试。')
+      setSession(result.data)
+      setAttachments(result.data.attachments)
+      return result.data.attachments
+    } catch (error) {
+      if (requestGeneration === generation.current) throw error instanceof AttachmentOperationError ? error : new AttachmentOperationError('无法添加附件，请重试。')
+    } finally {
+      if (requestGeneration === generation.current) { busyRef.current = false; setBusy(false) }
+    }
+  }, [api, begin, session])
+
   useEffect(() => {
-    if (!session && !busy && !disabled && !attempted.current) void begin()
-  }, [begin, busy, disabled, session])
+    if (api && !session && !busy && !disabled && !attempted.current) void begin()
+  }, [api, begin, busy, disabled, session])
 
   useEffect(() => {
     if (!session || !api.onAttachmentPaste) return
@@ -223,6 +259,6 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
     if (!retention.current && current?.status === 'open') void api.cancelAttachmentImport({ sessionId: current.sessionId })
   }, [api])
 
-  return { session, attachments, busy, select, remove, composerId }
+  return { session, attachments, busy, select, remove, composerId, addFile }
 }
 

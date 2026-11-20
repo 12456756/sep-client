@@ -234,8 +234,8 @@ export class AuthApiError extends Error {
   }
 }
 
-async function parseError(response: Response, resource?: AuthApiResource): Promise<AuthApiError> {
-  const diagnostic = await readApiDiagnostic(response, resource)
+async function parseError(response: Response, resource: AuthApiResource, secrets: readonly string[], signal?: AbortSignal): Promise<AuthApiError> {
+  const diagnostic = await readApiDiagnostic(response, resource, { secrets, signal })
   const retryAfterMs = parseRetryAfter(response.headers.get('Retry-After'))
   const body = diagnostic.body && typeof diagnostic.body === 'object' && !Array.isArray(diagnostic.body) ? diagnostic.body : {}
   return new AuthApiError({
@@ -250,9 +250,11 @@ async function parseError(response: Response, resource?: AuthApiResource): Promi
 
 async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource, signal?: AbortSignal): Promise<T> {
   const boundedRead = ['notifications', 'skills', 'subscriptions', 'model-catalog'].includes(resource)
+  const requestSignal = signal ?? (boundedRead ? AbortSignal.timeout(15_000) : undefined)
   const failTransport = (error: unknown): never => {
     if (boundedRead && !signal?.aborted && (error instanceof TypeError || isTransportTimeout(error))) {
-      throw new AuthApiError({ statusCode: 0, message: 'Platform read connection failed or timed out', diagnostic: transportApiDiagnostic(error, resource) }, resource, { cause: error })
+      const diagnostic = transportApiDiagnostic(error, resource, [accessToken])
+      throw new AuthApiError({ statusCode: 0, message: 'Platform read connection failed or timed out', diagnostic }, resource, { cause: diagnostic.transportError })
     }
     throw error
   }
@@ -261,14 +263,14 @@ async function getJson<T>(path: string, accessToken: string, resource: AuthApiRe
       Authorization: `Bearer ${accessToken}`,
       ...(resource === 'notifications' ? { Origin: config.SEP_WEB_ORIGIN } : {}),
     },
-    signal: signal ?? (boundedRead ? AbortSignal.timeout(15_000) : undefined),
+    signal: requestSignal,
   }).catch(failTransport)
   if (resource === 'skills' && path.startsWith('/enterprise/skill-versions?')) {
     const fields = { method: 'GET', path: '/enterprise/skill-versions', statusCode: response.status, ok: response.ok }
     if (response.ok) log.trace('skill version query response received', fields)
     else log.warn('skill version query response received', fields)
   }
-  if (!response.ok) throw await parseError(response, resource)
+  if (!response.ok) throw await parseError(response, resource, [accessToken], requestSignal)
   return response.json().catch(failTransport) as Promise<T>
 }
 
@@ -292,7 +294,7 @@ async function postJson<T>(
     if (response.ok) log.info('personal skill upload response received', fields)
     else log.warn('personal skill upload response received', fields)
   }
-  if (!response.ok) throw await parseError(response, resource)
+  if (!response.ok) throw await parseError(response, resource, [accessToken])
   try {
     return await response.json() as T
   } catch (error) {
@@ -312,7 +314,7 @@ async function postMultipart<T>(
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,
   })
-  if (!response.ok) throw await parseError(response, resource)
+  if (!response.ok) throw await parseError(response, resource, [accessToken])
   return response.json() as Promise<T>
 }
 
@@ -357,7 +359,7 @@ export async function login(request: LoginRequest): Promise<LoginResponse> {
   } catch (error) {
     throw new LoginFeedbackError(isTransportTimeout(error) ? 'timeout' : 'network', error)
   }
-  if (!response.ok) throw await parseError(response, 'login')
+  if (!response.ok) throw await parseError(response, 'login', [request.password])
   let value: unknown
   try {
     value = await response.json()
@@ -375,7 +377,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
   })
-  if (!response.ok) throw await parseError(response, 'refresh')
+  if (!response.ok) throw await parseError(response, 'refresh', [refreshToken])
   return response.json() as Promise<RefreshResponse>
 }
 
@@ -420,7 +422,7 @@ export async function getEmploymentToken(
     body: JSON.stringify(request),
     signal,
   })
-  if (!response.ok) throw await parseError(response, 'employment-token')
+  if (!response.ok) throw await parseError(response, 'employment-token', [request.refreshToken], signal)
   return response.json() as Promise<EmploymentTokenResponse>
 }
 
@@ -467,15 +469,16 @@ export async function getUnreadNotificationCount(accessToken: string, params: No
 
 /** Notification writes return 204; do not try to decode a nonexistent JSON body. */
 async function notificationCommand(path: string, method: 'POST' | 'DELETE', accessToken: string): Promise<void> {
+  const signal = AbortSignal.timeout(15_000)
   const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Origin: config.SEP_WEB_ORIGIN,
     },
-    signal: AbortSignal.timeout(15_000),
+    signal,
   })
-  if (!response.ok) throw await parseError(response, 'notifications')
+  if (!response.ok) throw await parseError(response, 'notifications', [accessToken], signal)
 }
 
 export async function markNotificationRead(notificationId: string, accessToken: string): Promise<void> {
@@ -504,7 +507,7 @@ export async function uploadFile(input: UploadInput, accessToken: string): Promi
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,
   })
-  if (!response.ok) throw await parseError(response, 'upload')
+  if (!response.ok) throw await parseError(response, 'upload', [accessToken])
   return response.json() as Promise<UploadFile>
 }
 
@@ -518,7 +521,7 @@ export async function uploadFiles(inputs: UploadInput[], accessToken: string): P
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,
   })
-  if (!response.ok) throw await parseError(response, 'upload')
+  if (!response.ok) throw await parseError(response, 'upload', [accessToken])
   return response.json() as Promise<UploadFile[]>
 }
 

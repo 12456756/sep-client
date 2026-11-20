@@ -4,7 +4,7 @@
 .ent-update-entry:focus-visible, .ent-update-panel button:focus-visible, .ent-update-confirm button:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 3px; }
 .ent-update-panel, .ent-update-confirm { -webkit-app-region: no-drag; border: 1px solid var(--ent-line); border-radius: 14px; color: var(--ent-ink); background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); font-size: var(--ent-fs-body); line-height: 1.6; }
 .ent-update-panel { position: fixed; z-index: 75; top: calc(var(--window-chrome-height, 0px) + 66px); right: calc(24px + var(--window-controls-inset, 0px)); width: min(390px, calc(100vw - 32px)); max-height: calc(100vh - var(--window-chrome-height, 0px) - 90px); padding: 18px; overflow-y: auto; }
-[data-platform='darwin'] .ent-shell .ent-update-panel { top: 60px; max-height: calc(100dvh - 76px); }
+[data-platform='darwin'] .ent-shell .ent-update-panel { --ent-update-panel-top: calc(var(--ent-mac-top-height) + 8px); top: var(--ent-update-panel-top); max-height: calc(100dvh - var(--ent-update-panel-top) - 16px); }
 .ent-update-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ent-update-head h2, .ent-update-confirm h2 { margin: 0; font-size: var(--ent-fs-title); font-weight: 600; }
 .ent-update-hint, .ent-update-version, .ent-update-notes time, .ent-update-progress p { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
@@ -12,7 +12,7 @@
 .ent-update-version strong { color: var(--ent-ink-2); }
 .ent-update-status p { margin: 6px 0; }
 .ent-update-notes { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--ent-line-soft); }
-.ent-update-notes h3 { display: inline; margin-right: 10px; font-size: var(--ent-fs-body); font-weight: 600; }
+.ent-update-notes h3 { display: inline; margin-right: 10px; font-size: var(--ent-fs-nav); font-weight: 600; }
 .ent-update-notes ul { margin: 8px 0; padding-left: 20px; }
 .ent-update-notes li { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ent-update-progress { margin-top: 14px; }

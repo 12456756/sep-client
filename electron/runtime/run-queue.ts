@@ -11,12 +11,12 @@
  * 也就写不出那个 bug。`take()` 返回布尔值同样是必要的——"我以为我取到了"和
  * "我确实取到了"必须能区分，否则同一个 run 会被启动两次。
  */
-import type { QueuedRun } from './run-types'
+import type { QueuedTaskRun } from './run-types'
 
 export class RunQueue {
-  private readonly entries: QueuedRun[] = []
+  private readonly entries: QueuedTaskRun[] = []
 
-  push(entry: QueuedRun): void {
+  push(entry: QueuedTaskRun): void {
     this.entries.push(entry)
   }
 
@@ -24,12 +24,12 @@ export class RunQueue {
    * 迭代用的快照。**必须基于快照迭代**：迭代期间队列会被同步移除条目，
    * 直接遍历活数组就回到了 C1。
    */
-  snapshot(): readonly QueuedRun[] {
+  snapshot(): readonly QueuedTaskRun[] {
     return [...this.entries]
   }
 
   /** 按 runId 重新定位条目。快照里的对象可能已经被移走了，用它确认还在。 */
-  find(runId: string): QueuedRun | undefined {
+  find(runId: string): QueuedTaskRun | undefined {
     return this.entries.find(entry => entry.runId === runId)
   }
 

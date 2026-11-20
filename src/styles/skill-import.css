@@ -15,7 +15,7 @@
 .skill-import-phase i { width: 7px; height: 7px; border-radius: 50%; background: #a99b92; }
 .skill-import-phase.phase-scanning i, .skill-import-phase.phase-uploading i, .skill-import-phase.phase-previewing i { background: #bd6b36; }
 .skill-import-phase.phase-uploaded i { background: #3d8057; }
-.skill-import-alert { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 14px; padding: 11px 13px; border: 1px solid #f0c6c3; border-radius: 6px; background: #fff1ef; color: #8f3430; font-size: 13px; }
+.skill-import-alert { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 14px; padding: 11px 13px; border: 1px solid #f0c6c3; border-radius: 6px; background: #fff1ef; color: #8f3430; font-size: var(--ent-fs-body); }
 .skill-import-alert svg { flex: none; }
 .skill-import-context { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 14px 16px; border: 1px solid #e8e3df; border-radius: 8px; background: #fff; }
 .skill-import-context-icon { display: grid; width: 38px; height: 38px; flex: none; place-items: center; border-radius: 7px; background: #eaf3ec; color: #39704a; }
@@ -26,8 +26,8 @@
 .skill-import-section, .skill-import-devices { margin-top: 16px; padding: 20px; border: 1px solid #e8e3df; border-radius: 8px; background: #fff; }
 .skill-import-section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 17px; }
 .skill-import-section-title h2, .skill-import-complete h2 { margin: 0; font-size: 16px; }
-.skill-import-section-title p { margin: 5px 0 0; color: #7a716c; font-size: 12px; }
-.skill-import-request-scope { color: #7b716b; font-size: 12px; }
+.skill-import-section-title p { margin: 5px 0 0; color: #7a716c; font-size: var(--ent-fs-body); }
+.skill-import-request-scope { color: #7b716b; font-size: var(--ent-fs-body); }
 .skill-import-pairing { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 3px 14px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid #e8e1dc; border-radius: 6px; background: #faf9f7; }
 .skill-import-pairing span, .skill-import-pairing small { color: #766d67; font-size: 11px; }
 .skill-import-pairing strong { grid-column: 2; grid-row: 1 / span 2; color: #903d35; font-size: 25px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
@@ -72,10 +72,10 @@
 @keyframes skill-import-progress { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
 .skill-import-complete { color: #39704a; }
 .skill-import-complete div { flex: 1; }
-.skill-import-complete p, .skill-import-recovery p { margin: 5px 0 0; color: #716862; font-size: 12px; }
+.skill-import-complete p, .skill-import-recovery p { margin: 5px 0 0; color: #716862; font-size: var(--ent-fs-body); }
 .skill-import-waiting { min-height: 142px; flex-direction: column; justify-content: center; color: #756c67; text-align: center; }
 .skill-import-waiting strong { color: #403a36; font-size: 14px; }
-.skill-import-waiting span { font-size: 12px; }
+.skill-import-waiting span { font-size: var(--ent-fs-body); }
 .skill-import-devices { margin-top: 16px; }
 .skill-import-device { display: flex; min-height: 54px; align-items: center; gap: 12px; border-top: 1px solid #eeeae6; }
 .skill-import-device > span { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }

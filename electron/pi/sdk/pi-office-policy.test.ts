@@ -16,6 +16,22 @@ describe('Office command policy', () => {
       approvalMode: 'auto-approve', commandPolicy: 'disabled' }
     return { root, workspace, policy }
   }
+  it('authorizes a DOCX read and a new DOC write without allowing overwrite or path escape', async t => {
+    const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }))
+    const command = { command: ['export-doc', 'article.docx', 'article.doc'] }
+    const approved = evaluateOfficeCommand(command, { ...f.policy, approvalMode: 'confirm-each' })
+    assert.equal(approved.allowed, true)
+    assert.equal(approved.requiresApproval, true)
+    assert.deepEqual(approved.lockPaths, [join(f.workspace, 'article.docx'), join(f.workspace, 'article.doc')])
+    assert.equal(evaluateOfficeCommand(command, { ...f.policy, preset: 'read-only' }).allowed, false)
+    for (const paths of [['../article.docx', 'article.doc'], ['article.docx', '../article.doc'],
+      ['article.docx', 'article.docx'], ['article.docm', 'article.doc'], ['article.docx', 'name:stream.doc'],
+      ['article.docx', 'article.doc', '--force']]) {
+      assert.equal(evaluateOfficeCommand({ command: ['export-doc', ...paths] }, f.policy).allowed, false)
+    }
+    await writeFile(join(f.workspace, 'article.doc'), 'keep')
+    assert.match(evaluateOfficeCommand(command, f.policy).reason ?? '', /already exists/)
+  })
   it('normalizes string and array commands without executing a shell', async t => {
     const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }))
     const decision = evaluateOfficeCommand({ command: 'get "report one.docx" /body --json' }, f.policy)
@@ -24,6 +40,19 @@ describe('Office command policy', () => {
     assert.deepEqual(decision.lockPaths, [join(f.workspace, 'report one.docx')])
     assert.equal(evaluateOfficeCommand({ command: ['help', 'docx', 'paragraph'] }, f.policy).allowed, true)
     assert.equal(evaluateOfficeCommand({ command: ['set', 'a.docx', '/body', '--prop', 'text=Hello'] }, f.policy).allowed, true)
+  })
+  it('requires confirmation for import even in auto-approve and accepts only an authorized extensionless attachment', async t => {
+    const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }))
+    const source = join(f.root, 'source')
+    await writeFile(source, 'attachment')
+    const command = { command: ['import-doc', source, 'working.docx'] }
+    assert.equal(evaluateOfficeCommand(command, f.policy).allowed, false)
+    const approved = evaluateOfficeCommand(command, { ...f.policy, readableAttachmentPaths: [source] })
+    assert.equal(approved.allowed, true)
+    assert.equal(approved.requiresApproval, true)
+    assert.deepEqual(approved.args, ['import-doc', source, join(f.workspace, 'working.docx')])
+    assert.equal(evaluateOfficeCommand({ command: ['import-doc', '../source', '../working.docx'] },
+      { ...f.policy, readableAttachmentPaths: [source] }).allowed, false)
   })
   it('blocks writes in read-only runs and respects approval settings', async t => {
     const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }))

@@ -1,5 +1,8 @@
 import { test } from 'node:test'
+import { registerHooks } from 'node:module'
 import * as assert from 'node:assert/strict'
+import * as React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { authorizedScheduledModels, automaticPlanningSelection, emptyScheduledTaskDraft, SCHEDULE_EXAMPLES } from './scheduled-task-home'
 
 const employees = [
@@ -43,6 +46,35 @@ test('home drafts start without execution authority or a guessed employee and do
   assert.deepEqual(first, { goal: '', mode: 'employee', subscriptionId: '', settings: { workDir: '', modelId: '', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' }, knowledge: { mode: 'none', knowledgeBaseIds: [] } } })
   first.settings.permissions.approvalMode = 'auto-approve'
   assert.equal(second.settings.permissions.approvalMode, 'confirm-each')
+})
+
+test('only saved empty-text tasks retain the empty-text option in the editor', async () => {
+  const hooks = registerHooks({ load: (url, context, nextLoad) => url.endsWith('.css')
+    ? { format: 'module', source: 'export {}', shortCircuit: true } : nextLoad(url, context) })
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'React')
+  Object.defineProperty(globalThis, 'React', { configurable: true, value: React })
+  try {
+    const { ScheduledTaskEditorForm } = await import('../../components/enterprise/scheduled/ScheduledTaskEditor')
+    type EditorProps = React.ComponentProps<typeof ScheduledTaskEditorForm>
+    const props = { workspace: { myEmployees: [] } as unknown as EditorProps['workspace'], model: { busy: false } as EditorProps['model'], onClose() {} }
+    const scheduledAt = Date.now() + 3600000
+    const fresh = renderToStaticMarkup(React.createElement(ScheduledTaskEditorForm, { ...props, initialDraft: { ...emptyScheduledTaskDraft(), mode: 'empty-text' } }))
+    const modes = fresh.match(/<select aria-label="任务模式">(.*?)<\/select>/)?.[1]
+    assert.ok(modes)
+    assert.deepEqual([...modes.matchAll(/<option value="([^"]+)"[^>]*>/g)].map(match => match[1]), ['employee', 'auto', 'general'])
+    assert.doesNotMatch(fresh, /scheduled-filename-mode/)
+    const existing = renderToStaticMarkup(React.createElement(ScheduledTaskEditorForm, { ...props, definition: {
+      id: 'existing', revision: 1, enabled: false, deleted: false, plan: null, planInputKey: null, nextRunAt: null, createdAt: 1, updatedAt: 1,
+      input: { mode: 'empty-text', name: 'Existing task', goal: 'Create an empty file', workDir: 'C:/work', scheduledAt, timezone: 'UTC',
+        emptyText: { naming: 'fixed', filename: 'existing.txt' }, permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } },
+    } }))
+    assert.match(existing, /<option value="empty-text" selected="">/)
+    assert.match(existing, /id="scheduled-filename"[^>]*value="existing\.txt"/)
+  } finally {
+    hooks.deregister()
+    if (previous) Object.defineProperty(globalThis, 'React', previous)
+    else Reflect.deleteProperty(globalThis, 'React')
+  }
 })
 
 test('examples provide editable goals with a schedule and file deliverables, not execution configuration', () => {

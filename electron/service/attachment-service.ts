@@ -4,10 +4,11 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import { AttachmentStore } from '../data/attachment-store'
 import type { AttachmentStorePort } from '../data/attachment-store'
 import { createHash } from 'node:crypto'
+import { extname } from 'node:path'
 import type { AttachmentExtractor } from '../domain/attachment-extraction'
 import type { ResolvedAttachmentInput } from '../domain/attachment-input'
 import { AppError } from '../errors/app-error'
-import { attachmentImportLimits } from '../../src/shared/attachment-contracts'
+import { attachmentImportLimits, referenceAttachmentSelectionSchema, referenceTextLimit, type ReferenceAttachmentSelection, type ReferenceMaterials } from '../../src/shared/attachment-contracts'
 
 
 export interface AttachmentImportResult {
@@ -49,13 +50,93 @@ export class AttachmentService {
   removeFromSession(sessionId: string, attachmentId: string, expectedRevision?: number): Promise<AttachmentImportSession> { return this.remove(this.currentScope(), sessionId, attachmentId, expectedRevision) }
   cancelSession(sessionId: string): Promise<boolean> { return this.cancel(this.currentScope(), sessionId) }
 
+  async referenceMaterials(scope: TaskOwnerScope, raw: ReferenceAttachmentSelection): Promise<ReferenceMaterials> {
+    const selection = referenceAttachmentSelectionSchema.parse(raw)
+    const assertOwner = () => {
+      const current = this.currentScope()
+      if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    }
+    assertOwner()
+    const session = await this.get(scope, selection.sessionId)
+    if (!session || session.target.kind !== 'compose' || session.status !== 'open' || session.expiresAt <= Date.now()) {
+      throw new AppError('INVALID_ARGUMENT', { message: '文件引用已失效，请重新选择。' })
+    }
+    const materials: ReferenceMaterials = []
+    const seen = new Set<string>()
+    for (const ref of selection.attachments) {
+      const item = session.attachments.find(candidate => candidate.attachmentId === ref.attachmentId && candidate.sha256 === ref.sha256)
+      if (!item) throw new AppError('INVALID_ARGUMENT', { message: '文件引用已变化，请重新选择。' })
+      if (seen.has(item.attachmentId)) continue
+      seen.add(item.attachmentId)
+      await this.store.read(scope, selection.sessionId, item.attachmentId)
+      const extraction = await this.store.readExtraction?.(scope, selection.sessionId, item.attachmentId)
+      if (!extraction?.text.trim() || !['ready', 'partial'].includes(extraction.status)) throw new AppError('INVALID_ARGUMENT', { message: `无法读取「${item.displayName}」的文本，请选择可提取文本的文件。` })
+      materials.push({ name: item.displayName, text: extraction.text.slice(0, referenceTextLimit), truncated: extraction.status === 'partial' || extraction.text.length > referenceTextLimit })
+      assertOwner()
+    }
+    return materials
+  }
+
   async previewTaskAttachment(taskId: string, attachmentId: string, sha256: string): Promise<AttachmentPreview> {
+    const { item, bytes } = await this.readTaskAttachment(taskId, attachmentId, sha256)
+    return this.imagePreview(item, bytes)
+  }
+
+  async previewDraftAttachment(sessionId: string, attachmentId: string, sha256: string): Promise<AttachmentPreview> {
+    const scope = this.currentScope()
+    const findImage = async () => {
+      const session = await this.get(scope, sessionId)
+      const current = this.currentScope()
+      if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+      if (session?.target.kind !== 'compose' || session.status !== 'open' || session.expiresAt <= Date.now()) throw new AppError('NOT_FOUND')
+      const item = session.attachments.find(candidate => candidate.attachmentId === attachmentId && candidate.sha256 === sha256)
+      if (!item || item.byteLength > attachmentImportLimits.maxFileBytes) throw new AppError('NOT_FOUND')
+      return item
+    }
+    const item = await findImage()
+    if (!/^image\/(?:png|jpeg|webp)$/.test(item.mediaType)) throw new Error('ATTACHMENT_PREVIEW_UNSUPPORTED')
+    const bytes = await this.store.read(scope, sessionId, attachmentId)
+    await findImage()
+    return this.imagePreview(item, bytes)
+  }
+
+  private imagePreview(item: AttachmentView, bytes: Buffer): AttachmentPreview {
+    const { attachmentId, sha256, mediaType } = item
+    if (mediaType !== 'image/png' && mediaType !== 'image/jpeg' && mediaType !== 'image/webp') throw new Error('ATTACHMENT_PREVIEW_UNSUPPORTED')
+    return { attachmentId, sha256, mediaType, bytes: new Uint8Array(bytes),
+      ...(item.width ? { width: item.width } : {}), ...(item.height ? { height: item.height } : {}) }
+  }
+
+  async readTaskDocument(taskId: string, attachmentId: string, sha256: string) {
+    const { item, bytes } = await this.readTaskAttachment(taskId, attachmentId, sha256)
+    const format = extname(item.displayName).slice(1).toLowerCase()
+    if (format !== 'doc' && format !== 'docx') throw new AppError('INVALID_ARGUMENT')
+    return { name: item.displayName, version: item.sha256, format, bytes }
+  }
+
+  async resolveTaskFile(scope: TaskOwnerScope, taskId: string, attachmentId: string, sha256: string) {
+    const current = this.currentScope()
+    if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    const { item } = await this.readTaskAttachment(taskId, attachmentId, sha256)
+    const path = this.store.taskReadPath?.(scope, taskId, attachmentId)
+    if (!path) throw new AppError('NOT_FOUND')
+    return { path, name: item.displayName, size: item.byteLength }
+  }
+
+  async attachResultFile(scope: TaskOwnerScope, sessionId: string, path: string, name: string): Promise<AttachmentImportSession> {
+    const session = await this.require(scope, sessionId)
+    const current = this.currentScope()
+    if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    if (session.status !== 'open' || session.target.kind !== 'compose') throw new AppError('INVALID_STATE')
+    await this.store.importPath(scope, sessionId, path, 'picker', name)
+    return this.require(scope, sessionId)
+  }
+
+  private async readTaskAttachment(taskId: string, attachmentId: string, sha256: string) {
     const scope = this.currentScope()
     const metadata = await this.store.readTaskMetadata(scope, taskId)
     const item = metadata.items.find(candidate => candidate.attachmentId === attachmentId && candidate.sha256 === sha256)
     if (!item) throw new Error('ATTACHMENT_REFERENCE_INVALID')
-    const mediaType = item.mediaType
-    if (mediaType !== 'image/png' && mediaType !== 'image/jpeg' && mediaType !== 'image/webp') throw new Error('ATTACHMENT_PREVIEW_UNSUPPORTED')
     if (item.byteLength > attachmentImportLimits.maxFileBytes) throw new Error('ATTACHMENT_TOO_LARGE')
     const bytes = await this.store.readTask(scope, taskId, attachmentId)
     if (bytes.byteLength !== item.byteLength || createHash('sha256').update(bytes).digest('hex') !== sha256) {
@@ -63,14 +144,7 @@ export class AttachmentService {
     }
     const current = this.scopeProvider?.()
     if (!current || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
-    return {
-      attachmentId,
-      sha256,
-      mediaType,
-      bytes: new Uint8Array(bytes),
-      ...(item.width ? { width: item.width } : {}),
-      ...(item.height ? { height: item.height } : {}),
-    }
+    return { item, bytes }
   }
 
   // Draft/task claims are intentionally explicit. The arrangement service should call these
@@ -120,14 +194,25 @@ export class AttachmentService {
     return this.store.readTaskSnapshot(scope, taskId)
   }
 
+  async describeTaskInputs(scope: TaskOwnerScope, taskId: string, refs: readonly AttachmentRef[]): Promise<ResolvedAttachmentInput[]> {
+    return this.describeInputs(scope, taskId, refs, (await this.store.readTaskMetadata(scope, taskId)).items)
+  }
+
+  private describeInputs(scope: TaskOwnerScope, taskId: string, refs: readonly AttachmentRef[], views: readonly AttachmentView[]): ResolvedAttachmentInput[] {
+    const items = new Map(views.map(item => [item.attachmentId, item]))
+    return refs.flatMap(ref => {
+      const item = items.get(ref.attachmentId)
+      if (!item || item.sha256 !== ref.sha256) return []
+      return [{ attachmentId: item.attachmentId, sha256: item.sha256, displayName: item.displayName, mediaType: item.mediaType, byteLength: item.byteLength, width: item.width, height: item.height, extractionStatus: item.extractionStatus, readPath: this.store.taskReadPath?.(scope, taskId, item.attachmentId) }]
+    })
+  }
+
   async resolveTaskInputs(scope: TaskOwnerScope, taskId: string, inputRefs: readonly (AttachmentRef | { kind: string; attachment?: AttachmentRef })[]): Promise<{ attachments: ResolvedAttachmentInput[]; images: Array<ResolvedAttachmentInput & { bytes: Uint8Array }>; digest: string }> {
     const refs = inputRefs.flatMap(ref => 'attachmentId' in ref ? [ref] : ref.kind === 'attachment' && ref.attachment ? [ref.attachment] : [])
     const metadata = await this.store.readTaskMetadata(scope, taskId)
-    const attachments = refs.map(ref => {
-      const item = metadata.items.find(candidate => candidate.attachmentId === ref.attachmentId && candidate.sha256 === ref.sha256)
-      if (!item) throw new Error('ATTACHMENT_REFERENCE_INVALID')
-      return { attachmentId: item.attachmentId, sha256: item.sha256, displayName: item.displayName, mediaType: item.mediaType, byteLength: item.byteLength, width: item.width, height: item.height, extractionStatus: item.extractionStatus, extractedText: metadata.extractionTextById[item.attachmentId], readPath: this.store.taskReadPath?.(scope, taskId, item.attachmentId) } satisfies ResolvedAttachmentInput
-    })
+    const attachments = this.describeInputs(scope, taskId, refs, metadata.items)
+      .map(item => ({ ...item, extractedText: metadata.extractionTextById[item.attachmentId] }))
+    if (attachments.length !== refs.length) throw new Error('ATTACHMENT_REFERENCE_INVALID')
     const images: Array<ResolvedAttachmentInput & { bytes: Uint8Array }> = []
     for (const ref of refs) {
       const bytes = await this.store.readTask(scope, taskId, ref.attachmentId)

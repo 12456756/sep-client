@@ -378,6 +378,21 @@ it('projects get and list without mutating raw tasks or treating unavailable pla
   assert.deepEqual((await harness({ workPlans: { async diagnose() { throw new Error('IO failure') } } }).get(task.id)).workType, { state: 'unavailable' })
 })
 
+it('projects a published scheduled task as an arrangement before its plan and metadata exist', async () => {
+  const scheduled = { ...task, prompt: 'Write a file', scheduledOrigin: { definitionId: 'schedule', occurrenceId: 'occurrence' } }
+  let ready = false
+  const service = harness({
+    taskManager: { async getTask() { return scheduled }, async getAllTasks() { return [scheduled] } },
+    workPlans: { async diagnose() { return ready ? { state: 'found', value: { mode: 'auto' } } : missing } },
+    taskMetadataStore: { async diagnose() { return ready ? { state: 'found', value: { kind: 'arrangement' } } : missing } },
+  })
+  for (const saved of [false, true]) {
+    ready = saved
+    assert.deepEqual((await service.get(task.id)).workType, { state: 'resolved', kind: 'arrangement' })
+    assert.deepEqual((await service.list())[0]?.workType, { state: 'resolved', kind: 'arrangement' })
+  }
+})
+
 it('queries wait for create metadata saving and return the saved kind', async () => {
   const gate = new TaskCreationGate()
   const saving = deferred()

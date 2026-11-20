@@ -40,6 +40,7 @@ import type { ArrangementMediaLinkStorePort } from '../domain/arrangement-media'
 import type { ArrangementMediaAssetsPort } from '../domain/arrangement-media-runtime'
 import { videoSubmissionRejected, type VideoStorePort } from '../domain/video-media'
 import { mediaIssueMessage } from '../../src/shared/media-feedback'
+import { missingImageTargetFailure } from '../domain/media'
 import type { MediaStorePort } from '../domain/media'
 import type { AttachmentService } from './attachment-service'
 import type { DraftAttachmentCandidate, NodeInputRef } from '../../src/shared/attachment-contracts'
@@ -473,7 +474,8 @@ export class ArrangementService {
       const job = link.kind === 'image'
         ? await this.deps.mediaStore?.getJob(scope, taskId, link.jobId)
         : await this.deps.videoStore?.getJob({ ...scope, subscriptionId: link.subscriptionId }, taskId, link.jobId)
-      const generation = job && ('generationStatus' in job ? job.generationStatus : job.receipt?.status ??
+      const imageRejection = job && 'generationStatus' in job ? missingImageTargetFailure(job) : undefined
+      const generation = job && ('generationStatus' in job ? imageRejection ? 'FAILED' : job.generationStatus : job.receipt?.status ??
         (job.submission === 'NOT_SENT' ? undefined : videoSubmissionRejected(job) ? 'FAILED' : 'SUBMISSION_UNKNOWN'))
       const node = state.nodes.find(node => node.nodeId === link.nodeId)
       const delivery = node?.delivery
@@ -492,7 +494,7 @@ export class ArrangementService {
       // Public status only; keep the original provider response out of the execution snapshot.
       const issue = job && generation && (phase === 'blocked' || generation === 'PARTIAL_SUCCEEDED') ? mediaIssueMessage({
         generationStatus: generation, trackingStatus: job.trackingStatus, saveStatus: job.saveStatus,
-        failure: job.failure, submissionFailure: job.submissionFailure,
+        failure: imageRejection ?? job.failure, submissionFailure: job.submissionFailure,
         ...('generationStatus' in job ? { error: job.errorCode ?? null, upstreamError: job.upstreamError, outputErrors: job.outputErrors,
           canDownload: job.recovery?.canDownload, canResumeTracking: job.recovery?.canQuery } :
           { error: job.error, upstreamError: job.receipt?.upstreamError, outputErrors: job.receipt?.outputErrors,

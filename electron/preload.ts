@@ -20,6 +20,14 @@ export type { ElectronAPI } from '../src/shared/ipc';
 const runtimePlatform = process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux' ? process.platform : 'unknown';
 const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
 
+let windowExpanded = false;
+const windowExpansionListeners = new Set<(expanded: boolean) => void>();
+ipcRenderer.on(EVENT_CHANNELS.WINDOW_EXPANDED_CHANGED, (_event, expanded: unknown) => {
+  if (typeof expanded !== 'boolean' || expanded === windowExpanded) return;
+  windowExpanded = expanded;
+  for (const listener of windowExpansionListeners) listener(expanded);
+});
+
 type PasteTarget = { composerId: string; sessionId: string; target: AttachmentImportTarget; isEnabled?: () => boolean; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean };
 const pasteTargets = new Map<string, PasteTarget>();
 const pasteListeners = new Set<(event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void>();
@@ -163,6 +171,7 @@ const electronAPI = {
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_SELECT, input),
   savePersonalSkill: (input: import('../src/shared/skill-library').SaveSkillInput) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_SAVE, input),
   retryPersonalSkillUpload: (input: { capabilityId: string; idempotencyKey: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_RETRY, input),
+  deleteLocalSkillCopy: (input: { capabilityId: string; idempotencyKey: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_DELETE_LOCAL, input),
   beginAttachmentImport: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_BEGIN, input),
   selectAttachments: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_SELECT, input),
   listAttachments: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_LIST, input),
@@ -226,6 +235,11 @@ const electronAPI = {
   selectDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY),
   clearDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY),
   setWindowTheme: theme => ipcRenderer.invoke(INVOKE_CHANNELS.WINDOW_SET_THEME, theme),
+  onWindowExpandedChanged: callback => {
+    windowExpansionListeners.add(callback);
+    callback(windowExpanded);
+    return () => { windowExpansionListeners.delete(callback); };
+  },
   onPiEvent: callback => {
     const handler = (_event: IpcRendererEvent, data: TaskExecutionEvent) => callback(data);
     ipcRenderer.on(EVENT_CHANNELS.PI_EVENT, handler);
@@ -263,10 +277,13 @@ const electronAPI = {
   getArrangementContext: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_CONTEXT),
   getArrangementPlan: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_PLAN, taskId),
   getArrangementExecution: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_EXECUTION, taskId),
+  exportWorkDiagnostic: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_EXPORT_DIAGNOSTIC, input),
   previewArrangementDocument: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_PREVIEW_DOCUMENT, input),
+  saveWordCopy: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_SAVE_WORD_COPY, input),
   previewResultFile: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_PREVIEW, input),
   releaseResultFilePreview: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_RELEASE, input),
   revealResultFile: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_REVEAL, input),
+  runResultFileAction: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_ACTION, input),
   openWorkDeliverable: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE, input),
   confirmArrangementNodes: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES, input),
   listArrangementDrafts: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS),

@@ -146,6 +146,15 @@ export class TaskService {
     const conversation = await this.isConversation(taskId)
     if (conversation && (nodeId || inputReply)) throw new AppError('INVALID_ARGUMENT')
     if (inputReply && (!nodeId || conversation || !arrangementInputReplySchema.safeParse(inputReply).success)) throw new AppError('INVALID_ARGUMENT')
+    if (inputReply?.referenceMaterials) throw new AppError('INVALID_ARGUMENT')
+    const requestScope = this.scope()
+    if (inputReply?.referenceFiles) {
+      if (!this.deps.attachments) throw new AppError('SERVICE_UNAVAILABLE')
+      const { referenceFiles, ...reply } = inputReply
+      const referenceMaterials = await this.deps.attachments.referenceMaterials(requestScope, referenceFiles)
+      this.assertScope(requestScope)
+      inputReply = { ...reply, referenceMaterials }
+    }
     try {
       if (conversation && this.deps.conversationQueue) {
         await this.deps.conversationQueue.resume(taskId, { retryOriginal: true })
@@ -432,7 +441,7 @@ export class TaskService {
       this.diagnose(plans?.diagnose ? () => plans.diagnose!(scope, task.id) : undefined),
     ])
     const group = metadata.state === 'found' ? metadata.value.executionGroup : undefined
-    return { ...task, ...(group ? { executionGroup: { rootTaskId: group.rootTaskId, number: group.number } } : {}), workType: resolveWorkType(metadata, plan, task.prompt) }
+    return { ...task, ...(group ? { executionGroup: { rootTaskId: group.rootTaskId, number: group.number } } : {}), workType: resolveWorkType(metadata, plan, task.prompt, task.scheduledOrigin) }
   }
 
   private async requireTask(taskId: string): Promise<ClientTask> {

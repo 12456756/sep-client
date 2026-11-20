@@ -1,12 +1,15 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { ReadableStream } from 'node:stream/web'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { ResultFileService } from './result-file-service'
 import type { TaskOwnerScope } from '../data/scope-path'
-import type { OpenResultFile } from '../data/result-file-store'
+import type { OpenResultFile, ResultActionFile } from '../data/result-file-store'
 
 const input = { taskId: 'task', nodeId: 'node', deliverableId: 'file' }
-function fixture() {
+function fixture(actionFile: ResultActionFile = { path: '/workspace/final.mp4', name: 'final.mp4', version: '1' }) {
   let scope: TaskOwnerScope | null = { memberId: 'member', enterpriseId: 'enterprise' }
   let closes = 0
   let changed = false
@@ -18,7 +21,7 @@ function fixture() {
     stream(start, end, signal, check) { return new ReadableStream({ pull(controller) { signal.throwIfAborted(); check(); controller.enqueue(new TextEncoder().encode('0123456789'.slice(start, end + 1))); controller.close() } }, { highWaterMark: 0 }) },
   }
   const service = new ResultFileService({ scope: { currentScope: () => scope }, store: {
-    async open() { return file }, async revealPath() { return '/workspace/final.mp4' },
+    async open() { return file }, async revealPath() { return '/workspace/final.mp4' }, async actionFile() { return actionFile },
   }, reveal: path => { revealed.push(path) } })
   return { service, revealed, closes: () => closes, setScope: (next: typeof scope) => { scope = next }, change: () => { changed = true } }
 }
@@ -76,4 +79,38 @@ test('rejects untrusted paths and only reveals a path resolved by the store', as
   f.setScope(null)
   await assert.rejects(f.service.reveal(input))
   await assert.rejects(f.service.release({ url: 'file:///etc/passwd' }))
+})
+
+test('Save As preserves bytes and extension, does not overwrite, and rechecks scope after the picker', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'csep-result-service-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const source = join(root, 'file.pdf'), destination = join(root, 'saved')
+  await writeFile(source, 'original bytes')
+  const f = fixture({ path: source, name: 'file.pdf', version: '1' })
+  assert.equal(await f.service.saveAs(input, async name => { assert.equal(name, 'file.pdf'); return null }), false)
+  assert.equal(await f.service.saveAs(input, async () => destination), true)
+  assert.equal(await readFile(destination + '.pdf', 'utf8'), 'original bytes')
+  await assert.rejects(f.service.saveAs(input, async () => destination))
+  await assert.rejects(f.service.saveAs(input, async () => destination + '.exe'))
+  await assert.rejects(f.service.saveAs(input, async () => { f.setScope(null); return join(root, 'leak.pdf') }))
+  await assert.rejects(readFile(join(root, 'leak.pdf')), { code: 'ENOENT' })
+})
+
+test('opens an authorized, correctly typed attachment copy and never launches executable or shortcut paths', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'csep-result-service-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const source = join(root, 'source')
+  await writeFile(source, 'original bytes')
+  const f = fixture({ path: source, name: 'brief.pdf', version: '1', temporaryOpen: true })
+  t.after(() => f.service.clear())
+  await f.service.openDefault(input, async path => {
+    assert.notEqual(path, source)
+    assert.match(path, /\.pdf$/)
+    assert.equal(await readFile(path, 'utf8'), 'original bytes')
+    return ''
+  })
+  for (const name of ['run.exe', 'site.url', 'shortcut.lnk', 'script.ps1']) {
+    const unsafe = fixture({ path: join(root, name), name: 'brief.pdf', version: '1' })
+    await assert.rejects(unsafe.service.openDefault(input, async () => assert.fail('Shell must not be invoked')))
+  }
 })

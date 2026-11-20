@@ -50,6 +50,8 @@ import { runtimeFailureEvent } from '../errors/runtime-feedback'
 import { TaskService } from '../service/task-service'
 import { TaskCreationGate } from '../service/task-creation-gate'
 import { ArrangementService } from '../service/arrangement-service'
+import { ArrangementDiagnosticService } from '../service/arrangement-diagnostic-service'
+import { ArrangementDiagnosticStore } from '../data/arrangement-diagnostic-store'
 import { summarizeArrangementMediaTools } from '../domain/arrangement-media-availability'
 import { parseMediaCapabilities } from '../common/platform/media-contract'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
@@ -83,7 +85,7 @@ import { videoSubmissionRejected } from '../domain/video-media'
 import { isMediaSubmissionUnconfirmed, MEDIA_RETRY_READ_FAILED } from '../../src/shared/media-retry'
 import { ScopePath } from '../data/scope-path'
 import { DocumentPreviewService } from '../service/document-preview-service'
-import { DocumentPreviewStore } from '../data/document-preview-store'
+import { DocumentPreviewStore, writeWordCopy } from '../data/document-preview-store'
 import type { DocumentPreviewRuntime } from '../runtime/document-preview-runtime'
 import { AttachmentStore } from '../data/attachment-store'
 import { AttachmentService } from '../service/attachment-service'
@@ -133,6 +135,7 @@ class BackendRuntime {
   readonly conversations: ConversationService
   readonly conversationQueue: ConversationQueueService
   readonly arrangements: ArrangementService
+  readonly arrangementDiagnostics: ArrangementDiagnosticService
   readonly attachments: AttachmentService
   private readonly attachmentStore: AttachmentStore
   private readonly attachmentExtractionRuntime: LazyAsync<AttachmentExtractionRuntime>
@@ -293,6 +296,13 @@ class BackendRuntime {
     })
 
     const videoStore = config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED ? new VideoStore(userDataDir) : undefined
+    this.arrangementDiagnostics = new ArrangementDiagnosticService({
+      scope: this, clientVersion: app.getVersion(),
+      authorizationRevision: () => this.authSession.getSessionRevision(),
+      store: new ArrangementDiagnosticStore(userDataDir),
+      listImageJobs: (owner, taskId) => mediaStore.listJobs(owner, taskId),
+      listVideoJobs: videoStore ? (owner, taskId, subscriptionId) => videoStore.listJobs({ ...owner, subscriptionId }, taskId) : undefined,
+    })
     if (videoStore) {
       const store = videoStore
       const videoOptions: MockVideoHostOptions = {
@@ -361,6 +371,7 @@ class BackendRuntime {
       scope: this, token: () => this.authSession.getValidAccessToken(),
       subscriptions: () => this.employees.list(), versions: skillVersions,
       submissions: new SkillSubmissionStore(userDataDir),
+      attachments: this.attachments,
       platform: { skills: getEmployeeSkills, list: listSkillVersions, preview: previewSkill, create: createPersonalSkillVersion },
       authorizeRewriteModel: modelId => this.employees.authorizeModel(modelId),
       rewriter: { rewrite: async (input, signal) => {
@@ -434,7 +445,8 @@ class BackendRuntime {
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
     this.resultFiles = new ResultFileService({
       scope: this,
-      store: new ResultFileStore(userDataDir, previewFiles, taskId => this.tasks.get(taskId), mediaStore, videoStore),
+      store: new ResultFileStore(userDataDir, previewFiles, taskId => this.tasks.get(taskId), mediaStore, videoStore,
+        (...args) => this.attachments.resolveTaskFile(...args)),
       reveal: path => shell.showItemInFolder(path),
     })
     this.documentPreviews = new DocumentPreviewService({
@@ -448,6 +460,11 @@ class BackendRuntime {
       },
       read: (...args) => previewFiles.read(...args),
       readConversation: async (scope, taskId, fileId) => previewFiles.readConversation(scope, await this.tasks.get(taskId), fileId),
+      readAttachment: async (taskId, attachmentId, sha256) => {
+        await this.tasks.get(taskId)
+        return this.attachments.readTaskDocument(taskId, attachmentId, sha256)
+      },
+      writeCopy: writeWordCopy,
       render: (format, bytes, validate) => this.documentPreviewRuntime.get().then(runtime => { validate(); return runtime.render(format, bytes) }),
       stop: () => this.documentPreviewRuntime.peek()?.stop(),
     })
@@ -575,10 +592,11 @@ class BackendRuntime {
     const scheduledWorkSource = new ScheduledWorkSource({ workPlans: this.workPlans, storage: scheduledStorage,
       tasks: this.taskManager, metadata: this.taskMetadataStore, attachments: this.attachments })
     const validateScheduledEmployee = (subscriptionId: string, modelId: string) => this.employees.validateScheduled(subscriptionId, modelId)
-    const employeePlanner = async (input: import('../../src/shared/scheduled-tasks').ScheduleInput, employee: unknown, signal: AbortSignal) => {
+    const authorizeScheduledModel = (modelId: string, subscriptionId?: string) => this.employees.authorizeScheduledModel(modelId, subscriptionId)
+    const employeePlanner = async (input: import('../../src/shared/scheduled-tasks').ModelScheduledInput, employee: unknown, signal: AbortSignal, modelGrantId?: string) => {
       const { PiEmployeePlanner } = await import('../runtime/pi-employee-planner')
       return new PiEmployeePlanner({ gatewayUrl: config.SEP_GATEWAY_URL, workspaceRoot: join(userDataDir, 'scheduled-planning'),
-        getRefreshToken: () => this.authSession.getRefreshToken(), onAuthenticationRequired: () => this.invalidateAuthentication() }).plan(input, employee, signal)
+        getRefreshToken: () => this.authSession.getRefreshToken(), onAuthenticationRequired: () => this.invalidateAuthentication() }).plan(input, employee, signal, modelGrantId)
     }
     const arrangeScheduledWork = async (input: import('../../src/shared/scheduled-tasks').ScheduleInput, signal: AbortSignal): Promise<ArrangementWorkPlan | { status: 'blocked'; reasons: string[] }> => {
       const scope = this.currentScope()
@@ -605,7 +623,7 @@ class BackendRuntime {
       }
       const planner = await this.arrangementPlanner.get()
       const generated = await planner.plan({ planningId: randomUUID(), modelId: input.modelId, plannerModelId: input.modelId,
-        draft, employees: catalog, plannerEmployees: catalog, signal, onProgress: () => undefined })
+        draft, employees: catalog, plannerEmployees: catalog, signal, scheduledDelivery: true, onProgress: () => undefined })
       if (generated.unresolvedSteps?.length || !generated.nodes.length) return {
         status: 'blocked', reasons: generated.unresolvedSteps?.map(step => step.reason) ?? ['规划没有生成可执行工作步骤。'],
       }
@@ -621,19 +639,20 @@ class BackendRuntime {
     }
     this.scheduledTasks = new ScheduledTaskService({
       repository: scheduledStorage, scope: this, employee: validateScheduledEmployee, planner: employeePlanner, source: scheduledWorkSource,
-      arrangementPlanner: arrangeScheduledWork,
+      arrangementPlanner: arrangeScheduledWork, authorizeModel: authorizeScheduledModel,
       timeInterpreter: async (input, signal) => {
         const { PiEmployeePlanner } = await import('../runtime/pi-employee-planner')
         return new PiEmployeePlanner({ gatewayUrl: config.SEP_GATEWAY_URL, workspaceRoot: join(userDataDir, 'scheduled-planning'),
           getRefreshToken: () => this.authSession.getRefreshToken(), onAuthenticationRequired: () => this.invalidateAuthentication() }).interpretTime(input, signal)
       },
       runner: new ScheduledTaskRunner({ scope: this, tasks: this.taskManager, workPlans: this.workPlans, metadata: this.taskMetadataStore, source: scheduledWorkSource,
-        checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore, storage: scheduledStorage, authorize: validateScheduledEmployee,
+        checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore, storage: scheduledStorage, authorize: validateScheduledEmployee, authorizeModel: authorizeScheduledModel,
         execution: () => this.getTaskRuntime(),
         resourcesConflict: async (left, right) => left.toLowerCase() === right.toLowerCase() }),
     })
     this.scheduledCreations = new ScheduledCreationService({
       repository: scheduledStorage, scope: this, schedules: this.scheduledTasks,
+      attachments: this.attachments,
       catalog: async () => (await this.employees.refresh()).filter(employee => employee.status === 'ACTIVE').map(employee => ({
         subscriptionId: employee.subscriptionId, name: employee.name, position: employee.position ?? '',
         functionalCategory: employee.functionalCategory ?? '', description: employee.description ?? '', allowedModels: [...employee.allowedModels],
@@ -819,6 +838,7 @@ class BackendRuntime {
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
       authorizeEmployee: (subscriptionId, modelId) => this.employees.authorize(subscriptionId, modelId),
       authorizeScheduledEmployee: (subscriptionId, modelId) => this.employees.authorizeScheduled(subscriptionId, modelId),
+      authorizeScheduledModel: (modelId, subscriptionId) => this.employees.authorizeScheduledModel(modelId, subscriptionId),
       authorizeModel: (modelId, preferredSubscriptionId) => this.employees.authorizeModel(modelId, preferredSubscriptionId),
       findEmployeeReplacement: input => this.arrangements.findEmployeeReplacement(input),
       userDataDir: this.userDataDir,
@@ -837,6 +857,7 @@ class BackendRuntime {
       video: this.videoRuns,
       conversationVideo: this.conversationVideo,
       arrangementMedia: this.arrangementMedia,
+      arrangementDiagnostics: this.arrangementDiagnostics,
       conversationMedia: this.conversationMedia,
       attachmentInputs: this.attachments,
     })

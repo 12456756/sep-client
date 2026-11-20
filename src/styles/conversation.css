@@ -11,7 +11,7 @@
 .ent-conversation-results { width: 100%; margin: 8px 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
 .ent-conversation-results .result-file-card { border-color: var(--ent-line); background: var(--ent-panel); }
 .ent-conversation-results .result-file-preview { background: var(--ent-panel-subtle); }
-.ent-conversation-results .result-file-name { color: var(--ent-ink); font-size: var(--ent-fs-body); }
+.ent-conversation-results .result-file-name { color: var(--ent-ink); font-size: var(--ent-fs-ui); }
 .ent-conversation-results .result-file-footer { gap: 8px; padding: 12px; color: var(--ent-ink-2); }
 .ent-conversation-results .result-file-actions { gap: 6px; }
 .ent-conversation-results .result-file-placeholder { color: var(--ent-ink-2); }
@@ -21,7 +21,7 @@
 .ent-message-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); }
 .ent-message-copy .ent-btn { min-height: 26px; padding: 3px 8px; font-size: var(--ent-fs-note); }
 .ent-chat-details, .ent-chat-files { margin-top: 14px; }
-.ent-chat-details > summary { cursor: pointer; font-size: var(--ent-fs-body); font-weight: 600; }
+.ent-chat-details > summary { cursor: pointer; font-size: var(--ent-fs-ui); font-weight: 600; }
 .ent-chat-details > .ent-panel { margin-top: 12px; }
 .ent-chat-files .ent-wk-files { max-height: 208px; overflow-y: auto; }
 .ent-conversation-body .ent-say { min-width: 0; }

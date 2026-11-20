@@ -544,6 +544,8 @@ Authorization: Bearer <accessToken>
 
 ### 9.3 员工状态 WebSocket
 
+当前桌面客户端通过 HTTP 获取员工状态，尚未接入本节的 WebSocket。通知 WebSocket 的错误帧和关闭诊断不替代员工状态 WebSocket 的验收；交接用例 C21（员工状态错误帧后关闭 1011）仍未覆盖。
+
 地址：`wss://sep-dev.longdaoSEP.cn/ws/employee-status`
 
 连接认证后服务端立即推送，并约每 3 秒广播：

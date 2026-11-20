@@ -70,6 +70,9 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       return
     }
     let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
+    const officeCommand = input.success && request.toolName === 'mcp__officecli__officecli' ? input.data.command : null
+    if (Array.isArray(officeCommand) && officeCommand[0] === 'import-doc') message = '允许用本机 Microsoft Word 打开这个旧版 Word 文件并创建编辑副本？仅在信任文件来源时允许。原文件不会被覆盖。'
+    if (Array.isArray(officeCommand) && officeCommand[0] === 'export-doc') message = '允许用本机 Microsoft Word 生成一个新的 Word 97–2003 文件？原文件不会被覆盖。'
     if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。员工将在原页面继续操作。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
     if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
     if (resubmission) message = isVideo

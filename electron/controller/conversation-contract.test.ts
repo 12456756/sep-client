@@ -8,7 +8,9 @@ import { randomUUID } from 'node:crypto'
 import { attachmentImportLimits, attachmentRefSchema } from '../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../src/shared/knowledge-selection'
 import { conversationQueueInputSchema } from '../../src/shared/conversation-queue'
-import { INVOKE_CHANNELS } from './channels'
+import { FEEDBACK_OPERATION_BY_CHANNEL, INVOKE_CHANNELS } from './channels'
+import { AppError } from '../errors/app-error'
+import { toEnvelope } from '../errors/error-mapper'
 import type { Route } from './router'
 import type { RequestContext } from './request-context'
 
@@ -62,6 +64,14 @@ test('conversation queue accepts a validated priority action and rejects unrelat
   })
   assert.throws(() => queueRoute.schema.parse({ taskId: 'task', action: 'prioritize', entryId: '../outside' }))
   assert.throws(() => queueRoute.schema.parse({ taskId: 'task', action: 'prioritize', unexpected: true }))
+})
+
+test('queue read errors are not reported as message send failures', () => {
+  const error = new AppError('INVALID_ARGUMENT')
+  const queueError = toEnvelope(error, { feedbackOperation: FEEDBACK_OPERATION_BY_CHANNEL[queueRoute.channel] })
+  const sendError = toEnvelope(error, { feedbackOperation: FEEDBACK_OPERATION_BY_CHANNEL[route.channel] })
+  assert.match(queueError.message, /^对话队列读取失败/)
+  assert.match(sendError.message, /^消息发送失败/)
 })
 
 test('conversation skip requires a snapshot token and does not accept a replay or replacement prompt', async () => {

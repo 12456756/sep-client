@@ -1,4 +1,7 @@
 import { z } from 'zod'
+import { dialog } from 'electron'
+import { workDiagnosticRequest } from '../../domain/arrangement-diagnostic'
+import { AppError } from '../../errors/app-error'
 import { arrangementPreflightFeedbackSchema } from '../../../src/shared/arrangement-feedback'
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
@@ -105,6 +108,16 @@ const requestEmployeeAccessInput = z.object({ draftId, expectedRevision: revisio
 const getEmployeeAccessRequestInput = z.object({ draftId, requestId: z.string().min(1) })
 
 export const arrangementRoutes = [
+  route(INVOKE_CHANNELS.WORK_EXPORT_DIAGNOSTIC, workDiagnosticRequest, async (ctx, input) => {
+    const exported = await ctx.arrangementDiagnostics.export(input, async name => {
+      const window = ctx.window()
+      if (!window) throw new AppError('INTERNAL_ERROR')
+      const selected = await dialog.showSaveDialog(window, { title: '导出本次诊断', defaultPath: name,
+        filters: [{ name: '诊断文件', extensions: ['json'] }] })
+      return selected.canceled ? null : selected.filePath ?? null
+    })
+    return { success: true, cancelled: !exported }
+  }, { trustedMainFrame: true, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.ARRANGE_REQUEST_REPLACEMENT_ACCESS, z.object({ taskId, nodeId: z.string().min(1), employeeId: z.string().min(1) }).strict(), async (ctx, input) => ({
     success: true, execution: await ctx.arrangements.requestReplacementEmployeeAccess(input.taskId, input.nodeId, input.employeeId),
   })),

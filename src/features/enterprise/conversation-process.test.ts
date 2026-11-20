@@ -9,13 +9,17 @@ import * as icons from 'lucide-react'
 import * as ts from 'typescript'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { ConversationProcessView } from '../../components/enterprise/ConversationProcess'
+import { DiagnosticExport } from '../../components/enterprise/DiagnosticExport'
 import * as transcript from './conversation-transcript'
 import { buildConversationTranscript } from './conversation-transcript'
 import type { WorkItem, WorkMessage } from './types'
 import type { TaskExecutionEvent } from '../../shared/types'
 import * as conversationResults from './conversation-results'
 import { ResultFileCard } from '../../components/workspace/ResultFileCard'
+import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton'
+import { SaveWordCopyButton } from '../../components/workspace/SaveWordCopyButton'
 import { FeedbackProvider } from '../../components/feedback/FeedbackProvider'
+import * as fileMenuActions from '../../components/workspace/file-menu-actions'
 
 const filename = fileURLToPath(new URL('../../components/enterprise/ConversationMessages.tsx', import.meta.url))
 const dependencies: Record<string, unknown> = {
@@ -23,11 +27,16 @@ const dependencies: Record<string, unknown> = {
   '../../features/enterprise/use-arrangement-transcript': {},
   '../../features/enterprise/conversation-transcript': transcript,
   './ConversationProcess': { ConversationProcessView },
+  './DiagnosticExport': { DiagnosticExport },
   './EmployeeFace': { EmployeeFace: () => null },
   './MessageContent': { MessageContent: ({ content }: { content: string }) => React.createElement('div', null, content) },
+  '../ContentCopyMenu': { useContentCopy: () => ({ showMenu() {}, menu: null }), imageCopyHandlers: () => ({}) },
   '../../features/enterprise/conversation-media': {},
   '../../features/enterprise/conversation-results': conversationResults,
   '../workspace/ResultFileCard': { ResultFileCard },
+  '../workspace/DocumentPreviewButton': { DocumentPreviewButton },
+  '../workspace/SaveWordCopyButton': { SaveWordCopyButton },
+  '../workspace/file-menu-actions': fileMenuActions,
   '../workspace/result-file-card.css': {},
 }
 const componentModule = { exports: {} }
@@ -63,7 +72,7 @@ test('an unfinished historical tool is marked interrupted instead of running for
 })
 
 function renderMessages(messages: WorkMessage[], preparing: boolean, activeRunId: string | null = null) {
-  return renderToStaticMarkup(React.createElement(ConversationMessagesView, {
+  return renderWithFeedback(React.createElement(ConversationMessagesView, {
     work: { id: 'task', currentEmployeeId: 'employee', currentEmployeeName: '电商分析师', createdAt: 1, updatedAt: 1,
       messages, activeRunId, isActive: !!activeRunId } as WorkItem,
     employees: [], preparing, loading: false, error: null, onReload() {},
@@ -72,6 +81,16 @@ function renderMessages(messages: WorkMessage[], preparing: boolean, activeRunId
       { taskId: 'task', runId: 'run-b', subscriptionId: 'employee', sequence: 1, type: 'thinking_delta', occurredAt: 2, data: { text: '第二轮思考' } },
     ]),
   }))
+}
+
+function renderWithFeedback(element: React.ReactElement) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'React')
+  Object.defineProperty(globalThis, 'React', { configurable: true, value: React })
+  try { return renderToStaticMarkup(React.createElement(FeedbackProvider, null, element)) }
+  finally {
+    if (previous) Object.defineProperty(globalThis, 'React', previous)
+    else Reflect.deleteProperty(globalThis, 'React')
+  }
 }
 
 test('renders the employee immediately after the request while no execution data is available', () => {
@@ -95,6 +114,26 @@ test('places folded processes inside their own employee replies across consecuti
   assert.doesNotMatch(html, /<details[^>]+open/)
 })
 
+test('offers diagnostic export only on the failed reply with saved evidence', () => {
+  const messages: WorkMessage[] = ['old', 'failed', 'retry'].map((runId, index) => ({
+    id: `user-${runId}`, role: 'user', content: 'Question', createdAt: index + 1, runId,
+  }))
+  const events: TaskExecutionEvent[] = messages.map(({ runId }, index) => ({ taskId: 'task', runId: runId!, subscriptionId: 'employee',
+    sequence: 1, occurredAt: index + 1, type: runId === 'retry' ? 'run_completed' : 'run_failed',
+    data: { diagnosticAvailable: runId !== 'old', error: 'PRIVATE_FAILURE', text: 'PRIVATE_DETAIL' } }))
+  const runs = buildConversationTranscript(events)
+  assert.deepEqual(runs, [{ runId: 'failed', entries: [], diagnosticAvailable: true }])
+  const html = renderWithFeedback(React.createElement(ConversationMessagesView, {
+    work: { id: 'task', currentEmployeeName: '员工', messages } as WorkItem,
+    employees: [], preparing: false, runs, loading: false, error: null, onReload() {},
+    onExportDiagnostic: async () => ({ success: true }),
+  }))
+  assert.equal((html.match(/导出本次诊断/g) ?? []).length, 1)
+  assert.ok(html.indexOf('data-run-id="failed"') < html.indexOf('导出本次诊断'))
+  assert.ok(html.indexOf('导出本次诊断') < html.indexOf('data-run-id="retry"'))
+  assert.doesNotMatch(html, /PRIVATE_/)
+})
+
 test('keeps image preview space and dimensions visible while preserving ordinary file attachments', () => {
   const base = { byteLength: 2048, sha256: 'a'.repeat(64), importSource: 'picker' as const, extractionStatus: 'not-required' as const, warnings: [] }
   const html = renderMessages([{ id: 'user-images', role: 'user', content: '看一下图片', createdAt: 1, attachments: [
@@ -108,22 +147,23 @@ test('keeps image preview space and dimensions visible while preserving ordinary
   assert.match(html, /2 KB/)
 })
 
+test('offers preview and download for an uploaded legacy Word attachment', () => {
+  const html = renderMessages([{ id: 'user-doc', role: 'user', content: '请修改正文', createdAt: 1, attachments: [{
+    attachmentId: 'doc', displayName: '旧版报告.doc', mediaType: 'application/msword', byteLength: 2048,
+    sha256: 'a'.repeat(64), importSource: 'picker', extractionStatus: 'not-required', warnings: [],
+  }] }], false)
+  assert.match(html, /aria-label="预览文档：旧版报告\.doc"/)
+  assert.match(html, /aria-label="另存为：旧版报告\.doc"/)
+})
+
 test('places generated document and media cards after their reply text and before its timestamp', () => {
   const work = { id: 'task', currentEmployeeId: 'employee', currentEmployeeName: '电商分析师', createdAt: 1, updatedAt: 2,
     messages: [{ id: 'reply', role: 'employee', content: '文件已保存：销售总结.md', createdAt: 2, runId: 'run' }],
     deliverables: [{ id: 'task-file-0', name: '销售总结.md', path: '成果/task/销售总结.md', note: '', format: 'md' }] } as WorkItem
-  const previousReact = Reflect.get(globalThis, 'React')
-  Object.defineProperty(globalThis, 'React', { configurable: true, value: React })
-  let html: string
-  try {
-    html = renderToStaticMarkup(React.createElement(FeedbackProvider, null, React.createElement(ConversationMessagesView, {
-      work, employees: [], preparing: false, runs: [], loading: false, error: null, onReload() {},
-      media: [{ runId: 'run', file: { id: 'image', name: '产品图.png', format: 'png', path: '', note: '', sourceArtifact: { kind: 'image', artifactId: 'image', sha256: '' } }, request: { taskId: 'task', assetId: 'image' } }],
-    })))
-  } finally {
-    if (previousReact === undefined) Reflect.deleteProperty(globalThis, 'React')
-    else Object.defineProperty(globalThis, 'React', { configurable: true, value: previousReact })
-  }
+  const html = renderWithFeedback(React.createElement(ConversationMessagesView, {
+    work, employees: [], preparing: false, runs: [], loading: false, error: null, onReload() {},
+    media: [{ runId: 'run', file: { id: 'image', name: '产品图.png', format: 'png', path: '', note: '', sourceArtifact: { kind: 'image', artifactId: 'image', sha256: '' } }, request: { taskId: 'task', assetId: 'image' } }],
+  }))
   assert.ok(html.indexOf('文件已保存') < html.indexOf('ent-conversation-results'))
   assert.ok(html.indexOf('ent-conversation-results') < html.indexOf('ent-message-time'))
   assert.match(html, /预览文档：销售总结.md/)

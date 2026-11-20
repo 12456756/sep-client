@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { referenceAttachmentSelectionSchema, referenceMaterialsSchema } from './attachment-contracts'
 
 export const arrangementMediaSpecRevisionsSchema = z.record(z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), z.number().int().positive().safe())
   .refine(value => Object.keys(value).length <= 64)
@@ -6,6 +7,8 @@ export const arrangementMediaSpecRevisionsSchema = z.record(z.string().regex(/^[
 export const arrangementInputReplySchema = z.object({
   requestId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   text: z.string().trim().min(1).max(4_000),
+  referenceFiles: referenceAttachmentSelectionSchema.optional(),
+  referenceMaterials: referenceMaterialsSchema.optional(),
 }).strict()
 
 export const arrangementInputRequestSchema = z.object({

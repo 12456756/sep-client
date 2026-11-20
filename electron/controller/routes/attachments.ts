@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { dialog } from 'electron'
 import { z } from 'zod'
-import { attachmentImportLimits, attachmentImportTargetSchema } from '../../../src/shared/attachment-contracts'
+import { attachmentImportLimits, attachmentImportTargetSchema, attachmentPreviewRequestSchema } from '../../../src/shared/attachment-contracts'
 import { AppError } from '../../errors/app-error'
 import { INVOKE_CHANNELS } from '../channels'
 import { route } from '../router'
@@ -9,7 +9,6 @@ import { route } from '../router'
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const sessionInput = z.object({ sessionId: id }).strict()
 const operationInput = sessionInput.extend({ operationId: id })
-const previewInput = z.object({ taskId: id, attachmentId: id, sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
 const trusted = { trustedMainFrame: true }
 
 export const attachmentRoutes = [
@@ -26,14 +25,14 @@ export const attachmentRoutes = [
     return { success: true, data: await ctx.attachments.beginSession(input.target) }
   }, trusted),
   route(INVOKE_CHANNELS.ATTACHMENT_LIST, sessionInput, async (ctx, input) => ({ success: true, data: await ctx.attachments.listSession(input.sessionId) }), trusted),
-  route(INVOKE_CHANNELS.ATTACHMENT_SELECT, sessionInput, async (ctx, input) => {
+  route(INVOKE_CHANNELS.ATTACHMENT_SELECT, sessionInput.extend({ single: z.boolean().optional() }), async (ctx, input) => {
     const session = await ctx.attachments.listSession(input.sessionId)
     if (!session || session.status !== 'open') throw new AppError('INVALID_STATE')
     const window = ctx.window()
     if (!window) throw new AppError('INTERNAL_ERROR')
-    const selected = await dialog.showOpenDialog(window, { title: '添加附件', properties: ['openFile', 'multiSelections'] })
+    const selected = await dialog.showOpenDialog(window, { title: input.single ? '引用文件' : '添加附件', properties: input.single ? ['openFile'] : ['openFile', 'multiSelections'] })
     if (selected.canceled) return { success: true, cancelled: true, data: session }
-    if (selected.filePaths.length > attachmentImportLimits.maxImportFiles) throw new AppError('INVALID_ARGUMENT', { message: '每次最多导入 10 个附件。' })
+    if (selected.filePaths.length > (input.single ? 1 : attachmentImportLimits.maxImportFiles)) throw new AppError('INVALID_ARGUMENT', { message: input.single ? '请选择一个文件。' : '每次最多导入 10 个附件。' })
     await ctx.attachments.importFiles(input.sessionId, randomUUID(), selected.filePaths, 'picker')
     return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
   }, trusted),
@@ -48,7 +47,10 @@ export const attachmentRoutes = [
     await ctx.attachments.importImageForSession(input.sessionId, input.operationId, input.bytes, input.name, input.type)
     return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
   }, trusted),
-  route(INVOKE_CHANNELS.ATTACHMENT_PREVIEW, previewInput, async (ctx, input) => {
+  route(INVOKE_CHANNELS.ATTACHMENT_PREVIEW, attachmentPreviewRequestSchema, async (ctx, input) => {
+    if ('sessionId' in input) {
+      return { success: true, data: await ctx.attachments.previewDraftAttachment(input.sessionId, input.attachmentId, input.sha256) }
+    }
     await ctx.tasks.get(input.taskId)
     return { success: true, data: await ctx.attachments.previewTaskAttachment(input.taskId, input.attachmentId, input.sha256) }
   }, trusted),

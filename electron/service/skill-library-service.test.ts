@@ -1,10 +1,11 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SkillLibraryService } from './skill-library-service'
-import { SkillVersionStore } from '../data/skill-version-store'
+import { localSkillVersionId, SkillVersionStore } from '../data/skill-version-store'
+import { ScopePath } from '../data/scope-path'
 import { SkillSubmissionStore } from '../data/skill-submission-store'
 import { AuthApiError, SkillSubmissionResponseError, type SkillVersion } from '../common/platform/platform-api'
 import { AppError } from '../errors/app-error'
@@ -59,15 +60,80 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW', publicVersion
         uploads.push(key)
         if (failUpload) throw new Error('offline')
         if (uploadError) throw uploadError
-        personal = { ...published, id: 'personal-v1', scope: 'PERSONAL', ownerId: 'user', status: uploadStatus, content: request.content }
+        personal = { ...published, id: 'personal-v1', scope: 'PERSONAL', ownerId: 'user', status: uploadStatus, content: request.content, changeSummary: request.changeSummary }
         return personal
       },
     },
   })
-  return { service, versions, submissions, uploads, queries, setConfirmation: (query: (signal?: AbortSignal) => Promise<SkillVersion[]>) => { confirmation = query }, setVerificationError: (error: unknown) => { verificationError = error }, hideSubmission: () => { hideSubmission = true }, setUploadError: (error: unknown) => { uploadError = error }, switchUser: () => { currentScope = { ...scope, memberId: "other" } }, offline: () => { offline = true }, fail: (value: boolean) => { failUpload = value }, reject: () => { personal = { ...personal!, status: 'ENTERPRISE_REJECTED' } }, approve: () => { personal = { ...personal!, status: 'ENTERPRISE_APPROVED' } } }
+  return { root, service, versions, submissions, uploads, queries, setConfirmation: (query: (signal?: AbortSignal) => Promise<SkillVersion[]>) => { confirmation = query }, setVerificationError: (error: unknown) => { verificationError = error }, hideSubmission: () => { hideSubmission = true }, setUploadError: (error: unknown) => { uploadError = error }, switchUser: () => { currentScope = { ...scope, memberId: "other" } }, offline: () => { offline = true }, online: () => { offline = false }, fail: (value: boolean) => { failUpload = value }, reject: () => { personal = { ...personal!, status: 'ENTERPRISE_REJECTED' } }, approve: () => { personal = { ...personal!, status: 'ENTERPRISE_APPROVED' } } }
 }
 
 describe('SkillLibraryService', () => {
+  it('removes only the local copy offline, even before the catalog sees the receipt', async () => {
+    const f = await fixture()
+    const idempotencyKey = 'delete-uploaded-key'
+    const request = { capabilityId: 'cap', parentVersionId: 'v1', content, changeSummary: 'My version' }
+    await f.service.save({ request, idempotencyKey })
+    const copyId = localSkillVersionId(idempotencyKey)
+    await f.service.select({ capabilityId: 'cap', versionId: idempotencyKey })
+    const other = await f.versions.savePlatform(scope, { subscriptionId: 'sub-b', employeeId: 'emp-b', capabilityId: 'cap',
+      version: 'Cloud copy', content, baseSkillVersionId: 'personal-v1', sourceScope: 'PERSONAL' })
+    await f.versions.select(scope, 'sub-b', 'cap', other.versionId)
+    const inactive = await f.versions.save(scope, { subscriptionId: 'sub-old', employeeId: 'emp-old', capabilityId: 'cap',
+      version: 'My version', content, baseSkillVersionId: 'v1', localSubmissionId: idempotencyKey, versionId: copyId })
+    await f.versions.select(scope, 'sub-old', 'cap', inactive.versionId)
+    f.offline()
+    const updated = await f.service.deleteLocalCopy({ capabilityId: 'cap', idempotencyKey })
+    const cloud = updated.versions.find(version => version.id === 'personal-v1')
+    assert.equal(cloud?.status, 'PENDING_ENTERPRISE_REVIEW')
+    assert.equal(cloud?.changeSummary, 'My version')
+    assert.equal(cloud?.content, undefined)
+    assert.deepEqual(updated.localVersions, [])
+    assert.deepEqual(updated.bindings.map(binding => binding.selectedVersionId), ['v1', 'personal-v1'])
+    assert.deepEqual(await f.submissions.list(scope, 'cap'), [])
+    const outbox = join(new ScopePath(f.root).ownerRoot(scope), 'skill-submissions.json')
+    assert.deepEqual(JSON.parse(await readFile(outbox + '.bak', 'utf8')), [])
+    for (const subscriptionId of ['sub-a', 'sub-b', 'sub-old']) {
+      assert.equal(await f.versions.load(scope, subscriptionId, 'cap', copyId), null)
+      const selectionBackup = join(f.root, 'versions', scope.enterpriseId, scope.memberId, subscriptionId, 'selection.json.bak')
+      assert.ok(!(await readFile(selectionBackup, 'utf8')).includes(copyId))
+    }
+    assert.equal(await f.versions.selected(scope, 'sub-a', 'cap'), null)
+    assert.equal(await f.versions.selected(scope, 'sub-b', 'cap'), other.versionId)
+    assert.equal(await f.versions.selected(scope, 'sub-old', 'cap'), null)
+    await assert.rejects(f.service.deleteLocalCopy({ capabilityId: 'cap', idempotencyKey: 'personal-v1' }), { code: 'NOT_FOUND' })
+    f.online()
+    f.approve()
+    assert.equal((await f.service.list())[0].versions.find(version => version.id === 'personal-v1')?.status, 'ENTERPRISE_APPROVED')
+  })
+
+  it('cannot delete another member’s local copy', async () => {
+    const f = await fixture()
+    const idempotencyKey = 'delete-local-key-1'
+    f.fail(true)
+    await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey })
+    f.switchUser()
+    f.offline()
+    await assert.rejects(f.service.deleteLocalCopy({ capabilityId: 'cap', idempotencyKey }), { code: 'NOT_FOUND' })
+    assert.equal((await f.submissions.list(scope, 'cap'))[0]?.idempotencyKey, idempotencyKey)
+    assert.equal(await f.versions.selected(scope, 'sub-a', 'cap'), localSkillVersionId(idempotencyKey))
+  })
+
+  it('drops only the targeted local outbox record and disables retry offline', async () => {
+    const f = await fixture()
+    const idempotencyKey = 'delete-local-key-2'
+    const keep = 'keep-local-key-02'
+    const request = { capabilityId: 'cap', parentVersionId: 'v1', content }
+    f.fail(true)
+    await f.service.save({ request: { ...request, changeSummary: 'Keep' }, idempotencyKey: keep })
+    await f.service.save({ request: { ...request, changeSummary: 'Delete' }, idempotencyKey })
+    f.offline()
+    const updated = await f.service.deleteLocalCopy({ capabilityId: 'cap', idempotencyKey })
+    assert.deepEqual(updated.localVersions.map(record => record.idempotencyKey), [keep])
+    assert.ok(updated.bindings.every(binding => binding.selectedVersionId === 'v1'))
+    assert.deepEqual(updated.versions.map(version => version.id), ['v1'])
+    await assert.rejects(f.service.retry({ capabilityId: 'cap', idempotencyKey }), { code: 'NOT_FOUND' })
+  })
   it('preserves specific business failures through the IPC error mapping', async () => {
     const f = await fixture()
     for (const [work, code, message] of [

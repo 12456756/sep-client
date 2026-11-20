@@ -229,6 +229,16 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
     }));
     return result.data;
   }, [identity, captureOperationFailure]);
+  const deleteLocalSkillCopy = useCallback(async (capabilityId: string, idempotencyKey: string): Promise<SkillLibraryItem> => {
+    const result = await window.electronAPI.deleteLocalSkillCopy({ capabilityId, idempotencyKey });
+    if (!identity.active) throw new Error('登录身份已变化，请重新打开技能。');
+    if (!result.success || !result.data) throw new Error(result.error?.message || '删除本地副本失败，请重试。');
+    const updated = result.data;
+    generation.current += 1;
+    setLoading(false);
+    setSkills(current => current.map(item => item.capability.id === capabilityId ? updated : item));
+    return updated;
+  }, [identity]);
   return {
     skills: stateScopeKey === scopeKey ? skills : [],
     skillsLoading: stateScopeKey === scopeKey ? skillsLoading : enabled,
@@ -244,6 +254,7 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
     selectSkillVersion,
     saveSkillSource,
     retrySkillUpload,
+    deleteLocalSkillCopy,
   };
 }
 export type SkillLibraryWorkspace = ReturnType<typeof useSkillLibrary>;

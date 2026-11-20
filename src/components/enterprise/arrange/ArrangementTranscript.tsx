@@ -4,8 +4,10 @@ import type { SiliconEmployee, WorkItem } from '../../../features/enterprise/typ
 import { buildArrangementTranscript, type NodeTranscript, type TranscriptEntry } from '../../../features/enterprise/arrangement-transcript'
 import { useArrangementTranscript } from '../../../features/enterprise/use-arrangement-transcript'
 import { EmployeeFace } from '../EmployeeFace'
+import { DiagnosticExport } from '../DiagnosticExport'
 import { MessageContent } from '../MessageContent'
 import { StepStateChip } from '../atoms'
+import type { ElectronAPI } from '../../../shared/ipc'
 
 interface Props {
   work: WorkItem
@@ -14,15 +16,17 @@ interface Props {
   busy: boolean
   onStop: (id: string, reason: string) => Promise<boolean>
   onResults: () => void
+  onExportDiagnostic?: ElectronAPI['exportWorkDiagnostic']
 }
 
 export function ArrangementTranscript(props: Props) {
   const transcript = useArrangementTranscript(props.work.id, props.scopeKey)
   const nodes = useMemo(() => buildArrangementTranscript(props.work.steps, transcript.events), [props.work.steps, transcript.events])
-  return <ArrangementTranscriptView {...props} nodes={nodes} loading={transcript.loading} error={transcript.error} onReload={transcript.reload} />
+  return <ArrangementTranscriptView key={JSON.stringify([props.scopeKey, props.work.id])} {...props} nodes={nodes}
+    onExportDiagnostic={window.electronAPI?.exportWorkDiagnostic} loading={transcript.loading} error={transcript.error} onReload={transcript.reload} />
 }
 
-export function ArrangementTranscriptView({ work, employees, nodes, loading = false, error = null, onReload, onStop, onResults, busy }: Omit<Props, 'scopeKey'> & {
+export function ArrangementTranscriptView({ work, employees, nodes, loading = false, error = null, onReload, onStop, onResults, onExportDiagnostic, busy }: Omit<Props, 'scopeKey'> & {
   nodes: NodeTranscript[]; loading?: boolean; error?: string | null; onReload?: () => void
 }) {
   const body = useRef<HTMLDivElement>(null)
@@ -57,7 +61,7 @@ export function ArrangementTranscriptView({ work, employees, nodes, loading = fa
         {error ? <div className="ent-transcript-notice" role="alert">{error}<button type="button" className="ent-btn sm" onClick={onReload}><RotateCcw size={13} aria-hidden />重新读取</button></div> : null}
         {loading ? <p className="ent-hint" role="status">正在读取执行过程…</p> : null}
         {nodes.map(node => <NodeSection key={node.step.id} node={node} employee={employees.find(employee => employee.id === node.step.employeeId)}
-          files={work.deliverables.filter(file => file.nodeId === node.step.id)} onResults={onResults} />)}
+          taskId={work.id} files={work.deliverables.filter(file => file.nodeId === node.step.id)} onResults={onResults} onExportDiagnostic={onExportDiagnostic} />)}
         {!nodes.length && !loading ? <p className="ent-hint">尚未生成执行节点。</p> : null}
       </div>
     </div>
@@ -68,8 +72,9 @@ export function ArrangementTranscriptView({ work, employees, nodes, loading = fa
   </section>
 }
 
-function NodeSection({ node, employee, files, onResults }: {
+function NodeSection({ node, employee, files, onResults, taskId, onExportDiagnostic }: {
   node: NodeTranscript; employee?: SiliconEmployee; files: WorkItem['deliverables']; onResults: () => void
+  taskId: string; onExportDiagnostic?: ElectronAPI['exportWorkDiagnostic']
 }) {
   const { step, entries } = node
   const active = step.state === 'running' || step.state === 'waiting-user'
@@ -91,6 +96,8 @@ function NodeSection({ node, employee, files, onResults }: {
       <StepStateChip value={step.state} />
     </button>
     {!open && step.state === 'done' ? <p className="ent-transcript-collapsed">我已经完成工作。{files.length ? ` · ${files.length} 个产物` : ''}</p> : null}
+    {step.state === 'failed' && node.diagnosticRunId && onExportDiagnostic ? <DiagnosticExport key={node.diagnosticRunId}
+      input={{ taskId, nodeId: step.id, nodeRunId: node.diagnosticRunId }} onExport={onExportDiagnostic} /> : null}
     <div id={`transcript-node-${step.id}`} ref={body} className="ent-transcript-node-body" hidden={!open} tabIndex={open ? 0 : -1}
       role="region" aria-label={`${step.title}的消息`} onWheel={() => { follow.current = false }} onScroll={() => {
         const el = body.current

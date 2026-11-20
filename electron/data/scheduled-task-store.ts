@@ -13,7 +13,7 @@ import { sourceFingerprint, validateScheduledSource } from '../domain/scheduled-
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const time = z.number().int().nonnegative()
-const issue = z.object({ code: z.string(), message: z.string(), action: z.enum(['retry', 'auth', 'blocked', 'review']), retryAfterMs: z.number().positive().optional() }).strict()
+const issue = z.object({ code: z.string(), message: z.string(), action: z.enum(['retry', 'auth', 'blocked', 'review', 'fail']), retryAfterMs: z.number().positive().optional() }).strict()
 const definition = z.object({
   id, revision: z.number().int().positive(), input: scheduleInputSchema, plan: scheduledPlanSchema.nullable(),
   planInputKey: z.string().nullable(), enabled: z.boolean(), deleted: z.boolean(), nextRunAt: time.nullable(), pausedAt: time.nullable().optional(), createdAt: time, updatedAt: time,

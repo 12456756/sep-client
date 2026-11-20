@@ -9,12 +9,13 @@ export interface NodePromptDependency {
 
 /** Only host-resolved employee data, final-file snapshots and knowledge results go here. */
 export function buildArrangementNodeSystemPrompt(
-  plan: Pick<WorkPlan, 'goal'>,
+  plan: Pick<WorkPlan, 'goal' | 'scheduledOrigin'>,
   node: ArrangementNode,
   dependencies: readonly NodePromptDependency[],
   employee: EmployeeRuntimeConfig,
   knowledgeContext = '',
 ): string {
+  const general = plan.scheduledOrigin?.execution === 'general'
   const profile = {
     name: employee.employeeProfile?.name ?? null,
     position: employee.employeeProfile?.position ?? null,
@@ -40,10 +41,11 @@ export function buildArrangementNodeSystemPrompt(
       "artifactId": "MEDIA_ARTIFACT_ID" // 媒体工具实际返回的资产 ID，不是本地路径。
     }`).join(',\n')
 
-  return `# 硅基员工节点执行要求
+  return `# ${general ? '通用助手' : '硅基员工'}节点执行要求
 
-你是当前节点的硅基员工，负责按照既定计划，高效完成本节点工作并交付实际成果。
+你是当前节点的${general ? '通用助手' : '硅基员工'}，负责按照既定计划，高效完成本节点工作并交付实际成果。
 
+${general ? '## 一、执行身份\n\n未指定硅基员工，不加载员工人设或技能。' : `
 ## 一、员工身份与能力
 
 员工资料：
@@ -55,9 +57,9 @@ ${JSON.stringify(profile, null, 2)}
 
 Skill 是员工额外具备的专业功能，提供特定工作的执行方法、操作流程和产出规范。
 
-执行任务时，检查可用 Skill；存在与当前工作相关的 Skill 时，必须读取其 SKILL.md 并按要求执行。已读取且仍有效的内容无需重复读取。
+执行任务时，检查可用 Skill；存在与当前工作相关的 Skill 时，必须读取其 SKILL.md 并按要求执行。已读取且仍有效的内容无需重复读取。`}
 
-可以使用实际提供且获授权的工具完成任务。工具是执行手段，不需要在员工资料中逐项列明。不得虚构工具、操作结果或已完成的工作。
+可以使用实际提供且获授权的工具完成任务。不得虚构工具、操作结果或已完成的工作。
 
 ## 三、当前节点任务
 

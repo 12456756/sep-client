@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
-import { resultFileRequestSchema, resultFileReleaseSchema, type ResultFileRequest, type ResultFilePreview } from '../../src/shared/result-files'
-import type { OpenResultFile, ResultFileStorePort } from '../data/result-file-store'
+import { canOpenResultFile, resultFileRequestSchema, resultFileReleaseSchema, type ResultFileRequest, type ResultFilePreview } from '../../src/shared/result-files'
+import { createResultOpenCopy, saveResultCopy, type OpenResultFile, type ResultActionFile, type ResultFileStorePort } from '../data/result-file-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { requireScope, type ScopeSource } from './scope-guard'
 import { AppError } from '../errors/app-error'
@@ -10,12 +10,15 @@ interface Lease { scope: TaskOwnerScope; input: ResultFileRequest; file: OpenRes
 
 export class ResultFileService {
   private readonly leases = new Map<string, Lease>()
+  private readonly openCopies = new Set<() => Promise<void>>()
   private epoch = 0
   constructor(private readonly options: Options) {}
 
   clear(): void {
     this.epoch++
     for (const [url] of this.leases) this.dispose(url)
+    for (const dispose of this.openCopies) void dispose()
+    this.openCopies.clear()
   }
 
   private dispose(url: string): void {
@@ -49,10 +52,50 @@ export class ResultFileService {
   }
 
   async reveal(raw: ResultFileRequest): Promise<void> {
+    await this.withPath(raw, this.options.reveal)
+  }
+
+  async withPath(raw: ResultFileRequest, use: (path: string) => void | Promise<void>): Promise<void> {
     const input = resultFileRequestSchema.parse(raw), scope = requireScope(this.options.scope), epoch = this.epoch
     const path = await this.options.store.revealPath(scope, input)
     this.assert(scope, epoch)
-    await this.options.reveal(path)
+    await use(path)
+  }
+
+  async withFile<T>(raw: ResultFileRequest, use: (file: ResultActionFile, scope: TaskOwnerScope, assert: () => void) => Promise<T>): Promise<T> {
+    const input = resultFileRequestSchema.parse(raw), scope = requireScope(this.options.scope), epoch = this.epoch
+    const file = await this.options.store.actionFile(scope, input)
+    const assert = () => this.assert(scope, epoch)
+    assert()
+    return use(file, scope, assert)
+  }
+
+  async openDefault(raw: ResultFileRequest, launch: (path: string) => Promise<string>): Promise<void> {
+    await this.withFile(raw, async (file, _scope, assert) => {
+      if (!canOpenResultFile(file.name) || (!file.temporaryOpen && !canOpenResultFile(file.path))) {
+        throw new AppError('INVALID_ARGUMENT', { message: '此格式不能在默认应用中打开。' })
+      }
+      const copy = file.temporaryOpen ? await createResultOpenCopy(file) : null
+      try {
+        assert()
+        if (await launch(copy?.path ?? file.path)) throw new AppError('INTERNAL_ERROR', { message: '无法在默认应用中打开，请检查系统文件关联。' })
+        assert()
+        if (copy) this.openCopies.add(copy.dispose)
+      } catch (error) { await copy?.dispose(); throw error }
+    })
+  }
+
+  async saveAs(raw: ResultFileRequest, select: (name: string) => Promise<string | null>): Promise<boolean> {
+    return this.withFile(raw, async (file, scope, assert) => {
+      const destination = await select(file.name)
+      if (!destination) return false
+      assert()
+      const current = await this.options.store.actionFile(scope, raw)
+      assert()
+      if (current.path !== file.path || current.version !== file.version) throw new AppError('INVALID_STATE', { message: '源文件已改变，请重新选择文件。' })
+      await saveResultCopy(current, destination)
+      return true
+    })
   }
 
   async handle(request: Request): Promise<Response> {

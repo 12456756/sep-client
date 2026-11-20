@@ -16,6 +16,10 @@ import { MediaArtifactsPanel, type MediaArtifactsSummary } from '../../component
 import { mediaRetryNotice, type MediaRetryState } from '../../shared/media-retry';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { ResultFileCard } from '../../components/workspace/ResultFileCard';
+import { FileAttachmentTarget, type AddFileToConversation } from '../../components/workspace/file-menu-actions';
+import { FileMentionChips, FileMentionPicker } from '../../components/enterprise/attachments/FileMentionPicker';
+import { FileMentionEditor } from '../../components/enterprise/attachments/FileMentionEditor';
+import { useTextReferenceComposer } from '../../components/enterprise/attachments/use-text-reference-composer';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
@@ -68,6 +72,12 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const mediaPhaseLabel = mediaPhase === 'preparing' ? '正在准备媒体请求' : mediaPhase === 'awaiting-approval' ? '等待确认媒体请求' : mediaPhase === 'submitted' ? '媒体已提交，等待供应商' : mediaPhase === 'tracking' ? '供应商正在生成媒体' : mediaPhase === 'saving' ? '正在下载并保存媒体' : mediaPhase === 'materializing' ? '正在整理媒体交付结果' : null;
   const [panel, setPanel] = useState<Panel>(null);
   const inspector = useRef<HTMLDialogElement | null>(null);
+  const addToConversation = useRef<AddFileToConversation>(null);
+  const addFromResults: AddFileToConversation = useCallback(async file => {
+    if (!addToConversation.current) throw new Error('对话输入框未就绪，请重试。');
+    await addToConversation.current(file);
+    setPanel(null);
+  }, []);
   const [mediaSummary, setMediaSummary] = useState<MediaArtifactsSummary>({ images: null, videos: null, error: null, retryState: 'checking' });
   const [conversationSkipped, setConversationSkipped] = useState(false);
   const handleMediaSummary = useCallback((summary: typeof mediaSummary) => setMediaSummary(summary), []);
@@ -182,7 +192,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           {work.kind === 'flow' ? <FailedNodeActions work={work} busy={workspace.busy} onRetry={workspace.retryWork} /> : null}
 
           {isConversation ? <section className="ent-chat-panel" aria-label="工作对话">
-            <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} onSkippedChange={setConversationSkipped} />
+            <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} onSkippedChange={setConversationSkipped} addFileRef={addToConversation} />
           </section> : <ArrangementTranscript work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey}
             busy={workspace.busy} onStop={workspace.stopWork} onResults={() => openInspector('results')} />}
         </div>
@@ -212,6 +222,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             <WorkSkills work={work} scopeKey={workspace.attachmentScopeKey} visible={panel === 'skills'} />
           </section>
           <section className="ent-panel ent-wk-inspector-content" aria-label="产出结果" hidden={panel !== 'results'}>
+            <FileAttachmentTarget.Provider value={isConversation ? addFromResults : null}>
             {isConversation ? <MediaArtifactsPanel taskId={work.id} visible={panel === 'results'} onSummary={handleMediaSummary} presentation="results" /> : null}
             {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel media={work.arrangementExecution.media} deliverables={work.deliverables} /> : null}
             {work.deliverables.length ? (
@@ -226,6 +237,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                 ))}
               </div>
             ) : showEmptyResults ? <p className="ent-hint">暂无产出结果</p> : null}
+            </FileAttachmentTarget.Provider>
           </section>
 
           {/* 普通会话的结构化活动仍可单独查看。 */}
@@ -345,20 +357,25 @@ function MediaInputReplyForm({ work, workspace, nodeId, request }: {
   work: WorkItem; workspace: EnterpriseWorkspace; nodeId: string; request: import('../../shared/arrangement-input').ArrangementInputRequest;
 }) {
   const [text, setText] = useState('');
+  const input = useRef<HTMLTextAreaElement>(null);
+  const files = useTextReferenceComposer({ input, value: text, update: setText, bindingKey: `${workspace.attachmentScopeKey}:${work.id}:${nodeId}:${request.requestId}`, disabled: workspace.busy });
+  const { mention } = files;
   const title = work.steps.find(step => step.id === nodeId)?.title ?? '当前媒体工作';
   return <form className="ent-media-input-form" onSubmit={event => {
     event.preventDefault();
-    if (!workspace.busy && text.trim()) void workspace.retryWork(work.id, nodeId, { requestId: request.requestId, text: text.trim() });
+    if (!workspace.busy && !files.blocked && text.trim()) void workspace.retryWork(work.id, nodeId, { requestId: request.requestId, text: mention.submissionText.trim(), ...(files.referenceFiles ? { referenceFiles: files.referenceFiles } : {}) });
   }}>
     <strong>{title}需要补充信息</strong>
     <p>{request.question}</p>
     <small>补充尚未确定的规格。已确认要求和已提交的生成任务会保留；修改它们需要重新编排。</small>
     <label>
       <span>补充规格或用途</span>
-      <textarea value={text} onChange={event => setText(event.target.value)} maxLength={4_000} rows={3}
+      <FileMentionEditor mention={mention} ref={input} {...mention.editorAria} value={text} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} onCompositionStart={mention.compositionStart} onCompositionEnd={event => mention.compositionEnd(event.currentTarget)} onKeyDown={mention.keyDown} maxLength={4_000} rows={3}
         placeholder="例如：用于手机竖屏展示，8 秒，无音频；其他规格请根据用途提出方案。" disabled={workspace.busy} required />
     </label>
-    <button type="submit" className="ent-btn primary sm" disabled={workspace.busy || !text.trim()}>提交补充并继续</button>
+    <FileMentionChips mention={mention} />
+    <div className="ent-file-reference-tools"><FileMentionPicker mention={mention} />{files.error && <span role="alert" className="ent-file-mention-error">{files.error}</span>}</div>
+    <button type="submit" className="ent-btn primary sm" disabled={workspace.busy || files.blocked || !text.trim()}>提交补充并继续</button>
   </form>;
 }
 
@@ -465,14 +482,21 @@ function Process({ work }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
 }
 
 function FailedNodeActions({ work, busy, onRetry }: { work: WorkItem; busy: boolean; onRetry: (workId: string, nodeId: string) => Promise<void> }) {
-  const failed = work.arrangementExecution?.nodes.filter(node => node.status === 'failed') ?? [];
+  const execution = work.arrangementExecution;
+  const failed = execution?.nodes.filter(node => node.status === 'failed') ?? [];
   if (!failed.length) return null;
   const titles = new Map(work.steps.map(step => [step.id, step.title]));
   return (
     <section className="ent-flow-act danger ent-failure-notice ent-failed-node-actions" aria-label="失败节点操作">
       {failed.map(node => {
         const title = titles.get(node.nodeId) ?? node.nodeId;
-        const reason = work.status === 'failed' ? work.stopReason?.trim() || work.nextUserAction?.trim() : null;
+        const issues = new Set<string>();
+        for (const item of execution?.media ?? []) {
+          const issue = item.issue?.trim();
+          if (item.nodeId === node.nodeId && item.phase === 'blocked' && issue) issues.add(issue);
+        }
+        const reason = issues.size ? [...issues].join('；')
+          : work.status === 'failed' ? work.stopReason?.trim() || work.nextUserAction?.trim() : null;
         return <FailureRetryRow key={node.nodeId} reason={`${title}：${reason || '节点执行失败'}`}
           hint={`重试任务：${title}`} label={`重试此节点：${title}`} busy={busy} onRetry={() => void onRetry(work.id, node.nodeId)} />;
       })}

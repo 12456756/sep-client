@@ -3,6 +3,7 @@ import { imageAspectRatio } from './media-spec'
 import { videoAllowedAudioModes, videoParametersSchema } from './video-media'
 import type { VideoParameters, VideoRuntime } from './video-media'
 import type { VideoRequestedSpec } from './media-spec-contract'
+import { isImageMissingTargetRejection } from './media-failure'
 
 /** Preserve an explicit available choice; otherwise use the server default before list order. */
 export function selectMediaProfile<T extends { profileId: string }>(profiles: readonly T[], selectedId?: string, defaultProfileId?: string | null): T | undefined {
@@ -109,8 +110,8 @@ export function mediaJobActions(job: MediaJobView, archived: boolean): {
     cancelUpstream: job.canCancelUpstream && ['QUEUED', 'RUNNING'].includes(job.generationStatus),
     resumeTracking: job.canResumeTracking !== false && job.trackingStatus !== 'ACTIVE' && recoverable && job.generationStatus !== 'RESULT_EXPIRED',
     retrySave: job.canRetrySave !== false && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus) && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus),
-    // Unknown receipts must be resolved before offering a fresh charged request.
-    redo: !archived && !unfinished,
+    // This rejection needs a changed input, not a copy of the rejected request.
+    redo: !archived && !unfinished && !isImageMissingTargetRejection(job.failure),
   }
 }
 

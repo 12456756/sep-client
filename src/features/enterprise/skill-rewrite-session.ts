@@ -1,5 +1,6 @@
 import type { SkillRewriteInput, SkillRewriteResult } from '../../shared/skill-rewrite';
 import type { SkillDraftHistory, SkillManualEdit } from './skill-draft-history';
+import type { RetainedAttachmentState } from './use-attachment-composer';
 
 export type RoundStatus = 'generating' | 'pending' | 'accepted' | 'ignored' | 'superseded' | 'undone' | 'stale' | 'failed' | 'cancelled';
 export interface RewriteRound {
@@ -12,6 +13,7 @@ export interface RewriteRound {
   status: RoundStatus;
   result?: SkillRewriteResult;
   error?: string;
+  referenceFiles?: SkillRewriteInput['referenceFiles'];
 }
 export type AdjustmentRecord = RewriteRound | (SkillManualEdit & { kind: 'manual' });
 interface RewriteState {
@@ -38,6 +40,7 @@ export class SkillRewriteSession {
   private listeners = new Set<() => void>();
   private get valid(): boolean { return this.isActive(); }
   draft?: SkillEditDraft;
+  readonly attachment: RetainedAttachmentState = { session: null, attachments: [] };
 
   constructor(private readonly isActive: () => boolean = () => true) {}
 
@@ -64,7 +67,7 @@ export class SkillRewriteSession {
     }).slice(-3);
     this.update({ activeRequestId: round.id, prompt: '', cancelError: '', rounds: [...this.state.rounds, round] });
     try {
-      const result = await rewrite({ requestId: round.id, content: round.source, prompt: round.prompt, modelId: round.model, history });
+      const result = await rewrite({ requestId: round.id, content: round.source, prompt: round.prompt, modelId: round.model, history, ...(round.referenceFiles ? { referenceFiles: round.referenceFiles } : {}) });
       if (!this.valid || this.state.activeRequestId !== round.id) return;
       if (result.requestId !== round.id) throw new Error('改写结果与本轮请求不匹配，请重试');
       this.setRounds(rounds => rounds.map(item => item.kind !== 'rewrite' ? item : item.id === round.id ? { ...item, result, status: 'pending' }

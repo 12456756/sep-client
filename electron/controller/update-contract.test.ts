@@ -1,5 +1,6 @@
 /** 自动更新边界契约：编译源码并注入替身，不加载 Electron 或真实 updater。 */
 import * as assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -63,6 +64,26 @@ function context(updater?: RequestContext['updater']): RequestContext {
 
 function invoke(entry: Route, ctx: RequestContext): Promise<unknown> {
   return Promise.resolve().then(() => entry.handle(ctx, undefined as never))
+}
+
+function bridgeFixture() {
+  const { RendererBridge: Bridge } = loadSource<{ RendererBridge: typeof RendererBridge }>('electron/bootstrap/renderer-bridge.ts', {
+    '../controller/channels': { EVENT_CHANNELS },
+  })
+  const calls: unknown[][] = []
+  const state = { destroyed: false, maximized: false, fullscreen: false }
+  const contents = Object.assign(new EventEmitter(), {
+    isDestroyed: () => state.destroyed,
+    send: (...args: unknown[]) => calls.push(args),
+  })
+  const window = Object.assign(new EventEmitter(), {
+    isDestroyed: () => state.destroyed,
+    isMaximized: () => state.maximized,
+    isFullScreen: () => state.fullscreen,
+    webContents: contents,
+  })
+  const bridge = new Bridge()
+  return { bridge, window, contents, calls, state, attach: () => bridge.attach(window as unknown as NonNullable<ReturnType<RendererBridge['currentWindow']>>) }
 }
 
 describe('auto-update IPC contract', () => {
@@ -196,14 +217,14 @@ describe('auto-update IPC contract', () => {
   it('preload invokes commands without input and unsubscribes the exact event handler', async () => {
     let api!: ElectronAPI
     const calls: unknown[][] = []
-    const listeners = new Map<string, (event: unknown, state: UpdateState) => void>()
+    const listeners = new Map<string, (event: unknown, value: unknown) => void>()
     const responses = new Map(updateCommands.map(([, channel]) => [channel, { success: true }]))
     loadSource('electron/preload.ts', {
       electron: {
         contextBridge: { exposeInMainWorld: (name: string, value: ElectronAPI) => { assert.equal(name, 'electronAPI'); api = value } },
         ipcRenderer: {
           invoke: (...args: unknown[]) => { calls.push(args); return Promise.resolve(responses.get(args[0] as typeof INVOKE_CHANNELS.UPDATE_CHECK)) },
-          on: (channel: string, handler: (event: unknown, state: UpdateState) => void) => { listeners.set(channel, handler) },
+          on: (channel: string, handler: (event: unknown, value: unknown) => void) => { listeners.set(channel, handler) },
           removeListener: (channel: string, handler: unknown) => { assert.equal(listeners.get(channel), handler); listeners.delete(channel) },
         },
       },
@@ -216,29 +237,56 @@ describe('auto-update IPC contract', () => {
     const received: UpdateState[] = []
     const unsubscribe = api.onUpdateStateChanged(state => received.push(state))
     const state: UpdateState = { status: 'checking', currentVersion: '1.0.0' }
-    assert.deepEqual([...listeners.keys()], [EVENT_CHANNELS.UPDATE_STATE_CHANGED])
+    assert.ok(listeners.has(EVENT_CHANNELS.UPDATE_STATE_CHANGED))
     listeners.get(EVENT_CHANNELS.UPDATE_STATE_CHANGED)!({ secret: 'event is not forwarded' }, state)
     assert.deepEqual(received, [state])
     unsubscribe()
-    assert.equal(listeners.size, 0)
+    assert.equal(listeners.has(EVENT_CHANNELS.UPDATE_STATE_CHANGED), false)
+
+    const publish = listeners.get(EVENT_CHANNELS.WINDOW_EXPANDED_CHANGED)!
+    const expanded: boolean[] = []
+    publish({}, true)
+    const stop = api.onWindowExpandedChanged(value => expanded.push(value))
+    publish({}, true)
+    publish({}, 'false')
+    publish({}, false)
+    stop()
+    publish({}, true)
+    assert.deepEqual(expanded, [true, false])
   })
 
   it('bridge pushes update snapshots only to an attached live window', () => {
-    const { RendererBridge: Bridge } = loadSource<{ RendererBridge: typeof RendererBridge }>('electron/bootstrap/renderer-bridge.ts', {
-      '../controller/channels': { EVENT_CHANNELS },
-    })
-    const bridge = new Bridge()
+    const { bridge, calls, state: windowState, attach } = bridgeFixture()
     const state: UpdateState = { status: 'downloaded', currentVersion: '1.0.0', version: '1.1.0' }
-    const calls: unknown[][] = []
-    let destroyed = false
-    const window = { isDestroyed: () => destroyed, webContents: { send: (...args: unknown[]) => calls.push(args) } } as unknown as NonNullable<ReturnType<RendererBridge['currentWindow']>>
     bridge.updateStateChanged(state)
-    bridge.attach(window)
+    attach()
     bridge.updateStateChanged(state)
-    destroyed = true
+    windowState.destroyed = true
     bridge.updateStateChanged(state)
     bridge.attach(null)
     bridge.updateStateChanged(state)
     assert.deepEqual(calls, [[EVENT_CHANNELS.UPDATE_STATE_CHANGED, state]])
+  })
+})
+
+describe('native window expansion IPC', () => {
+  it('publishes the state on load and native transitions, and stops when detached', () => {
+    const { bridge, window, contents, calls, state, attach } = bridgeFixture()
+    state.maximized = true
+    attach()
+    contents.emit('did-finish-load')
+    state.maximized = false
+    window.emit('unmaximize')
+    state.fullscreen = true
+    window.emit('enter-full-screen')
+    contents.emit('did-finish-load')
+    state.fullscreen = false
+    window.emit('leave-full-screen')
+    state.maximized = true
+    window.emit('maximize')
+    bridge.attach(null)
+    assert.deepEqual(window.eventNames(), [])
+    assert.deepEqual(contents.eventNames(), [])
+    assert.deepEqual(calls, [true, false, true, true, false, true].map(expanded => [EVENT_CHANNELS.WINDOW_EXPANDED_CHANGED, expanded]))
   })
 })

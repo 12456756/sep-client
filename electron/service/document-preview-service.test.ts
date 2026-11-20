@@ -4,7 +4,7 @@ import { DocumentPreviewService } from './document-preview-service'
 import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
 import type { DocumentPreviewContent } from '../../src/shared/document-preview'
 
-function fixture(overrides: Partial<Pick<ConstructorParameters<typeof DocumentPreviewService>[0], 'getDeliveryPath' | 'getConversationPath' | 'openFileDirectory'>> = {}) {
+function fixture(overrides: Partial<Pick<ConstructorParameters<typeof DocumentPreviewService>[0], 'getDeliveryPath' | 'getConversationPath' | 'openFileDirectory' | 'readAttachment' | 'writeCopy'>> = {}) {
   let scope: { memberId: string; enterpriseId: string } | null = { memberId: 'member', enterpriseId: 'enterprise' }
   let status = 'completed'
   let hash = 'a'.repeat(64)
@@ -30,6 +30,32 @@ function fixture(overrides: Partial<Pick<ConstructorParameters<typeof DocumentPr
     defer: () => { release = () => undefined }, release: () => release?.(), opened }
 }
 const request = { taskId: 'task', nodeId: 'node', deliverableId: 'report' }
+
+test('saves the original Word attachment bytes only after a current user chooses a destination', async () => {
+  const attachment = { taskId: 'task', attachmentId: 'attachment', sha256: 'a'.repeat(64) }
+  const bytes = Buffer.from('original bytes')
+  const destinations: string[] = []
+  const f = fixture({ readAttachment: async (taskId, attachmentId, sha256) => {
+    assert.deepEqual({ taskId, attachmentId, sha256 }, attachment)
+    return { name: 'report.doc', version: sha256, format: 'doc', bytes }
+  }, writeCopy: async (path, data, format) => {
+    assert.deepEqual(data, bytes)
+    assert.equal(format, 'doc')
+    destinations.push(path)
+  } })
+  assert.equal(await f.service.saveCopy(attachment, async (name, format) => {
+    assert.equal(name, 'report.doc')
+    assert.equal(format, 'doc')
+    return null
+  }), false)
+  assert.equal(await f.service.saveCopy(attachment, async () => '/chosen/report.doc'), true)
+  await assert.rejects(f.service.saveCopy(attachment, async () => {
+    f.setScope({ memberId: 'other', enterpriseId: 'enterprise' })
+    return '/chosen/stale.doc'
+  }), { code: 'AUTH_REQUIRED' })
+  assert.deepEqual(destinations, ['/chosen/report.doc'])
+  assert.equal(f.counts().renders, 0)
+})
 
 test('an accepted node can preview while peers are running; repeated opens reuse conversion', async () => {
   const f = fixture()

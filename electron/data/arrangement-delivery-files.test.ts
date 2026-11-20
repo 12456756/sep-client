@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zipSync, strToU8, unzipSync } from 'fflate'
 import { PDFDocument } from 'pdf-lib'
-import { validateDeliveryFiles, revalidateDeliveryFiles, resolveDeliveryFiles, deliveryFileIssue } from './arrangement-delivery-files'
+import { validateDeliveryFiles, revalidateDeliveryFiles, resolveDeliveryFiles, deliveryFileIssue, readDeliveryPreviewFile } from './arrangement-delivery-files'
 import type { ArrangementNode } from '../domain/arrangement-plan'
 import { applicationResourcesDirectory } from './application-resources'
 import * as officeManifest from '../../resources/office/manifest.json'
@@ -44,6 +44,25 @@ function officePackage(format: 'docx' | 'xlsx' | 'pptx'): Uint8Array {
 }
 
 describe('final delivery file validation', () => {
+  it('only accepts zero bytes for explicit empty text deliveries, including archived previews', async () => {
+    const f = await fixture()
+    const taskDirectory = join(f.root, 'task')
+    await writeFile(f.file, '')
+    const ordinary = await validateDeliveryFiles(f.root, f.node, f.submission, 'run')
+    assert.equal(!ordinary.ok && ordinary.issues[0]?.code, 'EMPTY_FILE')
+    f.node.deliverables![0]!.contentPolicy = 'empty'
+    const result = await validateDeliveryFiles(f.root, f.node, f.submission, 'run', undefined, { taskDirectory })
+    assert.ok(result.ok)
+    const receipt = result.files[0]!
+    assert.equal(receipt.snapshot?.size, 0)
+    assert.equal((await readDeliveryPreviewFile(f.root, receipt, taskDirectory)).bytes.length, 0)
+    assert.deepEqual(await revalidateDeliveryFiles(f.root, [receipt], undefined, { taskDirectory }), [])
+    await writeFile(f.file, '\n')
+    const nonempty = await validateDeliveryFiles(f.root, f.node, f.submission, 'run')
+    assert.equal(!nonempty.ok && nonempty.issues[0]?.code, 'FILE_MUST_BE_EMPTY')
+    assert.equal((await readDeliveryPreviewFile(f.root, receipt, taskDirectory)).bytes.length, 0)
+  })
+
   it('restores snapshots only from matching approved bytes and never invents a new version', async () => {
     const f = await fixture()
     const taskDirectory = join(f.root, 'task')

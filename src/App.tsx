@@ -17,6 +17,16 @@ interface AuthState {
 }
 
 export default function App() {
+  useEffect(() => {
+    const root = document.documentElement;
+    const unsubscribe = window.electronAPI?.onWindowExpandedChanged?.(expanded => {
+      root.toggleAttribute('data-window-expanded', expanded);
+    });
+    return () => {
+      unsubscribe?.();
+      root.removeAttribute('data-window-expanded');
+    };
+  }, []);
   return <FeedbackProvider><AppContent /></FeedbackProvider>;
 }
 

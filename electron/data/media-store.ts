@@ -14,6 +14,7 @@ import { isSafeId, ScopePath, TaskScopeError, type TaskOwnerScope } from './scop
 import { WriteChain } from './write-chain'
 import { mediaUpstreamErrorSchema } from '../../src/shared/media-upstream-error'
 import { mediaFailureSchema } from '../../src/shared/media-failure'
+import { mediaDiagnosticErrors } from '../domain/arrangement-diagnostic'
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const timestamp = z.number().int().nonnegative()
@@ -39,7 +40,7 @@ const jobSchema = z.object({
   lastQueriedAt: timestamp.optional(),
   providerWaitMs: timestamp.optional(), downloadMs: timestamp.optional(),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(), upstreamError: mediaUpstreamErrorSchema.optional(),
-  failure: mediaFailureSchema.optional(), submissionFailure: mediaFailureSchema.optional(),
+  failure: mediaFailureSchema.optional(), submissionFailure: mediaFailureSchema.optional(), diagnosticErrors: mediaDiagnosticErrors.optional(),
   attempts: z.number().int().nonnegative(), error: z.string().max(20_000).nullable(), createdAt: timestamp, updatedAt: timestamp,
 }).strict().superRefine((job, context) => {
   const { request, input, profile, quote } = job

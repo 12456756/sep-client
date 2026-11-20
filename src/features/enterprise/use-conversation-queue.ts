@@ -18,13 +18,13 @@ export function useConversationQueue(taskId: string, scopeKey: string) {
     try {
       const result = await window.electronAPI.conversationQueue({ taskId, action: 'get' })
       if (version !== generation.current || sequence !== request.current || !notice.isCurrent()) return
-      if (!result.success) throw responseError(result, 'workSend')
+      if (!result.success) throw responseError(result, 'workQueueRead')
       setQueue(conversationQueueViewSchema.parse(result.queue))
       failedRead.current = false
     } catch (error) {
       if (version !== generation.current || sequence !== request.current || !notice.isCurrent() || failedRead.current) return
       failedRead.current = true
-      notice.fail(error, 'workMessages')
+      notice.fail(error, 'workQueueRead')
     }
   }, [taskId, capture])
   const invalidate = useCallback(() => { generation.current++ }, [])

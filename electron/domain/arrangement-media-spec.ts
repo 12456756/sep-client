@@ -17,7 +17,13 @@ export function resolveArrangementMediaSpec(requirement: ArrangementMediaRequire
     return parsed.data as Record<string, unknown>
   }
   const required = requirement.requiredSpec ?? {}
-  const proposed = requirement.proposedSpec ?? {}
+  const proposed: Record<string, unknown> = { ...requirement.proposedSpec }
+  const formatSource = requirement.parameterSources?.outputFormat
+  // Old image plans could propose a format automatically; keep explicit and user-required values intact.
+  if (requirement.kind === 'image' && proposed.outputFormat === 'image/png'
+    && (typeof formatSource === 'object' ? formatSource.source : formatSource ?? 'model') === 'model') {
+    delete proposed.outputFormat
+  }
   const explicit = parse(input.requestedSpec ?? input.parameters ?? {})
   if (input.requestedSpec !== undefined && input.parameters !== undefined && !mediaSpecsEqual(explicit, parse(input.parameters))) {
     throw new AppError('SPEC_CONFLICT', { message: '同一次工具提交包含两套冲突规格，请确认后继续。' })

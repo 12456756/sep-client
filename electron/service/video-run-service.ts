@@ -159,6 +159,10 @@ export class VideoRunService implements VideoRunPort {
     }) }
   }
 
+  diagnosticJobIds(taskId: string, runId: string): readonly string[] {
+    return [...(this.runs.get(this.key(taskId, runId))?.jobs ?? [])]
+  }
+
   async waitForRun(taskId: string, runId: string, options: { recoverOriginal?: boolean; signal?: AbortSignal } = {}): Promise<void> {
     const run = this.runs.get(this.key(taskId, runId))
     if (!run) return

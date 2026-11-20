@@ -88,12 +88,15 @@ describe('planning contract and actionable correction', () => {
     const video = result.nodes[1]!
     assert.equal(image.inputRefs![0]!.kind, 'attachment')
     assert.equal(image.mediaRequirements![0]!.operation, 'edit')
+    assert.equal(image.mediaRequirements![0]!.proposedSpec?.outputFormat, undefined)
+    assert.equal(image.mediaRequirements![0]!.parameterSources?.outputFormat, undefined)
     assert.equal(image.deliverables![0]!.artifact!.source, 'media-output')
     assert.equal(video.mediaRequirements![0]!.operation, 'image-to-video')
     assert.deepEqual(video.mediaRequirements![0]!.inputFrom, { nodeId: image.id, deliverableId: image.deliverables![0]!.id })
     assert.deepEqual(video.dependsOn, [image.id])
     assert.deepEqual(video.mediaRequirements![0]!.requiredSpec, { durationSeconds: 10 })
     assert.ok(video.mediaRequirements![0]!.proposedSpec)
+    assert.equal(video.mediaRequirements![0]!.proposedSpec?.outputFormat, 'video/mp4')
     assert.ok(video.mediaRequirements![0]!.parameterSources)
     assert.match(ARRANGEMENT_PLANNER_RULES, /普通文档.*省略.*mediaRequirements/)
 

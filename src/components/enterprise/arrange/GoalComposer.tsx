@@ -6,7 +6,9 @@ import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { PromptExamples } from './PromptExamples';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
-import { AttachmentComposer } from '../attachments/AttachmentComposer';
+import { AttachmentComposer, type AttachmentComposerOperations } from '../attachments/AttachmentComposer';
+import { FileMentionChips, FileMentionPicker, useFileMention } from '../attachments/FileMentionPicker';
+import { FileMentionEditor } from '../attachments/FileMentionEditor';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 import { KnowledgeSelector } from '../KnowledgeSelector';
 import type { ConnectorId } from '../../../shared/connectors';
@@ -19,7 +21,7 @@ interface Props {
   placeholder: string;
   submitLabel: string;
   submitDisabled: boolean;
-  onSubmit: (text?: string) => void;
+  onSubmit: (text?: string, submittedAttachments?: AttachmentView[]) => void;
   onAttachmentsChange?: (attachments: AttachmentView[]) => void;
   onAttachmentSessionChange?: (session: AttachmentImportSession | null) => void;
   onAttachmentsBusyChange?: (busy: boolean) => void;
@@ -51,13 +53,22 @@ export function GoalComposer({
   onAttachmentsBusyChange,
   showExamples = false,
 }: Props) {
-  const [, setAttachments] = useState<AttachmentView[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentView[]>([]);
+  const [attachmentSessionId, setAttachmentSessionId] = useState<string>();
+  const handleAttachmentSession = useCallback((session: AttachmentImportSession | null) => {
+    setAttachmentSessionId(session?.sessionId);
+    onAttachmentSessionChange?.(session);
+  }, [onAttachmentSessionChange]);
+  const attachmentOps = useRef<AttachmentComposerOperations>(null);
   const [connectorId, setConnectorId] = useState<ConnectorId>();
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
   const [attachmentListContainer, setAttachmentListContainer] = useState<HTMLDivElement | null>(null);
   const composerId = useRef(`goal-${crypto.randomUUID()}`);
   const [editorVersion, setEditorVersion] = useState(0);
   const speech = useSpeechInput({ contextKey: 'auto-goal', value, onChange, disabled: busy });
+  const mention = useFileMention({ input: speech.inputProps.ref, text: value, update: next => { onChange(next); setEditorVersion(version => version + 1); }, attachments, attachmentSessionId, operations: attachmentOps, disabled: busy || speech.busy || attachmentsBusy });
+  const blocked = submitDisabled || busy || speech.busy || attachmentsBusy || mention.pending || mention.invalid;
+  const submit = () => { if (!blocked) onSubmit(withComposerConnector(mention.submissionText, connectorId), mention.attachments); };
   const onPasteEdit = useCallback(({ text: pasted, selectionStart, selectionEnd, editorVersion: pastedVersion }: { text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
     if (pastedVersion !== editorVersion) return false;
     onChange(`${value.slice(0, selectionStart)}${pasted}${value.slice(selectionEnd)}`);
@@ -75,7 +86,7 @@ export function GoalComposer({
         <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
         <div className="ent-goal">
           <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
-          <textarea
+          <FileMentionEditor mention={mention}
             data-composer-id={composerId.current}
             data-editor-version={editorVersion}
             {...speech.inputProps}
@@ -83,17 +94,23 @@ export function GoalComposer({
             value={value}
             placeholder={placeholder}
             aria-label="工作目标"
-            onChange={event => { onChange(event.target.value); setEditorVersion(version => version + 1); }}
+            {...mention.editorAria}
+            onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)}
+            onCompositionStart={() => { speech.inputProps.onCompositionStart(); mention.compositionStart(); }}
+            onCompositionEnd={event => { speech.inputProps.onCompositionEnd(); mention.compositionEnd(event.currentTarget); }}
             onKeyDown={event => {
+              mention.keyDown(event);
               speech.inputProps.onKeyDown(event);
               if (isSubmitEnter(event, speech.isComposing())) {
                 event.preventDefault();
-                if (!submitDisabled && !busy && !speech.busy && !attachmentsBusy) onSubmit(withComposerConnector(value, connectorId));
+                submit();
               }
             }}
           />
+          <FileMentionChips mention={mention} />
           <div className="ent-goal-bar">
-            <AttachmentComposer connectorId={connectorId} onConnectorChange={setConnectorId} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={attachmentBindingKey} disabled={busy || speech.busy} onChange={items => { setAttachments(items); onAttachmentsChange?.(items); }} onSessionChange={onAttachmentSessionChange} onBusyChange={value => { setAttachmentsBusy(value); onAttachmentsBusyChange?.(value); }} onPasteEdit={onPasteEdit} />
+            <AttachmentComposer operationsRef={attachmentOps} visibleAttachments={mention.unreferencedAttachments} connectorId={connectorId} onConnectorChange={setConnectorId} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={attachmentBindingKey} disabled={busy || speech.busy} onChange={items => { setAttachments(items); onAttachmentsChange?.(items); }} onSessionChange={handleAttachmentSession} onBusyChange={value => { setAttachmentsBusy(value); onAttachmentsBusyChange?.(value); }} onPasteEdit={onPasteEdit} />
+            <FileMentionPicker mention={mention} />
             <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />
             <RunSettingsBar
               settings={settings}
@@ -108,8 +125,8 @@ export function GoalComposer({
               className="ent-goal-send"
               aria-label={submitLabel}
               title={submitLabel}
-              onClick={() => { if (!busy && !speech.busy && !attachmentsBusy) onSubmit(withComposerConnector(value, connectorId)); }}
-              disabled={submitDisabled || busy || speech.busy || attachmentsBusy}
+              onClick={submit}
+              disabled={blocked}
             >
               <ArrowUp size={17} aria-hidden />
             </button>

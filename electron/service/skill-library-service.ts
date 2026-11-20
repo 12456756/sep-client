@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { AuthApiError, SkillSubmissionResponseError, type PersonalSkillVersionRequest, type SkillVersion } from '../common/platform/platform-api'
 import { skillVersionSchema } from '../../src/shared/platform-supplement-contracts'
@@ -7,12 +6,14 @@ import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { TaskOwnerScope } from '../data/scope-path'
-import type { SkillVersionStore } from '../data/skill-version-store'
+import { localSkillVersionId, type SkillVersionStore } from '../data/skill-version-store'
 import type { SkillSubmissionStore } from '../data/skill-submission-store'
+import { WriteChain } from '../data/write-chain'
 import type { LocalSkillSubmission, SaveSkillInput, SaveSkillResult, SkillLibraryItem, SkillLibraryQuery, SkillLibrarySnapshot } from '../../src/shared/skill-library'
 import { FOLLOW_PLATFORM_SKILL_VERSION, hasPersonalSkillVersionName, SKILL_VERSION_NAME_TAKEN } from '../../src/shared/skill-library'
 import { skillRewriteInputSchema, skillRewriteOutputSchema, splitSkillRewriteSource, type SkillRewriteInput, type SkillRewriteResult } from '../../src/shared/skill-rewrite'
 import type { SkillRewritePort } from '../domain/skill-rewrite'
+import type { AttachmentService } from './attachment-service'
 
 interface SkillPlatform {
   skills(employeeId: string, token: string): Promise<unknown>
@@ -28,6 +29,7 @@ interface Options {
   submissions: SkillSubmissionStore
   platform: SkillPlatform
   rewriter?: SkillRewritePort
+  attachments?: Pick<AttachmentService, 'referenceMaterials'>
   authorizeRewriteModel?: (modelId: string) => Promise<{ subscriptionId: string } | null>
   now?: () => number
 }
@@ -56,6 +58,7 @@ interface LibrarySession {
   inFlight: Map<string, Promise<SkillLibrarySnapshot>>
   queue: Promise<unknown>
   denied: boolean
+  pendingCatalogReceipts: Map<string, SkillVersion>
 }
 
 /** Drain current requests before exposing a failure; never keep starting work after one fails. */
@@ -75,6 +78,7 @@ async function loadBounded<T, R>(items: T[], load: (item: T) => Promise<R>): Pro
 
 export class SkillLibraryService {
   private readonly rewrites = new Map<string, { scope: TaskOwnerScope; controller: AbortController }>()
+  private readonly mutations = new WriteChain()
   private session: LibrarySession | null = null
   constructor(private readonly options: Options) {}
 
@@ -84,7 +88,7 @@ export class SkillLibraryService {
     const scope = requireScope(this.options.scope)
     if (!this.session || this.session.scope.memberId !== scope.memberId || this.session.scope.enterpriseId !== scope.enterpriseId) {
       this.session = { scope: { ...scope }, snapshot: { items: [], skippedCount: 0 }, catalogs: new Map(), pending: null,
-        blockedUntil: 0, manualAt: new Map(), inFlight: new Map(), queue: Promise.resolve(), denied: false }
+        blockedUntil: 0, manualAt: new Map(), inFlight: new Map(), queue: Promise.resolve(), denied: false, pendingCatalogReceipts: new Map() }
     }
     return this.session
   }
@@ -111,6 +115,7 @@ export class SkillLibraryService {
       if (invalidateAuthorization && error instanceof AuthApiError && (error.isUnauthorized || error.isForbidden)) {
         session.denied = true
         session.catalogs.clear()
+        session.pendingCatalogReceipts.clear()
         session.snapshot = { items: [], skippedCount: 0 }
         session.pending = null
       }
@@ -191,6 +196,7 @@ export class SkillLibraryService {
 
   private async buildLibrary(scope: TaskOwnerScope, catalogs: Catalog[]): Promise<SkillLibrarySnapshot> {
     this.checkScope(scope)
+    const receipts = this.session!.pendingCatalogReceipts
     const items = new Map<string, SkillLibraryItem>()
     let skippedCount = 0
     for (const { subscription, skills } of catalogs) {
@@ -213,7 +219,10 @@ export class SkillLibraryService {
         const local = selected ? await this.options.versions.load(scope, subscription.subscriptionId, skill.capability.id, selected) : null
         const personal = Boolean(local?.localSubmissionId || local?.sourceScope === 'PERSONAL' ||
           [skill.currentVersion, ...skill.versions].some(version => version?.id === local?.baseSkillVersionId && version?.scope === 'PERSONAL'))
-        const versions = [...new Map([...(previous?.versions ?? []), ...(skill.currentVersion ? [skill.currentVersion] : []), ...skill.versions].map(version => [version.id, version])).values()]
+        const catalogVersions = [...(skill.currentVersion ? [skill.currentVersion] : []), ...skill.versions]
+        for (const version of catalogVersions) receipts.delete(version.id)
+        const versions = [...new Map([...(previous?.versions ?? []), ...catalogVersions]
+          .filter(version => version.status !== 'ARCHIVED').map(version => [version.id, version])).values()]
         items.set(skill.capability.id, {
           capability: skill.capability, versions, usableVersionIds: [], localVersions: [],
           bindings: [...(previous?.bindings ?? []), { ...subscription, currentVersion: skill.currentVersion,
@@ -224,7 +233,8 @@ export class SkillLibraryService {
     const result = await loadBounded([...items.values()], async item => {
       this.checkScope(scope)
       const submissions = await this.options.submissions.list(scope, item.capability.id)
-      const versions = [...new Map([...submissions.flatMap(record => record.uploadedVersion ? [record.uploadedVersion] : []), ...item.versions].map(version => [version.id, version])).values()]
+      const unlisted = [...receipts.values()].filter(version => version.capabilityId === item.capability.id)
+      const versions = [...new Map([...unlisted, ...submissions.flatMap(record => record.uploadedVersion ? [record.uploadedVersion] : []), ...item.versions].map(version => [version.id, version])).values()]
       return {
         ...item, versions,
         bindings: item.bindings.map(binding => {
@@ -301,7 +311,12 @@ export class SkillLibraryService {
       signal.throwIfAborted()
       if (!grant) throw new AppError('MODEL_NOT_ALLOWED')
       if (!this.options.rewriter) throw new AppError('SERVICE_UNAVAILABLE')
-      const output = skillRewriteOutputSchema.parse(await this.options.rewriter.rewrite({ ...input, subscriptionId: grant.subscriptionId, skillName: item.capability.name }, signal))
+      const { referenceFiles, ...request } = input
+      if (referenceFiles && !this.options.attachments) throw new AppError('SERVICE_UNAVAILABLE')
+      const referenceMaterials = referenceFiles && await this.options.attachments!.referenceMaterials(scope, referenceFiles)
+      this.checkScope(scope)
+      signal.throwIfAborted()
+      const output = skillRewriteOutputSchema.parse(await this.options.rewriter.rewrite({ ...request, subscriptionId: grant.subscriptionId, skillName: item.capability.name, ...(referenceMaterials ? { referenceMaterials } : {}) }, signal))
       this.checkScope(scope)
       signal.throwIfAborted()
       if (splitSkillRewriteSource(output.body).metadata) throw new AppError('SKILL_REWRITE_FAILED')
@@ -328,7 +343,17 @@ export class SkillLibraryService {
     this.session = null
   }
 
-  async save(input: SaveSkillInput): Promise<SaveSkillResult> {
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    const scope = this.current().scope
+    return this.mutations.run(JSON.stringify([scope.enterpriseId, scope.memberId]), () => {
+      this.checkScope(scope)
+      return operation()
+    })
+  }
+
+  save(input: SaveSkillInput): Promise<SaveSkillResult> { return this.mutate(() => this.saveVersion(input)) }
+
+  private async saveVersion(input: SaveSkillInput): Promise<SaveSkillResult> {
     const { scope, item } = await this.authorizeLocalSave(input.request.capabilityId)
     if (!item.versions.some(version => version.id === input.request.parentVersionId)) throw new AppError('INVALID_ARGUMENT', { message: '来源版本不可见或不属于该技能。' })
     this.checkScope(scope)
@@ -345,12 +370,45 @@ export class SkillLibraryService {
     return { ...result, item: await this.updateLocalSnapshot(scope, input.request.capabilityId) }
   }
 
-  async retry(input: { capabilityId: string; idempotencyKey: string }): Promise<SaveSkillResult> {
+  retry(input: { capabilityId: string; idempotencyKey: string }): Promise<SaveSkillResult> {
+    return this.mutate(() => this.retryVersion(input))
+  }
+
+  private async retryVersion(input: { capabilityId: string; idempotencyKey: string }): Promise<SaveSkillResult> {
     const { scope } = await this.authorizeLocalSave(input.capabilityId)
     const record = (await this.options.submissions.list(scope, input.capabilityId)).find(value => value.idempotencyKey === input.idempotencyKey)
     if (!record) throw new AppError('NOT_FOUND', { message: '本地保存记录不存在。' })
     const result = await this.upload(scope, record)
     return { ...result, item: await this.updateLocalSnapshot(scope, input.capabilityId) }
+  }
+
+  deleteLocalCopy(input: { capabilityId: string; idempotencyKey: string }): Promise<SkillLibraryItem> {
+    return this.mutate(() => {
+      const { capabilityId, idempotencyKey } = input
+      const session = this.current()
+      const { scope } = session
+      const cleanup = session.queue.catch(() => undefined).then(async () => {
+        this.checkScope(scope)
+        const records = await this.options.submissions.list(scope, capabilityId)
+        const local = records.find(record => record.idempotencyKey === idempotencyKey)
+        this.checkScope(scope)
+        if (!local) throw new AppError('NOT_FOUND', { message: '此设备上没有该版本的本地副本。' })
+        if (!session.snapshot.items.some(item => item.capability.id === capabilityId)) {
+          throw new AppError('PERMISSION_DENIED', { message: '当前技能已不可见，请刷新技能列表。' })
+        }
+        await this.options.versions.removeLocalSubmission(scope, capabilityId, idempotencyKey)
+        this.checkScope(scope)
+        await this.options.submissions.remove(scope, capabilityId, idempotencyKey)
+        // The upload receipt may be newer than the employee catalogs. Keep only metadata until they catch up.
+        if (local.uploadedVersion && local.uploadedVersion.status !== 'ARCHIVED') {
+          const { content: _content, ...metadata } = local.uploadedVersion
+          session.pendingCatalogReceipts.set(metadata.id, metadata)
+        }
+        return this.updateLocalSnapshot(scope, capabilityId)
+      })
+      session.queue = cleanup
+      return cleanup
+    })
   }
 
   private async updateLocalSnapshot(scope: TaskOwnerScope, capabilityId: string): Promise<SkillLibraryItem> {
@@ -416,10 +474,12 @@ export class SkillLibraryService {
     }
   }
 
-  async select(input: { capabilityId: string; versionId: string }): Promise<SkillLibraryItem> {
-    const scope = this.current().scope
-    await this.applySelection(input)
-    return this.updateLocalSnapshot(scope, input.capabilityId)
+  select(input: { capabilityId: string; versionId: string }): Promise<SkillLibraryItem> {
+    return this.mutate(async () => {
+      const scope = this.current().scope
+      await this.applySelection(input)
+      return this.updateLocalSnapshot(scope, input.capabilityId)
+    })
   }
 
   private async applySelection(input: { capabilityId: string; versionId: string }): Promise<void> {
@@ -435,7 +495,7 @@ export class SkillLibraryService {
           subscriptionId: binding.subscriptionId, employeeId: binding.employeeId,
           capabilityId: input.capabilityId, baseSkillVersionId: local.request.parentVersionId,
           localSubmissionId: local.idempotencyKey, sourceScope: 'PERSONAL',
-          versionId: `local-${createHash('sha256').update(local.idempotencyKey).digest('hex')}`,
+          versionId: localSkillVersionId(local.idempotencyKey),
           version: local.request.changeSummary || '个人修改版', content: local.request.content,
         })
         this.checkScope(scope)

@@ -12,6 +12,9 @@ import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskService } from '../service/task-service'
 import { ConversationService } from '../service/conversation-service'
 import type { EmployeeAuthorizer } from '../service/employee-authorizer'
+import { ArrangementDiagnosticStore } from '../data/arrangement-diagnostic-store'
+import { ArrangementDiagnosticService } from '../service/arrangement-diagnostic-service'
+import { ConversationContextStore } from '../domain/conversation-context'
 
 async function waitFor(predicate: () => boolean | Promise<boolean>) {
   const deadline = Date.now() + 6000
@@ -26,11 +29,13 @@ test('task retry with an empty paused queue drains follow-ups only after the rec
   const manager = new TaskManager(root), runs = new TaskRunStore(root), metadata = new TaskMetadataStore(root)
   await manager.initialize(); await manager.setCurrentUser('member', 'enterprise')
   const scope = { currentScope: () => manager.getCurrentUserScope() }
+  const diagnosticStore = new ArrangementDiagnosticStore(root)
   const task = await manager.createTask('retry', 'initial', join(root, 'workspace'), 'employee')
   await metadata.save(scope.currentScope()!, { version: 1, taskId: task.id, kind: 'conversation', participantSubscriptionIds: ['employee'], currentSubscriptionId: 'employee', createdAt: 1 })
   const started: string[] = [], disposed: string[] = []
   const gates = new Map<string, () => void>()
   const runtime: TaskRuntime = new TaskRuntime({ taskManager: manager, taskRunStore: runs,
+    arrangementDiagnostics: new ArrangementDiagnosticService({ scope, store: diagnosticStore, authorizationRevision: () => 0, clientVersion: '0.5.6' }),
     resolveEmployee: () => ({ subscriptionId: 'employee', modelId: 'model', gatewayUrl: 'http://unused' }),
     getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
     onConversationSettled: (id, runId, owner) => queue.settled(id, runId, owner),
@@ -40,12 +45,16 @@ test('task retry with an empty paused queue drains follow-ups only after the rec
       gates.set(options.context.runId, release)
       return { async run(prompt) {
         assert.equal(disposed.length, started.length, 'dispose the previous worker before executing a follow-up')
-        started.push(prompt)
+        started.push(prompt.split('\n\n【', 1)[0]!)
         await mkdir(options.context.sessionDir, { recursive: true })
         const file = join(options.context.sessionDir, 'session.jsonl')
         await writeFile(file, '{}\n')
         await options.onSessionCreated?.({ sessionId: 'shared', sessionFile: file })
-        if (started.length === 1) throw new Error('Request timed out.')
+        if (started.length === 1) {
+          await options.context.modelTrace?.({ phase: '', kind: 'status', requestNumber: 1, text: 'PRIVATE_TRACE',
+            metrics: { 诊断: '{"httpStatus":504,"code":"gateway_timeout","sepRequestId":"test-request","body":"PRIVATE_BODY"}' } })
+          throw new Error('Request timed out.')
+        }
         await gate
       }, async abort() { release() }, async dispose() { disposed.push(options.context.runId) } }
     },
@@ -62,8 +71,22 @@ test('task retry with an empty paused queue drains follow-ups only after the rec
     await runtime.executeTask(task.id, { conversation: true })
     await waitFor(async () => (await queue.view(task.id)).paused && !runtime.hasConversationRun(task.id))
     assert.equal((await queue.view(task.id)).items.length, 0)
+    const owner = scope.currentScope()!
+    const failedRunId = disposed[0]!
+    const saved = await diagnosticStore.get(owner, { taskId: task.id, runId: failedRunId })
+    assert.equal(saved?.phase, 'model-execution')
+    assert.equal(saved?.modelRequest?.requestId, 'test-request')
+    assert.equal(saved?.modelHistory?.entries[0]?.diagnostic?.body, 'PRIVATE_BODY')
+    assert.equal(saved?.exception?.entries[0]?.message, 'Request timed out.')
+    assert.doesNotMatch(JSON.stringify(saved), /PRIVATE_TRACE|initial/)
+    const persisted = await runs.events.getTimeline(owner, task.id, failedRunId)
+    assert.deepEqual(persisted.find(event => event.type === 'run_failed')?.data,
+      { error: '模型请求超时，请稍后重试', diagnosticAvailable: true })
     await tasks.retry(task.id)
     await waitFor(() => started.length === 2)
+    const retryRunId = (await manager.getTask(task.id))!.activeRunId!
+    assert.notEqual(retryRunId, failedRunId)
+    assert.equal(await diagnosticStore.get(owner, { taskId: task.id, runId: retryRunId }), null)
     assert.equal((await queue.view(task.id)).paused, false)
     assert.deepEqual(await conversations.continue({ taskId: task.id, messageId: 'later', prompt: 'follow-up' }), { queued: true })
     gates.get((await manager.getTask(task.id))!.activeRunId!)!()
@@ -74,6 +97,45 @@ test('task retry with an empty paused queue drains follow-ups only after the rec
     assert.deepEqual(await conversations.continue({ taskId: task.id, messageId: 'idle', prompt: 'run immediately' }), { queued: false })
     await waitFor(() => started.length === 4)
   } finally { queue.stop(); for (const release of gates.values()) release(); await runtime.stopAll(); await rm(root, { recursive: true, force: true }) }
+})
+
+test('a failed conversation setup persists the original turn and a diagnostic without starting a worker', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'conversation-setup-diagnostic-'))
+  const owner = { memberId: 'member', enterpriseId: 'enterprise' }
+  const manager = new TaskManager(root), runs = new TaskRunStore(root), store = new ArrangementDiagnosticStore(root)
+  await manager.initialize(); await manager.setCurrentUser(owner.memberId, owner.enterpriseId)
+  const task = await manager.createTask('setup', 'initial', join(root, 'workspace'), 'employee')
+  let workersCreated = 0
+  const runtime = new TaskRuntime({ taskManager: manager, taskRunStore: runs,
+    resolveEmployee: () => ({ subscriptionId: 'employee', modelId: 'model', gatewayUrl: 'http://unused' }),
+    getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+    arrangementDiagnostics: new ArrangementDiagnosticService({ scope: { currentScope: () => manager.getCurrentUserScope() },
+      store, authorizationRevision: () => 0, clientVersion: '0.5.6' }),
+    attachmentInputs: {
+      async describeTaskInputs() { return [] },
+      async resolveTaskInputs() { throw new Error('ATTACHMENT_INTEGRITY_MISMATCH') },
+      async resolvePlannerMaterials() { return [] },
+    },
+    createWorker: () => { workersCreated++; throw new Error('Unexpected worker creation') },
+  })
+  try {
+    const sessionFile = join(root, 'previous-session.jsonl')
+    await writeFile(sessionFile, '{}\n')
+    const context = new ConversationContextStore(runs.getTaskDir(owner, task.id))
+    await context.setSharedSession({ sessionId: 'shared', sessionFile, lastRunId: 'previous', updatedAt: 1 })
+    await runtime.continueConversation(task.id, 'Check attachment', { attachmentRefs: [{ attachmentId: 'missing', sha256: 'a'.repeat(64) }] })
+    await waitFor(async () => (await manager.getTask(task.id))?.status === 'failed' && !runtime.hasConversationRun(task.id))
+    assert.equal(workersCreated, 0)
+    const [run] = await runs.list(owner, task.id)
+    assert.equal(run?.outcome, 'failed')
+    const diagnostic = await store.get(owner, { taskId: task.id, runId: run!.id })
+    assert.equal(diagnostic?.phase, 'input-read')
+    assert.equal(diagnostic?.reason, 'ATTACHMENT_INTEGRITY_MISMATCH')
+    const messages = await context.listMessages()
+    assert.ok(messages.some(message => message.role === 'user' && message.runId === run?.id))
+    const timeline = await runs.events.getTimeline(owner, task.id, run!.id)
+    assert.equal((timeline.find(event => event.type === 'run_failed')?.data as { diagnosticAvailable?: boolean })?.diagnosticAvailable, true)
+  } finally { await runtime.stopAll(); await rm(root, { recursive: true, force: true }) }
 })
 
 test('real conversation runs drain FIFO only after disposal, pause on failure and resume the failed prompt with its knowledge', async () => {
@@ -90,6 +152,7 @@ test('real conversation runs drain FIFO only after disposal, pause on failure an
     resolveEmployee: () => ({ subscriptionId: 'employee', modelId: 'model', gatewayUrl: 'http://unused' }),
     getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
     attachmentInputs: {
+      async describeTaskInputs() { return [] },
       async resolveTaskInputs(_scope, _taskId, refs) { inputRefs.push(structuredClone(refs)); return { attachments: [], images: [], digest: '' } },
       async resolvePlannerMaterials() { return [] },
     },
@@ -101,13 +164,14 @@ test('real conversation runs drain FIFO only after disposal, pause on failure an
       gates.set(id, release)
       return { async run(prompt) {
         if (started.length) assert.equal(disposed.length, started.length, 'previous worker must be disposed before next starts')
-        started.push(prompt)
+        const userPrompt = prompt.split('\n\n【', 1)[0]!
+        started.push(userPrompt)
         await mkdir(options.context.sessionDir, { recursive: true })
         const file = join(options.context.sessionDir, 'session.jsonl')
         await writeFile(file, '{}\n')
         await options.onSessionCreated?.({ sessionId: 'shared', sessionFile: file })
         await gate
-        if (prompt === 'one' && failOne) { failOne = false; throw new Error('Request timed out.') }
+        if (userPrompt === 'one' && failOne) { failOne = false; throw new Error('Request timed out.') }
       }, async abort() { release() }, async dispose() { disposed.push(id) } }
     },
   })

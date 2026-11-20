@@ -42,6 +42,7 @@ test('confirmed work becomes an independent enabled schedule without planning, a
   assert.equal(created.nextRunAt, 2000)
   assert.equal((await service.list()).definitions.length, 1)
   for (const mutation of [
+    { scheduledOrigin: { definitionId: 'definition', occurrenceId: 'occurrence', execution: 'general' } },
     { mode: 'conversation' }, { owner: { memberId: 'other', enterpriseId: 'enterprise' } },
     { permissions: { ...original.permissions, preset: 'read-only' } },
     { nodes: [null] },

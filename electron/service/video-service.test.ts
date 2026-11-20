@@ -91,6 +91,8 @@ describe('VideoService mock submission, disk recovery and original delivery', ()
     assert.equal(confirmed.submission, 'RECEIPTED')
     assert.equal(confirmed.failure, undefined)
     assert.equal(confirmed.submissionFailure, undefined)
+    assert.deepEqual(confirmed.diagnosticErrors?.entries.map(entry => entry.stage), ['video-submit', 'video-query'])
+    assert.equal(confirmed.diagnosticErrors?.entries[0]?.exception.entries[0]?.diagnostic?.computeRequestId, 'compute-id')
     assert.equal(posts, 1)
   })
   for (const [code, status] of [['INSUFFICIENT_FUNDS', 402], ['VIDEO_BUDGET_EXCEEDED', 402], ['QUOTE_EXPIRED', 409], ['VIDEO_CONCURRENCY_LIMIT', 409]] as const) {

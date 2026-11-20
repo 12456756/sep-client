@@ -29,7 +29,8 @@ export function buildSkillVersions(skill: SkillLibraryItem): SkillVersionEntry[]
   });
   for (const version of skill.versions) {
     if (localRemoteIds.has(version.id) || entries.some(entry => entry.id === version.id)) continue;
-    entries.push({ id: version.id, aliases: [version.id], label: skillVersionLabel(version), status: skillVersionStatus(version.status), createdAt: version.createdAt, version,
+    const status = skillVersionStatus(version.status);
+    entries.push({ id: version.id, aliases: [version.id], label: skillVersionLabel(version), status: version.scope === 'PERSONAL' ? '云端版本 · ' + status : status, createdAt: version.createdAt, version,
       usable: skill.usableVersionIds.includes(version.id), parentVersionId: version.id,
       usedBy: bindings.filter(binding => binding.selectedVersionId === version.id).map(binding => binding.subscriptionId) });
   }
@@ -52,7 +53,7 @@ export function buildSkillSelectionOptions(skill: SkillLibraryItem): SkillVersio
     label: labels.join(' / ') || '暂无可用版本', status: '',
     usable: bindings.length > 0 && bindings.every(binding => binding.currentVersion !== null),
     usedBy: bindings.filter(binding => skillSelectionValue({ ...skill, bindings: [binding] }) === FOLLOW_PLATFORM_SKILL_VERSION).map(binding => binding.subscriptionId),
-  }, ...buildSkillVersions(skill).filter(entry => entry.local || entry.version?.scope === 'PERSONAL')];
+  }, ...buildSkillVersions(skill).filter(entry => entry.usable && (entry.local || entry.version?.scope === 'PERSONAL'))];
 }
 
 export function unifiedSkillSelection(skill: SkillLibraryItem, entries = buildSkillSelectionOptions(skill)): SkillVersionEntry | undefined {

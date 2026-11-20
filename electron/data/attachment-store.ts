@@ -10,7 +10,9 @@ import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { WriteChain } from './write-chain'
 import type { InputSnapshotRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentExtractor, AttachmentExtraction } from '../domain/attachment-extraction'
+import { attachmentExtractionSchema } from '../domain/attachment-extraction'
 import { inspectMediaImage } from './media-image'
+import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
 
 const MIME: Record<string, string> = { txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }
 
@@ -19,11 +21,12 @@ export interface AttachmentStorePort {
   begin(scope: TaskOwnerScope, target: AttachmentImportTarget, now?: number): Promise<AttachmentImportSession>
   get(scope: TaskOwnerScope, sessionId: string): Promise<AttachmentImportSession | null>
   list(scope: TaskOwnerScope): Promise<AttachmentImportSession[]>
-  importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource']): Promise<AttachmentView>
+  importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource'], displayName?: string): Promise<AttachmentView>
   importBytes(scope: TaskOwnerScope, sessionId: string, bytes: Uint8Array, displayName: string, mediaType: string, source?: AttachmentView['importSource']): Promise<AttachmentView>
   remove(scope: TaskOwnerScope, sessionId: string, attachmentId: string, expectedRevision?: number): Promise<AttachmentImportSession>
   cancel(scope: TaskOwnerScope, sessionId: string): Promise<boolean>
   read(scope: TaskOwnerScope, sessionId: string, attachmentId: string): Promise<Buffer>
+  readExtraction?(scope: TaskOwnerScope, sessionId: string, attachmentId: string): Promise<AttachmentExtraction | null>
   freeze(scope: TaskOwnerScope, taskId: string, sessionId: string, refs: readonly { attachmentId: string; sha256: string }[]): Promise<InputSnapshotRef>
   readTask(scope: TaskOwnerScope, taskId: string, attachmentId: string): Promise<Buffer>
   taskReadPath?(scope: TaskOwnerScope, taskId: string, attachmentId: string): string
@@ -35,7 +38,10 @@ export interface AttachmentStorePort {
   findDraftClaim(scope: TaskOwnerScope, refs: readonly { attachmentId: string; sha256: string }[]): Promise<{ draftId: string; revision: number; sessionId: string; attachments: Array<{ attachmentId: string; sha256: string }> } | null>
 }
 
-function mimeFor(name: string): string { return MIME[extname(name).slice(1).toLowerCase()] ?? 'application/octet-stream' }
+function mimeFor(name: string): string {
+  const extension = extname(name).slice(1).toLowerCase()
+  return extension === 'doc' ? LEGACY_WORD_MIME : MIME[extension] ?? 'application/octet-stream'
+}
 function clone<T>(value: T): T { return structuredClone(value) }
 function verifiedMediaType(bytes: Uint8Array, declared: string): string {
   const type = declared.toLowerCase().split(';')[0].trim()
@@ -75,7 +81,7 @@ export class AttachmentStore implements AttachmentStorePort {
     return sessions.filter((item): item is AttachmentImportSession => item !== null)
   }
 
-  async importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource']): Promise<AttachmentView> {
+  async importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource'], displayName = basename(path)): Promise<AttachmentView> {
     let handle: Awaited<ReturnType<typeof open>> | undefined
     try {
       handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
@@ -98,7 +104,7 @@ export class AttachmentStore implements AttachmentStorePort {
       const sameIdentity = info.dev === after.dev && info.ino === after.ino && info.size === after.size && info.mtimeMs === after.mtimeMs && info.ctimeMs === after.ctimeMs
       if (!sameIdentity || total > attachmentImportLimits.maxFileBytes) throw new Error('ATTACHMENT_SOURCE_CHANGED')
       if (total <= 0) throw new Error('ATTACHMENT_EMPTY')
-      return this.importBuffer(scope, sessionId, Buffer.concat(chunks, total), basename(path), mimeFor(path), source)
+      return this.importBuffer(scope, sessionId, Buffer.concat(chunks, total), displayName, mimeFor(displayName), source)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ELOOP') throw new Error('ATTACHMENT_NOT_REGULAR_FILE')
       throw error
@@ -173,6 +179,13 @@ export class AttachmentStore implements AttachmentStorePort {
     const bytes = await readFile(this.paths.attachmentBlobFile(scope, sessionId, attachmentId))
     if (bytes.length !== item.byteLength || createHash('sha256').update(bytes).digest('hex') !== item.sha256) throw new Error('ATTACHMENT_INTEGRITY_MISMATCH')
     return bytes
+  }
+
+  readExtraction(scope: TaskOwnerScope, sessionId: string, attachmentId: string): Promise<AttachmentExtraction | null> {
+    return readJsonWithBackup(this.paths.attachmentExtractionFile(scope, sessionId, attachmentId), value => {
+      const result = attachmentExtractionSchema.safeParse(value)
+      return result.success ? result.data : null
+    })
   }
 
   async freeze(scope: TaskOwnerScope, taskId: string, sessionId: string, refs: readonly { attachmentId: string; sha256: string }[]): Promise<InputSnapshotRef> {

@@ -27,6 +27,10 @@ const dependencies: Record<string, unknown> = {
   '../../features/speech/use-speech-input': { useSpeechInput: () => ({ busy: false, inputProps: { onKeyDown() {} }, isComposing: () => false }) },
   '../speech/SpeechInputActions': { SpeechInputActions: empty },
   './attachments/AttachmentComposer': { AttachmentComposer: empty },
+  './attachments/FileMentionPicker': { FileMentionPicker: empty, FileMentionChips: empty, useFileMention: () => ({}) },
+  './attachments/FileMentionEditor': { FileMentionEditor: React.forwardRef<HTMLTextAreaElement, React.ComponentPropsWithoutRef<'textarea'> & { mention: unknown }>(({ mention: _mention, ...props }, ref) => React.createElement('textarea', { ...props, ref })) },
+  '../workspace/ResultFileCard': { resultFileRequest: () => null },
+  '../../features/enterprise/conversation-media': { useConversationMedia: () => ({ results: [] }) },
   '../../features/enterprise/conversation-sessions': sessions,
   '../../features/enterprise/composer-connectors': composerConnectors,
   '../../features/enterprise/general-assistant': { GENERAL_ASSISTANT_ID, generalAssistant },
@@ -38,6 +42,7 @@ const dependencies: Record<string, unknown> = {
   '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {}, async prioritize() {} }) },
   './ConversationMessages': { ConversationMessages: empty },
   '../workspace/ContextUsageIndicator': { ContextUsageIndicator: empty },
+  '../workspace/file-menu-actions': { FileAttachmentTarget: React.createContext(null) },
 }
 const filename = fileURLToPath(new URL('../../components/enterprise/WorkTalkDrawer.tsx', import.meta.url))
 const source = ts.transpileModule(readFileSync(filename, 'utf8'), {

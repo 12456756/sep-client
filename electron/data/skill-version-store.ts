@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { WriteChain } from './write-chain'
-import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
+import { backupPath, readJsonFile, readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import type { TaskOwnerScope } from './scope-path'
 
 export interface LocalSkillVersion {
@@ -26,6 +26,10 @@ export type SkillSelections = Record<string, SkillSelection>
 function safe(value: string): string {
   if (value === '.' || value === '..' || !/^[A-Za-z0-9._-]{1,128}$/.test(value)) throw new Error('Invalid skill identifier.')
   return value
+}
+
+export function localSkillVersionId(idempotencyKey: string): string {
+  return 'local-' + createHash('sha256').update(idempotencyKey).digest('hex')
 }
 
 export class SkillVersionStore {
@@ -82,6 +86,42 @@ export class SkillVersionStore {
   async selected(scope: TaskOwnerScope, subscriptionId: string, capabilityId: string): Promise<string | null> {
     const value = await this.selections(scope, subscriptionId)
     return value[capabilityId]?.versionId ?? null
+  }
+  async removeLocalSubmission(scope: TaskOwnerScope, capabilityId: string, idempotencyKey: string): Promise<void> {
+    const ownerDir = resolve(this.rootDir, safe(scope.enterpriseId), safe(scope.memberId))
+    const versionId = localSkillVersionId(idempotencyKey)
+    const subscriptions = await readdir(ownerDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return []
+      throw error
+    })
+    // Include cached copies for subscriptions that are no longer in the current catalog.
+    for (const entry of subscriptions) {
+      if (!entry.isDirectory() || !/^[A-Za-z0-9._-]{1,128}$/.test(entry.name)) continue
+      const subscriptionId = entry.name
+      await this.clearSelection(scope, subscriptionId, capabilityId, versionId)
+      const file = this.versionFile(scope, { subscriptionId, capabilityId, versionId } as LocalSkillVersion)
+      await this.writes.run(file, async () => {
+        await rm(backupPath(file), { force: true })
+        await rm(file, { force: true })
+      })
+    }
+  }
+
+  private async clearSelection(scope: TaskOwnerScope, subscriptionId: string, capabilityId: string, versionId: string): Promise<void> {
+    const file = this.selectionFile(scope, subscriptionId)
+    await this.writes.run(file, async () => {
+      const selections = await this.selections(scope, subscriptionId)
+      const current = selections[capabilityId]
+      const changed = current?.versionId === versionId || current?.pendingVersionId === versionId
+      if (current?.versionId === versionId) delete selections[capabilityId]
+      else if (current?.pendingVersionId === versionId) delete current.pendingVersionId
+      const backup = await readJsonFile(backupPath(file)) as SkillSelections | null
+      const previous = backup?.[capabilityId]
+      if (changed || previous?.versionId === versionId || previous?.pendingVersionId === versionId) {
+        await writeJsonAtomic(backupPath(file), selections, { backup: false })
+      }
+      if (changed) await writeJsonAtomic(file, selections, { backup: false })
+    })
   }
   async selections(scope: TaskOwnerScope, subscriptionId: string): Promise<SkillSelections> {
     return (await readJsonWithBackup(this.selectionFile(scope, subscriptionId), input => {

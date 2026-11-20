@@ -24,15 +24,15 @@ test('V3 video uploads all selected references before one quote and one submissi
   f.state.runtime = videoRuntimeSchema.parse({ protocolVersion: 3, executionMode: 'real', executionAvailable: true,
     defaultProfileId: 'video-v3', tools: ['video_from_image', 'video_get_job'], profiles: [{ profileId: 'video-v3', configVersion: 'cfg', kind: 'video', displayName: 'Video', operations: ['image-to-video'], executionMode: 'async-query', authorized: true,
       adapter: { id: 'video-adapter', version: '3', available: true, operations: ['image-to-video'], referenceSupport: { maxCount: 3, maxInputBytes: 1024, mimeTypes: ['image/png'] }, supportsTaskQuery: true, supportsCancel: false }, capabilityHints: [] }] })
-  const requests: Array<{ stage: string; referenceIds: string[] }> = []
+  const requests: Array<{ stage: string; referenceIds: string[]; creativeBrief: string }> = []
   const readIds: string[] = []
   let uploads = 0
   const options: MockVideoHostOptions = { ...f.options,
     readReference: async (_scope, _taskId, id) => { readIds.push(id); return { bytes, sha256 } }, gateway: () => ({
       ...f.options.gateway(scope),
       uploadReference: async () => ({ mock: false, referenceId: `reference-${++uploads}`, expiresAt: new Date(Date.now() + 60_000).toISOString(), mimeType: 'image/png', byteLength: bytes.length, sha256, width: 1, height: 1 }),
-      quote: async request => { requests.push({ stage: 'quote', referenceIds: request.referenceIds }); return { quoteId: 'quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.100000', currency: 'CNY', protocolVersion: 3, specRevision: 1, effectiveSpec: request.parameters } },
-      submit: async request => { requests.push({ stage: 'submit', referenceIds: request.referenceIds }); return videoReceiptSchema.parse({ ...fixture.receipt, mock: false, protocolVersion: 3, specRevision: request.specRevision, effectiveSpec: request.requestedSpec, billingStatus: 'RESERVED', receiptId: 'receipt', clientRequestId: request.clientRequestId, profileId: request.profileId, configVersion: request.configVersion, operation: request.operation }) },
+      quote: async request => { requests.push({ stage: 'quote', referenceIds: request.referenceIds, creativeBrief: request.creativeBrief }); return { quoteId: 'quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.100000', currency: 'CNY', protocolVersion: 3, specRevision: 1, effectiveSpec: request.parameters } },
+      submit: async request => { requests.push({ stage: 'submit', referenceIds: request.referenceIds, creativeBrief: request.creativeBrief }); return videoReceiptSchema.parse({ ...fixture.receipt, mock: false, protocolVersion: 3, specRevision: request.specRevision, effectiveSpec: request.requestedSpec, billingStatus: 'RESERVED', receiptId: 'receipt', clientRequestId: request.clientRequestId, profileId: request.profileId, configVersion: request.configVersion, operation: request.operation }) },
     }) }
   const host = new MockVideoHostService(options)
   const request: VideoGenerationInput = { ...input(), profileId: 'video-v3', protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 }, parameterSources: { durationSeconds: 'user' }, specRevision: 1, localAssetIds: ['third', 'first', 'second'] }
@@ -40,8 +40,12 @@ test('V3 video uploads all selected references before one quote and one submissi
     const job = await host.generate('task-a', request)
     assert.equal(uploads, 3)
     assert.deepEqual(readIds, request.localAssetIds)
-    assert.deepEqual(requests, [{ stage: 'quote', referenceIds: ['reference-1', 'reference-2', 'reference-3'] }, { stage: 'submit', referenceIds: ['reference-1', 'reference-2', 'reference-3'] }])
-    assert.deepEqual((await f.store.getJob(scope, 'task-a', job.jobId))?.request.referenceIds, requests[0]!.referenceIds)
+    const creativeBrief = `Animate the provided image(s) according to the following instructions.\n\n${request.creativeBrief}`
+    const referenceIds = ['reference-1', 'reference-2', 'reference-3']
+    assert.deepEqual(requests, [{ stage: 'quote', referenceIds, creativeBrief }, { stage: 'submit', referenceIds, creativeBrief }])
+    const stored = await f.store.getJob(scope, 'task-a', job.jobId)
+    assert.deepEqual(stored?.request.referenceIds, referenceIds)
+    assert.equal(stored?.request.creativeBrief, creativeBrief)
     f.state.runtime.profiles[0]!.capabilities.maxReferenceCount = 2
     await assert.rejects(host.generate('task-a', request))
     assert.equal(uploads, 3)
@@ -128,6 +132,58 @@ async function realSetup() {
   }) }
   return { ...f, options, host: new MockVideoHostService(options) }
 }
+
+test('real host keeps an existing video mode prefix and shows the frozen prompt for approval', async t => {
+  const f = await realSetup()
+  t.after(() => f.host.stopAll())
+  const creativeBrief = 'Animate the provided image(s) according to the following instructions.\n\nSlow product movement'
+  const job = await f.host.generate('task-a', { ...input(), creativeBrief })
+  assert.deepEqual(f.approvals.map(approval => approval.toolName), ['video_from_image', 'video_from_image'])
+  assert.equal((f.approvals[1]?.input as { creativeBrief?: string } | undefined)?.creativeBrief, creativeBrief)
+  assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.request.creativeBrief, creativeBrief)
+})
+
+test('real host rejects a prefixed brief over the limit before approvals or media requests', async t => {
+  const f = await realSetup()
+  t.after(() => f.host.stopAll())
+  await assert.rejects(f.host.generate('task-a', { ...input(), creativeBrief: 'a'.repeat(4000) }),
+    { code: 'INVALID_ARGUMENT', message: '视频创作提示过长，请缩短正文，为自动添加的模式说明留出空间。' })
+  assert.equal(f.approvals.length, 0)
+  assert.equal(f.state.uploads, 0)
+  assert.equal(f.gateway.calls.quote, 0)
+  assert.equal(f.gateway.calls.submit, 0)
+  assert.deepEqual(await f.store.listJobs(scope), [])
+})
+
+test('real host reuses a same-run legacy text-to-video job without changing its stored prompt', async t => {
+  const f = await realSetup()
+  t.after(() => f.host.stopAll())
+  f.state.runtime = videoRuntimeSchema.parse({ ...f.state.runtime, tools: ['video_generate', 'video_get_job'],
+    profiles: f.state.runtime.profiles.map(profile => ({ ...profile, operations: ['text-to-video'],
+      capabilities: { ...profile.capabilities, supportsTextToVideo: true, supportsImageToVideo: false } })) })
+  const profile = f.state.runtime.profiles[0]!
+  const runId = 'legacy-video-run'
+  const request: VideoGenerationInput = { ...input(), operation: 'text-to-video', localAssetIds: [] }
+  const jobId = 'legacy-video-job'
+  const now = Date.now()
+  const quote = { quoteId: 'legacy-video-quote', requestHash: 'a'.repeat(64), expiresAt: now + 60_000,
+    status: 'quoted' as const, currency: 'CNY', amount: '0.900000' }
+  const original = { profileId: request.profileId, operation: request.operation, configVersion: profile.configVersion,
+    creativeBrief: request.creativeBrief, parameters: request.parameters, referenceIds: [],
+    quoteId: quote.quoteId, clientRequestId: 'legacy-video-request' }
+  await f.store.createJob(scope, { version: 1, scope, taskId: 'task-a', jobId, runId, executionMode: 'real',
+    request: original, quote, submission: 'NOT_SENT', receipt: null,
+    trackingStatus: 'ACTIVE', saveStatus: 'PENDING', error: null, createdAt: now, updatedAt: now })
+  await f.store.updateJob(scope, 'task-a', jobId, job => ({ ...job, submission: 'RECEIPTED',
+    receipt: realReceipt(videoReceiptSchema.parse({ ...fixture.receipt,
+      clientRequestId: original.clientRequestId, profileId: original.profileId, configVersion: original.configVersion, operation: original.operation,
+    })) }))
+  const retried = await f.host.generate('task-a', request, undefined, { runId, requestApproval: async () => assert.fail('Duplicate must not ask for approval') })
+  assert.equal(retried.jobId, jobId)
+  assert.equal(f.gateway.calls.quote, 0)
+  assert.equal(f.gateway.calls.submit, 0)
+  assert.deepEqual((await f.store.getJob(scope, 'task-a', jobId))?.request, original)
+})
 
 test('real host approves actual CNY quote, freezes mode, saves and reopens without byte IPC', async () => {
   const f = await realSetup()

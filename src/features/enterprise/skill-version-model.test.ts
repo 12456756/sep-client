@@ -82,6 +82,19 @@ test('public followers are one selection even when employee releases differ', ()
   assert.equal(unifiedSkillSelection({ ...item, bindings: [item.bindings[0], skill.bindings[1]] }), undefined);
 });
 
+test('removing a local copy hides its unavailable cloud entry from selection but preserves review history', () => {
+  const pending = { ...uploaded, changeSummary: '版本1' };
+  const usable = { ...pending, id: 'approved-personal', status: 'ENTERPRISE_APPROVED' };
+  const item = { ...skill, versions: [approved, pending, usable], localVersions: [], usableVersionIds: [approved.id, usable.id],
+    bindings: skill.bindings.map(binding => ({ ...binding, selectedVersionId: usable.id })) };
+  const options = buildSkillSelectionOptions(item);
+  assert.deepEqual(options.map(option => option.id), ['follow-platform', usable.id]);
+  assert.equal(unifiedSkillSelection(item, options)?.label, '版本1');
+  assert.equal(findSkillVersion(buildSkillVersions(item), pending.id)?.status, '云端版本 · 待企业审核');
+  assert.ok(buildSkillSelectionOptions({ ...item, localVersions: [local], usableVersionIds: [...item.usableVersionIds, local.idempotencyKey] })
+    .some(option => option.id === local.idempotencyKey));
+});
+
 test('missing public releases disable following but do not disable owner personal versions', () => {
   const item = { ...skill, bindings: skill.bindings.map(binding => ({ ...binding, currentVersion: null })) };
   assert.equal(buildSkillSelectionOptions(item)[0].usable, false);

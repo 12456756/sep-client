@@ -3,7 +3,8 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaGenerationStatus, MediaProfile, MediaSaveStatus, MediaTrackingStatus } from '../../src/shared/media'
 import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
 import type { MediaUpstreamError } from '../../src/shared/media-upstream-error'
-import type { MediaFailure } from '../../src/shared/media-failure'
+import { isImageMissingTargetRejection, type MediaFailure } from '../../src/shared/media-failure'
+import type { MediaDiagnosticErrors } from './arrangement-diagnostic'
 export type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaJobView, MediaProfile } from '../../src/shared/media'
 
 export interface MediaOutput {
@@ -65,6 +66,7 @@ export interface MediaRequest {
 
 export interface MediaGatewayPort {
   readonly quoteRequiresUploadedReferences?: boolean
+  validateV3Spec?(requestedSpec: ImageRequestedSpec): void
   uploadReference(subscriptionId: string, input: { bytes: Uint8Array; mime: ImageMime; sha256: string }, signal: AbortSignal): Promise<{ referenceId: string; sha256: string; expiresAt: number }>
   quote(subscriptionId: string, request: Omit<MediaRequest, 'clientRequestId' | 'quoteId'>, signal: AbortSignal): Promise<unknown>
   submit(subscriptionId: string, request: MediaRequest, signal: AbortSignal): Promise<unknown>
@@ -110,6 +112,7 @@ export interface LocalMediaJob {
   errorCode?: MediaReceipt['errorCode']
   failure?: MediaFailure
   submissionFailure?: MediaFailure
+  diagnosticErrors?: MediaDiagnosticErrors
   outputErrors?: MediaReceipt['outputErrors']
   upstreamError?: MediaUpstreamError
   /** Last provider status query, retained for recovery diagnostics. */
@@ -134,6 +137,12 @@ export interface MediaRunSnapshot {
   capabilities: MediaCapabilities | null
   runtimeSnapshot?: EmployeeRuntimeSnapshot
   createdAt: number
+}
+
+export function missingImageTargetFailure(job: LocalMediaJob): MediaFailure | undefined {
+  // Older jobs may have saved the rejection separately before an unsuccessful query.
+  if (job.submission !== 'MAYBE_SENT' || job.receiptId || !['FAILED', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)) return undefined
+  return [job.failure, job.submissionFailure].find(isImageMissingTargetRejection)
 }
 
 export type ImageReplacementDecision = 'approved' | 'declined'

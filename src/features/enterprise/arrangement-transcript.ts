@@ -13,6 +13,7 @@ export interface TranscriptEntry {
 export interface NodeTranscript {
   step: WorkStep
   entries: TranscriptEntry[]
+  diagnosticRunId?: string
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -61,6 +62,7 @@ function snapshotThinking(data: Record<string, unknown>): string {
 /** Excludes prompts, tool arguments/results and session internals from UI state. */
 export function selectTranscriptEvent(event: TaskExecutionEvent): TaskExecutionEvent | null {
   const data = record(event.data)
+  if (event.type === 'run_failed') return data.diagnosticAvailable === true ? { ...event, data: { diagnosticAvailable: true } } : null
   const type = event.type === 'arrangement_node_progress' ? data.eventType : event.type
   if (typeof type !== 'string' || (!PROGRESS_TYPES.has(type) && !['message_end', 'arrangement_node_started', 'arrangement_node_completed', 'arrangement_node_failed'].includes(type))) return null
   const safe: Record<string, unknown> = {}
@@ -68,6 +70,7 @@ export function selectTranscriptEvent(event: TaskExecutionEvent): TaskExecutionE
     const value = data[key]
     if (typeof value === 'string' || typeof value === 'boolean') safe[key] = value
   }
+  if (event.type === 'arrangement_node_failed' && data.diagnosticAvailable === true) safe.diagnosticAvailable = true
   if (type === 'message_end' || type === 'turn_end') {
     const thinking = snapshotThinking(data)
     if (thinking) safe.thinking = thinking
@@ -78,12 +81,17 @@ export function selectTranscriptEvent(event: TaskExecutionEvent): TaskExecutionE
 
 export function buildArrangementTranscript(steps: readonly WorkStep[], source: readonly TaskExecutionEvent[]): NodeTranscript[] {
   const events = mergeTranscriptEvents([], source)
-  const result = steps.map(step => ({ step, entries: [] as TranscriptEntry[] }))
+  const result: NodeTranscript[] = steps.map(step => ({ step, entries: [] }))
   const nodes = new Map(result.map(node => [node.step.id, node]))
   const runNodes = new Map<string, string>()
   const wrappedRuns = new Set<string>()
   for (const event of events) {
     const data = record(event.data)
+    const node = typeof data.nodeId === 'string' ? nodes.get(data.nodeId) : undefined
+    if (node && ['arrangement_node_started', 'arrangement_node_completed', 'arrangement_node_failed'].includes(event.type)) {
+      node.diagnosticRunId = event.type === 'arrangement_node_failed' && data.diagnosticAvailable === true && typeof data.nodeRunId === 'string'
+        ? data.nodeRunId : undefined
+    }
     if (typeof data.nodeRunId === 'string' && typeof data.nodeId === 'string') {
       runNodes.set(data.nodeRunId, data.nodeId)
       if (event.type === 'arrangement_node_progress') wrappedRuns.add(data.nodeRunId)

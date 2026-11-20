@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Copy, LoaderCircle, Minus, Plus, RotateCcw, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Copy, Ellipsis, LoaderCircle, Minus, Plus, RotateCcw, X } from 'lucide-react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly'
@@ -7,6 +7,8 @@ import type { DocumentPreview, DocumentPreviewRequest } from '../../shared/docum
 import { documentPreviewFrame } from './document-preview-frame'
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { operationFailure, responseError } from '../../shared/arrangement-feedback'
+import { useContentCopy } from '../ContentCopyMenu'
+import { useFileMenuCommands } from './file-menu-actions'
 
 const PdfPreview = lazy(() => import('./PdfDocumentPreview'))
 const markdownPlugins = [remarkGfm, remarkCjkFriendly]
@@ -17,6 +19,8 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
   const nodeId = 'nodeId' in props ? props.nodeId : undefined
   const deliverableId = 'deliverableId' in props ? props.deliverableId : undefined
   const fileId = 'fileId' in props ? props.fileId : undefined
+  const attachmentId = 'attachmentId' in props ? props.attachmentId : undefined
+  const sha256 = 'sha256' in props ? props.sha256 : undefined
   const { capture } = useOperationFeedback(`${taskId}:${fileId}:${nodeId}:${deliverableId}:${version}`)
   const dialog = useRef<HTMLDialogElement>(null)
   const close = useRef<HTMLButtonElement>(null)
@@ -40,14 +44,15 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
       notice.show(message, 'error', `document-preview:${taskId}:${fileId}:${nodeId}:${deliverableId}:${version}:${attempt}`, true)
     }
     setData(null); setError(null); setSection(0); setZoom(1)
-    const request: DocumentPreviewRequest = fileId !== undefined ? { taskId, fileId } : { taskId, nodeId: nodeId!, deliverableId: deliverableId! }
+    const request: DocumentPreviewRequest = attachmentId !== undefined && sha256 !== undefined ? { taskId, attachmentId, sha256 }
+      : fileId !== undefined ? { taskId, fileId } : { taskId, nodeId: nodeId!, deliverableId: deliverableId! }
     void window.electronAPI.previewArrangementDocument(request).then(result => {
       if (!active || !notice.isCurrent()) return
       if (!result.success || !result.data) { failed(responseError(result, 'documentPreview').message); return }
       setData(result.data)
     }).catch(() => failed(operationFailure('documentPreview')))
     return () => { active = false }
-  }, [taskId, nodeId, deliverableId, fileId, version, attempt, capture])
+  }, [taskId, nodeId, deliverableId, fileId, attachmentId, sha256, version, attempt, capture])
   const content = data?.content
   const text = content?.kind === 'text' || content?.kind === 'markdown' ? content.text : ''
   const count = content?.kind === 'html' ? content.sections.length : Math.max(1, Math.ceil(text.length / 100_000))
@@ -62,9 +67,16 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
     dialog.current?.close()
     onClose()
   }
-  return <dialog ref={dialog} className="document-preview-dialog" aria-label={`文档预览：${name}`} onCancel={event => { event.preventDefault(); closePreview() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) closePreview() }}>
-    <header className="document-preview-heading"><div><strong title={name}>{name}</strong><small>{fileId !== undefined ? '当前对话成果' : data?.source === 'verified-original' ? '已核对原件' : data?.source === 'recovered-snapshot' ? '历史恢复版本' : '节点验收版本'}</small></div>
+  const request: DocumentPreviewRequest = attachmentId !== undefined && sha256 !== undefined ? { taskId, attachmentId, sha256 }
+    : fileId !== undefined ? { taskId, fileId } : { taskId, nodeId: nodeId!, deliverableId: deliverableId! }
+  const commands = useFileMenuCommands(request, name, closePreview)
+  const { showMenu, menu } = useContentCopy()
+  return <dialog ref={dialog} className="document-preview-dialog" aria-label={`文档预览：${name}`} onCancel={event => { event.preventDefault(); closePreview() }}
+    onContextMenu={event => showMenu(event, commands)} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation(); else showMenu(event, commands) }}
+    onClick={event => { if (event.target === event.currentTarget) closePreview() }}>
+    <header className="document-preview-heading"><div><strong title={name}>{name}</strong><small>{attachmentId !== undefined ? '对话原附件' : fileId !== undefined ? '当前对话成果' : data?.source === 'verified-original' ? '已核对原件' : data?.source === 'recovered-snapshot' ? '历史恢复版本' : '节点验收版本'}</small></div>
       <div className="document-preview-actions">
+        <button type="button" title="文件操作" aria-label="文件操作" aria-haspopup="menu" onClick={event => showMenu(event, commands)}><Ellipsis size={17} aria-hidden /></button>
         <button type="button" title="重新读取" aria-label="重新读取文档" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={17} /></button>
         <button ref={close} type="button" title="关闭预览" aria-label="关闭文档预览" onClick={closePreview}><X size={18} /></button>
       </div>
@@ -91,5 +103,6 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
               </div> : <pre>{part}</pre>}
             </div>}
           </>}
+    {menu}
   </dialog>
 }

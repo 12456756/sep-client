@@ -18,3 +18,10 @@ export const mediaFailureSchema = z.object({
 
 /** Safe request diagnostics with an optional redacted upstream explanation. */
 export type MediaFailure = z.infer<typeof mediaFailureSchema>
+
+export const IMAGE_MISSING_TARGET_MESSAGE = '图片服务判定需要参考图，但没有收到参考图。纯文生图请只描述画面；如需参考图，请添加图片并使用图片编辑。'
+
+export function isImageMissingTargetRejection(failure: MediaFailure | undefined): boolean {
+  return failure?.stage === 'image-submit' && failure.source === 'upstream' && failure.httpStatus === 400 &&
+    failure.diagnostic?.code === 'upstream_missing_image_target'
+}

@@ -12,6 +12,8 @@ interface Options {
   openFileDirectory(filePath: string): Promise<void>
   read(scope: TaskOwnerScope, taskId: string, file: FinalDeliveryFile, workspace: string): Promise<{ bytes: Uint8Array; source: DocumentPreview['source'] }>
   readConversation?(scope: TaskOwnerScope, taskId: string, fileId: string): Promise<{ name: string; format: string; version: string; bytes: Uint8Array } | null>
+  readAttachment?(taskId: string, attachmentId: string, sha256: string): Promise<{ name: string; format: string; version: string; bytes: Uint8Array }>
+  writeCopy?(path: string, bytes: Uint8Array, format: string): Promise<void>
   render(format: string, bytes: Uint8Array, validate: () => void): Promise<DocumentPreviewContent>
   stop?: () => void
 }
@@ -40,6 +42,14 @@ export class DocumentPreviewService {
     const assert = () => {
       const current = requireScope(this.options.scope)
       if (epoch !== this.epoch || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    }
+    if ('attachmentId' in input) {
+      const file = await this.options.readAttachment?.(input.taskId, input.attachmentId, input.sha256)
+      assert()
+      if (!file) throw new AppError('NOT_FOUND')
+      const content = await this.convert(JSON.stringify([scope, input, file.format, file.version]), file.format, file.bytes, assert)
+      assert()
+      return { name: file.name, format: file.format, version: file.version, source: 'attachment', content }
     }
     if ('fileId' in input) {
       const read = async () => {
@@ -85,6 +95,7 @@ export class DocumentPreviewService {
 
   async openDirectory(raw: DocumentPreviewRequest): Promise<void> {
     const input = documentPreviewRequestSchema.parse(raw)
+    if ('attachmentId' in input) throw new AppError('INVALID_ARGUMENT')
     const scope = requireScope(this.options.scope), epoch = this.epoch
     const assert = () => {
       const current = requireScope(this.options.scope)
@@ -103,6 +114,32 @@ export class DocumentPreviewService {
       throw new AppError('INTERNAL_ERROR', { cause: error })
     }
     assert()
+  }
+
+  async saveCopy(raw: DocumentPreviewRequest, choose: (name: string, format: string) => Promise<string | null>): Promise<boolean> {
+    const input = documentPreviewRequestSchema.parse(raw)
+    const scope = requireScope(this.options.scope), epoch = this.epoch
+    const assert = () => {
+      const current = requireScope(this.options.scope)
+      if (epoch !== this.epoch || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    }
+    const file = 'attachmentId' in input ? await this.options.readAttachment?.(input.taskId, input.attachmentId, input.sha256)
+      : 'fileId' in input ? await this.options.readConversation?.(scope, input.taskId, input.fileId)
+        : await this.options.getDelivery(scope, input.taskId, input.nodeId, input.deliverableId).then(async delivery => {
+          assert()
+          if (delivery?.status !== 'completed' || delivery.file.sourceArtifact || !['doc', 'docx'].includes(delivery.file.format.toLowerCase())) return null
+          const { bytes } = await this.options.read(scope, input.taskId, delivery.file, delivery.workspace)
+          return { name: delivery.file.path.split(/[\\/]/).pop() ?? 'document', format: delivery.file.format, bytes }
+        })
+    assert()
+    const format = file?.format.toLowerCase()
+    if (!file || (format !== 'doc' && format !== 'docx') || !this.options.writeCopy) throw new AppError('NOT_FOUND', { message: '当前 Word 文件不可另存。' })
+    const name = file.name.split(/[\\/]/).pop()?.replace(/[<>:"|?*]/g, '_') || 'document.' + format
+    const selected = await choose(name, format)
+    assert()
+    if (!selected) return false
+    await this.options.writeCopy(selected, file.bytes, format)
+    return true
   }
 
   private async convert(key: string, format: string, bytes: Uint8Array, assert: () => void): Promise<DocumentPreviewContent> {

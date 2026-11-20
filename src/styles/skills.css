@@ -16,12 +16,12 @@
 .skill-rows { margin:0; padding:0; list-style:none; }
 .skill-row { min-height:78px; border-top:1px solid var(--ent-line-soft); }
 .skill-row > * { min-width:0; }
-.skill-row-identity h2 { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:0; font-size:15px; font-weight:600; }
+.skill-row-identity h2 { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:0; font-size:var(--ent-fs-nav); font-weight:600; }
 .skill-row-identity h2 button { font:inherit; color:var(--ent-ink); text-align:left; border:0; background:none; padding:0; overflow-wrap:anywhere; cursor:pointer; }
 .skill-edit-status { display:flex; align-items:center; gap:5px; margin-top:6px; color:var(--ent-brand-ink); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
 .skill-edit-status > svg { flex-shrink:0; }
 .skill-edit-status.is-failed { color:var(--ent-danger); }
-.skill-description { margin-top:4px; font-size:12px; color:var(--ent-ink-3); }
+.skill-description { margin-top:4px; font-size:var(--ent-fs-body); color:var(--ent-ink-3); }
 .skill-description summary { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; list-style:none; }
 .skill-description[open] summary { color:var(--ent-brand-ink); }
 .skill-description p { margin:6px 0 0; overflow-wrap:anywhere; line-height:1.7; }
@@ -35,7 +35,7 @@
 .skill-switch-recovery { display:flex; flex-wrap:wrap; gap:8px; }
 .skill-row-open { white-space:nowrap; justify-content:flex-end; }
 .skill-badge { display:inline-block; padding:2px 6px; border-radius:4px; color:var(--ent-brand-ink); background:var(--ent-brand-soft); font-size:11px; font-weight:400; white-space:nowrap; vertical-align:middle; }
-.skill-error { color:var(--ent-danger); font-size:13px; overflow-wrap:anywhere; }
+.skill-error { color:var(--ent-danger); font-size:var(--ent-fs-body); overflow-wrap:anywhere; }
 .skill-state-banner { justify-content:space-between; align-items:center; }
 .skill-state-banner > div { display:grid; gap:2px; min-width:0; }
 .skill-state-banner strong { margin:0; }

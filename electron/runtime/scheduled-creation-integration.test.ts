@@ -11,7 +11,9 @@ import { ScheduledTaskStore } from '../data/scheduled-task-store'
 import { WorkPlanStore } from '../data/work-plan-store'
 import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskRunStore } from '../data/task-run-store'
+import { MediaStore } from '../data/media-store'
 import { ArrangementCheckpointStore } from '../data/arrangement-checkpoint-store'
+import { MediaService } from '../service/media-service'
 import { ScheduledCreationService } from '../service/scheduled-creation-service'
 import { ScheduledTaskService } from '../service/scheduled-task-service'
 import { ScheduledTaskRunner } from '../service/scheduled-task-runner'
@@ -19,6 +21,161 @@ import { PiEmployeePlanner } from './pi-employee-planner'
 import { TaskManager } from './task-manager'
 import { TaskRuntime } from './task-runtime'
 import type { EmployeeRuntimeConfig } from './run-types'
+import { AppError } from '../errors/app-error'
+import { emptyTextFilenameSchema, type ScheduleInput } from '../../src/shared/scheduled-tasks'
+import { occurrenceId } from '../domain/scheduled-task'
+import { createScheduledEmptyText } from '../data/arrangement-delivery-files'
+
+for (const mode of ['general', 'empty-text'] as const) {
+  test(`manual scheduled ${mode} confirms, runs, records delivery, and does not replay on restart`, { timeout: 30000 }, async t => {
+    const root = await mkdtemp(join(tmpdir(), `sep-${mode}-`))
+    const shutdown: Array<() => Promise<void>> = []
+    t.after(async () => {
+      for (const stop of shutdown) await stop()
+      await rm(root, { recursive: true, force: true })
+    })
+    let now = Date.UTC(2026, 10, 20, 2, 30)
+    const scheduledAt = now + 60000
+    const next = scheduledAt + 86400000
+    let calls = 0, planningCalls = 0, authorizeCalls = 0, revoked = false
+    let failNodeAuthorization = false, boundAuthorizationCalls = 0
+    const grant = async (model: string, expected?: string): Promise<EmployeeRuntimeConfig> => {
+      authorizeCalls++
+      assert.equal(mode, 'general')
+      assert.equal(model, modelId)
+      if (expected !== undefined) assert.equal(expected, 'model-grant')
+      if (revoked && expected !== undefined) throw new AppError('MODEL_NOT_ALLOWED')
+      if (failNodeAuthorization && expected !== undefined && ++boundAuthorizationCalls === 2) throw new AppError('NOT_FOUND')
+      return { subscriptionId: 'model-grant', modelId: model, gatewayUrl: 'http://gateway.invalid' }
+    }
+    const forbidden = () => assert.fail('Neither mode should authorize or replace an employee')
+    const makeBackend = async () => {
+      const storage = new ScheduledTaskStore(root), runs = new TaskRunStore(root), tasks = new TaskManager(root, null, undefined, runs)
+      const workPlans = new WorkPlanStore(root), metadata = new TaskMetadataStore(root), checkpoints = new ArrangementCheckpointStore(root)
+      const owner = { currentScope: () => tasks.getCurrentUserScope() }
+      const media = new MediaService({ scope: owner, store: new MediaStore(root), getTask: id => tasks.getTask(id),
+        authorize: forbidden, requestApproval: forbidden })
+      const imagePrepare = t.mock.method(media, 'prepareRun')
+      const imageWait = t.mock.method(media, 'waitForRun')
+      const video = { prepareRun: async () => assert.fail('A file-only schedule must not initialize video tools'),
+        waitForRun: async () => assert.fail('A file-only schedule must not wait for video jobs'), stopTask: async () => {} }
+      const planner = new PiEmployeePlanner({ gatewayUrl: 'http://gateway.invalid', workspaceRoot: root, getRefreshToken: () => 'test-only', onAuthenticationRequired() {},
+        createWorker: options => ({ async run() {
+          assert.equal(mode, 'general'); planningCalls++
+          assert.equal(options.context.subscriptionId, 'model-grant')
+          assert.equal(options.context.disableTools, true)
+          assert.match(options.context.fixedSystemPrompt ?? '', /通用助手/)
+          assert.doesNotMatch(options.context.fixedSystemPrompt ?? '', /员工资料：|判断职责/)
+          const file = { ...employeePlan.deliverables[0]!, contentPolicy: 'empty', contentOutline: ['No content'], acceptanceCriteria: ['Exactly zero bytes'] }
+          await options.onResponseSettled?.({ text: JSON.stringify({ ...employeePlan, deliverables: [file] }), stopReason: 'stop' })
+        }, async abort() {}, async dispose() {} }),
+      })
+      const runtime = new TaskRuntime({ taskManager: tasks, taskRunStore: runs, workPlanStore: workPlans, arrangementCheckpointStore: checkpoints,
+        getRefreshToken: () => 'test-only', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest: forbidden,
+        resolveEmployee: forbidden, authorizeScheduledEmployee: forbidden, findEmployeeReplacement: forbidden, authorizeScheduledModel: grant, media, video,
+        createWorker: options => ({ async run() {
+          assert.equal(mode, 'general'); calls++
+          assert.equal(options.context.subscriptionId, 'model-grant')
+          assert.equal(options.context.additionalSkillPaths, undefined)
+          assert.equal(options.context.employeeProfile, undefined)
+          assert.match(options.context.fixedSystemPrompt ?? '', /通用助手节点执行要求/)
+          assert.doesNotMatch(options.context.fixedSystemPrompt ?? '', /员工资料：/)
+          assert.equal(options.context.mediaTools, undefined)
+          assert.equal(options.context.videoTools, undefined)
+          await writeFile(join(options.context.workspaceDir, 'report.txt'), Buffer.alloc(0), { flag: 'wx' })
+          await options.onResponseSettled?.({ text: JSON.stringify({ nodeId: 'employee-work', summary: 'Report delivered', finalDeliverables: [{ id: 'report', path: 'report.txt' }] }), stopReason: 'stop' })
+        }, async abort() {}, async dispose() {} }),
+      })
+      const runner = new ScheduledTaskRunner({ scope: owner, tasks, workPlans, metadata, checkpoints, runs, storage, authorize: forbidden, authorizeModel: grant, now: () => now,
+        execution: async () => runtime })
+      const schedules = new ScheduledTaskService({ repository: storage, scope: owner, employee: forbidden, authorizeModel: grant, runner, now: () => now,
+        planner: (input, profile, signal, id) => planner.plan(input, profile, signal, id) })
+      shutdown.push(async () => { schedules.stop(); await runtime.stopAll() })
+      await tasks.initialize(); await tasks.setCurrentUser(scope.memberId, scope.enterpriseId)
+      return { storage, tasks, workPlans, metadata, checkpoints, runs, schedules, runtime, imagePrepare, imageWait }
+    }
+    const backend = await makeBackend()
+    const common = { name: mode, goal: 'Create a file', workDir: root, timezone: 'Asia/Shanghai', scheduledAt,
+      recurrence: { frequency: 'daily', interval: 1 }, permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } } as const
+    const input: ScheduleInput = mode === 'general' ? { ...common, mode, modelId } : { ...common, mode, emptyText: { naming: 'scheduled' } }
+    const definition = await backend.schedules.create(randomUUID(), input)
+    await assert.rejects(backend.schedules.confirm(definition.id, definition.revision))
+    const planned = await backend.schedules.plan(definition.id, definition.revision)
+    await backend.schedules.confirm(planned.id, planned.revision)
+    now = scheduledAt
+    await backend.schedules.scan()
+    const occurrence = (await backend.schedules.list()).occurrences[0]!
+    const waitForTerminalWork = async (instance: typeof backend, taskId: string) => {
+      const deadline = Date.now() + 10000
+      while (Date.now() < deadline) {
+        const task = await instance.tasks.getTask(taskId)
+        if (task && ['completed', 'failed', 'interrupted'].includes(task.status) && !task.activeRunId) return task
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      assert.fail(`Timed out waiting for work ${taskId}`)
+    }
+    const task = await waitForTerminalWork(backend, occurrence.taskId)
+    await backend.schedules.scan()
+    assert.equal((await backend.schedules.list()).occurrences[0]!.status, 'completed', JSON.stringify(task))
+    assert.equal(task.subscriptionId, null)
+    assert.deepEqual((await backend.metadata.load(scope, task.id))?.participantSubscriptionIds, [])
+    const filename = mode === 'empty-text' ? '20261120-1031.txt' : 'report.txt'
+    const bytes = await readFile(join(task.workDir!, filename))
+    assert.equal(bytes.length, 0)
+    assert.equal(backend.imagePrepare.mock.callCount(), 0)
+    assert.equal(backend.imageWait.mock.callCount(), 0)
+    const delivery = (await backend.checkpoints.get(scope, task.id))?.state.nodes[0]?.delivery
+    assert.equal(delivery?.finalFiles[0]?.size, bytes.length)
+    assert.ok(delivery?.finalFiles[0]?.snapshot)
+    const records = await backend.runs.list(scope, task.id)
+    assert.equal(records.length, 2)
+    assert.ok(records.every(item => item.outcome === 'completed'))
+    backend.schedules.stop(); await backend.runtime.stopAll()
+    const restarted = await makeBackend()
+    await restarted.schedules.recover(); await restarted.schedules.scan()
+    assert.deepEqual(await restarted.runs.list(scope, task.id), records)
+    assert.equal(calls, mode === 'general' ? 1 : 0)
+    assert.equal(planningCalls, mode === 'general' ? 1 : 0)
+    now = next
+    if (mode === 'general') {
+      failNodeAuthorization = true
+      await restarted.schedules.scan()
+      const failed = (await restarted.schedules.list()).occurrences.find(item => item.scheduledAt === next)!
+      assert.equal((await waitForTerminalWork(restarted, failed.taskId)).status, 'failed')
+      await restarted.schedules.scan()
+      const result = (await restarted.schedules.list()).occurrences.find(item => item.id === failed.id)!
+      assert.equal(result.status, 'failed')
+      assert.equal(result.error?.code, 'EXECUTION_FAILED')
+      assert.equal(calls, 1)
+      failNodeAuthorization = false
+      now = next + 86400000
+      revoked = true
+      await restarted.schedules.scan()
+      const blocked = (await restarted.schedules.list()).occurrences.find(item => item.scheduledAt === now)!
+      assert.equal(blocked.status, 'blocked')
+      assert.equal(blocked.error?.code, 'MODEL_NOT_ALLOWED')
+      assert.equal(calls, 1)
+    } else {
+      const directory = await restarted.storage.prepareWorkspace(root, occurrenceId(definition.id, next))
+      const target = join(directory, '20261121-1031.txt')
+      await writeFile(target, 'keep existing data')
+      assert.throws(() => emptyTextFilenameSchema.parse('../escape.txt'))
+      assert.throws(() => emptyTextFilenameSchema.parse('NUL.txt'))
+      assert.throws(() => emptyTextFilenameSchema.parse('ok:stream.txt'))
+      await assert.rejects(createScheduledEmptyText(directory, occurrenceId(definition.id, next), 'cancelled.txt', () => { throw new DOMException('Cancelled', 'AbortError') }), { name: 'AbortError' })
+      await assert.rejects(readFile(join(directory, 'cancelled.txt')), { code: 'ENOENT' })
+      await restarted.schedules.scan()
+      const conflict = (await restarted.schedules.list()).occurrences.find(item => item.scheduledAt === next)!
+      await waitForTerminalWork(restarted, conflict.taskId)
+      await restarted.schedules.scan()
+      const failed = (await restarted.schedules.list()).occurrences.find(item => item.id === conflict.id)!
+      assert.equal(failed.status, 'failed')
+      assert.equal(failed.error?.code, 'FILE_ALREADY_EXISTS')
+      assert.equal(await readFile(target, 'utf8'), 'keep existing data')
+      assert.equal(authorizeCalls, 0)
+    }
+  })
+}
 
 const scope = { memberId: 'member', enterpriseId: 'enterprise' }
 const modelId = 'chosen-model'

@@ -13,7 +13,9 @@ import { PromptExamples } from './PromptExamples';
 import { ConversationEmployeePicker } from '../ConversationEmployeePicker';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
-import { AttachmentComposer } from '../attachments/AttachmentComposer';
+import { AttachmentComposer, type AttachmentComposerOperations } from '../attachments/AttachmentComposer';
+import { FileMentionChips, FileMentionPicker, useFileMention } from '../attachments/FileMentionPicker';
+import { FileMentionEditor } from '../attachments/FileMentionEditor';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 import { KnowledgeSelector } from '../KnowledgeSelector';
 import type { ConnectorId } from '../../../shared/connectors';
@@ -44,8 +46,10 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const composerId = useRef(`chat-${crypto.randomUUID()}`);
   const speech = useSpeechInput({ contextKey: `chat:${employeeId}`, value: text, onChange: setText, disabled: busy });
   const input = speech.inputProps.ref;
+  const attachmentOps = useRef<AttachmentComposerOperations>(null);
+  const mention = useFileMention({ input, text, update: value => { setText(value); setEditorVersion(version => version + 1); }, attachments, attachmentSessionId: attachmentSession?.sessionId, operations: attachmentOps, disabled: busy || speech.busy || attachmentsBusy });
   const employee = employees.find(item => item.id === employeeId);
-  const ready = Boolean(employee && text.trim() && models.includes(settings.modelId)) && !attachmentsBusy;
+  const ready = Boolean(employee && text.trim() && models.includes(settings.modelId)) && !attachmentsBusy && !mention.invalid && !mention.pending;
   const onPasteEdit = useCallback(({ text: pasted, selectionStart, selectionEnd, editorVersion: pastedVersion }: { text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
     if (pastedVersion !== editorVersion) return false;
     setText(current => `${current.slice(0, selectionStart)}${pasted}${current.slice(selectionEnd)}`);
@@ -55,7 +59,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const start = () => {
     if (ready && !busy && !speech.busy) {
       setSubmitted(true);
-      onStart(employeeId, withComposerConnector(text, connectorId), attachments, attachmentSession);
+      onStart(employeeId, withComposerConnector(mention.submissionText, connectorId), mention.attachments, attachmentSession);
     }
   };
 
@@ -71,7 +75,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
       <div className="ent-chat-ask">
         <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
-        <textarea
+        <FileMentionEditor mention={mention}
           data-composer-id={composerId.current}
           data-editor-version={editorVersion}
           {...speech.inputProps}
@@ -79,8 +83,12 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
           value={text}
           placeholder="随心输入"
           aria-label="工作目标"
-          onChange={event => { setText(event.target.value); setEditorVersion(version => version + 1); }}
+          {...mention.editorAria}
+          onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)}
+          onCompositionStart={() => { speech.inputProps.onCompositionStart(); mention.compositionStart(); }}
+          onCompositionEnd={event => { speech.inputProps.onCompositionEnd(); mention.compositionEnd(event.currentTarget); }}
           onKeyDown={event => {
+            mention.keyDown(event);
             speech.inputProps.onKeyDown(event);
             if (isSubmitEnter(event, speech.isComposing())) {
               event.preventDefault();
@@ -88,8 +96,10 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
             }
           }}
         />
+        <FileMentionChips mention={mention} />
         <div className="ent-chat-askbar">
-          <AttachmentComposer connectorId={connectorId} onConnectorChange={setConnectorId} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+          <AttachmentComposer operationsRef={attachmentOps} visibleAttachments={mention.unreferencedAttachments} connectorId={connectorId} onConnectorChange={setConnectorId} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+          <FileMentionPicker mention={mention} />
           <ConversationEmployeePicker employees={employees} employeeId={employeeId} onChange={onEmployeeChange} onChoose={() => input.current?.focus()} />
           <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />
           <RunSettingsBar

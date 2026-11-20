@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ArrangementWorkPlan, EmployeeWorkPlan, ScheduleInput, ScheduledOccurrence } from '../../src/shared/scheduled-tasks'
@@ -19,7 +19,7 @@ const scope = { memberId: 'member', enterpriseId: 'enterprise' }
 const plan: EmployeeWorkPlan = { status: 'ready', objective: 'Deliver a report', instruction: 'Write the report file', expectedOutput: 'A usable file',
   deliverables: [{ id: 'report', name: 'Report', format: 'txt', path: 'report.txt', contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }] }
 
-for (const mode of ['success', 'missing-file', 'invalid-submission', 'admission-uncertain'] as const) {
+for (const mode of ['success', 'empty-file', 'missing-file', 'invalid-submission', 'admission-uncertain'] as const) {
   test(`scheduled execution uses the existing runtime and validates actual delivery: ${mode}`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'sep-scheduled-integration-'))
     const runs = new TaskRunStore(root)
@@ -32,7 +32,10 @@ for (const mode of ['success', 'missing-file', 'invalid-submission', 'admission-
     let validations = 0
     let skillLoads = 0
     let plannerCalls = 0
-    let now = 1000
+    const scheduledAt = mode === 'empty-file' ? Date.parse('2026-11-20T04:00:00Z') : 2000
+    const workPlan = mode === 'empty-file' ? { ...plan, instruction: '按本次运行开始时间生成空白文本文件，文件名使用 yyyyMMdd-HHmm.txt。',
+      deliverables: [{ ...plan.deliverables[0], path: 'yyyyMMdd-HHmm.txt', acceptanceCriteria: ['文件大小为 0 字节。'] }] } : plan
+    let now = scheduledAt - 1000
     const employee: EmployeeRuntimeConfig = { subscriptionId: 'sub', modelId: 'model', gatewayUrl: 'http://gateway.invalid' }
     const runtime = new TaskRuntime({ taskManager: tasks, taskRunStore: runs, workPlanStore: workPlans, arrangementCheckpointStore: checkpoints,
       getRefreshToken: () => 'test-only', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
@@ -42,15 +45,17 @@ for (const mode of ['success', 'missing-file', 'invalid-submission', 'admission-
         async run() {
           executions++
           assert.deepEqual(options.context.additionalSkillPaths, ['current-employee-skills'])
-          assert.match(options.context.fixedSystemPrompt ?? '', /report.txt/)
-          if (mode === 'success') await writeFile(join(options.context.workspaceDir, 'report.txt'), 'Verified research findings', 'utf8')
+          const path = mode === 'empty-file' ? executions === 1 ? '20261120-1200.txt' : '20261120-1205.txt' : 'report.txt'
+          assert.ok(options.context.fixedSystemPrompt?.includes(path))
+          if (mode === 'empty-file') await writeFile(join(options.context.workspaceDir, path), Buffer.alloc(0), { flag: 'wx' })
+          if (mode === 'success') await writeFile(join(options.context.workspaceDir, path), 'Verified research findings', 'utf8')
           for (let i = 0; i < 5; i++) {
             validations++
             const response = mode === 'invalid-submission' ? { status: 'blocked', reason: 'Required sales input is missing' }
-              : { nodeId: 'employee-work', summary: 'Report ready', finalDeliverables: [{ id: 'report', path: 'report.txt' }] }
+              : { nodeId: 'employee-work', summary: 'Report ready', finalDeliverables: [{ id: 'report', path }] }
             const correction = await options.onResponseSettled?.({ text: JSON.stringify(response), stopReason: 'stop' })
             if (!correction) return
-            assert.equal(mode, 'missing-file')
+            assert.ok(mode === 'missing-file' || mode === 'invalid-submission')
           }
           assert.fail('Invalid delivery should have terminated the same-session validation loop')
         },
@@ -58,7 +63,7 @@ for (const mode of ['success', 'missing-file', 'invalid-submission', 'admission-
       }),
     })
     const runner = new ScheduledTaskRunner({ scope: { currentScope: () => tasks.getCurrentUserScope() }, tasks, workPlans, metadata, checkpoints, runs, storage,
-      authorize: async () => employee, execution: async () => ({
+      authorize: async () => employee, now: () => now, execution: async () => ({
         executeTask: (id, options) => {
           let checks = 0
           return runtime.executeTask(id, { beforeAdmission: () => {
@@ -68,16 +73,24 @@ for (const mode of ['success', 'missing-file', 'invalid-submission', 'admission-
         }, cancelTask: (id, reason) => runtime.cancelTask(id, reason),
       }) })
     const makeService = () => new ScheduledTaskService({ repository: new ScheduledTaskStore(root), scope: { currentScope: () => tasks.getCurrentUserScope() },
-      employee: async () => employee, planner: async () => { plannerCalls++; return plan }, runner, now: () => now })
+      employee: async () => employee, planner: async () => { plannerCalls++; return workPlan }, runner, now: () => now,
+      arrangementPlanner: async () => {
+        plannerCalls++
+        return { status: 'ready', kind: 'arrangement', title: 'Empty file', intentAnalysis: null,
+          nodes: [{ id: 'employee-work', title: 'Empty file', subscriptionId: 'sub', modelId: 'model', objective: workPlan.objective,
+            instruction: workPlan.instruction, expectedOutput: workPlan.expectedOutput, deliverables: workPlan.deliverables,
+            dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }
+      } })
     const service = makeService()
     t.after(async () => { service.stop(); await runtime.stopAll(); await rm(root, { recursive: true, force: true }) })
     await tasks.initialize(); await tasks.setCurrentUser(scope.memberId, scope.enterpriseId)
     const input: ScheduleInput = { name: 'Report', goal: 'Produce a report', subscriptionId: 'sub', modelId: 'model', workDir: root,
-      scheduledAt: 2000, timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
+      scheduledAt, timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' },
+      ...(mode === 'empty-file' ? { mode: 'auto', recurrence: { frequency: 'cron', interval: 1, expression: '*/5 * * * *', preset: 'custom' } } : {}) }
     const created = await service.create('request', input)
     const planned = await service.plan(created.id, created.revision)
     await service.confirm(created.id, planned.revision)
-    now = 2000
+    now = scheduledAt
     await service.scan()
     let occurrence = (await service.list()).occurrences[0]
     const deadline = Date.now() + 15000
@@ -90,15 +103,21 @@ for (const mode of ['success', 'missing-file', 'invalid-submission', 'admission-
     }
     await service.scan()
     occurrence = (await service.list()).occurrences[0]
-    assert.equal(occurrence.status, mode === 'success' ? 'completed' : 'review')
+    assert.equal(occurrence.status, mode === 'success' || mode === 'empty-file' ? 'completed' : mode === 'admission-uncertain' ? 'review' : 'failed')
     assert.equal(executions, 1)
     assert.equal(plannerCalls, 1)
     assert.ok(skillLoads >= 1)
-    assert.equal(validations, mode === 'missing-file' ? 5 : 1)
+    assert.equal(validations, mode === 'missing-file' || mode === 'invalid-submission' ? 2 : 1)
     if (mode === 'success') {
       const task = await tasks.getTask(occurrence.taskId)
       assert.equal(await readFile(join(task!.workDir!, 'report.txt'), 'utf8'), 'Verified research findings')
-    } else assert.equal(occurrence.error?.code, 'EXECUTION_UNCERTAIN')
+    } else if (mode === 'empty-file') {
+      const task = await tasks.getTask(occurrence.taskId)
+      assert.deepEqual(await readdir(task!.workDir!), ['20261120-1200.txt'])
+      assert.equal((await readFile(join(task!.workDir!, '20261120-1200.txt'))).length, 0)
+      const checkpoint = await checkpoints.get(scope, occurrence.taskId)
+      assert.equal(checkpoint?.state.nodes[0]?.delivery?.finalFiles[0]?.snapshot?.size, 0)
+    } else assert.equal(occurrence.error?.code, mode === 'missing-file' ? 'FILE_MISSING' : mode === 'invalid-submission' ? 'INVALID_SUBMISSION' : 'EXECUTION_UNCERTAIN')
     service.stop()
     const restarted = makeService()
     await restarted.recover(); await restarted.scan(); restarted.stop()
@@ -110,6 +129,19 @@ for (const mode of ['success', 'missing-file', 'invalid-submission', 'admission-
     const receipt = await reloaded.getTask(occurrence.taskId)
     assert.equal(receipt?.scheduledOrigin?.occurrenceId, occurrence.id)
     assert.ok(receipt?.scheduledAdmission)
+    if (mode === 'empty-file') {
+      now += 300000
+      await restarted.scan()
+      const next = (await restarted.list()).occurrences.find(item => item.scheduledAt === now)!
+      assert.notEqual(next.taskId, occurrence.taskId)
+      const until = Date.now() + 5000
+      while (Date.now() < until && (await tasks.getTask(next.taskId))?.status !== 'completed') await new Promise(resolve => setTimeout(resolve, 20))
+      await restarted.scan()
+      assert.equal((await restarted.list()).occurrences.find(item => item.id === next.id)?.status, 'completed')
+      const task = await tasks.getTask(next.taskId)
+      assert.deepEqual(await readdir(task!.workDir!), ['20261120-1205.txt'])
+      assert.equal((await readFile(join(task!.workDir!, '20261120-1205.txt'))).length, 0)
+    }
   })
 }
 

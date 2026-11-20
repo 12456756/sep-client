@@ -4,7 +4,7 @@ import type { LocalSkillSubmission } from '../../src/shared/skill-library'
 import { hasPersonalSkillVersionName, SKILL_VERSION_NAME_TAKEN } from '../../src/shared/skill-library'
 import { AppError } from '../errors/app-error'
 import { idempotencyKeySchema, personalSkillVersionRequestSchema, skillVersionSchema } from '../../src/shared/platform-supplement-contracts'
-import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
+import { backupPath, readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 import { WriteChain } from './write-chain'
 
@@ -27,6 +27,18 @@ export class SkillSubmissionStore {
       const result = z.array(recordSchema).safeParse(value)
       return result.success ? result.data : null
     })) ?? []
+  }
+  remove(scope: TaskOwnerScope, capabilityId: string, idempotencyKey: string): Promise<void> {
+    const file = this.file(scope)
+    return this.writes.run(file, async () => {
+      const current = await this.read(scope)
+      const remaining = current.filter(record => record.request.capabilityId !== capabilityId || record.idempotencyKey !== idempotencyKey)
+      if (remaining.length !== current.length) {
+        // A recoverable backup must not bring back the deleted source or upload request.
+        await writeJsonAtomic(backupPath(file), remaining, { backup: false })
+        await writeJsonAtomic(file, remaining, { backup: false })
+      }
+    })
   }
   save(scope: TaskOwnerScope, value: LocalSkillSubmission): Promise<void> {
     const validated = recordSchema.parse(value)

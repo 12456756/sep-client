@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, FileText, PanelRightOpen, Pencil, RefreshCw, Save, X } from 'lucide-react';
+import { ArrowLeft, Check, FileText, PanelRightOpen, Pencil, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -6,10 +6,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterpriseWorkspace';
 import type { AppRoute } from '../../../features/enterprise/types';
 import { buildSkillVersions, findSkillVersion, initialSkillViewingVersion, skillDateLabel, skillReadingParts } from '../../../features/enterprise/skill-version-model';
+import type { SkillVersionEntry } from '../../../features/enterprise/skill-version-model';
 import { uniqueSkillBindings } from '../../../features/enterprise/skill-list-model';
 import type { SkillLibraryItem } from '../../../shared/skill-library';
 import { hasPersonalSkillVersionName, SKILL_VERSION_NAME_TAKEN } from '../../../shared/skill-library';
 import { SkillRewriteComposer } from './SkillRewriteComposer';
+import { useFeedback } from '../../feedback/FeedbackProvider';
 import { changeSkillDraft, createSkillDraftHistory, resetSkillDraft, undoSkillDraft } from '../../../features/enterprise/skill-draft-history';
 import type { SkillEditDraft } from '../../../features/enterprise/skill-rewrite-session';
 import '../../../styles/skill-detail.css';
@@ -24,6 +26,7 @@ type Operation = 'save' | 'upload' | null;
 const readingComponents = { a: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>, img: ({ alt }: { alt?: string }) => <span className="skill-caption">[图片：{alt || '未加载'}]</span> };
 
 export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Props): React.JSX.Element {
+  const feedback = useFeedback();
   const rewriteSession = workspace.getSkillRewriteSession(skill.capability.id);
   const rewriteState = useSyncExternalStore(rewriteSession.subscribe, rewriteSession.getSnapshot, rewriteSession.getSnapshot);
   const entries = useMemo(() => buildSkillVersions(skill), [skill]);
@@ -48,6 +51,7 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
   const [editing, setEditing] = useState(() => rewriteSession.draft?.editing ?? false);
   const [loading, setLoading] = useState(true);
   const [operation, setOperation] = useState<Operation>(null);
+  const [deleting, setDeleting] = useState(false);
   const [sourceError, setSourceError] = useState('');
   const [actionError, setActionError] = useState<{ message: string; phase: Exclude<Operation, null>; key?: string } | null>(null);
   const [notice, setNotice] = useState('');
@@ -62,7 +66,7 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
   const page = useRef<HTMLDivElement>(null);
   const sourceTrigger = useRef<HTMLButtonElement>(null);
   const alive = useRef(true);
-  const busy = operation !== null;
+  const busy = operation !== null || deleting;
   const dirty = editing && content !== source;
   const entry = findSkillVersion(entries, viewingVersionId);
   const parentVersionId = entry?.parentVersionId;
@@ -188,6 +192,49 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
     workspace.updateSkillPageState?.({ focusId: `skill-version-${skill.capability.id}` });
     workspace.navigate({ name: 'skills' });
   };
+  const deleteVersion = async (target: SkillVersionEntry): Promise<void> => {
+    const idempotencyKey = target.local?.idempotencyKey;
+    if (!idempotencyKey || editing || busy) return;
+    const revision = feedback.getRevision();
+    const isCurrent = (): boolean => alive.current && revision === feedback.getRevision();
+    await feedback.confirm({
+      key: JSON.stringify(['delete-skill-version', workspace.attachmentScopeKey, skill.capability.id, target.id]),
+      title: '删除本地副本',
+      message: `确认删除「${target.label}」在此设备上的副本？本地副本无法恢复，已上传的版本和审核状态不受影响。${skill.bindings.some(binding => binding.selectedVersionId === idempotencyKey) ? '此设备上选用该副本的员工将改用默认版本。' : ''}`,
+      actionLabel: '删除本地副本', busyLabel: '正在删除…',
+      onConfirm: async () => {
+        if (!isCurrent()) return { success: true };
+        setDeleting(true);
+        try {
+          const updated = await workspace.deleteLocalSkillCopy(skill.capability.id, idempotencyKey);
+          if (isCurrent()) {
+            target.aliases.forEach(id => sourceCache.current.delete(id));
+            if (target.aliases.includes(viewingVersionId)) {
+              rewriteSession.reset();
+              restored.current = undefined;
+              setLoading(true); setSourceError(''); setSource(''); updateContent('');
+              const fallback = initialSkillViewingVersion(updated, sourceEmployeeId);
+              setViewingVersionId(fallback);
+              if (fallback === viewingVersionId) setReload(value => value + 1);
+              setMode('read'); setName(''); setSavedId('');
+              saveAttempt.current = null;
+            }
+            setActionError(current => current?.key === idempotencyKey ? null : current);
+            setNotice('本地副本已删除。');
+          }
+          return { success: true };
+        } catch (error) {
+          return { success: false, message: error instanceof Error ? error.message : '删除本地副本失败，请重试。' };
+        } finally {
+          if (isCurrent()) setDeleting(false);
+        }
+      },
+    });
+  };
+  const deleteButton = (target: SkillVersionEntry | undefined, compact = false): React.JSX.Element | null => {
+    if (!target?.local) return null;
+    return <button type="button" className={`ent-btn danger ghost${compact ? ' sm' : ''}`} aria-label={`删除本地副本：${target.label}`} disabled={busy || editing} onClick={() => void deleteVersion(target)}><Trash2 size={14} aria-hidden />删除本地副本</button>;
+  };
 
   return <div ref={page} className={`ent-page skill-detail${editing ? ' skill-detail-editing' : ''}`}>
     <div className="skill-detail-navigation"><button type="button" className="skill-text-button skill-detail-back" disabled={busy} onClick={back}><ArrowLeft size={18} aria-hidden />{returnLabel}</button>{returnTo?.name === 'employee' ? <button type="button" className="skill-text-button" disabled={busy} onClick={() => workspace.navigate({ name: 'skills' })}>全部技能</button> : null}</div>
@@ -198,7 +245,7 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
     {actionError && !(saveOpen && actionError.phase === 'save') ? <div className="ent-banner danger skill-state-banner" role="alert"><span>{actionError.message}</span>{actionError.phase === 'upload' ? <button type="button" className="ent-btn sm" disabled={busy || dirty} onClick={() => void retryUpload(actionError.key!)}>重试上传</button> : <button type="button" className="ent-btn sm" disabled={busy} onClick={() => setSaveOpen(true)}>重试保存</button>}</div> : null}
     <div className="skill-detail-tabs" role="tablist" aria-label="技能详情">{(['description', 'history'] as const).map(item => <button type="button" key={item} role="tab" id={`skill-tab-${item}`} aria-selected={tab === item} aria-controls={`skill-panel-${item}`} tabIndex={tab === item ? 0 : -1} disabled={busy || dirty && item === 'history'} onKeyDown={setTabFromKey} onClick={() => setTab(item)}>{item === 'description' ? '技能说明' : '版本记录'}</button>)}</div>
     <section className={editing ? 'skill-chat-panel' : undefined} id="skill-panel-description" role="tabpanel" aria-labelledby="skill-tab-description" hidden={tab !== 'description'}>
-      <div className="skill-content-toolbar"><div className="skill-inline-actions"><span className="skill-viewing-version">{entry ? entry.label : viewingVersionId ? '查看版本已不可用，草稿已保留' : '暂无版本'}</span>{editing ? <span className="skill-badge">个人版本草稿</span> : null}</div><div className="skill-inline-actions">{editing ? <button ref={sourceTrigger} type="button" className="skill-text-button" disabled={loading || Boolean(sourceError) || !viewingVersionId || busy} onClick={() => { setMode('read'); setSourceOpen(true); }}><PanelRightOpen size={15} aria-hidden />查看原文</button> : <><div className="ent-segment"><button type="button" aria-pressed={mode === 'read'} className={mode === 'read' ? 'active' : undefined} onClick={() => setMode('read')}>阅读</button><button type="button" aria-pressed={mode === 'raw'} className={mode === 'raw' ? 'active' : undefined} onClick={() => setMode('raw')}>原文</button></div><button type="button" className="ent-btn" disabled={!entry || !validParent || loading || busy || Boolean(sourceError)} onClick={() => { setMode('read'); setEditing(true); setActionError(null); }}><Pencil size={14} aria-hidden />创建个人版本</button></>}</div></div>
+      <div className="skill-content-toolbar"><div className="skill-inline-actions"><span className="skill-viewing-version">{entry ? entry.label : viewingVersionId ? '查看版本已不可用，草稿已保留' : '暂无版本'}</span>{editing ? <span className="skill-badge">个人版本草稿</span> : null}</div><div className="skill-inline-actions">{editing ? <button ref={sourceTrigger} type="button" className="skill-text-button" disabled={loading || Boolean(sourceError) || !viewingVersionId || busy} onClick={() => { setMode('read'); setSourceOpen(true); }}><PanelRightOpen size={15} aria-hidden />查看原文</button> : <><div className="ent-segment"><button type="button" aria-pressed={mode === 'read'} className={mode === 'read' ? 'active' : undefined} onClick={() => setMode('read')}>阅读</button><button type="button" aria-pressed={mode === 'raw'} className={mode === 'raw' ? 'active' : undefined} onClick={() => setMode('raw')}>原文</button></div>{deleteButton(entry)}<button type="button" className="ent-btn" disabled={!entry || !validParent || loading || busy || Boolean(sourceError)} onClick={() => { setMode('read'); setEditing(true); setActionError(null); }}><Pencil size={14} aria-hidden />创建个人版本</button></>}</div></div>
       {sourceError ? <div className="ent-banner danger skill-state-banner" role="alert"><span>{sourceError}</span><button type="button" className="ent-btn sm" disabled={busy} onClick={() => { sourceCache.current.delete(viewingVersionId); setReload(value => value + 1); }}>重新读取</button></div> : null}
       {loading ? <p className="skill-loading" role="status">正在读取原文…</p> : !viewingVersionId ? <div className="skill-document-empty">当前技能暂无可查看的版本。</div> : !sourceError ? editing ? <SkillRewriteComposer key={`${viewingVersionId}-${chatRevision}`} content={content} revision={draft.current.revision} disabled={busy || !validParent || saveOpen}
         onRewrite={input => workspace.rewriteSkillSource({ ...input, capabilityId: skill.capability.id, versionId: viewingVersionId })}
@@ -224,7 +271,7 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
     </section>
     <section className="skill-history" id="skill-panel-history" role="tabpanel" aria-labelledby="skill-tab-history" hidden={tab !== 'history'}>
       <div className="skill-history-toolbar"><button type="button" className="skill-text-button" disabled={!canRefresh} onClick={() => void workspace.refreshSkills(true, skill.capability.id)}><RefreshCw size={13} aria-hidden />{workspace.skillsLoading ? '刷新中…' : retrySeconds > 0 ? `${retrySeconds} 秒后重试` : '刷新状态'}</button></div>
-      {entries.length ? entries.map(item => <div className={`skill-version-row${entry?.id === item.id ? ' active' : ''}`} key={item.id}><FileText size={19} aria-hidden /><div className="skill-version-info"><strong>{item.label}{item.local || item.version?.scope === 'PERSONAL' ? <span className="skill-badge">个人</span> : null}</strong><small>{item.status} · {skillDateLabel(item.createdAt)}</small>{item.version?.rejectionReason ? <small className="skill-error">驳回原因：{item.version.rejectionReason}</small> : null}{item.usedBy.length ? <details className="skill-version-used"><summary><Check size={12} aria-hidden />{item.usedBy.length === bindings.length ? `全部 ${bindings.length} 名员工使用` : `${item.usedBy.length} / ${bindings.length} 名员工使用`}</summary><p>{item.usedBy.map(employeeName).join('、')}</p></details> : null}</div><button type="button" className="ent-btn sm" disabled={busy} onClick={() => view(item.id)}>{entry?.id === item.id ? '正在查看' : '查看内容'}</button>{item.local && !item.local.uploadedVersion ? <button type="button" className="ent-btn sm" disabled={busy || dirty} onClick={() => void retryUpload(item.id)}>{operation === 'upload' ? '正在上传…' : '重试上传'}</button> : null}</div>) : <p className="skill-document-empty">当前技能暂无可查看的版本。</p>}
+      {entries.length ? entries.map(item => <div className={`skill-version-row${entry?.id === item.id ? ' active' : ''}`} key={item.id}><FileText size={19} aria-hidden /><div className="skill-version-info"><strong>{item.label}{item.local || item.version?.scope === 'PERSONAL' ? <span className="skill-badge">个人</span> : null}</strong><small>{item.status} · {skillDateLabel(item.createdAt)}</small>{item.version?.rejectionReason ? <small className="skill-error">驳回原因：{item.version.rejectionReason}</small> : null}{item.usedBy.length ? <details className="skill-version-used"><summary><Check size={12} aria-hidden />{item.usedBy.length === bindings.length ? `全部 ${bindings.length} 名员工使用` : `${item.usedBy.length} / ${bindings.length} 名员工使用`}</summary><p>{item.usedBy.map(employeeName).join('、')}</p></details> : null}</div>{deleteButton(item, true)}<button type="button" className="ent-btn sm" disabled={busy} onClick={() => view(item.id)}>{entry?.id === item.id ? '正在查看' : '查看内容'}</button>{item.local && !item.local.uploadedVersion ? <button type="button" className="ent-btn sm" disabled={busy || dirty} onClick={() => void retryUpload(item.id)}>{operation === 'upload' ? '正在上传…' : '重试上传'}</button> : null}</div>) : <p className="skill-document-empty">当前技能暂无可查看的版本。</p>}
     </section>
     <Dialog.Root open={sourceOpen && editing} onOpenChange={open => { if (!busy) { if (!open) manualEdit.current = null; setSourceOpen(open); } }}><Dialog.Portal container={container}>
       <Dialog.Overlay className="skill-dialog-overlay skill-source-overlay" />

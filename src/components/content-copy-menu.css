@@ -1,0 +1,7 @@
+.ent-content-copy-menu { position: fixed; inset: auto; max-width: calc(100vw - 16px); margin: 0; padding: 4px; border: 1px solid var(--ent-line, #ddd); border-radius: 8px; color: var(--ent-ink-2, #333); background: var(--ent-panel, #fff); box-shadow: var(--ent-shadow-lift, 0 4px 16px #0002); }
+.ent-content-copy-menu button { display: flex; width: 100%; min-width: 120px; min-height: 36px; align-items: center; gap: 8px; padding: 7px 10px; border: 0; border-radius: 4px; color: inherit; background: transparent; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.ent-content-copy-menu button:is(:hover,:focus-visible) { outline: 0; color: var(--ent-brand-ink, #333); background: var(--ent-brand-softer, #eee); }
+.ent-content-copy-menu { max-height: calc(100vh - 16px); overflow: auto; }
+.ent-content-copy-menu [role="separator"] { margin: 4px 6px; border-top: 1px solid var(--ent-line, #ddd); }
+.ent-content-copy-menu button:disabled { opacity: .5; cursor: default; background: transparent; color: inherit; }
+.ent-copyable-preview-image:focus-visible { outline: 2px solid var(--ent-brand, currentColor); outline-offset: -2px; }

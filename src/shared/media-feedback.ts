@@ -1,7 +1,7 @@
 import type { MediaGenerationStatus, MediaSaveStatus, MediaTrackingStatus } from './media'
 import { MEDIA_SPEC_ERROR_MESSAGES, imageRequestedSpecSchema, videoRequestedSpecSchema, type MediaSpecFailureContext } from './media-spec-contract'
 import type { MediaUpstreamError } from './media-upstream-error'
-import { mediaFailureCodeSchema, mediaFailureSchema, type MediaFailure } from './media-failure'
+import { IMAGE_MISSING_TARGET_MESSAGE, isImageMissingTargetRejection, mediaFailureCodeSchema, mediaFailureSchema, type MediaFailure } from './media-failure'
 import { mediaErrorReason, mediaRecoveryAdvice, mediaUpstreamReason } from './media-error-messages'
 
 export interface MediaIssueState {
@@ -90,6 +90,7 @@ export function mediaSpecFailureMessage(error: { code: string; message?: string 
 }
 
 export function mediaIssueMessage(job: MediaIssueState, kind: 'image' | 'video'): string | null {
+  if (kind === 'image' && job.generationStatus === 'FAILED' && isImageMissingTargetRejection(job.failure)) return IMAGE_MISSING_TARGET_MESSAGE
   const name = kind === 'image' ? '图片' : '视频'
   // An unconfirmed submission must never be presented as a proven rejection.
   const reason = failureReason(job)

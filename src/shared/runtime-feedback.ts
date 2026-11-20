@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { FeedbackController } from './feedback-controller'
 import type { TaskExecutionEvent } from './types'
+import { IMAGE_MISSING_TARGET_MESSAGE } from './media-failure'
 
 export const RUNTIME_FAILURE_EVENT = 'run_failure_notice'
 export const RUNTIME_FAILURE_MESSAGES = {
@@ -22,6 +23,7 @@ export const RUNTIME_FAILURE_MESSAGES = {
   DELIVERY_FAILED: '工作成果未满足计划中的交付要求，请检查交付清单、文件路径和文件内容后重试。',
   MEDIA_UNAVAILABLE: '当前流程暂不支持该媒体交付方式，请保留已生成的媒体资产，不要重复生成。',
   MEDIA_SUBMISSION_UNKNOWN: '图片或视频提交结果尚未确认，请查询原任务；暂时无法查询时请联系平台管理员，勿重复生成。',
+  IMAGE_MISSING_TARGET: IMAGE_MISSING_TARGET_MESSAGE,
   MEDIA_QUERY_UNAVAILABLE: '图片或视频任务跟踪已中断，尚未确认生成结果，请恢复原任务跟踪；持续失败请联系平台管理员，勿重复生成。',
   MEDIA_GENERATION_FAILED: '图片或视频生成未成功完成，请查看原任务的具体原因；原因不明时请联系平台管理员。',
   MEDIA_RESULT_EXPIRED: '原图片或视频结果已过期，无法重新下载；已保存的文件仍可使用。',

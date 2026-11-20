@@ -4,6 +4,18 @@ import { arrangementMediaRequirementSchema } from './arrangement-plan'
 import { normalizePlannerMediaContract } from './arrangement-planner-media'
 import { resolveArrangementMediaSpec } from './arrangement-media-spec'
 
+test('omits old model-proposed PNG defaults but preserves explicitly requested formats', () => {
+  const requirement = arrangementMediaRequirementSchema.parse({ id: 'poster', kind: 'image', operation: 'generate', specRevision: 1,
+    proposedSpec: { size: '1024x1536', count: 1, quality: 'high', outputFormat: 'image/png' }, parameterSources: { outputFormat: 'model' } })
+  const resolved = resolveArrangementMediaSpec(requirement, {})
+  assert.deepEqual(resolved?.requestedSpec, { size: '1024x1536', count: 1, quality: 'high' })
+  assert.equal(resolved?.parameterSources.outputFormat, undefined)
+  assert.equal(requirement.proposedSpec?.outputFormat, 'image/png')
+  assert.equal(resolveArrangementMediaSpec({ ...requirement, requiredSpec: { outputFormat: 'image/png' } }, {})?.parameterSources.outputFormat, 'user')
+  assert.equal(resolveArrangementMediaSpec(requirement, { requestedSpec: { outputFormat: 'image/png' }, parameterSources: { outputFormat: 'user' } })?.requestedSpec.outputFormat, 'image/png')
+  assert.equal(resolveArrangementMediaSpec({ ...requirement, parameterSources: { outputFormat: 'user' } }, {})?.requestedSpec.outputFormat, 'image/png')
+})
+
 test('planner normalization preserves hard requirements and proposed specs without defaults', () => {
   const requirement = { id: 'video', kind: 'video', operation: 'text-to-video', specRevision: 2,
     requiredSpec: { durationSeconds: 8, aspectRatio: '9:16', audio: false },

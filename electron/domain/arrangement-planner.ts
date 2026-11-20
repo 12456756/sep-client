@@ -89,6 +89,7 @@ export interface ArrangementPlannerPort {
   plan(input: {
     planningId: string
     planningStage?: ArrangementPlanningStage
+    scheduledDelivery?: boolean
     modelId?: string
     draft: ArrangementPlannerDraft
     employees: readonly ArrangementPlannerEmployee[]

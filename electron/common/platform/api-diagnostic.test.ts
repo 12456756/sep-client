@@ -40,6 +40,16 @@ describe('platform error diagnostics', () => {
     assert.deepEqual(result.body, body)
   })
 
+  it('retains nested provider details after a second pass at the IPC boundary', async () => {
+    const body = { body: { error: { code: 12, details: { dimensions: { width: 1300 }, checks: [{ actual: { count: 2 } }] } } } }
+    const diagnostic = await readApiDiagnostic(json(body, 502))
+    assert.deepEqual(safeApiDiagnostic(diagnostic)?.body, body)
+    assert.equal(diagnostic.truncated, undefined)
+    let tooDeep: unknown = { retainedUntilLimit: true }
+    for (let index = 0; index < 25; index++) tooDeep = { nested: tooDeep }
+    assert.equal(safeApiDiagnostic({ body: tooDeep })?.truncated, true)
+  })
+
   it('preserves independent association IDs and only diagnostic response headers', async () => {
     const result = await readApiDiagnostic(json({ requestId: 'body-id', sepRequestId: 'body-sep', message: 'Invalid API key' }, 401, {
       'X-Request-ID': 'sep-id', 'X-Compute-Request-ID': 'compute-id', 'X-Upstream-Request-ID': 'provider-id',

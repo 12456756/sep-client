@@ -9,7 +9,7 @@ import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 export class ArrangementMediaSubmissionError extends Error {}
 
 export class ArrangementMediaRecoveryError extends Error {
-  constructor(readonly phase: 'submission' | 'query' | 'generation' | 'expired' | 'download' | 'copy', cause: unknown) {
+  constructor(readonly phase: 'submission' | 'image-missing-target' | 'query' | 'generation' | 'expired' | 'download' | 'copy', cause: unknown) {
     super('Original media recovery failed: ' + phase, { cause })
     this.name = 'ArrangementMediaRecoveryError'
   }

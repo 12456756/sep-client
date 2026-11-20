@@ -18,6 +18,7 @@ export interface RequestContext {
   readonly tasks: Backend['tasks']
   readonly conversations: Backend['conversations']
   readonly arrangements: Backend['arrangements']
+  readonly arrangementDiagnostics: Backend['arrangementDiagnostics']
   readonly attachments: Backend['attachments']
   readonly documentPreviews: Backend['documentPreviews']
   readonly resultFiles: Backend['resultFiles']
@@ -55,6 +56,7 @@ export function createRequestContext(
     tasks: backend.tasks,
     conversations: backend.conversations,
     arrangements: backend.arrangements,
+    arrangementDiagnostics: backend.arrangementDiagnostics,
     attachments: backend.attachments,
     documentPreviews: backend.documentPreviews,
     resultFiles: backend.resultFiles,

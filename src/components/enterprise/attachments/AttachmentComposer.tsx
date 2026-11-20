@@ -1,5 +1,5 @@
 import { FileText, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useImperativeHandle, type Ref } from 'react'
 import { createPortal } from 'react-dom'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../../shared/attachment-contracts'
 import { useAttachmentComposer, type RetainedAttachmentState } from '../../../features/enterprise/use-attachment-composer'
@@ -7,13 +7,17 @@ import { useOperationFeedback } from '../../feedback/use-operation-feedback'
 import { ComposerAddMenu } from '../home/ComposerAddMenu'
 import { ComposerConnectorChip } from './ComposerConnectorChip'
 import type { ConnectorId } from '../../../shared/connectors'
+import type { AddFileToConversation } from '../../workspace/file-menu-actions'
 
 interface Props {
+  addFileRef?: Ref<AddFileToConversation>
+  operationsRef?: Ref<AttachmentComposerOperations>
   target: AttachmentImportTarget
   bindingKey?: string
   disabled?: boolean
   retainedState?: RetainedAttachmentState
   onChange?: (attachments: AttachmentView[]) => void
+  visibleAttachments?: AttachmentView[]
   onSessionChange?: (session: AttachmentImportSession | null) => void
   onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean
   onPasteImported?: (operationId: string, attachments: AttachmentView[]) => void
@@ -26,18 +30,26 @@ interface Props {
   onConnectorChange: (id?: ConnectorId) => void
 }
 
-export function AttachmentComposer({ target, bindingKey, disabled = false, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer, connectorId, onConnectorChange }: Props) {
+export interface AttachmentComposerOperations {
+  select(single?: boolean): Promise<AttachmentView[] | null>
+  addFile(file: Parameters<AddFileToConversation>[0]): Promise<AttachmentView[] | undefined>
+}
+
+export function AttachmentComposer({ target, bindingKey, disabled = false, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer, connectorId, onConnectorChange, addFileRef, operationsRef, visibleAttachments }: Props) {
   const { capture } = useOperationFeedback(bindingKey)
   const notice = capture()
   const composer = useAttachmentComposer({ target, bindingKey, disabled, retainedState, onError: message => notice.show(message), onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished })
-  const attachments = composer.attachments
+  const { attachments, select, addFile } = composer
+  useImperativeHandle(addFileRef, () => async file => { await addFile(file) }, [addFile])
+  useImperativeHandle(operationsRef, () => ({ select, addFile }), [select, addFile])
   const chip = <ComposerConnectorChip value={connectorId} disabled={disabled || composer.busy} onRemove={() => onConnectorChange(undefined)} />
   useEffect(() => { onChange?.(attachments) }, [attachments, onChange])
   useEffect(() => { onSessionChange?.(composer.session) }, [composer.session, onSessionChange])
   useEffect(() => { onBusyChange?.(composer.busy) }, [composer.busy, onBusyChange])
-  const attachmentList = attachments.length ? (
+  const visible = visibleAttachments ?? attachments
+  const attachmentList = visible.length ? (
     <div className={`ent-attachment-list${listContainer ? ' ent-attachment-list-tiles' : ''}`} aria-label="已添加附件">
-      {attachments.map(item => (
+      {visible.map(item => (
         <div className="ent-attachment-item" key={item.attachmentId}>
           {listContainer ? <div className="ent-attachment-preview" aria-hidden><FileText size={28} strokeWidth={1.5} /></div> : null}
           <div className="ent-attachment-details">

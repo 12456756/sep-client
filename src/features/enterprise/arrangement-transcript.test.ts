@@ -12,6 +12,14 @@ const event = (sequence: number, nodeId: string, eventType: string, data: Record
 })
 
 describe('arrangement transcript projection', () => {
+  it('retains only the current attempt diagnostic marker, not error data', () => {
+    const failed = { ...event(1, 'a', ''), type: 'arrangement_node_failed', data: { nodeId: 'a', nodeRunId: 'run-a', diagnosticAvailable: true, diagnostic: 'PRIVATE' } }
+    const projected = selectTranscriptEvent(failed)!
+    assert.equal(buildArrangementTranscript(steps, [projected])[0].diagnosticRunId, 'run-a')
+    assert.doesNotMatch(JSON.stringify(projected), /PRIVATE/)
+    const later = { ...failed, sequence: 2, occurredAt: 2, data: { ...failed.data, nodeRunId: 'run-a2', diagnosticAvailable: false } }
+    assert.equal(buildArrangementTranscript(steps, [projected, later])[0].diagnosticRunId, undefined)
+  })
   it('keeps parallel employees and turns independent in plan order', () => {
     const result = buildArrangementTranscript(steps, [event(1, 'b', 'turn_start'), event(2, 'a', 'turn_start'),
       event(3, 'b', 'thinking_delta', { text: 'Think B' }), event(4, 'a', 'text_delta', { text: 'Reply A' }),

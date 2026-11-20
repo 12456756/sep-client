@@ -18,10 +18,35 @@ import type { RendererPort } from '../runtime/task-notifier'
 
 export class RendererBridge implements RendererPort {
   private window: BrowserWindow | null = null
+  private stopWatchingExpansion: (() => void) | undefined
 
   /** 窗口创建后接上，关闭后传 null 断开。 */
   attach(window: BrowserWindow | null): void {
+    this.stopWatchingExpansion?.()
+    this.stopWatchingExpansion = undefined
     this.window = window
+    if (!window || window.isDestroyed()) return
+
+    const contents = window.webContents
+    const publishExpansion = () => {
+      if (this.currentWindow() !== window || contents.isDestroyed()) return
+      this.send(EVENT_CHANNELS.WINDOW_EXPANDED_CHANGED, window.isMaximized() || window.isFullScreen())
+    }
+    window.on('maximize', publishExpansion)
+    window.on('unmaximize', publishExpansion)
+    window.on('enter-full-screen', publishExpansion)
+    window.on('leave-full-screen', publishExpansion)
+    // Preload starts afresh on reload, including when the window is already expanded.
+    contents.on('did-finish-load', publishExpansion)
+    this.stopWatchingExpansion = () => {
+      if (!window.isDestroyed()) {
+        window.removeListener('maximize', publishExpansion)
+        window.removeListener('unmaximize', publishExpansion)
+        window.removeListener('enter-full-screen', publishExpansion)
+        window.removeListener('leave-full-screen', publishExpansion)
+      }
+      if (!contents.isDestroyed()) contents.removeListener('did-finish-load', publishExpansion)
+    }
   }
 
   /** 需要父窗口的原生弹框（目录选择）用它，避免第二处窗口引用。 */

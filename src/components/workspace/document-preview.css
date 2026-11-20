@@ -1,4 +1,5 @@
 .document-preview-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 32px)); height: min(880px, calc(100dvh - 32px)); max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); margin: auto; padding: 0; border: 1px solid var(--ent-line); border-radius: 8px; background: var(--ent-panel); color: var(--ent-ink); overflow: hidden; }
+[data-platform='darwin'] .document-preview-dialog { inset-block-start: var(--window-chrome-height); height: min(880px, calc(100dvh - var(--window-chrome-height) - 32px)); }
 .document-preview-dialog[open] { display: flex; flex-direction: column; }
 .document-preview-dialog::backdrop { background: rgb(0 0 0 / 42%); }
 .document-preview-heading, .document-preview-toolbar { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid var(--ent-line); }
@@ -19,7 +20,7 @@
 .document-preview-frame { width: 100%; min-height: 0; flex: 1 1 0; border: none; background: white; }
 .document-preview-text { flex: 1; min-height: 0; padding: 20px 28px; overflow: auto; line-height: 1.75; overflow-wrap: anywhere; }
 .document-preview-text > pre { margin: 0; white-space: pre-wrap; font: inherit; }
-.document-preview-markdown { max-width: 52rem; margin-inline: auto; }
+.document-preview-markdown { max-width: 52rem; margin-inline: auto; font-size: var(--ent-fs-body, 14px); }
 .document-preview-markdown :is(p, ul, ol, blockquote, pre, hr, .document-preview-table) { margin-block: 0 1em; }
 .document-preview-markdown > :last-child { margin-bottom: 0; }
 .document-preview-markdown :is(h1, h2, h3, h4, h5, h6) { margin-block: 1em .5em; font-weight: 650; line-height: 1.4; }

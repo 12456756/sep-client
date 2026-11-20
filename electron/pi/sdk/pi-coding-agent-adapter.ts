@@ -63,11 +63,13 @@ import type { McpRuntime } from './pi-mcp-client'
 import { BROWSER_MODE_TOOL, createHostMcpRuntime } from './pi-browser-runtime'
 import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
+import { buildMediaExecutionPrompt } from './media-execution-prompts'
 import { GatewayRetryWait } from './gateway-retry-wait'
 import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnapshot } from './model-request-tracker'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { encodingToolDefinitions } from './pi-text-tools'
 import { CURRENT_TIME_TOOL_NAME, currentTimeToolDefinition } from './pi-current-time'
+import { CONVERSATION_ATTACHMENT_TOOL, conversationAttachmentTool } from './pi-conversation-attachment'
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
@@ -110,8 +112,19 @@ function mediaInputValidationFailure(error: z.ZodError) {
   const issue = error.issues.find(item => (item.path[0] === 'parameters' || item.path[0] === 'requestedSpec') && fields.has(String(item.path[1])))
   const conflict = error.issues.some(item => item.code === 'custom' && /conflict|contradictory/i.test(item.message))
   return mediaToolFailureFrom(new AppError(conflict ? 'SPEC_CONFLICT' : 'INVALID_ARGUMENT', { details: {
-    source: 'client', stage: 'input-validation', ...(issue ? { field: `${String(issue.path[0])}.${String(issue.path[1])}` } : {}),
+    source: 'client', stage: 'input-validation', submissionState: 'not_submitted', billingState: 'not_reserved',
+    recovery: 'revise_request', ...(issue ? { field: `${String(issue.path[0])}.${String(issue.path[1])}` } : {}),
   } }))
+}
+
+function invalidMediaSource(input: { requestedSpec?: object; parameterSources?: object }, fields: readonly string[]) {
+  const submitted = new Set(Object.entries(input.requestedSpec ?? {}).filter(([, value]) => value !== undefined).map(([field]) => field))
+  const field = Object.keys(input.parameterSources ?? {}).find(key => !fields.includes(key) || !submitted.has(key))
+  if (!field) return undefined
+  return mediaToolFailure('SPEC_CONFLICT', '只为 requestedSpec 中实际提交的字段标注来源；保留用户的明确要求。', {
+    field: `parameterSources.${field}`, source: 'client', stage: 'input-validation',
+    submissionState: 'not_submitted', billingState: 'not_reserved', recovery: 'revise_request', retryable: false,
+  })
 }
 
 function registeredVideoNames(config: PiAgentSessionConfig): VideoToolName[] {
@@ -208,19 +221,20 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
     frameRate: Type.Optional(Type.Number({ exclusiveMinimum: 0, maximum: Number.MAX_SAFE_INTEGER })), audio: Type.Optional(Type.Boolean()),
     outputFormat: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   }, { additionalProperties: false })
+  const specFields = Object.keys(parameters.properties)
   return names.map(name => {
     const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
     return {
       name, label: name, executionMode: 'sequential',
       description: name === 'video_get_job'
-        ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs and referenceAssets. When present, referenceSources maps current-turn attachment names and generated image sourceArtifactIds to usable reference localAssetIds. Select the actual requested image; clarify ambiguous multiple inputs rather than picking the first. The host tracks and saves submitted jobs; generation tools return only after terminal status and local save are known. Never poll this tool or use sleep to wait. Image capabilities do not describe video availability.'
+        ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs and referenceAssets. When present, referenceSources maps conversation attachment names and generated image sourceArtifactIds to usable reference localAssetIds. Select the actual requested image; clarify ambiguous multiple inputs rather than picking the first. The host tracks and saves submitted jobs; generation tools return only after terminal status and local save are known. Never poll this tool or use sleep to wait. Image capabilities do not describe video availability.'
         : `Generate a video using ${operation}. Inspect video_get_job({}) for actual authorization, profiles and protocol version. Preserve user specifications. When the user has not specified resolution or pixel dimensions, prefer the lowest resolution confirmed to be supported by the current model for the selected operation, duration and reference assets, while preserving the intended aspect ratio. Compare actual pixel specifications, using total pixel count when explicit width and height are available; never assume the first capability entry is the lowest resolution. If support or ordering is uncertain, do not invent or claim a minimum. Submit the selected resolution or width/height as structured specifications with model sources; preserve any explicit user resolution or pixel dimensions. Infer other ordinary unspecified specifications from purpose, context and reference assets, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. Legacy parameters require explicit complete decisions; missing fields are never filled by the host. Never silently change specifications, switch model or substitute script animation. ${name === 'video_from_image' ? 'Supply one or more SAVED task-local referenceAssets localAssetIds in the user-specified order; never invent IDs or file paths.' : 'No reference assets are needed.'} The host validates cost and obtains approval before submission. Report the actual generation and local save states and chosen specifications; distinguish submitted, generated and saved. Report tool error codes and their source, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
       parameters: name === 'video_get_job' ? Type.Object({ jobId: Type.Optional(id) }, { additionalProperties: false })
         : Type.Object({
           profileId: Type.Optional(profileId), operation: Type.Optional(Type.Literal(operation)),
           localAssetIds: name === 'video_from_image' ? Type.Array(id, { minItems: 1, maxItems: 32 }) : Type.Optional(Type.Array(id, { maxItems: 0 })),
           creativeBrief: Type.String({ minLength: 1, maxLength: 4000 }), parameters: Type.Optional(parameters),
-          requestedSpec: Type.Optional(parameters), ...mediaDecisionToolProperties(),
+          requestedSpec: Type.Optional(parameters), ...mediaDecisionToolProperties(specFields),
         }, { additionalProperties: false }),
       async execute(_toolCallId, input, signal) {
         const failure = (message: string) => ({ content: [{ type: 'text' as const, text: message }], details: { isError: true } })
@@ -230,6 +244,8 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
           const parsed = name === 'video_get_job' ? videoToolJobInputSchema.safeParse(input) : videoToolGenerationInputSchema.safeParse(input)
           if (!parsed.success) return failure(JSON.stringify(mediaInputValidationFailure(parsed.error)))
           if ('creativeBrief' in parsed.data) {
+            const sourceError = invalidMediaSource(parsed.data, specFields)
+            if (sourceError) return failure(JSON.stringify(sourceError))
             const count = parsed.data.localAssetIds.length
             const invalidReferences = name === 'video_from_image'
               ? parsed.data.protocolVersion === 3 ? count < 1 : count !== 1
@@ -313,7 +329,10 @@ function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown
       reasonCode: z.string().max(96).optional(), submissionState: z.string().max(32).optional(), billingState: z.string().max(32).optional(), retryable: z.boolean().optional(),
       alternatives: z.array(z.union([imageRequestedSpecSchema, videoRequestedSpecSchema])).max(8).optional(),
     }) }).safeParse(result)
-    if (parsed.success) return { value: mediaToolFailure(parsed.data.error.code, parsed.data.error.message, parsed.data.error), isError: true }
+    if (parsed.success) {
+      const failure = mediaToolFailure(parsed.data.error.code, parsed.data.error.message, parsed.data.error)
+      return { value: name === 'media_generate_image' ? imageToolFailure(failure) : failure, isError: true }
+    }
     throw new Error('Invalid media business error.')
   }
   const value = name === 'media_get_capabilities'
@@ -328,7 +347,14 @@ function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown
   return { value: redactValue(value, 0, '', { maxDepth: 8, maxArrayLength: 128 }), isError: false }
 }
 
-function mediaDecisionToolProperties() {
+function imageToolFailure(value: ReturnType<typeof mediaToolFailure>): ReturnType<typeof mediaToolFailure> {
+  const error = value.error
+  if (error.code !== 'ADAPTER_FIELD_UNMAPPED' || error.source !== 'adapter' || error.submissionState !== 'not_submitted'
+    || error.recovery !== 'revise_request' || !['outputFormat', 'requestedSpec.outputFormat'].includes(error.field ?? '')) return value
+  return mediaToolFailure(error.code, '图片通道不能指定原生输出格式，本次未提交。若该字段是模型自行填写的，移除该字段及其来源后可重新报价一次，保留最终交付格式。若用户明确要求上游原生格式，先说明限制并等待用户决定。', error)
+}
+
+function mediaDecisionToolProperties(fields: readonly string[]) {
   const source = Type.Union([
     Type.Literal('user'), Type.Literal('model'), Type.Literal('upstream'),
     Type.Object({ source: Type.Union([Type.Literal('user'), Type.Literal('model'), Type.Literal('upstream')]), decisionRef: Type.String({ minLength: 1, maxLength: 256 }) }, { additionalProperties: false }),
@@ -337,9 +363,7 @@ function mediaDecisionToolProperties() {
     requirementId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
     protocolVersion: Type.Optional(Type.Literal(3)),
     specRevision: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
-    parameterSources: Type.Optional(Type.Object(Object.fromEntries([
-      'width', 'height', 'aspectRatio', 'size', 'count', 'quality', 'durationSeconds', 'resolution', 'frameRate', 'audio', 'outputFormat',
-    ].map(key => [key, Type.Optional(source)])), { additionalProperties: false })),
+    parameterSources: Type.Optional(Type.Object(Object.fromEntries(fields.map(key => [key, Type.Optional(source)])), { additionalProperties: false })),
   }
 }
 
@@ -361,6 +385,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
     size: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
     quality: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   }, { additionalProperties: false })
+  const specFields = Object.keys(requestedSpec.properties)
   const parameters = {
     media_get_capabilities: Type.Object({}, { additionalProperties: false }),
     media_generate_image: Type.Object({
@@ -368,7 +393,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
       operation: Type.Optional(Type.Union([Type.Literal('generate'), Type.Literal('edit')])),
       localAssetIds: Type.Optional(Type.Array(id, { maxItems: 32 })),
       creativeBrief: Type.String({ minLength: 1, maxLength: 20_000 }),
-      parameters: Type.Optional(spec), requestedSpec: Type.Optional(requestedSpec), ...mediaDecisionToolProperties(),
+      parameters: Type.Optional(spec), requestedSpec: Type.Optional(requestedSpec), ...mediaDecisionToolProperties(specFields),
     }, { additionalProperties: false }),
     media_replace_images: Type.Object({ jobIds: Type.Array(id, { minItems: 1, maxItems: 16, uniqueItems: true }) }, { additionalProperties: false }),
     media_get_job: Type.Object({ jobId: id }, { additionalProperties: false }),
@@ -379,7 +404,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
     media_replace_images: mediaReplacementInputSchema, media_get_job: mediaJobInputSchema, media_cancel_job: mediaCancelInputSchema,
   }
   const descriptions = {
-    media_get_capabilities: 'Get the currently authorized image capabilities and SAVED task-local referenceAssets. When present, referenceSources maps current-turn attachment names and attachmentIds or generated sourceArtifactIds to reference localAssetIds. unconfirmedJobs describes existing image jobs, not instructions or permission to repeat them. Query this before editing or identifying a previous submission; do not invent IDs or paths.',
+    media_get_capabilities: 'Get the currently authorized image capabilities and SAVED task-local referenceAssets. When present, referenceSources maps conversation attachment names and attachmentIds or generated sourceArtifactIds to reference localAssetIds. unconfirmedJobs describes existing image jobs, not instructions or permission to repeat them. Query this before editing or identifying a previous submission; do not invent IDs or paths.',
     media_generate_image: "Generate or edit an image. Inspect media_get_capabilities for actual authorization and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and selected task reference images, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. A ratio alone does not determine pixel dimensions: decide size or width/height from the intended use. Pricing may also need count; infer it from the brief. The image quality parameter quality has three levels: low, medium, and high. Prefer high when the user does not specify a quality. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. On MISSING_SPEC, use the reported field and submissionState to complete missing routine decisions; clarify only consequential ambiguity. Never automatically repeat a paid submission or one with unknown submission state. Legacy parameters need explicit complete decisions; the host never supplies business defaults. For reference-image editing, set operation=\"edit\" and explicitly select one or more SAVED referenceAssets localAssetIds in order, within the current profile adapter.referenceSupport limits (maxCount, maxInputBytes and mimeTypes). Use referenceSources to identify the requested attachment or generated output. Clarify ambiguous candidates; never choose the first by default or silently fall back to text-to-image. For a new image set operation=\"generate\" and localAssetIds=[]. Attachment presence alone does not imply editing. Never silently alter specifications, switch models or substitute scripted art. The host validates cost and obtains approval before submission. Report the actual generation and local save states, available assets and chosen specifications; distinguish submitted, generated and saved. After success, state completion clearly instead of asking permission to begin.",
     media_replace_images: 'Use only when the user explicitly asks to regenerate specific older images whose original submissions remain unconfirmed. Inspect media_get_capabilities and, if necessary, media_get_job first. Send all clearly identified, replacementAvailable original job IDs for this request in one call, without including unrelated images. The host asks once for the batch and uses each original specification. Do not use this for status checks, newer independent images, same-turn failures, or jobs already handled. Do not use media_generate_image to bypass a decline or retry a replacement with an unclear outcome. Report skipped or incomplete entries without resubmitting.',
     media_get_job: 'Read cached status and task-local assets of an image job. The host tracks and saves submitted jobs. Never poll this tool or use sleep to wait. A submission with an unknown outcome must not be repeated, but independent requested images can still be generated in the same turn.',
@@ -393,11 +418,16 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
         if (!parsed.success) return {
           content: [{ type: 'text', text: JSON.stringify(mediaInputValidationFailure(parsed.error)) }], details: { isError: true },
         }
+        if ('creativeBrief' in parsed.data) {
+          const sourceError = invalidMediaSource(parsed.data, specFields)
+          if (sourceError) return { content: [{ type: 'text', text: JSON.stringify(sourceError) }], details: { isError: true } }
+        }
         if (signal?.aborted) throw new Error('Cancelled media call.')
         const result = safeMediaResult(name, await config.mediaTools!.execute(name, parsed.data, signal))
         return { content: [{ type: 'text', text: JSON.stringify(result.value) }], details: { isError: result.isError } }
       } catch (error) {
-        const value = mediaToolFailureFrom(error, signal?.aborted)
+        const failure = mediaToolFailureFrom(error, signal?.aborted)
+        const value = name === 'media_generate_image' ? imageToolFailure(failure) : failure
         return {
           content: [{ type: 'text', text: JSON.stringify(value) }],
           details: { isError: true },
@@ -415,6 +445,7 @@ export function sessionToolOptions(
   registeredMcpNames: readonly string[] = [],
   registeredMediaNames: readonly MediaToolName[] = [],
   registeredVideoNames: readonly VideoToolName[] = [],
+  attachmentsEnabled = false,
 ): { tools?: string[]; noTools?: 'all' } {
   if (disableTools) return { noTools: 'all' }
   const allowedTools = toolPolicy && isUnrestrictedToolPolicy(toolPolicy)
@@ -428,7 +459,13 @@ export function sessionToolOptions(
     ...registeredMcpNames,
     ...registeredMediaNames,
     ...registeredVideoNames,
+    ...(attachmentsEnabled ? [CONVERSATION_ATTACHMENT_TOOL] : []),
   ])] }
+}
+
+function conversationAttachmentsEnabled(config: PiAgentSessionConfig): boolean {
+  return !!config.conversationAttachments && !config.disableTools && (!config.toolPolicy ||
+    isUnrestrictedToolPolicy(config.toolPolicy) || config.toolPolicy.allowedTools.includes('read'))
 }
 
 function getFailure(messages: unknown): string | undefined {
@@ -682,6 +719,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
       if (selected.includes(tool.name)) pi.registerTool(tool)
     }
     if (selected.includes(CURRENT_TIME_TOOL_NAME)) pi.registerTool(currentTimeToolDefinition())
+    if (conversationAttachmentsEnabled(config) && config.conversationAttachments) pi.registerTool(conversationAttachmentTool(config.conversationAttachments))
   }
   const mediaNames = registeredMediaNames(config)
   const videoNames = registeredVideoNames(config)
@@ -742,6 +780,10 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (toolName === CONVERSATION_ATTACHMENT_TOOL) {
+        return conversationAttachmentsEnabled(config) && pi.getActiveTools().includes(toolName)
+          ? { block: false } : { block: true, reason: 'Conversation attachments are not enabled for this run.' }
+      }
       if (toolName === CURRENT_TIME_TOOL_NAME) {
         const enabled = sessionToolOptions(config.toolPolicy, config.disableTools).tools?.includes(toolName) === true
           && pi.getActiveTools().includes(toolName)
@@ -853,7 +895,10 @@ class PiCodingAgentSession implements PiAgentSession {
         const fields = { taskTitle: config.taskTitle, nodeTitle: config.nodeTitle, toolName: event.toolName, elapsedMs,
           ...(!started ? { success: !event.isError } : {}) }
         log.info(started ? 'tool execution started' : 'tool execution completed', fields)
-        void config.modelTrace?.({ phase: '', kind: 'tool', text: `${started ? '工具开始' : '工具结束'}\n${readableTraceValue({ ...fields, ...event })}` }).catch(() => undefined)
+        void config.modelTrace?.({ phase: '', kind: 'tool', text: `${started ? '工具开始' : '工具结束'}\n${readableTraceValue({ ...fields, ...event })}`,
+          metrics: !started && event.isError ? { 失败工具: event.toolName, 工具调用标识: event.toolCallId, 工具耗时毫秒: elapsedMs,
+            工具失败分类: classifyToolFailure(event.toolName, event.result),
+            工具错误信息: redactModelTraceText(toolResultText(event.result)).slice(0, 8192) } : undefined }).catch(() => undefined)
         if (!started) toolStarts.delete(event.toolCallId)
       }
       if (config && /^(auto_retry_|compaction_|summarization_retry_scheduled)/.test(event.type)) {
@@ -1130,6 +1175,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
             metrics: { 总耗时毫秒: elapsedMs, 首个SDK流事件毫秒: timings.firstEventMs, 首次思考毫秒: timings.firstThinkingMs, 首次正文毫秒: timings.firstTextMs,
               响应结束时间: new Date().toISOString(), 发送状态: sent ? '已发送' : '未发送',
               响应头耗时毫秒: headersMs, 平台请求标识: platformRequestId, 响应状态码: providerStatus, 结束原因: response.stopReason,
+              SDK错误信息: response.errorMessage ? redactModelTraceText(response.errorMessage).slice(0, 8192) : undefined,
               输入Token: usage.input, 输出Token: usage.output, 缓存读取Token: usage.cacheRead, 缓存写入Token: usage.cacheWrite, 总Token: usage.total } })
         }, () => startedAt, timings => {
           log.info('model stream progress', { ...fields, ...timings })
@@ -1195,6 +1241,8 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     } }
     try {
       const employeePrompt = !config.useNativeSystemPrompt && config.employeeProfile ? buildEmployeeSystemPrompt(config.employeeProfile) : undefined
+      const mediaPrompt = buildMediaExecutionPrompt(registeredMediaNames(config).includes('media_generate_image'),
+        registeredVideoNames(config).some(name => name !== 'video_get_job'), config.arrangementNodeId !== undefined)
       // Append once for both native and custom prompts; the SDK skips tool guidelines for custom prompts.
       const browserPrompt = mcp.tools.some(tool => tool.name === 'mcp__playwright__browser_snapshot')
         ? ['浏览器使用规则：', ...PLAYWRIGHT_GUIDELINES, ...(mcp.builtinBrowser ? PLAYWRIGHT_HANDOFF_GUIDELINES : [])].join('\n')
@@ -1217,8 +1265,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
         systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
           : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,
-        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt || browserPrompt || common.unavailable.length
+        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt || mediaPrompt || browserPrompt || common.unavailable.length
           ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : []),
+            ...(mediaPrompt ? [mediaPrompt] : []),
             ...(browserPrompt ? [browserPrompt] : []),
             ...(common.unavailable.length ? ['The built-in Office capability is unavailable for this session. Do not claim it was used or install another executable.'] : [])]
           : undefined,
@@ -1251,7 +1300,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         resourceLoader,
         sessionManager,
         // Advertise only the task policy's tools so the model cannot select denied tools.
-        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config)),
+        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config), conversationAttachmentsEnabled(config)),
         // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
         settingsManager,
       })
