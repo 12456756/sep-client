@@ -18,7 +18,7 @@ class PreviewBoundary extends Component<{ children: ReactNode; onClose(): void; 
 }
 
 export function DocumentPreviewButton(props: Props) {
-  const previewId = 'fileId' in props ? props.fileId : `${props.nodeId}:${props.deliverableId}`
+  const previewId = 'attachmentId' in props ? props.attachmentId : 'fileId' in props ? props.fileId : `${props.nodeId}:${props.deliverableId}`
   const { capture } = useOperationFeedback(`${props.taskId}:${previewId}`)
   const trigger = useRef<HTMLButtonElement>(null)
   const [Dialog, setDialog] = useState<ComponentType<DocumentPreviewDialogProps> | null>(null)

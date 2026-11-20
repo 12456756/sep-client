@@ -4,6 +4,7 @@ import type { WorkDeliverable } from '../../features/enterprise/types'
 import { useResultFilePreview, type ResultFilePreviewSource } from '../../features/enterprise/use-result-file-preview'
 import type { ResultFileRequest } from '../../shared/result-files'
 import { DocumentPreviewButton } from './DocumentPreviewButton'
+import { SaveWordCopyButton } from './SaveWordCopyButton'
 
 export interface ResultFileCardProps {
   taskId: string
@@ -84,6 +85,7 @@ export function ResultFileCard({ taskId, file, visible = true, conversation = fa
       <strong className="result-file-name" title={file.name}>{file.name}</strong>
       <div className="result-file-actions">
         {!mediaRequest && !kind && file.format && request && ('nodeId' in request || 'fileId' in request) ? <DocumentPreviewButton {...request} name={file.name} format={file.format} version={file.previewVersion} /> : null}
+        {!mediaRequest && !kind && /^\.?docx?$/i.test(file.format ?? '') && request && ('nodeId' in request || 'fileId' in request) ? <SaveWordCopyButton request={request} name={file.name} /> : null}
         <button type="button" className="ent-btn sm" aria-busy={opening} disabled={opening || !request} onClick={() => void reveal()} title="打开文件所在目录" aria-label={`打开 ${file.name} 所在文件夹`}>
           {opening ? <LoaderCircle size={14} className="animate-spin" /> : <FolderOpen size={14} />}<span>打开所在文件夹</span>
         </button>

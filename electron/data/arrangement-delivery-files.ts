@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { unzipSync } from 'fflate'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { PDFDocument } from 'pdf-lib'
+import { hasLegacyWordSignature } from '../common/legacy-word-format'
 import { isSafeDeliveryPath, type ArrangementNode } from '../domain/arrangement-plan'
 import { finalDeliveryFileSchema, type DeliveryIssue, type DeliverySubmission, type FinalDeliveryFile } from '../domain/arrangement-delivery'
 import { resolveArrangementMediaFile, restoreArrangementMediaSnapshot } from './arrangement-media-files'
@@ -148,6 +149,8 @@ async function validateFormat(bytes: Buffer, format: string): Promise<void> {
     if (!document || typeof document !== 'object' || !Object.hasOwn(document, section)) throw new Error('INVALID_FORMAT')
     if (lower === 'xlsx' && !Object.keys(parsed).some(name => /^xl\/worksheets\/sheet\d+\.xml$/.test(name) && Object.hasOwn(parsed[name], 'worksheet'))) throw new Error('INVALID_FORMAT')
     if (lower === 'pptx' && !Object.keys(parsed).some(name => /^ppt\/slides\/slide\d+\.xml$/.test(name) && Object.hasOwn(parsed[name], 'sld'))) throw new Error('INVALID_FORMAT')
+  } else if (lower === 'doc') {
+    if (!hasLegacyWordSignature(bytes)) throw new Error('INVALID_FORMAT')
   } else if (lower === 'pdf') {
     const pdf = await PDFDocument.load(bytes, { updateMetadata: false })
     if (!pdf.getPageCount()) throw new Error('INVALID_FORMAT')

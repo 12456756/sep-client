@@ -442,6 +442,7 @@ export interface ElectronAPI {
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
   getArrangementExecution: (taskId: string) => Promise<ArrangementExecutionResult>
   previewArrangementDocument: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { data?: DocumentPreview }>
+  saveWordCopy: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { cancelled?: boolean }>
   previewResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult & { data?: ResultFilePreview }>
   releaseResultFilePreview: (input: { url: string }) => Promise<IpcCommandResult>
   revealResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult>

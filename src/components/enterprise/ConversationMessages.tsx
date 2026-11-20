@@ -9,6 +9,8 @@ import { MessageContent } from './MessageContent'
 import { useConversationMedia } from '../../features/enterprise/conversation-media'
 import { groupConversationResults, type ConversationResult } from '../../features/enterprise/conversation-results'
 import { ResultFileCard } from '../workspace/ResultFileCard'
+import { DocumentPreviewButton } from '../workspace/DocumentPreviewButton'
+import { SaveWordCopyButton } from '../workspace/SaveWordCopyButton'
 import '../workspace/result-file-card.css'
 
 interface Props {
@@ -93,6 +95,8 @@ function MessageAttachment({ taskId, attachment }: {
   attachment: NonNullable<WorkMessage['attachments']>[number]
 }) {
   const isPreviewableImage = ['image/png', 'image/jpeg', 'image/webp'].includes(attachment.mediaType)
+  const wordFormat = /\.(docx?)$/i.exec(attachment.displayName)?.[1]?.toLowerCase()
+  const documentRequest = { taskId, attachmentId: attachment.attachmentId, sha256: attachment.sha256 }
   const [preview, setPreview] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
@@ -127,6 +131,10 @@ function MessageAttachment({ taskId, attachment }: {
       <span className="ent-message-attachment-name">{attachment.displayName}</span>
       {isPreviewableImage && attachment.width && attachment.height ? <small>{attachment.width} × {attachment.height}</small> : null}
       <small>{formatAttachmentBytes(attachment.byteLength)}</small>
+      {wordFormat ? <>
+        <DocumentPreviewButton {...documentRequest} name={attachment.displayName} format={wordFormat} version={attachment.sha256} />
+        <SaveWordCopyButton request={documentRequest} name={attachment.displayName} />
+      </> : null}
     </span>
     {opened && preview && !failed ? <AttachmentImageDialog url={preview} attachment={attachment} onClose={() => setOpened(false)} /> : null}
   </span>

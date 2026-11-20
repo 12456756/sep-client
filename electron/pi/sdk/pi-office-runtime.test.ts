@@ -135,7 +135,8 @@ describe('built-in Office runtime', () => {
   })
   it('locks an output shared by otherwise distinct Office commands', async t => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'sep-office-locks-')))
-    t.after(() => rm(root, { recursive: true, force: true }))
+    let dispose = async (): Promise<void> => {}
+    t.after(async () => { await dispose(); await rm(root, { recursive: true, force: true }) })
     await writeFile(join(root, 'package.json'), '{"type":"commonjs"}')
     await writeFile(join(root, 'mcp'), `
       const fs = require('node:fs');
@@ -155,8 +156,15 @@ describe('built-in Office runtime', () => {
       toolPolicy: { allowedTools: ['read', 'write'], allowedPaths: [root], deniedPaths: [], workspaceDir: root,
         commandPolicy: 'disabled', approvalMode: 'auto-approve' },
     })
-    t.after(() => attached.runtime.dispose())
+    dispose = attached.runtime.dispose
     const office = attached.runtime.tools.find(tool => tool.name === OFFICE_TOOL_NAME)!
+    if (process.platform === 'win32') {
+      assert.match(office.description, /export-doc/)
+      const result = await office.execute('invalid-export', { command: ['export-doc', 'missing.docx', 'output.doc'] }, undefined)
+      assert.equal(result.details.isError, true)
+      assert.match(result.content[0].text, /valid DOCX/)
+      assert.equal(existsSync(join(root, 'calls')), false, 'export must not be forwarded to OfficeCLI')
+    }
     for (const command of [
       ['view', 'second.docx', 'html', '--out', 'same.html'],
       ['get', 'same.html'],
@@ -211,8 +219,12 @@ describe('built-in Office runtime', () => {
     assert.equal(approved, 0)
     assert.equal((await invoke(['create', 'a.docx'])).block, true)
     assert.equal(approved, 1)
+    assert.equal((await invoke(['export-doc', 'a.docx', 'a.doc'])).block, true)
+    assert.equal(approved, 2)
     config.toolPolicy = { ...config.toolPolicy!, preset: 'full-local', approvalMode: 'auto-approve' }
     assert.equal((await invoke(['create', 'a.docx'])).block, false)
+    assert.equal((await invoke(['import-doc', 'a.doc', 'a-working.docx'])).block, true)
+    assert.equal(approved, 3)
     assert.equal((await invoke(['install'])).block, true)
   })
 

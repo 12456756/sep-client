@@ -1,9 +1,9 @@
 import { z } from 'zod'
-import { documentPreviewRequestSchema } from './document-preview'
+import { resultDocumentRequestSchema } from './document-preview'
 
 const localId = z.string().regex(/^[A-Za-z0-9_-]{1,160}$/)
 export const resultFileRequestSchema = z.union([
-  documentPreviewRequestSchema,
+  resultDocumentRequestSchema,
   z.object({ taskId: localId, assetId: localId }).strict(),
   z.object({ taskId: localId, jobId: localId, outputId: localId }).strict(),
 ])

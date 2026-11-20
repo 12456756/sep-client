@@ -1,13 +1,18 @@
 import { z } from 'zod'
 
 const taskId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
-export const documentPreviewRequestSchema = z.union([z.object({
+export const resultDocumentRequestSchema = z.union([z.object({
   taskId,
   nodeId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   deliverableId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
 }).strict(), z.object({
   taskId,
   fileId: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/),
+}).strict()])
+export const documentPreviewRequestSchema = z.union([resultDocumentRequestSchema, z.object({
+  taskId,
+  attachmentId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict()])
 export type DocumentPreviewRequest = z.infer<typeof documentPreviewRequestSchema>
 
@@ -22,11 +27,11 @@ export interface DocumentPreview {
   name: string
   format: string
   version: string
-  source: 'snapshot' | 'recovered-snapshot' | 'verified-original' | 'conversation-file'
+  source: 'snapshot' | 'recovered-snapshot' | 'verified-original' | 'conversation-file' | 'attachment'
   content: DocumentPreviewContent
 }
 
-const formats = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'yaml', 'yml', 'sql', 'log'])
+const formats = new Set(['pdf', 'doc', 'docx', 'xlsx', 'pptx', 'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'yaml', 'yml', 'sql', 'log'])
 export function supportsDocumentPreview(format: string): boolean {
   return formats.has(format.toLowerCase().replace(/^\./, ''))
 }

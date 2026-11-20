@@ -19,6 +19,7 @@ import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPa
 import * as mediaRetry from '../../shared/media-retry';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
+import { SaveWordCopyButton } from '../../components/workspace/SaveWordCopyButton';
 import { useResultFilePreview } from '../../features/enterprise/use-result-file-preview';
 import type { WorkItem } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
@@ -31,7 +32,8 @@ const cardFilename = fileURLToPath(new URL('../../components/workspace/ResultFil
 const cardSource = ts.transpileModule(readFileSync(cardFilename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const cardModule = { exports: {} };
 const cardDependencies: Record<string, unknown> = { react: React, 'react/jsx-runtime': jsxRuntime, 'lucide-react': icons,
-  '../../features/enterprise/use-result-file-preview': { useResultFilePreview }, './DocumentPreviewButton': { DocumentPreviewButton }, './result-file-card.css': {} };
+  '../../features/enterprise/use-result-file-preview': { useResultFilePreview }, './DocumentPreviewButton': { DocumentPreviewButton },
+  './SaveWordCopyButton': { SaveWordCopyButton }, './result-file-card.css': {} };
 compileFunction(cardSource, ['require', 'exports', 'module'], { filename: cardFilename })((id: string) => { assert.ok(Object.hasOwn(cardDependencies, id), `unexpected card import: ${id}`); return cardDependencies[id] }, cardModule.exports, cardModule);
 const { ResultFileCard, ResultFileMedia, resultFileRequest } = cardModule.exports as typeof import('../../components/workspace/ResultFileCard');
 
@@ -569,10 +571,13 @@ describe('WorkDetailPage media entry', () => {
   });
 
   it('offers previews for supported conversation documents without node delivery identities', () => {
-    const html = renderDetail({ ...work, deliverables: ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt', 'zip'].map((format, index) => ({
+    const html = renderDetail({ ...work, deliverables: ['doc', 'docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt', 'zip'].map((format, index) => ({
       id: `${work.id}-file-${index}`, name: `report.${format}`, path: `C:\\work\\report.${format}`, note: '对话成果', format,
     })) })
-    for (const format of ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt']) assert.match(html, new RegExp(`aria-label="预览文档：report\\.${format}"`))
+    for (const format of ['doc', 'docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt']) assert.match(html, new RegExp(`aria-label="预览文档：report\\.${format}"`))
+    assert.match(html, /aria-label="另存为：report\.doc"/)
+    assert.match(html, /aria-label="另存为：report\.docx"/)
+    assert.doesNotMatch(html, /aria-label="另存为：report\.pdf"/)
     assert.doesNotMatch(html, /aria-label="预览文档：report\.zip"/)
     assert.match(html, /打开所在文件夹/)
     assert.doesNotMatch(html, /复制路径/)

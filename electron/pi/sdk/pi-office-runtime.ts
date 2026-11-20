@@ -1,7 +1,8 @@
 import type { PiAgentSessionConfig, McpServerConfig } from './pi-agent-runtime'
 import type { CommonSkillsResult } from './common-skills'
 import { createMcpRuntime, type McpRuntime } from './pi-mcp-client'
-import { evaluateOfficeCommand, OFFICE_TOOL_NAME } from './pi-office-policy'
+import { evaluateOfficeCommand, OFFICE_EXPORT_DOC, OFFICE_IMPORT_DOC, OFFICE_TOOL_NAME } from './pi-office-policy'
+import { exportLegacyWord, importLegacyWord } from './pi-word-export'
 import type { ToolPolicy } from '../../../pi-extension/guard'
 
 // Shared across employee sessions; independent files can still proceed concurrently.
@@ -78,6 +79,9 @@ export async function attachOfficeRuntime(
   const closeOffice = (): Promise<void> => officeClosing ??= office.dispose()
   const tools = office.tools.map(tool => ({
     ...tool,
+    ...(process.platform === 'win32' ? {
+      description: tool.description + ' On Windows with Microsoft Word, use ["import-doc", "source.doc or exact approved attachment path", "working.docx"] to make an editable copy of a trusted .doc, with user confirmation. Edit the copy, save and close it, then use ["export-doc", "working.docx", "output.doc"] for a real Word 97-2003 file. Do not convert merely to summarize available attachment text. Use a new destination and put only final files in the task delivery directory.',
+    } : {}),
     async execute(...args: Parameters<typeof tool.execute>) {
       let decision = evaluateOfficeCommand(args[1], officeTaskPolicy(config))
       if (!decision.allowed) return { content: [{ type: 'text' as const, text: decision.reason ?? 'Office command denied.' }],
@@ -91,6 +95,24 @@ export async function attachOfficeRuntime(
           const current = evaluateOfficeCommand(args[1], officeTaskPolicy(config))
           if (!current.allowed) throw new Error(current.reason)
           if (!sameLockPaths(decision.lockPaths, current.lockPaths)) return { retry: current }
+          if (current.args[0] === OFFICE_EXPORT_DOC || current.args[0] === OFFICE_IMPORT_DOC) {
+            const [verb, source, destination] = current.args
+            const importing = verb === OFFICE_IMPORT_DOC
+            const convert = importing ? importLegacyWord : exportLegacyWord
+            try {
+              await withOfficeFileLock('windows-word-export', args[2], () => convert(source, destination, () => {
+                const updated = evaluateOfficeCommand(args[1], officeTaskPolicy(config))
+                if (!updated.allowed || updated.args[2] !== destination) throw new Error(updated.reason ?? 'The Word destination changed during conversion.')
+              }, args[2]))
+              const message = importing ? 'Created editable DOCX working copy' : 'Exported Word 97-2003 document'
+              return { result: { content: [{ type: 'text' as const, text: message + ': ' + destination }],
+                details: { serverName: 'officecli', toolName: 'officecli', isError: false } } }
+            } catch (error) {
+              const ioError = !!error && typeof error === 'object' && 'code' in error
+              return { result: { content: [{ type: 'text' as const, text: !ioError && error instanceof Error ? error.message : 'Could not publish the converted file. Check the destination directory and choose a new filename.' }],
+                details: { serverName: 'officecli', toolName: 'officecli', isError: true } } }
+            }
+          }
           const result = await tool.execute(args[0], { command: current.args }, args[2])
           if (result.details.executionUncertain) {
             interrupted = true

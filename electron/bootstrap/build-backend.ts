@@ -83,7 +83,7 @@ import { videoSubmissionRejected } from '../domain/video-media'
 import { isMediaSubmissionUnconfirmed, MEDIA_RETRY_READ_FAILED } from '../../src/shared/media-retry'
 import { ScopePath } from '../data/scope-path'
 import { DocumentPreviewService } from '../service/document-preview-service'
-import { DocumentPreviewStore } from '../data/document-preview-store'
+import { DocumentPreviewStore, writeWordCopy } from '../data/document-preview-store'
 import type { DocumentPreviewRuntime } from '../runtime/document-preview-runtime'
 import { AttachmentStore } from '../data/attachment-store'
 import { AttachmentService } from '../service/attachment-service'
@@ -448,6 +448,11 @@ class BackendRuntime {
       },
       read: (...args) => previewFiles.read(...args),
       readConversation: async (scope, taskId, fileId) => previewFiles.readConversation(scope, await this.tasks.get(taskId), fileId),
+      readAttachment: async (taskId, attachmentId, sha256) => {
+        await this.tasks.get(taskId)
+        return this.attachments.readTaskDocument(taskId, attachmentId, sha256)
+      },
+      writeCopy: writeWordCopy,
       render: (format, bytes, validate) => this.documentPreviewRuntime.get().then(runtime => { validate(); return runtime.render(format, bytes) }),
       stop: () => this.documentPreviewRuntime.peek()?.stop(),
     })

@@ -4,6 +4,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { posix } from 'node:path'
 import type { DocumentPreviewContent } from '../../src/shared/document-preview'
 import { DocumentPreviewError } from '../errors/document-preview-error'
+import { readLegacyWordText } from './legacy-word-text'
 
 const escape = (text: string) => text.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
@@ -135,6 +136,10 @@ export async function convertDocumentPreview(format: string, bytes: Uint8Array):
   switch (format.toLowerCase()) {
     case 'pdf': return { kind: 'pdf', bytes: new Uint8Array(bytes) }
     case 'docx': return word(bytes)
+    case 'doc': {
+      return { kind: 'html', sections: [{ title: '正文', html: '<pre>' + escape((await readLegacyWordText(bytes)).slice(0, 100_000)) + '</pre>' }],
+        notices: ['旧版 Word 仅预览提取的文字，原有排版和图片请在原文件中查看。'] }
+    }
     case 'xlsx': return spreadsheet(bytes)
     case 'pptx': return presentation(bytes)
     default: {

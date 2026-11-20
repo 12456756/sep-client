@@ -11,6 +11,7 @@ import { WriteChain } from './write-chain'
 import type { InputSnapshotRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentExtractor, AttachmentExtraction } from '../domain/attachment-extraction'
 import { inspectMediaImage } from './media-image'
+import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
 
 const MIME: Record<string, string> = { txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }
 
@@ -35,7 +36,10 @@ export interface AttachmentStorePort {
   findDraftClaim(scope: TaskOwnerScope, refs: readonly { attachmentId: string; sha256: string }[]): Promise<{ draftId: string; revision: number; sessionId: string; attachments: Array<{ attachmentId: string; sha256: string }> } | null>
 }
 
-function mimeFor(name: string): string { return MIME[extname(name).slice(1).toLowerCase()] ?? 'application/octet-stream' }
+function mimeFor(name: string): string {
+  const extension = extname(name).slice(1).toLowerCase()
+  return extension === 'doc' ? LEGACY_WORD_MIME : MIME[extension] ?? 'application/octet-stream'
+}
 function clone<T>(value: T): T { return structuredClone(value) }
 function verifiedMediaType(bytes: Uint8Array, declared: string): string {
   const type = declared.toLowerCase().split(';')[0].trim()

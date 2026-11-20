@@ -1,5 +1,6 @@
 import { withApprovedSkillReadPaths } from './run-skill-policy'
 import { runSkillDisplay } from '../common/run-skill-display'
+import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
 import { MEDIA_SPEC_EXECUTION_PROMPT } from './media-execution-prompts'
 /**
  * 编排式任务的节点执行器。
@@ -639,6 +640,9 @@ export class ArrangementExecutor {
         : null
       if (attachmentInputs?.attachments.length) {
         prompt += `\n\n【已绑定附件】\n${attachmentInputs.attachments.map(item => `附件：${item.displayName}（${item.mediaType}，${item.byteLength} bytes）${item.extractedText ? `\n提取内容：\n${item.extractedText}` : item.readPath ? `\n文件路径：${item.readPath}` : ''}`).join('\n\n')}`
+        const legacyWordSources = attachmentInputs.attachments.flatMap(item => item.mediaType === LEGACY_WORD_MIME && item.readPath
+          ? [{ name: item.displayName, path: item.readPath }] : [])
+        if (legacyWordSources.length) prompt += `\n\n【旧版 Word 附件只读路径】\n${JSON.stringify(legacyWordSources)}\n仅当任务要求编辑该附件时，通过 Office 工具 import-doc 将对应路径导入工作区中的新 DOCX 副本。导入前需要确认，不修改附件原件；要交付 DOC 时用 export-doc 生成新文件。`
       }
       if (this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.create(this.options.scope, {

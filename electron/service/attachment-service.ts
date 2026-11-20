@@ -4,6 +4,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import { AttachmentStore } from '../data/attachment-store'
 import type { AttachmentStorePort } from '../data/attachment-store'
 import { createHash } from 'node:crypto'
+import { extname } from 'node:path'
 import type { AttachmentExtractor } from '../domain/attachment-extraction'
 import type { ResolvedAttachmentInput } from '../domain/attachment-input'
 import { AppError } from '../errors/app-error'
@@ -50,12 +51,25 @@ export class AttachmentService {
   cancelSession(sessionId: string): Promise<boolean> { return this.cancel(this.currentScope(), sessionId) }
 
   async previewTaskAttachment(taskId: string, attachmentId: string, sha256: string): Promise<AttachmentPreview> {
+    const { item, bytes } = await this.readTaskAttachment(taskId, attachmentId, sha256)
+    const mediaType = item.mediaType
+    if (mediaType !== 'image/png' && mediaType !== 'image/jpeg' && mediaType !== 'image/webp') throw new Error('ATTACHMENT_PREVIEW_UNSUPPORTED')
+    return { attachmentId, sha256, mediaType, bytes: new Uint8Array(bytes),
+      ...(item.width ? { width: item.width } : {}), ...(item.height ? { height: item.height } : {}) }
+  }
+
+  async readTaskDocument(taskId: string, attachmentId: string, sha256: string) {
+    const { item, bytes } = await this.readTaskAttachment(taskId, attachmentId, sha256)
+    const format = extname(item.displayName).slice(1).toLowerCase()
+    if (format !== 'doc' && format !== 'docx') throw new AppError('INVALID_ARGUMENT')
+    return { name: item.displayName, version: item.sha256, format, bytes }
+  }
+
+  private async readTaskAttachment(taskId: string, attachmentId: string, sha256: string) {
     const scope = this.currentScope()
     const metadata = await this.store.readTaskMetadata(scope, taskId)
     const item = metadata.items.find(candidate => candidate.attachmentId === attachmentId && candidate.sha256 === sha256)
     if (!item) throw new Error('ATTACHMENT_REFERENCE_INVALID')
-    const mediaType = item.mediaType
-    if (mediaType !== 'image/png' && mediaType !== 'image/jpeg' && mediaType !== 'image/webp') throw new Error('ATTACHMENT_PREVIEW_UNSUPPORTED')
     if (item.byteLength > attachmentImportLimits.maxFileBytes) throw new Error('ATTACHMENT_TOO_LARGE')
     const bytes = await this.store.readTask(scope, taskId, attachmentId)
     if (bytes.byteLength !== item.byteLength || createHash('sha256').update(bytes).digest('hex') !== sha256) {
@@ -63,14 +77,7 @@ export class AttachmentService {
     }
     const current = this.scopeProvider?.()
     if (!current || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
-    return {
-      attachmentId,
-      sha256,
-      mediaType,
-      bytes: new Uint8Array(bytes),
-      ...(item.width ? { width: item.width } : {}),
-      ...(item.height ? { height: item.height } : {}),
-    }
+    return { item, bytes }
   }
 
   // Draft/task claims are intentionally explicit. The arrangement service should call these

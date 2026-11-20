@@ -12,6 +12,8 @@ function previewRoute(channel: Route['channel'] = INVOKE_CHANNELS.ARRANGE_PREVIE
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   const module = { exports: {} as { documentPreviewRoutes: Route[] } }
   const dependencies: Record<string, unknown> = {
+    electron: { dialog: { showSaveDialog: async () => ({ canceled: false, filePath: 'C:\\downloads\\article.doc' }) } },
+    '../../errors/app-error': { AppError: Error },
     '../../../src/shared/document-preview': contracts,
     '../channels': { INVOKE_CHANNELS },
     '../router': { route: (channel: string, schema: Route['schema'], handle: Route['handle']) => ({ channel, schema, handle }) },
@@ -20,7 +22,7 @@ function previewRoute(channel: Route['channel'] = INVOKE_CHANNELS.ARRANGE_PREVIE
     assert.ok(Object.hasOwn(dependencies, name), name)
     return dependencies[name]
   }, module.exports, module)
-  assert.equal(module.exports.documentPreviewRoutes.length, 2)
+  assert.equal(module.exports.documentPreviewRoutes.length, 3)
   const found = module.exports.documentPreviewRoutes.find(entry => entry.channel === channel)
   assert.ok(found)
   return found
@@ -70,4 +72,19 @@ it('open output directory IPC reuses trusted file identities and rejects rendere
   const context = { documentPreviews: { openDirectory: async (value: unknown) => { calls.push(value) } } }
   assert.deepEqual(await route.handle(context as never, input as never), { success: true })
   assert.deepEqual(calls, [input])
+})
+
+it('saves a registered Word attachment using the native destination instead of accepting a renderer path', async () => {
+  const route = previewRoute(INVOKE_CHANNELS.WORK_SAVE_WORD_COPY)
+  const input = { taskId: 'task', attachmentId: 'attach-a', sha256: 'a'.repeat(64) }
+  assert.deepEqual(route.schema.parse(input), input)
+  assert.equal(route.schema.safeParse({ ...input, path: 'C:\\private.doc' }).success, false)
+  const context = { window: () => ({}), documentPreviews: {
+    saveCopy: async (id: unknown, choose: (name: string, format: string) => Promise<string>) => {
+      assert.deepEqual(id, input)
+      assert.equal(await choose('article.doc', 'doc'), 'C:\\downloads\\article.doc')
+      return true
+    },
+  } }
+  assert.deepEqual(await route.handle(context as never, input as never), { success: true, cancelled: false })
 })
