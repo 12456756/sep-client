@@ -374,6 +374,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-message-attachment-placeholder { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .ent-message-attachment-preview:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: -2px; }
 .ent-message-attachments small { color: var(--ent-ink-3); white-space: nowrap; }
+.ent-say.user > p:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
 .ent-attachment-image-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px)); max-width: none; max-height: none; margin: auto; padding: 0; border: 1px solid var(--ent-line); border-radius: 8px; background: var(--ent-panel); color: var(--ent-ink-2); }
 .ent-attachment-image-dialog[open] { display: flex; flex-direction: column; }
 .ent-attachment-image-dialog::backdrop { background: rgb(0 0 0 / 65%); }
