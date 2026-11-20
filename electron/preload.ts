@@ -163,6 +163,7 @@ const electronAPI = {
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_SELECT, input),
   savePersonalSkill: (input: import('../src/shared/skill-library').SaveSkillInput) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_SAVE, input),
   retryPersonalSkillUpload: (input: { capabilityId: string; idempotencyKey: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_RETRY, input),
+  deleteLocalSkillCopy: (input: { capabilityId: string; idempotencyKey: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_DELETE_LOCAL, input),
   beginAttachmentImport: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_BEGIN, input),
   selectAttachments: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_SELECT, input),
   listAttachments: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_LIST, input),

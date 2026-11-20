@@ -388,6 +388,7 @@ export interface ElectronAPI {
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: SkillLibraryItem }>
   savePersonalSkill: (input: SaveSkillInput) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
   retryPersonalSkillUpload: (input: { capabilityId: string; idempotencyKey: string }) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
+  deleteLocalSkillCopy: (input: { capabilityId: string; idempotencyKey: string }) => Promise<IpcCommandResult & { data?: SkillLibraryItem }>
   beginAttachmentImport: (input: { target: AttachmentImportTarget; idempotencyKey?: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession }>
   selectAttachments: (input: { sessionId: string; operationId?: string; single?: boolean }) => Promise<IpcCommandResult & { cancelled?: boolean; data?: AttachmentImportSession | AttachmentView[] }>
   listAttachments: (input: { sessionId: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession | AttachmentView[] }>

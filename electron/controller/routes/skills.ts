@@ -24,6 +24,7 @@ export const skillRoutes = [
   }),
   route(INVOKE_CHANNELS.SKILL_LIBRARY_PREVIEW, versionInput, async (ctx, input) => ({ success: true, data: await ctx.skills.preview(input) })),
   route(INVOKE_CHANNELS.SKILL_LIBRARY_SELECT, versionInput, async (ctx, input) => ({ success: true, data: await ctx.skills.select(input) })),
+  route(INVOKE_CHANNELS.SKILL_LIBRARY_DELETE_LOCAL, z.object({ capabilityId: skillVersionIdSchema, idempotencyKey: idempotencyKeySchema }).strict(), async (ctx, input) => ({ success: true, data: await ctx.skills.deleteLocalCopy(input) })),
   route(INVOKE_CHANNELS.SKILL_LIBRARY_SAVE, z.object({ request: personalSkillVersionRequestSchema, idempotencyKey: idempotencyKeySchema }).strict(), async (ctx, input) => ({ success: true, data: await ctx.skills.save(input) })),
   route(INVOKE_CHANNELS.SKILL_LIBRARY_RETRY, z.object({ capabilityId: skillVersionIdSchema, idempotencyKey: idempotencyKeySchema }).strict(), async (ctx, input) => ({ success: true, data: await ctx.skills.retry(input) })),
 ]

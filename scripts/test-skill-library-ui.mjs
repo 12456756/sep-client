@@ -21,6 +21,7 @@ import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook
 await import('/index.css');await import('/styles/enterprise.css');await import('/styles/arrange.css');
 const React=(await import('${reactUrl}')).default;const {createRoot}=(await import('${domUrl}')).default;
 const {SkillsPage}=await import('/pages/enterprise/SkillsPage.tsx');
+const {FeedbackProvider}=await import('/components/feedback/FeedbackProvider.tsx');
 const {useSkillLibrary}=await import('/features/enterprise/use-skill-library.ts');
 const {createSkillPageState,enterSkillPage,createSkillLeaveRegistry}=await import('/features/enterprise/skill-page-state.ts');
 const {useSkillPageScroll}=await import('/features/enterprise/use-skill-page-scroll.ts');
@@ -30,9 +31,30 @@ const platform={...publicVersion,id:'platform',scope:'PLATFORM',version:'1.0.0',
 const approved={...publicVersion,id:'approved',scope:'PERSONAL',ownerId:'user',version:'opaque-personal-id',parentVersionId:'public',changeSummary:'已审核优化版',createdAt:'2026-10-20'};
 window.sources={public:window.source,platform:'# 平台原文\n',approved:'# 我的已审核版本\n'};
 window.library=[{capability:{id:'cap',name:'数据分析',description:'读取数据并生成分析报告，保留原文与版本。',type:'SKILL'},bindings:[{subscriptionId:'sub-a',employeeId:'emp-a',currentVersion:publicVersion,selectedVersionId:'public'},{subscriptionId:'sub-b',employeeId:'emp-b',currentVersion:publicVersion,selectedVersionId:'platform'}],usableVersionIds:['public','platform','approved'],versions:[publicVersion,platform,approved],localVersions:[]}];
+if(location.search==='?local-delete'){
+ const item=window.library[0];
+ const uploaded={...approved,id:'uploaded-copy',status:'PENDING_ENTERPRISE_REVIEW',changeSummary:'已上传修改版'};
+ const uploadedLocal={idempotencyKey:'local-uploaded-copy',request:{capabilityId:'cap',parentVersionId:'public',changeSummary:'已上传修改版',content:'# 本地修改原文'},createdAt:'2026-10-20',uploadedVersion:uploaded};
+ const draft={idempotencyKey:'local-unuploaded-copy',request:{capabilityId:'cap',parentVersionId:'public',changeSummary:'仅本地草稿',content:'# 本地草稿原文'},createdAt:'2026-10-19'};
+ item.versions.push(uploaded);item.localVersions.push(uploadedLocal,draft);item.usableVersionIds.push(uploadedLocal.idempotencyKey,draft.idempotencyKey);
+ window.sources[uploaded.id]='# 云端修改原文';
+ for(const local of item.localVersions)window.sources[local.idempotencyKey]=local.request.content;
+}
 window.calls=[];window.previewCalls=[];window.failUpload=false;window.failList=false;window.failSelect=false;window.failSave=false;window.skippedCount=0;
 const makeEmployee=id=>({id,name:id==='sub-a'?'数据分析师':'报告撰写员',availability:'ready',assignedToMe:true,allowedModels:[],skillIds:['cap'],goodAt:[],cannotDo:[],permissions:[],avatar:null});
 window.electronAPI={
+ deleteLocalSkillCopy:async input=>{
+   window.calls.push({kind:'delete',...input});
+   if(window.failDelete)return {success:false,error:{message:'删除失败测试'}};
+   const item=window.library.find(value=>value.capability.id===input.capabilityId);
+   const local=item.localVersions.find(value=>value.idempotencyKey===input.idempotencyKey);
+   if(!local)return {success:false,error:{message:'此设备上没有该版本的本地副本。'}};
+   item.localVersions=item.localVersions.filter(v=>v!==local);
+   delete window.sources[input.idempotencyKey];
+   item.usableVersionIds=item.usableVersionIds.filter(id=>id!==input.idempotencyKey);
+   item.bindings=item.bindings.map(b=>b.selectedVersionId===input.idempotencyKey?{...b,selectedVersionId:b.currentVersion?.id??null,selectionMode:'follow-platform'}:b);
+   return {success:true,data:structuredClone(item)};
+ },
  listSkillLibrary:async()=>window.failList?{success:false,error:{message:'平台连接失败'}}:window.limited?{success:false,error:{statusCode:429,message:'请在 2 秒后重试'}}:{success:true,skippedCount:window.skippedCount,data:structuredClone(window.memberId==='other'?window.library.map(item=>({...item,versions:item.versions.filter(v=>v.scope!=='PERSONAL'),localVersions:[],usableVersionIds:['public','platform'],bindings:item.bindings.map(binding=>({...binding,selectionMode:'follow-platform',selectedVersionId:'public'}))})):window.library)},
  previewLibrarySkill:async input=>{window.previewCalls.push(input);if(window.failPreview)return {success:false,error:{message:'读取失败测试'}};return {success:true,data:window.sources[input.versionId]??'# 技能内容\n'};},
  selectSkillVersion:async input=>{window.calls.push({kind:'select',...input});if(window.failSelect)return {success:false,error:{message:'版本切换失败测试'}};if(window.delaySelect)await new Promise(resolve=>window.resolveSelect=resolve);window.library=window.library.map(item=>item.capability.id!==input.capabilityId?item:({...item,bindings:item.bindings.map(b=>({...b,selectionMode:input.versionId==='follow-platform'?'follow-platform':'personal',selectedVersionId:input.versionId==='follow-platform'?b.currentVersion.id:input.versionId}))}));return {success:true};},
@@ -51,18 +73,18 @@ function Fixture(){
  const workspace={...library,attachmentScopeKey:scope,skillPageState:state,updateSkillPageState:update,registerSkillLeaveGuard:register,navigate,canGoBack:false,employees:[makeEmployee('sub-a'),makeEmployee('sub-b')],organizationEmployees:[]};
  return React.createElement('div',{className:'ent-shell',style:{display:'block',height:'100vh',overflow:'hidden'}},React.createElement('main',{ref:scroll,'data-test-scroll':'',className:route.name==='skills'?'ent-scroll-skills':'',style:{overflow:'auto',height:'100%'}},route.name==='skills'?React.createElement(SkillsPage,{workspace,skillId:route.skillId,employeeFilterId:route.employeeFilterId,sourceEmployeeId:route.sourceEmployeeId,returnTo:route.returnTo}):React.createElement('h1',null,route.name==='employee'?'员工详情示例':'其他页面')));
 }
-createRoot(document.getElementById('root')).render(React.createElement(Fixture));
+createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider,null,React.createElement(Fixture)));
 </script></body></html>`;
   browser = await chromium.launch({ channel: process.env.SEP_BROWSER_CHANNEL || 'chrome', headless: true });
-  const screenshotDir = join(process.cwd(), 'outputs', 'skill-library-validation');
+  const screenshotDir = process.env.SEP_SKILL_SCREENSHOT_DIR || join(process.cwd(), 'outputs', 'skill-library-validation');
   await mkdir(screenshotDir, { recursive: true });
   const page = await browser.newPage();
   page.setDefaultTimeout(10_000);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.route('**/__skill-library-test', route => route.fulfill({ contentType: 'text/html', body: html }));
-  const reset = async () => { await page.goto(origin + '/__skill-library-test'); await page.getByRole('button', { name: '查看详情：数据分析', exact: true }).waitFor(); };
+  await page.route(url => url.pathname === '/__skill-library-test', route => route.fulfill({ contentType: 'text/html', body: html }));
+  const reset = async (scenario = '') => { await page.goto(origin + '/__skill-library-test' + scenario); await page.getByRole('button', { name: '查看详情：数据分析', exact: true }).waitFor(); };
   const open = () => page.getByRole('button', { name: '查看详情：数据分析', exact: true }).click();
   const candidate = page.getByRole('combobox', { name: '切换使用版本：数据分析（全部 2 名关联员工）', exact: true });
   const toList = async () => {
@@ -82,6 +104,60 @@ createRoot(document.getElementById('root')).render(React.createElement(Fixture))
     await page.getByRole('button', { name: '确定保存', exact: true }).click();
   };
   const savedKey = () => page.evaluate(() => window.calls.filter(call => call.kind === 'save').at(-1).idempotencyKey);
+  await reset('?local-delete');
+  assert.equal(await candidate.locator('option[value="local-uploaded-copy"]').count(), 1);
+  await open();
+  await page.locator('.skill-reading').waitFor();
+  const description = page.getByRole('tabpanel', { name: '技能说明' });
+  const history = page.getByRole('tabpanel', { name: '版本记录' });
+  const deleteUploaded = { name: '删除本地副本：已上传修改版' };
+  const uploadedRow = history.locator('.skill-version-row').filter({ hasText: '已上传修改版' });
+  const draftRow = history.locator('.skill-version-row').filter({ hasText: '仅本地草稿' });
+  assert.equal(await description.getByRole('button', { name: '删除本地副本' }).count(), 0);
+  await page.getByRole('tab', { name: '版本记录' }).click();
+  assert.equal(await history.getByRole('button', { name: '删除本地副本' }).count(), 2);
+  await page.screenshot({ path: join(screenshotDir, 'delete-version-history.png'), fullPage: true });
+  await history.getByRole('button', deleteUploaded).click();
+  await page.getByText(/已上传的版本和审核状态不受影响/).waitFor();
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.calls.filter(call => call.kind === 'delete').length), 0);
+  await uploadedRow.getByRole('button', { name: '查看内容' }).click();
+  await description.getByText('本地修改原文', { exact: true }).waitFor();
+  await page.screenshot({ path: join(screenshotDir, 'delete-version-description.png'), fullPage: true });
+  await description.getByRole('button', deleteUploaded).click();
+  await page.evaluate(() => { window.failDelete = true; });
+  await page.getByRole('button', { name: '删除本地副本', exact: true }).click();
+  await page.getByText('删除失败测试', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '知道了', exact: true }).click();
+  await page.evaluate(() => { window.failDelete = false; });
+  await description.getByRole('button', deleteUploaded).click();
+  await page.getByRole('button', { name: '删除本地副本', exact: true }).click();
+  await description.getByText('保留 Markdown 与原文。').waitFor();
+  await page.getByRole('tab', { name: '版本记录' }).click();
+  await uploadedRow.getByText('云端版本 · 待企业审核').waitFor();
+  assert.equal(await uploadedRow.getByRole('button', { name: '删除本地副本' }).count(), 0);
+  await uploadedRow.getByRole('button', { name: '查看内容' }).click();
+  await description.getByText('云端修改原文', { exact: true }).waitFor();
+  assert.equal(await description.getByRole('button', { name: '删除本地副本' }).count(), 0);
+  await page.getByRole('tab', { name: '版本记录' }).click();
+  await draftRow.getByRole('button', { name: '删除本地副本：仅本地草稿' }).click();
+  await page.getByRole('button', { name: '删除本地副本', exact: true }).click();
+  await draftRow.waitFor({ state: 'detached' });
+  assert.deepEqual(await page.evaluate(() => window.calls.filter(call => call.kind === 'delete').map(call => call.idempotencyKey)), ['local-uploaded-copy', 'local-uploaded-copy', 'local-unuploaded-copy']);
+  await toList();
+  await candidate.waitFor();
+  const expectedOptions = ['follow-platform', 'approved'];
+  assert.deepEqual(await candidate.locator('option:not([value=""])').evaluateAll(options => options.map(option => option.value)), expectedOptions);
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await candidate.locator('option[value="approved"]').waitFor({ state: 'attached' });
+  assert.deepEqual(await candidate.locator('option:not([value=""])').evaluateAll(options => options.map(option => option.value)), expectedOptions);
+  log('PASS local deletion from both tabs, cloud retention, and viewing fallback');
+  assert.deepEqual(errors, []);
+  if (process.env.SEP_SKILL_DELETE_ONLY !== '1') await verifyFullLibrary();
+  assert.deepEqual(errors, []);
+  log('PASS skill library browser regression; screenshots: ' + screenshotDir);
+
+  async function verifyFullLibrary() {
   for (const width of [1200, 960]) {
     await page.setViewportSize({ width, height: width === 1200 ? 800 : 640 });
     await reset();
@@ -351,9 +427,9 @@ createRoot(document.getElementById('root')).render(React.createElement(Fixture))
   await page.getByText('来源员工已不在当前列表中，已返回技能列表。', { exact: true }).waitFor();
   await page.getByRole('button', { name: '查看详情：数据分析', exact: true }).waitFor();
   log('PASS rate limit and employee entry/return');
-  assert.deepEqual(errors, []);
-  log('PASS skill library browser regression; screenshots: ' + screenshotDir);
+  }
 } finally {
   await browser?.close();
+  server.httpServer?.closeAllConnections();
   await server.close();
 }
