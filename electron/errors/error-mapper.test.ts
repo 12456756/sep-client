@@ -5,6 +5,7 @@ import { AuthenticationRequiredError } from '../common/platform/authentication-r
 import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
 import { InvalidTaskTransitionError, TaskAdmissionError, TaskPersistenceError, TaskScopeError } from '../runtime/task-manager'
 import { TaskStatus } from '../../src/shared/types'
+import type { ApiDiagnostic } from '../../src/shared/api-diagnostic'
 import { ERROR_CODES } from './error-codes'
 import { appError } from './app-error'
 import { authFailure, failure, toAuthEnvelope, toEnvelope } from './error-mapper'
@@ -31,6 +32,21 @@ describe('error code table', () => {
 })
 
 describe('toEnvelope', () => {
+  it('publishes translated validation and conflict reasons without rendering arbitrary response strings', () => {
+    const makeError = (statusCode: number, body: ApiDiagnostic['body'], message: string) => new AuthApiError({
+      statusCode, message, diagnostic: { httpStatus: statusCode, message, body },
+    }, 'subscriptions')
+    const invalid = makeError(422, { errors: [
+      { field: 'requestedSpec.count', message: 'Expected number, received string' },
+      { field: 'name', message: 'Required' },
+      { field: '/private/path', message: '<html>private value</html>' },
+    ] }, 'Invalid parameters')
+    assert.equal(toEnvelope(invalid).message, '生成数量必须为数字；请填写名称，请修改后重试。')
+    assert.equal(toEnvelope(invalid, { feedbackOperation: 'workRetry' }).message, toEnvelope(invalid).message)
+    const conflict = makeError(409, 'Stale client run', 'Stale client run')
+    assert.match(toAuthEnvelope(conflict).message, /旧记录/)
+    assert.doesNotMatch(toEnvelope(makeError(422, { message: 'private detail' }, 'private detail')).message, /private/)
+  })
   it('keeps HTTP classification, validation details and retry hints through both IPC projections', () => {
     for (const [statusCode, code] of [[400, 'INVALID_ARGUMENT'], [409, 'CONFLICT'], [422, 'INVALID_ARGUMENT'], [502, 'SERVICE_UNAVAILABLE']] as const) {
       const diagnostic = { httpStatus: statusCode, message: 'Stale client run', code: 123,

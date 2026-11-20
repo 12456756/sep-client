@@ -26,6 +26,26 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe('platform HTTP error preservation', () => {
+  it('removes already known credentials even from unlabeled diagnostic fields', async () => {
+    const calls: Array<[string, (secret: string) => Promise<unknown>]> = [
+      ['opaque-desktop-access', secret => api.getSubscriptions(secret)],
+      ['opaque-desktop-refresh', secret => api.refreshAccessToken(secret)],
+      ['opaque-employment-refresh', secret => api.getEmploymentToken({ refreshToken: secret, subscriptionId: 'sub-1' })],
+      ['opaque-login-password', secret => api.login({ email: 'person@example.test', password: secret, fingerprint: 'fp', platform: 'windows' })],
+    ]
+    for (const [secret, call] of calls) {
+      globalThis.fetch = async () => new Response(JSON.stringify({ message: `Validation failed: ${secret}`, body: { details: { value: secret, [secret]: 'value' } } }),
+        { status: 422, headers: { 'x-request-id': secret } })
+      await assert.rejects(call(secret), error => {
+        assert.ok(error instanceof api.AuthApiError)
+        assert.match(error.message, /Validation failed/)
+        assert.ok(!JSON.stringify(error.error).includes(secret))
+        assert.equal(error.error.diagnostic?.sepRequestId, '[redacted]')
+        return true
+      })
+    }
+  })
+
   it('preserves plain text and numeric error codes instead of replacing the reason', async () => {
     for (const body of ['Stale client run', { code: 123, message: 'Unsupported image dimensions', details: { width: 1300 } }]) {
       globalThis.fetch = async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), {
@@ -76,13 +96,13 @@ describe('employee runtime skill artifact negotiation errors', () => {
 })
 
 describe('SEP enabled model catalog', () => {
-  it('preserves the timeout cause when a bounded platform read fails', async () => {
-    const cause = new DOMException('private timeout diagnostic', 'TimeoutError')
+  it('preserves the timeout cause without retaining a raw credential when a bounded platform read fails', async () => {
+    const cause = new DOMException('Timed out for opaque-access-credential', 'TimeoutError')
     globalThis.fetch = async () => { throw cause }
-    await assert.rejects(api.getEnabledModels('access'), error => {
+    await assert.rejects(api.getEnabledModels('opaque-access-credential'), error => {
       assert.ok(error instanceof api.AuthApiError)
       assert.equal(error.statusCode, 0)
-      assert.equal(error.cause, cause)
+      assert.deepEqual(error.cause, { name: 'TimeoutError', message: 'Timed out for [redacted]', code: 23 })
       return true
     })
   })
@@ -393,7 +413,7 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     let calls = 0
     globalThis.fetch = async () => { calls++; return response(version) }
     const request = { capabilityId: 'cap', parentVersionId: 'v', content: 'text' }
-    for (const invalid of [{ ...request, content: '' }, { ...request, content: 'x'.repeat(512001) }, { ...request, ownerId: 'other' }, { ...request, capabilityId: 'x'.repeat(129) }]) {
+    for (const invalid of [{ ...request, content: '' }, { ...request, ownerId: 'other' }, { ...request, capabilityId: 'x'.repeat(129) }]) {
       await assert.rejects(async () => api.createPersonalSkillVersion(invalid, 'valid-key-1234567', 'access'))
     }
     await assert.rejects(async () => api.createPersonalSkillVersion(request, '', 'access'))

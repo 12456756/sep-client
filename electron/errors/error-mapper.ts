@@ -31,6 +31,7 @@ import { mediaSpecToolFailureFrom } from './media-tool-error'
 import { transportKind } from '../common/transport-error'
 import { safeApiDiagnostic } from '../common/platform/api-diagnostic'
 import type { ApiDiagnostic } from '../../src/shared/api-diagnostic'
+import { platformDiagnosticMessage } from './platform-diagnostic-feedback'
 
 /** Popup copy stays separate from optional sanitized transport evidence. */
 export interface IpcErrorEnvelope extends MediaSpecFailureContext {
@@ -127,7 +128,12 @@ export function toEnvelope(error: unknown, context: { authenticated?: boolean; f
     result.statusCode = error.statusCode
     if (error.error.retryAfterMs !== undefined) result.retryAfterMs = error.error.retryAfterMs
   }
-  return context.feedbackOperation ? { ...result, ...operationFeedback(error, context.feedbackOperation, result) } : result
+  const publicResult = context.feedbackOperation ? { ...result, ...operationFeedback(error, context.feedbackOperation, result) } : result
+  if (error instanceof KnowledgeApiError || error instanceof AuthApiError && error.resource !== 'login') {
+    const message = platformDiagnosticMessage(diagnostic, error.statusCode)
+    if (message) return { ...publicResult, message }
+  }
+  return publicResult
 }
 
 function mapEnvelope(error: unknown, context: { authenticated?: boolean }): IpcErrorEnvelope {
