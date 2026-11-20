@@ -383,6 +383,39 @@ async function mediaSession(
   }
 }
 
+describe('conversation attachments through the real Pi SDK', () => {
+  it('advertises only the scoped reader and returns the selected document to the model', async () => {
+    const conversationAttachments: NonNullable<PiAgentSessionConfig['conversationAttachments']> = {
+      list: () => ({ files: [{ attachmentId: 'attachment-doc', name: 'notes.txt', mediaType: 'text/plain', messageNumber: 1 }], nextOffset: null }),
+      async read(id, offset) {
+        assert.equal(id, 'attachment-doc')
+        assert.equal(offset, 0)
+        return { text: JSON.stringify({ text: 'Original document content.' }) }
+      },
+    }
+    const call = { name: 'conversation_attachment', input: { operation: 'read', attachmentId: 'attachment-doc' } }
+    const { bodies, approvals } = await mediaSession({ conversationAttachments, mediaTools: undefined }, call)
+    assert.equal(bodies[0].tools!.find(tool => tool.function.name === call.name)?.function.parameters.type, 'object')
+    const result = bodies[1].messages.find(message => message.role === 'tool')!
+    assert.equal(JSON.parse(messageText(result.content)).text, 'Original document content.')
+    assert.equal(approvals, 0)
+
+    const blocked = await mediaSession({ conversationAttachments, disableTools: true }, call)
+    assert.ok(!blocked.bodies[0].tools?.some(tool => tool.function.name === call.name))
+    assert.ok(!JSON.stringify(blocked.bodies).includes('Original document content.'))
+  })
+
+  it('forwards a selected attachment image as image content, not an encoded text result', async () => {
+    const image = { data: 'aW1hZ2UtZGF0YQ==', mimeType: 'image/png' }
+    const { bodies } = await mediaSession({ vision: true, mediaTools: undefined, conversationAttachments: {
+      list: () => ({ files: [], nextOffset: null }),
+      read: async () => ({ text: '{"name":"original.png"}', image }),
+    } }, { name: 'conversation_attachment', input: { operation: 'read', attachmentId: 'attachment-image' } })
+    assert.ok(!JSON.stringify(bodies[0].messages).includes(image.data))
+    assert.match(JSON.stringify(bodies[1].messages), /data:image\/png;base64,aW1hZ2UtZGF0YQ==/)
+  })
+})
+
 describe('browser instructions in real provider requests', () => {
   const cases: Array<{ name: string; overrides: Partial<PiAgentSessionConfig> }> = [
     { name: 'native general assistant', overrides: { useNativeSystemPrompt: true, disableSkills: true,

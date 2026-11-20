@@ -42,6 +42,7 @@ export interface PiTaskWorkerContext {
   enableCommonTools?: PiAgentSessionConfig['enableCommonTools']
   mediaTools?: PiAgentSessionConfig['mediaTools']
   videoTools?: PiAgentSessionConfig['videoTools']
+  conversationAttachments?: PiAgentSessionConfig['conversationAttachments']
   employeeProfile?: PiAgentSessionConfig['employeeProfile']
   fixedSystemPrompt?: string
   arrangementNodeId?: string
@@ -167,6 +168,7 @@ export class PiTaskWorker {
         enableCommonTools: this.context.enableCommonTools,
         mediaTools: this.context.mediaTools,
         videoTools: this.context.videoTools,
+        conversationAttachments: this.context.conversationAttachments,
         employeeProfile: this.context.employeeProfile,
         fixedSystemPrompt: this.context.fixedSystemPrompt,
         arrangementNodeId: this.context.arrangementNodeId,

@@ -291,6 +291,10 @@ describe('real SDK model request awareness', () => {
 
         await f.session.prompt('生成一张商品概念图，最终交付 PNG。')
         assert.deepEqual(f.payloadErrors, [])
+        const system = f.requests[0]!.messages.find(message => message.role === 'system')!.content
+        assert.match(system, /parameterSources.*requestedSpec.*实际存在/)
+        assert.match(system, /不得.*width.*height/)
+        assert.match(system, /提交状态.*未知.*原任务/)
         const expectedCalls = recoverable ? ['media_generate_image', 'media_get_job'] : ['media_generate_image']
         assert.deepEqual(attempted, expectedCalls)
         assert.deepEqual(executed, expectedCalls)
