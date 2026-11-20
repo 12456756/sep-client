@@ -26,6 +26,8 @@ import * as contentCopy from '../../components/ContentCopyMenu';
 import * as fileMenuActions from '../../components/workspace/file-menu-actions';
 import { resultFileReleaseSchema } from '../../shared/result-files';
 import type { WorkItem } from '../../features/enterprise/types';
+import { buildWorkItem } from '../../features/enterprise/work-mapping';
+import type { ClientTask } from '../../shared/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import * as workProcess from '../../features/enterprise/work-process';
 import * as vocabulary from '../../features/enterprise/vocabulary';
@@ -540,6 +542,25 @@ describe('WorkDetailPage media entry', () => {
       assert.doesNotMatch(html, /查看产出结果/);
       if (state === 'unavailable') assert.match(html, /重新读取工作类型/);
     }
+  });
+
+  it('opens a scheduled record without mounting the chat queue, even with stale conversation classification', () => {
+    const task: ClientTask = {
+      id: 'scheduled-work', title: 'Create a file', prompt: 'Create a file', status: 'pending', workDir: null,
+      createdAt: 1, startedAt: null, completedAt: null, error: null, files: [], logs: [],
+      ownerId: 'member', ownerEnterpriseId: 'enterprise', subscriptionId: 'employee', activeRunId: null,
+      scheduledOrigin: { definitionId: 'schedule', occurrenceId: 'occurrence' },
+    };
+    const pending = buildWorkItem({ task, employees: [] });
+    const completed = buildWorkItem({ task: { ...task, status: 'completed', startedAt: 1, completedAt: 2,
+      workType: { state: 'resolved', kind: 'conversation' }, files: ['deliverables/20261120-1659.txt'] }, employees: [] });
+    for (const item of [pending, completed]) {
+      assert.deepEqual(item.workType, { state: 'resolved', kind: 'arrangement' });
+      const html = renderDetail(item);
+      assert.doesNotMatch(html, /aria-label="工作对话"/);
+      assert.match(html, /查看产出结果/);
+    }
+    assert.match(renderDetail(completed), /20261120-1659\.txt/);
   });
 
   it('keeps deletion behind work information and an explicit confirmation', () => {

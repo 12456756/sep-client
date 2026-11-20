@@ -199,7 +199,10 @@ interface BuildInput {
 
 export function buildWorkItem({ task, employees, messages, streamingText, streamingRunId, activities = [], activeEmployeeId, plan, arrangementEvents = [], arrangementExecution }: BuildInput): WorkItem {
   const legacyMeta = decodeWorkMeta(task.prompt);
-  const workType: WorkItem['workType'] = task.workType ?? { state: 'loading' };
+  // A scheduled record can still carry a stale conversation type from the task cache.
+  const workType: WorkItem['workType'] = task.scheduledOrigin
+    ? { state: 'resolved', kind: 'arrangement' }
+    : task.workType ?? { state: 'loading' };
   const resolvedKind = workType.state === 'resolved' ? workType.kind : null;
   const meta: WorkMeta | null = plan && plan.mode !== 'conversation' ? {
     kind: 'flow', goal: plan.goal,

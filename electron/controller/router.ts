@@ -103,8 +103,9 @@ function toFailure(route: Route, error: unknown, input?: unknown): unknown {
   if (route.channel === INVOKE_CHANNELS.TASK_UPDATE_DETAILS && input && typeof input === 'object' && 'pinned' in input && !('title' in input)) {
     feedbackOperation = input.pinned ? 'workPin' : 'workUnpin'
   }
-  if (route.channel === INVOKE_CHANNELS.CONVERSATION_QUEUE && input && typeof input === 'object' && 'action' in input && input.action === 'skip') {
-    feedbackOperation = 'workSkip'
+  if (route.channel === INVOKE_CHANNELS.CONVERSATION_QUEUE && input && typeof input === 'object' && 'action' in input) {
+    if (input.action === 'skip') feedbackOperation = 'workSkip'
+    else if (input.action === 'resume' || input.action === 'recover' || input.action === 'prioritize') feedbackOperation = 'workRetry'
   }
   if (feedbackOperation) return reportFailure(route.channel, error, { authenticated: true, feedbackOperation })
   switch (route.errorShape) {

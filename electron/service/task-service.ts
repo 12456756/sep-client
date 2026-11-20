@@ -441,7 +441,7 @@ export class TaskService {
       this.diagnose(plans?.diagnose ? () => plans.diagnose!(scope, task.id) : undefined),
     ])
     const group = metadata.state === 'found' ? metadata.value.executionGroup : undefined
-    return { ...task, ...(group ? { executionGroup: { rootTaskId: group.rootTaskId, number: group.number } } : {}), workType: resolveWorkType(metadata, plan, task.prompt) }
+    return { ...task, ...(group ? { executionGroup: { rootTaskId: group.rootTaskId, number: group.number } } : {}), workType: resolveWorkType(metadata, plan, task.prompt, task.scheduledOrigin) }
   }
 
   private async requireTask(taskId: string): Promise<ClientTask> {

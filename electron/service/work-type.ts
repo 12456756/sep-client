@@ -1,4 +1,5 @@
 import type { WorkTypeReadResult } from '../../src/shared/types'
+import type { ScheduledOrigin } from '../../src/shared/scheduled-tasks'
 import type { JsonReadDiagnostic } from '../data/atomic-file'
 import type { TaskMetadata } from '../data/task-metadata-store'
 import type { WorkPlan } from '../domain/arrangement-plan'
@@ -7,7 +8,10 @@ export function resolveWorkType(
   metadata: JsonReadDiagnostic<Pick<TaskMetadata, 'kind'>>,
   plan: JsonReadDiagnostic<Pick<WorkPlan, 'mode'>>,
   prompt: string,
+  scheduledOrigin?: ScheduledOrigin,
 ): WorkTypeReadResult {
+  // The task is published before its schedule's work plan and metadata are saved.
+  if (scheduledOrigin) return { state: 'resolved', kind: 'arrangement' }
   if (metadata.state === 'found') return { state: 'resolved', kind: metadata.value.kind }
   if (plan.state === 'found') return { state: 'resolved', kind: plan.value.mode === 'conversation' ? 'conversation' : 'arrangement' }
   const marker = '[SEP_WORK_META]'
