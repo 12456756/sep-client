@@ -27,6 +27,7 @@ const sourcePlanSchema = z.object({
 })
 
 export function validateScheduledSource(plan: WorkPlan, scope: TaskOwnerScope): void {
+  if (plan.scheduledOrigin?.execution) throw new AppError('INVALID_ARGUMENT', { message: '请在定时任务中修改原任务配置，此执行记录不能转成指定员工的定时任务。' })
   if (!sourcePlanSchema.safeParse(plan).success) throw new AppError('INVALID_ARGUMENT', { message: '此工作没有可复用的完整编排计划，或使用了不支持的只读权限。' })
   if (plan.owner.memberId !== scope.memberId || plan.owner.enterpriseId !== scope.enterpriseId) throw new AppError('PERMISSION_DENIED')
   validateArrangementNodes(plan.nodes)

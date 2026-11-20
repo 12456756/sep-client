@@ -22,7 +22,7 @@ import { createRunCompletion, WorkerRegistry } from './run-workers'
 import { cleanupRun } from './run-cleanup'
 import type {
   EmployeeRuntimeConfig,
-  QueuedRun,
+  QueuedTaskRun,
   SessionRecoveryMode,
   TaskWorkerPort,
   ControlIntent,
@@ -92,6 +92,7 @@ export interface TaskRuntimeOptions {
   resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   authorizeEmployee?: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   authorizeScheduledEmployee?: (subscriptionId: string, modelId: string) => Promise<EmployeeRuntimeConfig>
+  authorizeScheduledModel?: (modelId: string, subscriptionId: string) => Promise<EmployeeRuntimeConfig>
   authorizeModel?: (modelId: string, preferredSubscriptionId?: string) => Promise<EmployeeRuntimeConfig | null>
   createWorker?: (options: PiTaskWorkerOptions) => TaskWorkerPort
   taskRunStore?: TaskRunStorePort
@@ -121,6 +122,7 @@ export class TaskRuntime {
   private readonly resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   private readonly authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   private readonly authorizeScheduledEmployee: (subscriptionId: string, modelId: string) => Promise<EmployeeRuntimeConfig>
+  private readonly authorizeScheduledModel: NonNullable<TaskRuntimeOptions['authorizeScheduledModel']>
   private readonly authorizeModel: TaskRuntimeOptions['authorizeModel']
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
@@ -166,6 +168,7 @@ export class TaskRuntime {
     this.onEvent = options.onEvent
     this.resolveEmployee = options.resolveEmployee
     this.authorizeModel = options.authorizeModel
+    this.authorizeScheduledModel = options.authorizeScheduledModel ?? (async () => { throw new AppError('MODEL_NOT_ALLOWED') })
     this.authorizeEmployee = options.authorizeEmployee ?? (async (subscriptionId, modelId) => {
       const employee = this.resolveEmployee(subscriptionId)
       return employee && (!modelId || employee.modelId === modelId) ? employee : null
@@ -320,6 +323,8 @@ export class TaskRuntime {
       throw new Error('Terminal tasks cannot be executed.')
     }
     const arrangement = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
+    if (arrangement?.scheduledOrigin?.execution && (task.scheduledOrigin?.occurrenceId !== arrangement.scheduledOrigin.occurrenceId
+      || task.scheduledOrigin.definitionId !== arrangement.scheduledOrigin.definitionId || !options.beforeAdmission)) throw new AppError('INVALID_STATE')
     const taskKnowledge = arrangement?.mode === 'conversation'
       ? options.knowledge ?? arrangement.knowledge
       : arrangement ? arrangement.knowledge : options.knowledge ?? await this.latestKnowledgeSelection(taskId)
@@ -351,11 +356,13 @@ export class TaskRuntime {
           (checkpoint?.state.status === 'completed' ? activePlan.nodes[0] : undefined)
         let primarySubscriptionId = primaryNode?.subscriptionId ?? task.subscriptionId
         if (!primarySubscriptionId) throw new Error('Select a silicon employee before executing the task.')
-        let employee = arrangement.scheduledOrigin
+        const local = arrangement.scheduledOrigin?.execution === 'empty-text'
+        const general = arrangement.scheduledOrigin?.execution === 'general'
+        let employee = local ? null : general ? await this.authorizeScheduledModel(primaryNode?.modelId ?? '', primarySubscriptionId) : arrangement.scheduledOrigin
           ? await this.authorizeScheduledEmployee(primarySubscriptionId, primaryNode?.modelId ?? '')
           : await this.authorizeEmployee(primarySubscriptionId)
         check()
-        if (!employee && primaryNode) {
+        if (!employee && primaryNode && !local && !general) {
           const search = await this.findEmployeeReplacement?.({ taskId,
             planningId: randomUUID(), taskGoal: activePlan.goal, node: primaryNode, signal: controller.signal,
           })
@@ -400,7 +407,7 @@ export class TaskRuntime {
             }
           }
         }
-        if (!employee) throw new AppError('INVALID_STATE')
+        if (!employee && !local) throw new AppError('INVALID_STATE')
         check()
         if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
         const runId = randomUUID()
@@ -409,8 +416,10 @@ export class TaskRuntime {
         if (!admittedTask || admittedTask.activeRunId !== runId) return
         this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: activePlan.goal, conversation: false, arrangement: activePlan, knowledge: taskKnowledge,
           ...(activePlan.inputSnapshot?.attachments?.length ? { attachmentRefs: activePlan.inputSnapshot.attachments } : {}) })
-        this.reportMonitorQueued({ taskId, runId, prompt: activePlan.goal, subscriptionId: primarySubscriptionId, title: task.title, modelId: employee.modelId, taskType: 'arrangement' })
-        this.reportMonitorInput({ taskId, runId, content: activePlan.goal })
+        if (employee) {
+          this.reportMonitorQueued({ taskId, runId, prompt: activePlan.goal, subscriptionId: primarySubscriptionId, title: task.title, modelId: employee.modelId, taskType: 'arrangement' })
+          this.reportMonitorInput({ taskId, runId, content: activePlan.goal })
+        }
         void this.pump()
         return
       } finally { if (this.arrangementPreparations.get(taskId) === controller) this.arrangementPreparations.delete(taskId) }
@@ -895,7 +904,7 @@ export class TaskRuntime {
             await this.conversationSettled(queued, task)
             continue
           }
-          if (!this.resolveEmployee(queued.subscriptionId)) {
+          if (!queued.arrangement?.scheduledOrigin?.execution && !this.resolveEmployee(queued.subscriptionId)) {
             if (!this.admission.take(queued.runId)) continue
             log.warn('dropped queued run', {
               taskId: queued.taskId,
@@ -929,7 +938,7 @@ export class TaskRuntime {
   }
 
   private async startRun(
-    queued: QueuedRun,
+    queued: QueuedTaskRun,
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
     releaseWorkspace: () => void,
   ): Promise<void> {
@@ -938,7 +947,8 @@ export class TaskRuntime {
         await this.startArrangementRun(queued, task, releaseWorkspace)
         return
       }
-      await this.conversationExecutor.execute(queued, task, releaseWorkspace)
+      if (!queued.employee) throw new AppError('INVALID_STATE')
+      await this.conversationExecutor.execute({ ...queued, employee: queued.employee }, task, releaseWorkspace)
     } catch (error) {
       log.warn('task run escaped its executor', { taskId: queued.taskId, runId: queued.runId,
         cause: redactText(error instanceof Error ? error.message : String(error)) })
@@ -949,14 +959,14 @@ export class TaskRuntime {
     }
   }
 
-  private async conversationSettled(queued: QueuedRun, task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>): Promise<void> {
+  private async conversationSettled(queued: QueuedTaskRun, task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>): Promise<void> {
     if (!queued.conversation) return
     await this.onConversationSettled?.(queued.taskId, queued.runId, { memberId: task.ownerId, enterpriseId: task.ownerEnterpriseId })
       .catch(error => log.warn('conversation queue settlement failed', { taskId: queued.taskId, error }))
   }
 
   private async startArrangementRun(
-    queued: QueuedRun,
+    queued: QueuedTaskRun,
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
     releaseWorkspace: () => void,
   ): Promise<void> {
@@ -973,12 +983,13 @@ export class TaskRuntime {
     let arrangement: ArrangementExecutor | null = null
     try {
       if (scope && this.taskRunStore) {
+        const modelId = queued.employee?.modelId ?? 'local'
         await this.taskRunStore.create(scope, {
           taskId,
           runId,
           subscriptionId: queued.subscriptionId,
-          modelId: queued.employee.modelId,
-          runtimeKey: `${queued.subscriptionId}:${queued.employee.modelId}`,
+          modelId,
+          runtimeKey: `${queued.subscriptionId}:${modelId}`,
           workspaceDir: task.workDir ?? this.getTaskWorkspaceRoot(),
           prompt: plan.goal,
           executionKind: 'arrangement',
@@ -997,7 +1008,9 @@ export class TaskRuntime {
         onAuthenticationRequired: this.onAuthenticationRequired,
         onApprovalRequest: request => this.approvals.request(request),
         onEvent: event => this.enqueueEvent(event),
-        authorizeEmployee: (subscriptionId, modelId) => plan.scheduledOrigin
+        authorizeEmployee: (subscriptionId, modelId) => plan.scheduledOrigin?.execution === 'general'
+          ? this.authorizeScheduledModel(modelId ?? '', subscriptionId)
+          : plan.scheduledOrigin
           ? this.authorizeScheduledEmployee(subscriptionId, modelId ?? '')
           : this.authorizeEmployee(subscriptionId, modelId),
         workspaceRoot: task.workDir ?? this.getTaskWorkspaceRoot(),
@@ -1008,7 +1021,7 @@ export class TaskRuntime {
         arrangementDiagnostics: this.arrangementDiagnostics,
         knowledgeSearch: this.knowledgeSearch,
         attachmentInputs: this.attachmentInputs,
-        findReplacement: this.findEmployeeReplacement,
+        findReplacement: plan.scheduledOrigin?.execution ? undefined : this.findEmployeeReplacement,
         replacePlanEmployee: (taskId, nodeId, subscriptionId) => this.arrangementPlanWrites.run(taskId, async () => {
           const owner = scope
           const currentScope = this.taskManager.getCurrentUserScope()

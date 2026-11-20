@@ -592,10 +592,11 @@ class BackendRuntime {
     const scheduledWorkSource = new ScheduledWorkSource({ workPlans: this.workPlans, storage: scheduledStorage,
       tasks: this.taskManager, metadata: this.taskMetadataStore, attachments: this.attachments })
     const validateScheduledEmployee = (subscriptionId: string, modelId: string) => this.employees.validateScheduled(subscriptionId, modelId)
-    const employeePlanner = async (input: import('../../src/shared/scheduled-tasks').ScheduleInput, employee: unknown, signal: AbortSignal) => {
+    const authorizeScheduledModel = (modelId: string, subscriptionId?: string) => this.employees.authorizeScheduledModel(modelId, subscriptionId)
+    const employeePlanner = async (input: import('../../src/shared/scheduled-tasks').ModelScheduledInput, employee: unknown, signal: AbortSignal, modelGrantId?: string) => {
       const { PiEmployeePlanner } = await import('../runtime/pi-employee-planner')
       return new PiEmployeePlanner({ gatewayUrl: config.SEP_GATEWAY_URL, workspaceRoot: join(userDataDir, 'scheduled-planning'),
-        getRefreshToken: () => this.authSession.getRefreshToken(), onAuthenticationRequired: () => this.invalidateAuthentication() }).plan(input, employee, signal)
+        getRefreshToken: () => this.authSession.getRefreshToken(), onAuthenticationRequired: () => this.invalidateAuthentication() }).plan(input, employee, signal, modelGrantId)
     }
     const arrangeScheduledWork = async (input: import('../../src/shared/scheduled-tasks').ScheduleInput, signal: AbortSignal): Promise<ArrangementWorkPlan | { status: 'blocked'; reasons: string[] }> => {
       const scope = this.currentScope()
@@ -622,7 +623,7 @@ class BackendRuntime {
       }
       const planner = await this.arrangementPlanner.get()
       const generated = await planner.plan({ planningId: randomUUID(), modelId: input.modelId, plannerModelId: input.modelId,
-        draft, employees: catalog, plannerEmployees: catalog, signal, onProgress: () => undefined })
+        draft, employees: catalog, plannerEmployees: catalog, signal, scheduledDelivery: true, onProgress: () => undefined })
       if (generated.unresolvedSteps?.length || !generated.nodes.length) return {
         status: 'blocked', reasons: generated.unresolvedSteps?.map(step => step.reason) ?? ['规划没有生成可执行工作步骤。'],
       }
@@ -638,14 +639,14 @@ class BackendRuntime {
     }
     this.scheduledTasks = new ScheduledTaskService({
       repository: scheduledStorage, scope: this, employee: validateScheduledEmployee, planner: employeePlanner, source: scheduledWorkSource,
-      arrangementPlanner: arrangeScheduledWork,
+      arrangementPlanner: arrangeScheduledWork, authorizeModel: authorizeScheduledModel,
       timeInterpreter: async (input, signal) => {
         const { PiEmployeePlanner } = await import('../runtime/pi-employee-planner')
         return new PiEmployeePlanner({ gatewayUrl: config.SEP_GATEWAY_URL, workspaceRoot: join(userDataDir, 'scheduled-planning'),
           getRefreshToken: () => this.authSession.getRefreshToken(), onAuthenticationRequired: () => this.invalidateAuthentication() }).interpretTime(input, signal)
       },
       runner: new ScheduledTaskRunner({ scope: this, tasks: this.taskManager, workPlans: this.workPlans, metadata: this.taskMetadataStore, source: scheduledWorkSource,
-        checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore, storage: scheduledStorage, authorize: validateScheduledEmployee,
+        checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore, storage: scheduledStorage, authorize: validateScheduledEmployee, authorizeModel: authorizeScheduledModel,
         execution: () => this.getTaskRuntime(),
         resourcesConflict: async (left, right) => left.toLowerCase() === right.toLowerCase() }),
     })
@@ -837,6 +838,7 @@ class BackendRuntime {
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
       authorizeEmployee: (subscriptionId, modelId) => this.employees.authorize(subscriptionId, modelId),
       authorizeScheduledEmployee: (subscriptionId, modelId) => this.employees.authorizeScheduled(subscriptionId, modelId),
+      authorizeScheduledModel: (modelId, subscriptionId) => this.employees.authorizeScheduledModel(modelId, subscriptionId),
       authorizeModel: (modelId, preferredSubscriptionId) => this.employees.authorizeModel(modelId, preferredSubscriptionId),
       findEmployeeReplacement: input => this.arrangements.findEmployeeReplacement(input),
       userDataDir: this.userDataDir,

@@ -59,6 +59,12 @@ export interface QueuedRun {
   knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection
 }
 
+export type QueuedTaskRun = QueuedRun | (Omit<QueuedRun, 'employee' | 'arrangement' | 'conversation'> & {
+  employee: null
+  arrangement: WorkPlan
+  conversation: false
+})
+
 export interface ActiveRun {
   taskId: string
   runId: string

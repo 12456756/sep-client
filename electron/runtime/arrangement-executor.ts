@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto'
 import { cleanupRun } from './run-cleanup'
 import { WriteChain } from '../data/write-chain'
 import { recoverArrangementSession } from '../data/arrangement-session-recovery'
-import { resolveDeliveryFiles } from '../data/arrangement-delivery-files'
+import { createScheduledEmptyText, resolveDeliveryFiles, validateDeliveryFiles } from '../data/arrangement-delivery-files'
 import { DeliveryExecutionError, deliveryPlanIssues, parseRecordedDeliverySubmission, type DeliveryIssue, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
 import { ArrangementDeliveryValidation, buildArrangementDeliveryCorrection, resolveArrangementNodeFailure } from './arrangement-delivery-validation'
 import type { TaskExecutionEvent, ArrangementEmployeeReplacement } from '../../src/shared/types'
@@ -173,6 +173,7 @@ inputSelection 是选图意图；当前每项需求只解析一个明确来源�
 预期输出：${node.expectedOutput}
 交付清单：${JSON.stringify(node.deliverables ?? [], null, 2)}
 全部交付物都必须实际保存到指定路径。可以产生过程文件，但最终提交清单不得包含资料、草稿和临时文件。
+${node.deliverables?.some(file => file.contentPolicy === 'empty') ? '标记为 contentPolicy=empty 的文本文件必须恰好为 0 字节，不得写入换行、空格或字节顺序标记。' : ''}
 只能使用分配的共享工作区，不要重放或虚构前置节点的工具调用。
 ${mediaDeliverables.length ? '标记为 media-output 的图片或视频交付物必须来自本节点已保存的媒体资产。结束 JSON 的 mediaDeliverables 必须为每个此类交付物填写明确的 deliverableId 和媒体工具返回的 artifactId；不得猜测 ID、使用其他节点未声明的资产或提交本地路径。' : ''}
 ${mediaDeliverables.length ? '媒体提交成功后，由主进程跟踪原任务、下载保存并生成交付清单。不要 sleep、执行等待脚本或反复调用 media_get_job / video_get_job 等待生成；不要因等待而重新提交。纯媒体节点提交所需操作后直接结束，本地交付由主进程验收。' : ''}
@@ -495,8 +496,9 @@ export class ArrangementExecutor {
     saveReplacement: (replacement: ArrangementEmployeeReplacement) => Promise<void>,
   ): Promise<NodeExecutionResult> {
     const nodeRunId = randomUUID()
-    const trace = this.options.createModelTrace?.({ taskId, runId: nodeRunId, title: plan.goal, phase: `节点：${node.title}` })
-    const modelEvidence = this.options.arrangementDiagnostics ? trackModelFailureEvidence(trace) : undefined
+    const local = plan.scheduledOrigin?.execution === 'empty-text'
+    const trace = local ? undefined : this.options.createModelTrace?.({ taskId, runId: nodeRunId, title: plan.goal, phase: `节点：${node.title}` })
+    const modelEvidence = this.options.arrangementDiagnostics && !local ? trackModelFailureEvidence(trace) : undefined
     const modelTrace = modelEvidence?.record ?? trace
     const workspaceDir = plan.workspace.path ?? this.options.workspaceRoot
     const paths = this.options.scope && this.options.taskRunStore
@@ -521,6 +523,12 @@ export class ArrangementExecutor {
     let terminalMediaFailure: unknown
     let diagnosticPhase: DiagnosticPhase = 'node-setup'
     const mediaEvidence = this.options.arrangementDiagnostics ? trackMediaToolFailureEvidence() : undefined
+    const requiresMediaBridge = !!node.mediaRequirements?.length ||
+      !!node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')
+    // File-only scheduled assistants have a model grant but no task-level employee binding.
+    const scheduledFileNode = plan.scheduledOrigin?.execution === 'general' && !requiresMediaBridge
+    const media = scheduledFileNode ? undefined : this.options.media
+    const video = scheduledFileNode ? undefined : this.options.video
     let inputRequired: ArrangementInputRequest | undefined
     const missingSpecTools = new Map<string, ArrangementInputRequest>()
     const executionNode = { ...node, ...(node.mediaRequirements ? { mediaRequirements: node.mediaRequirements.map(requirement => ({ ...requirement,
@@ -540,8 +548,6 @@ export class ArrangementExecutor {
     }
     try {
       checkControl()
-      const requiresMediaBridge = !!node.mediaRequirements?.length ||
-        !!node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')
       if (requiresMediaBridge && !this.options.arrangementMedia) {
         throw new DeliveryExecutionError('编排媒体资产流转和最终交付尚未接通，当前节点暂不可执行。请保留已保存的媒体资产，待接入后继续，不要重新提交生成请求。')
       }
@@ -597,6 +603,44 @@ export class ArrangementExecutor {
           }
         }
 
+      }
+      if (local) {
+        const file = node.deliverables?.[0]
+        if (!this.options.scope || !this.options.taskRunStore || !paths || !file || node.deliverables?.length !== 1
+          || file.contentPolicy !== 'empty' || file.format !== 'txt' || file.artifact) throw new DeliveryExecutionError('本地空白文本交付配置无效。')
+        await this.options.taskRunStore.create(this.options.scope, { taskId, runId: nodeRunId, subscriptionId: node.subscriptionId,
+          modelId: node.modelId, runtimeKey: 'builtin:empty-text', workspaceDir, prompt: node.instruction, arrangementNodeId: node.id })
+        created = true
+        startedAt = new Date().toISOString()
+        await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_node_started', arrangementRunId, nodeId: node.id,
+          nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt, data: { ...metadata(), prompt: node.instruction, status: 'RUNNING' } })
+        try {
+          await createScheduledEmptyText(workspaceDir, plan.scheduledOrigin!.occurrenceId, file.path, checkControl)
+        } catch (error) {
+          checkControl()
+          const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+          const issue: DeliveryIssue = { code: code === 'EEXIST' ? 'FILE_ALREADY_EXISTS' : 'LOCAL_FILE_CREATION_FAILED', path: file.path, deliverableId: file.id,
+            message: code === 'EEXIST' ? '同名文件已存在，未覆盖。' : '无法创建空白文本，请检查成果目录、权限和磁盘状态。' }
+          await saveDelivery({ ...delivery, issues: [issue], firstIssue: issue, correctionStopped: true })
+          throw new DeliveryExecutionError(issue.message)
+        }
+        checkControl()
+        const summary = '已创建并验收 0 字节文本文件。'
+        const result = await validateDeliveryFiles(workspaceDir, node, { nodeId: node.id, summary,
+          finalDeliverables: [{ id: file.id, path: file.path }] }, nodeRunId, signal, { taskDirectory: paths.taskDir })
+        checkControl()
+        delivery = { validationAttempts: 1, issues: result.ok ? [] : result.issues, finalFiles: result.ok ? result.files : [],
+          ...(result.ok ? { summary } : { firstIssue: result.issues[0], correctionStopped: true }) }
+        await saveDelivery(delivery)
+        await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_delivery_checked', arrangementRunId, nodeId: node.id, nodeRunId,
+          subscriptionId: node.subscriptionId, data: { validationAttempts: 1, accepted: result.ok, issues: delivery.issues } })
+        if (!result.ok) throw new DeliveryExecutionError(result.issues[0]?.message ?? '验收未通过')
+        output = summary
+        checkControl()
+        await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
+        return { ok: true, nodeId: node.id, output, completion: { type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id,
+          nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
+          data: { ...metadata(), output, finalDeliverables: delivery.finalFiles, status: 'COMPLETED', completedAt: new Date().toISOString() } } }
       }
       const recovery = this.options.scope && this.options.taskRunStore
         ? await recoverArrangementSession(this.options.taskRunStore, this.options.scope, taskId, node, checkpoint, workspaceDir)
@@ -667,13 +711,13 @@ export class ArrangementExecutor {
       const toolPolicy = { ...withApprovedSkillReadPaths(toToolPolicy(plan.permissions, workspaceDir), employee)!,
         readableDeliveryPaths: dependencies.flatMap(dependency => dependency.files.flatMap(file => file.readPath ? [file.readPath] : [])),
         readableAttachmentPaths: attachmentInputs?.attachments.flatMap(item => item.readPath ? [item.readPath] : []) ?? [] }
-      diagnosticPhase = 'media-setup'
+      if (!scheduledFileNode) diagnosticPhase = 'media-setup'
       if (requiresMediaBridge) mediaSession = await this.options.arrangementMedia!.prepareNode({
         taskId, arrangementRunId, nodeRunId, attempt: checkpoint.attempt, planHash: plan.planHash, node,
         signal,
         ...(checkpoint.mediaSpecRevisions ? { specRevisions: checkpoint.mediaSpecRevisions } : {}),
       })
-      const rawMediaTools = await this.options.media?.prepareRun({
+      const rawMediaTools = await media?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.onApprovalRequest(request),
         onJobCreated: mediaSession?.onJobCreated,
@@ -681,7 +725,7 @@ export class ArrangementExecutor {
       })
       const requiresVideoBridge = node.mediaRequirements?.some(item => item.kind === 'video') === true ||
         node.deliverables?.some(file => file.artifact?.kind === 'video') === true
-      const rawVideoTools = await this.options.video?.prepareRun({
+      const rawVideoTools = await video?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.onApprovalRequest(request),
         onJobCreated: mediaSession?.onJobCreated, recoverJobIds: mediaSession?.recoverJobIds,
@@ -707,16 +751,16 @@ export class ArrangementExecutor {
         } catch (error) { observeMissingSpec(mediaInputKey(name, raw), error); throw error }
       } } : bound.video
       if (this.abortRequested) {
-        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
+        await Promise.all([media?.stopTask(taskId), video?.stopTask(taskId)])
         throw new Error('Arrangement execution was interrupted.')
       }
       checkControl()
       const deliveryValidation = new ArrangementDeliveryValidation({
-        node, workspaceDir, nodeRunId, signal, fileOptions, mediaSession,
+        node, workspaceDir, nodeRunId, signal, fileOptions, mediaSession, scheduled: !!plan.scheduledOrigin,
         getProgress: () => delivery,
         saveProgress: async progress => { delivery = progress; await saveDelivery(progress) },
         checkControl,
-        waitForMedia: async () => { await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId, { recoverOriginal: true, signal }), this.options.video?.waitForRun(taskId, nodeRunId, { recoverOriginal: true, signal })]) },
+        waitForMedia: async () => { await Promise.all([media?.waitForRun(taskId, nodeRunId, { recoverOriginal: true, signal }), video?.waitForRun(taskId, nodeRunId, { recoverOriginal: true, signal })]) },
         onChecked: async check => {
           await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_delivery_checked', arrangementRunId, nodeId: node.id, nodeRunId,
             subscriptionId: node.subscriptionId, data: { validationAttempts: check.validationAttempts, accepted: check.accepted, issues: check.issues } })
@@ -851,7 +895,7 @@ export class ArrangementExecutor {
       if (inputRequired) throw new ArrangementInputRequiredError(inputRequired)
       if (runError !== undefined) throw runError
       diagnosticPhase = 'media-wait'
-      if (!this.abortRequested && !signal.aborted) await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId, { signal }), this.options.video?.waitForRun(taskId, nodeRunId, { signal })])
+      if (!this.abortRequested && !signal.aborted) await Promise.all([media?.waitForRun(taskId, nodeRunId, { signal }), video?.waitForRun(taskId, nodeRunId, { signal })])
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
       checkControl()
       diagnosticPhase = 'decision'
@@ -890,7 +934,7 @@ export class ArrangementExecutor {
             modelRequest: diagnosticPhase === 'model-execution' ? modelEvidence?.evidence() : undefined,
             modelHistory: modelEvidence?.history(), toolFailures: modelEvidence?.toolFailures(), mediaToolFailures: mediaEvidence?.history() },
           { subscriptionId: node.subscriptionId, recoveredJobIds: mediaSession?.recoverJobIds,
-            videoJobIds: this.options.video?.diagnosticJobIds?.(taskId, nodeRunId) })
+            videoJobIds: video?.diagnosticJobIds?.(taskId, nodeRunId) })
           await withTimeout(capture, 2_000, 'arrangement node diagnostic capture')
           diagnosticAvailable = true
         } catch {
@@ -905,12 +949,14 @@ export class ArrangementExecutor {
         attempt: checkpoint.attempt, data: { ...metadata(), output: output || null, error: message, ...(diagnosticAvailable ? { diagnosticAvailable } : {}),
           status: interrupted ? this.stopRequested ? 'CANCELLED' : 'PAUSED' : 'FAILED', completedAt: new Date().toISOString() },
       }
-      return { ok: false, nodeId: node.id, error: message, terminal, failure,
+      const freshFileSetupFailure = scheduledFileNode && !interrupted && !checkpoint.sessionRunId &&
+        (diagnosticPhase === 'node-setup' || diagnosticPhase === 'input-read')
+      return { ok: false, nodeId: node.id, error: message, terminal: terminal || freshFileSetupFailure, failure,
         ...(!interrupted && error instanceof PredecessorRepairRequired ? { repair: { nodeId: error.nodeId, issues: error.issues } } : {}) }
     } finally {
       signal.removeEventListener('abort', abortWorker)
       await cleanupRun(taskId, nodeRunId, [
-        ['video', () => this.options.video?.finishRun?.(taskId, nodeRunId)],
+        ['video', () => video?.finishRun?.(taskId, nodeRunId)],
         ['registry', () => this.activeWorkers.delete(nodeRunId)],
         ['worker', () => worker?.dispose()],
       ])

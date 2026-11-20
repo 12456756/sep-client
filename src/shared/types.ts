@@ -262,6 +262,8 @@ export interface ArrangementDeliverable {
   path: string
   contentOutline: string[]
   acceptanceCriteria: string[]
+  contentPolicy?: 'empty'
+  scheduledFilenameTime?: 'scheduled' | 'started'
   artifact?: {
     kind: ArrangementArtifactKind
     source?: 'workspace' | 'media-output' | 'either'

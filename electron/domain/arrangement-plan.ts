@@ -164,6 +164,8 @@ export function isSafeDeliveryPath(value: string): boolean {
       !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))
 }
 
+export const scheduledFilenamePattern = /(^|[\\/])yyyyMMdd-HHmm(?=\.[A-Za-z0-9_+-]+$)/
+
 export const arrangementNodeWorkContractSchema = z.object({
   knowledge: knowledgeSelectionSchema.optional(),
   objective: deliveryText.optional(),
@@ -175,8 +177,12 @@ export const arrangementNodeWorkContractSchema = z.object({
     path: z.string().trim().min(1).max(1_024).refine(isSafeDeliveryPath),
     contentOutline: z.array(deliveryText).min(1).max(128),
     acceptanceCriteria: z.array(deliveryText).min(1).max(128),
+    contentPolicy: z.literal('empty').optional(),
+    scheduledFilenameTime: z.enum(['scheduled', 'started']).optional(),
     artifact: arrangementDeliverableArtifactSchema.optional(),
-  }).strict().refine(value => value.path.toLowerCase().endsWith(`.${value.format.toLowerCase()}`)))
+  }).strict().refine(value => value.path.toLowerCase().endsWith(`.${value.format.toLowerCase()}`))
+    .refine(value => !value.contentPolicy || value.format.toLowerCase() === 'txt' && (!value.artifact || value.artifact.source === 'workspace' && ['document', 'data', 'other'].includes(value.artifact.kind)))
+    .refine(value => !value.scheduledFilenameTime || scheduledFilenamePattern.test(value.path)))
     .min(1).max(32).optional(),
   mediaRequirements: z.array(arrangementMediaRequirementSchema).min(1).superRefine((requirements, context) => {
     const requirementIds = new Set<string>()
@@ -288,7 +294,7 @@ export interface ArrangementDraft {
 }
 
 export interface WorkPlan {
-  scheduledOrigin?: import('../../src/shared/scheduled-tasks').ScheduledOrigin
+  scheduledOrigin?: import('../../src/shared/scheduled-tasks').ScheduledOrigin & { execution?: 'general' | 'empty-text' }
   knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1 | 2

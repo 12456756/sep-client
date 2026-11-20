@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { ArrangementWorkPlan, EmployeePlanResult, ScheduleInput, ScheduledDefinition, ScheduledOccurrence, ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
 import { scheduleInputSchema, scheduleTimeRequestSchema, scheduleTimeResultSchema, type ScheduleTimeRequest, type ScheduleTimeResult } from '../../src/shared/scheduled-tasks'
-import { occurrenceId, planInputKey, employeePlanResultSchema, scheduledPlanResultSchema, dueScheduleWindow, nextScheduledAt } from '../domain/scheduled-task'
+import { buildEmptyTextPlan, occurrenceId, planInputKey, employeePlanResultSchema, scheduledPlanResultSchema, dueScheduleWindow, nextScheduledAt } from '../domain/scheduled-task'
+import type { ModelScheduledInput } from '../../src/shared/scheduled-tasks'
 import { AppError } from '../errors/app-error'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
@@ -21,7 +22,8 @@ export interface ScheduledServiceOptions {
   repository: ScheduledRepository
   scope: { currentScope(): TaskOwnerScope | null }
   employee(subscriptionId: string, modelId: string): Promise<unknown>
-  planner(input: ScheduleInput, employee: unknown, signal: AbortSignal): Promise<EmployeePlanResult>
+  authorizeModel?(modelId: string): Promise<{ subscriptionId: string }>
+  planner(input: ModelScheduledInput, employee: unknown, signal: AbortSignal, modelGrantId?: string): Promise<EmployeePlanResult>
   arrangementPlanner?(input: ScheduleInput, signal: AbortSignal): Promise<ArrangementWorkPlan | { status: 'blocked'; reasons: string[] }>
   timeInterpreter?(input: ScheduleTimeRequest, signal: AbortSignal): Promise<ScheduleTimeResult>
   runner: ScheduledRunnerPort
@@ -152,7 +154,14 @@ export class ScheduledTaskService {
     try {
       controller.signal.throwIfAborted()
       let result: ScheduledDefinition['plan'] | { status: 'blocked'; reasons: string[] }
-      if (snapshot.input.mode === 'auto') {
+      if (snapshot.input.mode === 'empty-text') {
+        result = buildEmptyTextPlan(snapshot.input)
+      } else if (snapshot.input.mode === 'general') {
+        if (!this.options.authorizeModel) throw new AppError('INVALID_STATE')
+        const grant = await withTimeout(this.options.authorizeModel(snapshot.input.modelId), 60000, 'scheduled-model-authorization')
+        this.assertScope(scope, generation)
+        result = employeePlanResultSchema.parse(await withTimeout(this.options.planner(snapshot.input, null, controller.signal, grant.subscriptionId), 120000, 'scheduled-general-planning'))
+      } else if (snapshot.input.mode === 'auto') {
         if (!this.options.arrangementPlanner) throw new AppError('INVALID_STATE', { message: 'Multi-employee planning is unavailable' })
         await withTimeout(this.options.employee(snapshot.input.subscriptionId, snapshot.input.modelId), 60000, 'arrangement-planning-authorization')
         this.assertScope(scope, generation)

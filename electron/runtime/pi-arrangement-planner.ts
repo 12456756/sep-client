@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { logger, type LogFields } from '../common/logger'
 import { planningErrorFields, type PlanningPhase } from '../errors/planning-diagnostics'
 import { AppError } from '../errors/app-error'
+import { scheduledDeliveryPlanningRules } from '../domain/scheduled-task'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import {
   parseArrangementPlannerOutput,
@@ -228,7 +229,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
           nextPhase('provider-request', { promptLength: continueWith.length })
           return { continueWith }
         }
-      }, trace, draft.goal, stageTitle)
+      }, trace, draft.goal, stageTitle, undefined, input.scheduledDelivery)
       let abortHandler: (() => void) | null = null
       const abortPromise = new Promise<never>((_resolve, reject) => {
         abortHandler = (): void => {
@@ -343,6 +344,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     taskTitle?: string,
     tracePhase?: string,
     systemRules?: string,
+    scheduledDelivery?: boolean,
   ): TaskWorkerPort {
     const workspaceDir = this.options.workspaceRoot
     const context: PiTaskWorkerOptions['context'] = {
@@ -356,7 +358,9 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       agentDir: this.options.getAgentDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'agent'),
       sessionDir: this.options.getSessionDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'sessions'),
       additionalSkillPaths: this.options.additionalSkillPaths ? [...this.options.additionalSkillPaths] : undefined,
-      transformSystemPrompt: systemRules ? () => systemRules : transformArrangementPlannerSystemPrompt,
+      transformSystemPrompt: systemRules ? () => systemRules : scheduledDelivery
+        ? prompt => `${transformArrangementPlannerSystemPrompt(prompt)}\n\n【定时编排补充协议】交付项还可使用以下两个字段。${scheduledDeliveryPlanningRules}`
+        : transformArrangementPlannerSystemPrompt,
       toolPolicy: {
         ...PLANNER_POLICY,
         allowedPaths: [workspaceDir],

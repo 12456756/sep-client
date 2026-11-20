@@ -8,6 +8,7 @@ import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 import { retryFileOperation } from '../common/retry-file-operation'
 
 type MediaAssets = Awaited<ReturnType<ArrangementMediaSession['artifactSummary']>>
+const MAX_SCHEDULED_VALIDATIONS = 3
 type ValidationStage = 'media-wait' | 'submission' | 'materialization' | 'files' | 'decision'
 type Accepted = { status: 'accepted'; submission: DeliverySubmission }
 type Failed = { status: 'failed'; stage: ValidationStage; error: unknown }
@@ -29,6 +30,7 @@ export interface ArrangementDeliveryValidationOptions {
   signal: AbortSignal
   fileOptions: DeliveryFileOptions
   mediaSession?: ArrangementMediaSession
+  scheduled?: boolean
   getProgress(): NodeDeliveryProgress
   saveProgress(progress: NodeDeliveryProgress): Promise<void>
   checkControl(): void
@@ -45,10 +47,16 @@ export function buildArrangementDeliveryCorrection(issues: readonly DeliveryIssu
 export function resolveArrangementNodeFailure(error: unknown, interrupted: boolean, terminalMediaFailure: boolean): { message: string; terminal: boolean } {
   const feedback = runtimeFeedback(error)
   return {
-    message: interrupted ? '工作已停止' : error instanceof DeliveryExecutionError && feedback.code === 'INTERNAL_ERROR'
+    message: interrupted ? '工作已停止' : error instanceof ScheduledDeliveryValidationError ? error.message : error instanceof DeliveryExecutionError && feedback.code === 'INTERNAL_ERROR'
       ? RUNTIME_FAILURE_MESSAGES.DELIVERY_FAILED : feedback.message,
     terminal: (error instanceof DeliveryExecutionError || terminalMediaFailure) && !interrupted,
   }
+}
+
+class ScheduledDeliveryValidationError extends DeliveryExecutionError {}
+
+function issueKey(issues: readonly DeliveryIssue[]): string {
+  return JSON.stringify(issues.map(issue => [issue.code, issue.deliverableId, issue.path, issue.submissionStage, issue.message]).map(value => JSON.stringify(value)).sort())
 }
 
 /** One coordinator for delivery checks, correction decisions and recovery. Checks remain in their owning layers. */
@@ -60,6 +68,7 @@ export class ArrangementDeliveryValidation {
   async settle(response: { text: string; stopReason?: string }): Promise<ArrangementDeliveryDecision> {
     try {
       await this.waitForMedia()
+      const priorIssues = this.progress.issues
       await this.save({ ...this.progress, validationAttempts: this.progress.validationAttempts + 1, finalFiles: [], summary: undefined })
       this.stage = 'submission'
       let parsed = parseDeliverySubmission(this.options.node, response.text, response.stopReason)
@@ -75,12 +84,12 @@ export class ArrangementDeliveryValidation {
         accepted = parsed.submission
         await this.accept(parsed.submission, checked)
       } else {
-        await this.save({ ...this.progress, issues: checked.result.ok ? [] : checked.result.issues, pendingSubmission: undefined })
+        await this.reject(checked.result.ok ? [] : checked.result.issues)
       }
       await this.options.onChecked({ validationKind: parsed.ok ? 'files' : 'submission', validationAttempts: this.progress.validationAttempts,
         accepted: accepted !== undefined, issues: this.progress.issues, elapsedMs: Date.now() - checked.validationStartedAt })
       if (accepted) return { status: 'accepted', submission: accepted }
-      return await this.correct()
+      return await this.correct(priorIssues)
     } catch (error) {
       return { status: 'failed', stage: this.stage, error }
     }
@@ -96,7 +105,7 @@ export class ArrangementDeliveryValidation {
       await this.savePendingSubmission(parsed)
       const checked = await this.inspect(parsed)
       if (!checked.result.ok || !parsed.ok) {
-        await this.save({ ...this.progress, issues: checked.result.ok ? [] : checked.result.issues, pendingSubmission: undefined })
+        await this.reject(checked.result.ok ? [] : checked.result.issues)
         return await this.correct()
       }
       this.checkControl()
@@ -109,6 +118,11 @@ export class ArrangementDeliveryValidation {
 
   private get progress(): NodeDeliveryProgress { return this.options.getProgress() }
   private save(progress: NodeDeliveryProgress): Promise<void> { return this.options.saveProgress(progress) }
+
+  private reject(issues: DeliveryIssue[]): Promise<void> {
+    const firstIssue = this.options.scheduled ? this.progress.firstIssue ?? issues[0] : undefined
+    return this.save({ ...this.progress, issues, ...(firstIssue ? { firstIssue } : {}), pendingSubmission: undefined })
+  }
 
   private checkControl(): void {
     this.options.checkControl()
@@ -160,10 +174,17 @@ export class ArrangementDeliveryValidation {
         materializeMs: checked.validationStartedAt - checked.materializeStartedAt, deliveryMs: Date.now() - checked.validationStartedAt } : {}) })
   }
 
-  private async correct(): Promise<ArrangementDeliveryDecision> {
+  private async correct(priorIssues: readonly DeliveryIssue[] = []): Promise<ArrangementDeliveryDecision> {
     this.stage = 'decision'
     if (this.progress.issues.some(issue => ['ENOSPC', 'EACCES', 'EPERM', 'EIO'].includes(issue.code))) {
       return { status: 'failed', stage: 'files', error: new Error(RUNTIME_FAILURE_MESSAGES.STORAGE_FAILED) }
+    }
+    if (this.options.scheduled && (this.progress.validationAttempts >= MAX_SCHEDULED_VALIDATIONS ||
+        priorIssues.length > 0 && issueKey(priorIssues) === issueKey(this.progress.issues))) {
+      const first = this.progress.firstIssue
+      const reason = first ? `首次失败（${first.code}）：${first.message}` : '交付未通过验收。'
+      await this.save({ ...this.progress, correctionStopped: true })
+      return { status: 'failed', stage: 'decision', error: new ScheduledDeliveryValidationError(`已停止自动纠错。${reason}`) }
     }
     const mediaAssets = await this.options.mediaSession?.artifactSummary()
     return { status: 'correction', continueWith: buildArrangementDeliveryCorrection(this.progress.issues, this.options.node, mediaAssets) }

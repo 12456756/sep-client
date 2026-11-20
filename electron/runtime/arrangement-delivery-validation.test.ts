@@ -30,6 +30,7 @@ async function fixture(media?: Partial<ArrangementMediaSession>) {
   }
   const options = { node, workspaceDir: root, nodeRunId: 'run', signal: signal.signal,
     fileOptions: { taskDirectory: join(root, 'task') }, mediaSession,
+    scheduled: false,
     getProgress: () => progress,
     saveProgress: async (value: NodeDeliveryProgress) => { progress = value; saved.push(structuredClone(value)) },
     checkControl: () => {}, waitForMedia: async () => {}, onChecked: async (value: ArrangementDeliveryCheck) => { checked.push(value) },
@@ -91,6 +92,20 @@ test('document and mixed nodes keep correcting beyond two and five attempts', as
       assert.equal(f.progress().validationAttempts, attempt)
     }
   }
+})
+
+test('scheduled validation stops after three distinct failures and preserves the first cause', async () => {
+  const f = await fixture()
+  f.options.scheduled = true
+  const inputs = ['not JSON', JSON.stringify({ ...f.submission, nodeId: 'other' }), JSON.stringify(f.submission)]
+  for (const text of inputs.slice(0, 2)) assert.equal((await f.validation.settle({ text, stopReason: 'stop' })).status, 'correction')
+  const result = await f.validation.settle({ text: inputs[2]!, stopReason: 'stop' })
+  assert.equal(result.status, 'failed')
+  assert.equal(f.progress().validationAttempts, 3)
+  assert.equal(f.progress().firstIssue?.code, 'INVALID_SUBMISSION')
+  assert.equal(f.progress().issues[0]?.code, 'FILE_MISSING')
+  assert.equal(f.progress().correctionStopped, true)
+  if (result.status === 'failed') assert.match(resolveArrangementNodeFailure(result.error, false, false).message, /INVALID_SUBMISSION/)
 })
 
 for (const kind of ['image', 'video'] as const) {

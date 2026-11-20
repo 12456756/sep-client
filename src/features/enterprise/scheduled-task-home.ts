@@ -1,10 +1,11 @@
 import { defaultRunSettings, type RunSettings } from './run-settings'
 import type { SiliconEmployee } from './types'
 import { resolveTaskModel } from '../../shared/model-preferences'
+import type { ScheduleInput } from '../../shared/scheduled-tasks'
 
 export interface ScheduledTaskDraft {
   goal: string
-  mode: 'employee' | 'auto'
+  mode: NonNullable<ScheduleInput['mode']>
   subscriptionId: string
   settings: RunSettings
 }

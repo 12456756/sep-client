@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { occurrenceId, parseEmployeePlan, classifyScheduledError, latestScheduledOccurrence, nextWakeAt, nextScheduledAt } from './scheduled-task'
+import { occurrenceId, parseEmployeePlan, classifyScheduledError, latestScheduledOccurrence, nextWakeAt, nextScheduledAt, resolveScheduledDeliveryNodes } from './scheduled-task'
+import type { ArrangementNode } from './arrangement-plan'
 import { scheduleInputSchema } from '../../src/shared/scheduled-tasks'
 
 test('a planned instant has one stable occurrence independent of definition revisions', () => {
@@ -23,6 +24,18 @@ test('only explicit transient pre-execution failures permit automatic retries', 
   assert.equal(classifyScheduledError({ statusCode: 403 }).action, 'blocked')
   assert.equal(classifyScheduledError({ code: 'AUTH_REQUIRED' }).action, 'auth')
   assert.equal(classifyScheduledError(new Error('unknown fault')).action, 'review')
+})
+
+test('scheduled delivery binds timestamps in the configured timezone without changing the original plan', () => {
+  const node: ArrangementNode = { id: 'node', subscriptionId: 'sub', modelId: 'model', title: 'Files', instruction: 'Create files', expectedOutput: 'Files', dependsOn: [], skillIds: [], requiresUserConfirmation: false,
+    deliverables: [{ id: 'file', name: 'File', format: 'txt', path: 'out/yyyyMMdd-HHmm.txt', contentOutline: ['Text'], acceptanceCriteria: ['Saved'], scheduledFilenameTime: 'scheduled' }] }
+  const times = { scheduledAt: Date.parse('2026-11-20T15:55:00Z'), startedAt: Date.parse('2026-11-20T16:02:00Z'), timezone: 'Asia/Shanghai' }
+  assert.equal(resolveScheduledDeliveryNodes([node], times, false)[0]?.deliverables?.[0]?.path, 'out/20261120-2355.txt')
+  assert.equal(node.deliverables![0]!.path, 'out/yyyyMMdd-HHmm.txt')
+  node.deliverables![0]!.scheduledFilenameTime = 'started'
+  assert.equal(resolveScheduledDeliveryNodes([node], times, false)[0]?.deliverables?.[0]?.path, 'out/20261121-0002.txt')
+  node.deliverables!.push({ ...node.deliverables![0]!, id: 'collision', path: 'OUT/20261121-0002.txt', scheduledFilenameTime: undefined })
+  assert.throws(() => resolveScheduledDeliveryNodes([node], times, false), error => classifyScheduledError(error).code === 'DELIVERY_CONTRACT_INVALID')
 })
 
 test('scheduled authorization failures remain distinct and wait for user action', () => {

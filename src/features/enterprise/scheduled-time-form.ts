@@ -1,5 +1,5 @@
 import type { RecurrenceRule, ScheduleInput } from '../../shared/scheduled-tasks'
-import { cronPreview } from '../../shared/cron-schedule'
+import { cronPreview, isValidCron } from '../../shared/cron-schedule'
 import { localDateTime, scheduledInstant } from './scheduled-task-model'
 
 export type RepeatKind = 'once' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom'
@@ -56,7 +56,8 @@ export function timingConfiguration(value: ScheduleTiming, now = Date.now()): { 
     expression = `${minute} ${hour} * * ${[...new Set(value.weekdays)].sort((a, b) => a - b).join(',')}`
   } else {
     if (!value.custom || value.custom.timezone !== value.timezone) throw new Error('请先确认自定义时间规则。')
-    expression = value.custom.expression
+    expression = value.custom.expression.trim()
+    if (!isValidCron(expression)) throw new Error('请输入有效的五字段 Cron 时间规则。')
   }
   const preview = cronPreview(expression, value.timezone, now)
   return { recurrence: { frequency: 'cron', interval: 1, expression, preset: value.kind as 'hourly' | 'daily' | 'weekly' | 'custom', ...(value.kind === 'custom' ? { description: value.custom!.description } : {}) }, scheduledAt: preview[0]!, preview }

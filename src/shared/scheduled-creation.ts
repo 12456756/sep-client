@@ -1,11 +1,11 @@
 import { z } from 'zod'
 import { isValidCron } from './cron-schedule'
-import { scheduleInputSchema } from './scheduled-tasks'
+import { employeeScheduleInputSchema, scheduleInputSchema } from './scheduled-tasks'
 import { scheduledInstant } from './zoned-time'
 import { referenceAttachmentSelectionSchema, referenceMaterialsSchema, type ReferenceMaterials } from './attachment-contracts'
 
-const timezoneSchema = scheduleInputSchema.shape.timezone.refine(value => !/^[+-]/.test(value), 'Use an IANA timezone, not a numeric offset.')
-const subscriptionIdSchema = scheduleInputSchema.shape.subscriptionId
+const timezoneSchema = employeeScheduleInputSchema.shape.timezone.refine(value => !/^[+-]/.test(value), 'Use an IANA timezone, not a numeric offset.')
+const subscriptionIdSchema = employeeScheduleInputSchema.shape.subscriptionId
 const textSchema = z.string().trim().min(1).max(16000)
 const timestampSchema = z.number().int().nonnegative().max(8640000000000000)
 const messageSchema = z.object({ role: z.literal('user'), content: textSchema, receivedAt: timestampSchema.optional(), referenceMaterials: referenceMaterialsSchema.optional() }).strict()
@@ -62,8 +62,8 @@ export const scheduleInterpretationSchema = z.object({
 export type ScheduleInterpretation = z.infer<typeof scheduleInterpretationSchema>
 
 const creationRequestFields = {
-  message: textSchema, modelId: scheduleInputSchema.shape.modelId, workDir: scheduleInputSchema.shape.workDir,
-  timezone: timezoneSchema, permissions: scheduleInputSchema.shape.permissions,
+  message: textSchema, modelId: employeeScheduleInputSchema.shape.modelId, workDir: employeeScheduleInputSchema.shape.workDir,
+  timezone: timezoneSchema, permissions: employeeScheduleInputSchema.shape.permissions,
   referenceFiles: referenceAttachmentSelectionSchema.optional(),
 }
 export const scheduledCreationRequestSchema = z.object({

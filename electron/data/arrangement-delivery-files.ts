@@ -10,6 +10,7 @@ import { isSafeDeliveryPath, type ArrangementNode } from '../domain/arrangement-
 import { finalDeliveryFileSchema, type DeliveryIssue, type DeliverySubmission, type FinalDeliveryFile } from '../domain/arrangement-delivery'
 import { resolveArrangementMediaFile, restoreArrangementMediaSnapshot } from './arrangement-media-files'
 import { publishDeliverySnapshot } from './delivery-snapshot-recovery'
+import { emptyTextFilenameSchema } from '../../src/shared/scheduled-tasks'
 
 const MAX_BYTES = 64 * 1024 * 1024
 const MAX_XML_BYTES = 8 * 1024 * 1024
@@ -52,7 +53,7 @@ async function saveSnapshot(taskDirectory: string, file: FinalDeliveryFile, byte
     await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 })
     signal?.throwIfAborted()
     await publishDeliverySnapshot(temporary, target, async path => {
-      const bytes = await readWorkspaceFile(root, relative(root, path).split(sep).join('/'), signal).catch(error => {
+      const bytes = await readWorkspaceFile(root, relative(root, path).split(sep).join('/'), signal, file.contentPolicy === 'empty').catch(error => {
         if (error instanceof Error && error.message === 'EMPTY_FILE') throw new Error('SNAPSHOT_CHANGED')
         throw error
       })
@@ -60,13 +61,13 @@ async function saveSnapshot(taskDirectory: string, file: FinalDeliveryFile, byte
     }, async () => {
       if ((await lstat(directory)).isSymbolicLink() || await realpath(directory) !== directory) throw new Error('UNSAFE_PATH')
     }, signal)
-    const verified = await readWorkspaceFile(root, snapshotRelativePath(saved), signal)
+    const verified = await readWorkspaceFile(root, snapshotRelativePath(saved), signal, file.contentPolicy === 'empty')
     if (verified.length !== snapshot.size || createHash('sha256').update(verified).digest('hex') !== snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
     return saved
   } finally { await rm(temporary, { force: true }) }
 }
 
-export async function readWorkspaceFile(workspace: string, path: string, signal?: AbortSignal): Promise<Buffer> {
+export async function readWorkspaceFile(workspace: string, path: string, signal?: AbortSignal, allowEmpty = false): Promise<Buffer> {
   signal?.throwIfAborted()
   if (!isSafeDeliveryPath(path)) throw new Error('UNSAFE_PATH')
   const root = await realpath(workspace)
@@ -81,7 +82,7 @@ export async function readWorkspaceFile(workspace: string, path: string, signal?
   try {
     const before = await file.stat()
     if (!before.isFile()) throw new Error('NOT_A_FILE')
-    if (!before.size) throw new Error('EMPTY_FILE')
+    if (!before.size && !allowEmpty) throw new Error('EMPTY_FILE')
     if (before.size > MAX_BYTES) throw new Error('FILE_TOO_LARGE')
     signal?.throwIfAborted()
     // Bound allocation and reads even if a writer grows the file during validation.
@@ -116,8 +117,12 @@ function xmlChildren(value: unknown, name: string): Record<string, unknown>[] {
   return (Array.isArray(children) ? children : [children]).filter((child): child is Record<string, unknown> => !!child && typeof child === 'object')
 }
 
-async function validateFormat(bytes: Buffer, format: string): Promise<void> {
+async function validateFormat(bytes: Buffer, format: string, contentPolicy?: 'empty'): Promise<void> {
   const lower = format.toLowerCase()
+  if (contentPolicy === 'empty') {
+    if (lower !== 'txt' || bytes.length !== 0) throw new Error('FILE_MUST_BE_EMPTY')
+    return
+  }
   if (TEXT_FORMATS.has(lower)) {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
     if (!text.trim()) throw new Error('EMPTY_FILE')
@@ -163,6 +168,7 @@ export function deliveryFileIssue(error: unknown, id: string, path: string): Del
   const messages: Record<string, string> = {
     UNSAFE_PATH: '路径越界或使用了不安全的文件链接，请在共享工作区规定位置保存真实文件。',
     NOT_A_FILE: '交付路径不是普通文件。', EMPTY_FILE: '文件为空，请写入实际成果。',
+    FILE_MUST_BE_EMPTY: '此交付物必须恰好为 0 字节，不得包含换行、空格或字节顺序标记。',
     FILE_TOO_LARGE: '文件或解压内容超过 64 MiB（单个 XML 超过 8 MiB），请精简成果。', FILE_CHANGED: '校验时文件仍在变化，请完成保存后再提交。',
     INVALID_FORMAT: '文件内容不能按规定文档格式解析，请重新生成有效文档。',
     SNAPSHOT_CHANGED: '交付快照已损坏，不能使用变化后的文件代替已确认快照。',
@@ -204,14 +210,27 @@ export async function validateDeliveryFiles(workspace: string, node: Arrangement
         files.push(media)
         continue
       }
-      const bytes = await readWorkspaceFile(workspace, expected.path, signal)
-      await validateFormat(bytes, expected.format)
+      const bytes = await readWorkspaceFile(workspace, expected.path, signal, expected.contentPolicy === 'empty')
+      await validateFormat(bytes, expected.format, expected.contentPolicy)
       signal?.throwIfAborted()
-      const file = { id: expected.id, path: expected.path, format: expected.format, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), nodeRunId, validatedAt: Date.now() }
+      const file = { id: expected.id, path: expected.path, format: expected.format, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), nodeRunId, validatedAt: Date.now(),
+        ...(expected.contentPolicy ? { contentPolicy: expected.contentPolicy } : {}) }
       files.push(options.taskDirectory ? await saveSnapshot(options.taskDirectory, file, bytes, 'confirmed', signal) : file)
     } catch (error) { signal?.throwIfAborted(); issues.push(deliveryFileIssue(error, expected.id, expected.path)) }
   }
   return issues.length ? { ok: false, issues } : { ok: true, files }
+}
+
+export async function createScheduledEmptyText(workspace: string, occurrenceId: string, filename: string, checkControl: () => void): Promise<void> {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(occurrenceId) || !isAbsolute(workspace) || workspace !== resolve(workspace)
+    || !workspace.endsWith(`${sep}scheduled-${occurrenceId}`) || !emptyTextFilenameSchema.safeParse(filename).success
+    || filename !== filename.trim() || !isSafeDeliveryPath(filename)) throw new Error('WORKSPACE_INVALID')
+  const info = await lstat(workspace)
+  if (!info.isDirectory() || info.isSymbolicLink() || await realpath(workspace) !== workspace) throw new Error('WORKSPACE_INVALID')
+  checkControl()
+  // Exclusive open also rejects a pre-existing symlink or hard link; never truncate a file.
+  const handle = await open(join(workspace, filename), 'wx', 0o600)
+  await handle.close()
 }
 
 export async function resolveDeliveryFiles(workspace: string, files: readonly FinalDeliveryFile[], signal?: AbortSignal, options: DeliveryFileOptions = {}): Promise<ResolvedDeliveryFiles> {
@@ -237,7 +256,7 @@ export async function resolveDeliveryFiles(workspace: string, files: readonly Fi
         if (!options.taskDirectory) throw new Error('SNAPSHOT_UNAVAILABLE')
         let bytes: Buffer
         try {
-          bytes = await readWorkspaceFile(options.taskDirectory, snapshotRelativePath(file), signal)
+          bytes = await readWorkspaceFile(options.taskDirectory, snapshotRelativePath(file), signal, file.contentPolicy === 'empty')
           if (bytes.length !== file.snapshot.size || createHash('sha256').update(bytes).digest('hex') !== file.snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
         } catch (error) {
           signal?.throwIfAborted()
@@ -246,22 +265,22 @@ export async function resolveDeliveryFiles(workspace: string, files: readonly Fi
             if (issue.code === 'FILE_MISSING') throw new Error('SNAPSHOT_UNAVAILABLE')
             throw error
           }
-          bytes = await readWorkspaceFile(workspace, file.path, signal)
+          bytes = await readWorkspaceFile(workspace, file.path, signal, file.contentPolicy === 'empty')
           if (bytes.length !== file.snapshot.size || createHash('sha256').update(bytes).digest('hex') !== file.snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
-          await validateFormat(bytes, file.format)
+          await validateFormat(bytes, file.format, file.contentPolicy)
           await saveSnapshot(options.taskDirectory, file, bytes, file.snapshot.source, signal)
         }
         result.files.push(file)
         result.readPaths.push(resolve(await realpath(options.taskDirectory), snapshotRelativePath(file)))
         continue
       }
-      const bytes = await readWorkspaceFile(workspace, file.path, signal)
+      const bytes = await readWorkspaceFile(workspace, file.path, signal, file.contentPolicy === 'empty')
       const changed = bytes.length !== file.size || createHash('sha256').update(bytes).digest('hex') !== file.sha256
       if (changed && (!options.allowWorkspaceChanges || file.sourceArtifact)) {
         result.issues.push({ code: 'PREDECESSOR_FILE_CHANGED', deliverableId: file.id, path: file.path, message: '已确认的前置最终文件被修改，不能将其作为有效前置成果。' })
         continue
       }
-      await validateFormat(bytes, file.format)
+      await validateFormat(bytes, file.format, file.contentPolicy)
       const saved = options.taskDirectory ? await saveSnapshot(options.taskDirectory, file, bytes, changed ? 'workspace-recovery' : 'confirmed', signal) : file
       if (changed) result.warnings.push({ code: 'LEGACY_DELIVERY_UPDATED', deliverableId: file.id, path: file.path,
         message: '历史任务没有交付快照，已使用当前格式有效的文件继续；该恢复版本不等同于原验收版本。' })
@@ -287,8 +306,8 @@ export async function readDeliveryPreviewFile(workspace: string, file: FinalDeli
   if (!finalDeliveryFileSchema.safeParse(file).success || file.sourceArtifact) throw new Error('INVALID_DELIVERY_RECORD')
   const snapshot = file.snapshot
   const bytes = snapshot
-    ? await readWorkspaceFile(taskDirectory, snapshotRelativePath(file))
-    : await readWorkspaceFile(workspace, file.path)
+    ? await readWorkspaceFile(taskDirectory, snapshotRelativePath(file), undefined, file.contentPolicy === 'empty')
+    : await readWorkspaceFile(workspace, file.path, undefined, file.contentPolicy === 'empty')
   if (bytes.length !== (snapshot?.size ?? file.size) || createHash('sha256').update(bytes).digest('hex') !== (snapshot?.sha256 ?? file.sha256)) {
     throw new Error('PREVIEW_FILE_CHANGED')
   }

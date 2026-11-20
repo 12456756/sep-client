@@ -20,12 +20,15 @@ export const scheduleTimeResultSchema = z.union([
 export type ScheduleTimeRequest = z.infer<typeof scheduleTimeRequestSchema>
 export type ScheduleTimeResult = z.infer<typeof scheduleTimeResultSchema>
 
-export const scheduleInputSchema = z.object({
-  mode: z.enum(['employee', 'auto']).optional(),
+export const emptyTextFilenameSchema = z.string().trim().max(160)
+  .refine(value => /^[^<>:"/\\|?*]+\.txt$/i.test(value)
+    && [...value].every(character => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
+    && !/^(?:CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])\s*(?:\.|$)/i.test(value), '请输入有效的 .txt 文件名，不含目录')
+const scheduleIdentity = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+const scheduleModel = z.string().trim().min(1).max(160)
+const scheduleBaseSchema = z.object({
   name: z.string().trim().min(1).max(160),
   goal: z.string().trim().min(1).max(16000),
-  subscriptionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
-  modelId: z.string().trim().min(1).max(160),
   workDir: z.string().trim().min(1).max(1024).refine(value => /^(?:[A-Za-z]:[\\/]|\/|\\\\[^\\]+\\[^\\]+)/.test(value), '请选择绝对工作目录'),
   scheduledAt: z.number().int().positive().max(8640000000000000),
   recurrence: recurrenceSchema.optional(),
@@ -33,7 +36,17 @@ export const scheduleInputSchema = z.object({
     try { new Intl.DateTimeFormat('en', { timeZone: value }); return true } catch { return false }
   }),
   permissions: z.object({ preset: z.enum(['workspace-edit', 'full-local']), approvalMode: z.enum(['confirm-each', 'auto-approve']) }).strict(),
-}).strict().superRefine((input, context) => {
+}).strict()
+export const employeeScheduleInputSchema = scheduleBaseSchema.extend({ mode: z.enum(['employee', 'auto']).optional(), subscriptionId: scheduleIdentity, modelId: scheduleModel })
+export const scheduleInputSchema = z.union([
+  employeeScheduleInputSchema.extend({ emptyText: z.never().optional() }),
+  scheduleBaseSchema.extend({ mode: z.literal('general'), subscriptionId: z.never().optional(), modelId: scheduleModel, emptyText: z.never().optional() }),
+  scheduleBaseSchema.extend({ mode: z.literal('empty-text'), subscriptionId: z.never().optional(), modelId: z.never().optional(),
+    permissions: z.object({ preset: z.literal('workspace-edit'), approvalMode: z.literal('confirm-each') }).strict(),
+    emptyText: z.union([z.object({ naming: z.literal('fixed'), filename: emptyTextFilenameSchema }).strict(),
+      z.object({ naming: z.enum(['scheduled', 'started']) }).strict()]),
+  }),
+]).superRefine((input, context) => {
   if (input.recurrence?.frequency !== 'cron') return
   try {
     if (latestCronTime(input.recurrence.expression, input.timezone, input.scheduledAt) === input.scheduledAt) return
@@ -41,6 +54,7 @@ export const scheduleInputSchema = z.object({
   context.addIssue({ code: 'custom', path: ['scheduledAt'], message: '首次运行时间与重复规则不一致' })
 })
 export type ScheduleInput = z.infer<typeof scheduleInputSchema>
+export type ModelScheduledInput = Exclude<ScheduleInput, { mode: 'empty-text' }>
 const sourceId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const sourceHash = z.string().regex(/^[a-f0-9]{64}$/)
 export const scheduledWorkSourceSchema = z.object({ taskId: sourceId, templateId: sourceId, planHash: sourceHash, requestKey: sourceHash }).strict()
@@ -76,7 +90,7 @@ export interface ArrangementWorkPlan {
 export type ScheduledWorkPlan = EmployeeWorkPlan | ArrangementWorkPlan
 export type EmployeePlanResult = EmployeeWorkPlan | { status: 'blocked'; reasons: string[] }
 export type ScheduledRunStatus = 'pending' | 'preparing' | 'launching' | 'running' | 'waiting_approval' | 'waiting_retry' | 'waiting_auth' | 'blocked' | 'review' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'missed'
-export interface ScheduledIssue { code: string; message: string; action: 'retry' | 'auth' | 'blocked' | 'review'; retryAfterMs?: number }
+export interface ScheduledIssue { code: string; message: string; action: 'retry' | 'auth' | 'blocked' | 'review' | 'fail'; retryAfterMs?: number }
 export interface ScheduledDefinition {
   id: string; revision: number; input: ScheduleInput; plan: ScheduledWorkPlan | null
   planInputKey: string | null; enabled: boolean; deleted: boolean; nextRunAt: number | null; pausedAt?: number | null

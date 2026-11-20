@@ -12,10 +12,11 @@ interface Props {
   model: Pick<ScheduledTasksModel, 'interpretTime'>
   employeeId: string
   modelId: string
+  manualCron?: boolean
   onParsingChange(value: boolean): void
 }
 
-export function ScheduledTimeSettings({ value, onChange, model, employeeId, modelId, onParsingChange }: Props) {
+export function ScheduledTimeSettings({ value, onChange, model, employeeId, modelId, manualCron = false, onParsingChange }: Props) {
   const [customOpen, setCustomOpen] = useState(false)
   const [description, setDescription] = useState(value.custom?.description ?? '')
   const [parsed, setParsed] = useState<{ expression: string; description: string; timezone: string } | null>(null)
@@ -47,7 +48,7 @@ export function ScheduledTimeSettings({ value, onChange, model, employeeId, mode
     <div className="ent-sch-repeat" aria-label="定时设置">
       <div className="ent-sch-time-row"><label htmlFor="schedule-repeat">重复</label><select id="schedule-repeat" aria-label="重复频率" value={value.kind} onChange={event => {
         const kind = event.target.value as RepeatKind
-        if (kind === 'custom') openCustom()
+        if (kind === 'custom' && !manualCron) openCustom()
         else update({ kind, interval: 1 })
       }}><option value="hourly">每小时</option><option value="daily">每天</option><option value="weekly">每周</option>{value.kind === 'monthly' ? <option value="monthly">每月</option> : null}<option value="custom">自定义</option><option value="once">不重复</option></select></div>
       {value.kind === 'hourly' ? <div className="ent-sch-time-row"><label htmlFor="schedule-minute">在第几分钟</label><span className="ent-sch-time-value"><input id="schedule-minute" aria-label="每小时的分钟" type="number" min={0} max={59} required value={Number.isNaN(value.minute) ? '' : value.minute} onChange={event => update({ minute: event.target.value === '' ? NaN : Number(event.target.value) })} />分</span></div> : null}
@@ -55,8 +56,10 @@ export function ScheduledTimeSettings({ value, onChange, model, employeeId, mode
       {value.kind === 'daily' || (value.kind === 'weekly' && !legacyInterval) ? <div className="ent-sch-time-row"><label htmlFor="schedule-clock">运行时间</label><input id="schedule-clock" type="time" aria-label="运行时间" required value={value.clock} onChange={event => update({ clock: event.target.value, onceAt: `${value.onceAt.slice(0, 10)}T${event.target.value}` })} /></div> : null}
       {value.kind === 'once' || value.kind === 'monthly' || legacyInterval ? <div className="ent-sch-time-row"><label htmlFor="schedule-once">{value.kind === 'once' ? '运行时间' : '首次运行时间'}</label><input id="schedule-once" type="datetime-local" aria-label="执行时间" required value={value.onceAt} onChange={event => update({ onceAt: event.target.value })} /></div> : null}
       {value.kind === 'monthly' || legacyInterval ? <div className="ent-sch-time-row"><label htmlFor="schedule-interval">间隔</label><input id="schedule-interval" aria-label="周期间隔" type="number" min={1} max={365} value={value.interval} onChange={event => update({ interval: Number(event.target.value) })} /></div> : null}
-      {value.kind === 'custom' ? <div className="ent-sch-time-row"><span>频率</span><button type="button" className="ent-sch-custom-rule" onClick={openCustom}><span>{value.custom?.description ?? '请选择'}</span><ChevronRight size={16} /></button></div> : null}
-      <div className="ent-sch-time-row timezone-row"><label htmlFor="schedule-timezone">时区</label><input id="schedule-timezone" aria-label="执行时区" list="scheduled-timezones" required value={value.timezone} onChange={event => update({ timezone: event.target.value })} /><datalist id="scheduled-timezones">{['Asia/Shanghai', 'Asia/Singapore', 'Asia/Tokyo', 'UTC', 'Europe/London', 'America/New_York', 'America/Los_Angeles'].map(zone => <option key={zone} value={zone} />)}</datalist></div>
+      {value.kind === 'custom' ? manualCron
+        ? <div className="ent-sch-time-row"><label htmlFor="schedule-cron">Cron</label><input id="schedule-cron" value={value.custom?.expression ?? ''} maxLength={200} required placeholder="30 9 * * 1-5" onChange={event => update({ custom: { expression: event.target.value, description: event.target.value, timezone: value.timezone } })} /></div>
+        : <div className="ent-sch-time-row"><span>频率</span><button type="button" className="ent-sch-custom-rule" onClick={openCustom}><span>{value.custom?.description ?? '请选择'}</span><ChevronRight size={16} /></button></div> : null}
+      <div className="ent-sch-time-row timezone-row"><label htmlFor="schedule-timezone">时区</label><input id="schedule-timezone" aria-label="执行时区" list="scheduled-timezones" required value={value.timezone} onChange={event => { const timezone = event.target.value; update({ timezone, ...(manualCron && value.custom ? { custom: { ...value.custom, timezone } } : {}) }) }} /><datalist id="scheduled-timezones">{['Asia/Shanghai', 'Asia/Singapore', 'Asia/Tokyo', 'UTC', 'Europe/London', 'America/New_York', 'America/Los_Angeles'].map(zone => <option key={zone} value={zone} />)}</datalist></div>
     </div>
     {preview.length ? <div className="ent-sch-preview" aria-label="预计执行时间"><span>下次运行</span><time>{scheduleTime(preview[0]!, value.timezone)}</time></div> : null}
     <Dialog.Root open={customOpen} onOpenChange={open => { if (!parsing) setCustomOpen(open) }}>

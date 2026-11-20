@@ -131,13 +131,14 @@ export class EmployeeAuthorizer {
   }
 
   /** General assistant: reuse the grant's shared tools without employee behavior or skills. */
-  async authorizeModel(modelId: string, preferredSubscriptionId?: string): Promise<EmployeeRuntimeConfig | null> {
+  async authorizeModel(modelId: string, preferredSubscriptionId?: string, scheduled = false): Promise<EmployeeRuntimeConfig | null> {
     const scope = this.captureScope()
     if (!scope) return null
-    const instances = await this.list()
+    const instances = scheduled ? await this.refresh() : await this.list()
     if (!scope.isCurrent()) return null
     const available = instances.filter(instance => instance.status === 'ACTIVE' && instance.allowedModels.includes(modelId))
-    const selected = available.find(instance => instance.subscriptionId === preferredSubscriptionId) ?? available[0]
+    const preferred = available.find(instance => instance.subscriptionId === preferredSubscriptionId)
+    const selected = scheduled && preferredSubscriptionId ? preferred : preferred ?? available[0]
     if (!selected) return null
     const capabilities = this.modelCatalog
       ? await this.readModelCapabilities(modelId, await this.session.getValidAccessToken()) : {}
@@ -152,6 +153,15 @@ export class EmployeeAuthorizer {
       ...(current.manifest.runtime.media !== undefined ? { media: current.manifest.runtime.media } : {}),
       ...(current.manifest.runtime.video !== undefined ? { video: current.manifest.runtime.video } : {}),
     }
+  }
+
+  async authorizeScheduledModel(modelId: string, subscriptionId?: string): Promise<EmployeeRuntimeConfig> {
+    const scope = this.captureScope()
+    if (!scope) throw new AppError('AUTH_REQUIRED')
+    const grant = await this.authorizeModel(modelId, subscriptionId, true)
+    if (!scope.isCurrent()) throw new AppError('AUTH_REQUIRED')
+    if (!grant) throw new AppError('MODEL_NOT_ALLOWED', { message: '通用助手当前没有此模型的使用授权。' })
+    return grant
   }
 
   /** Host fence for external invalidation and observed video policy changes. */

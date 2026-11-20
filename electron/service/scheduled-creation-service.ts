@@ -183,6 +183,7 @@ export class ScheduledCreationService {
         return record
       }
       guard()
+      if (configured.mode === 'general' || configured.mode === 'empty-text') throw new AppError('INVALID_STATE')
       const nodes = definition.plan?.kind === 'arrangement' ? definition.plan.nodes : [{ subscriptionId: configured.subscriptionId, modelId: configured.modelId }]
       for (const node of nodes) {
         await withTimeout(this.options.authorize(node.subscriptionId, node.modelId), 30000, 'scheduled-creation-final-authorization')
