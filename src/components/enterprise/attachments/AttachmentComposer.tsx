@@ -1,5 +1,5 @@
 import { FileText, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useImperativeHandle, type Ref } from 'react'
 import { createPortal } from 'react-dom'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../../shared/attachment-contracts'
 import { useAttachmentComposer, type RetainedAttachmentState } from '../../../features/enterprise/use-attachment-composer'
@@ -7,8 +7,10 @@ import { useOperationFeedback } from '../../feedback/use-operation-feedback'
 import { ComposerAddMenu } from '../home/ComposerAddMenu'
 import { ComposerConnectorChip } from './ComposerConnectorChip'
 import type { ConnectorId } from '../../../shared/connectors'
+import type { AddFileToConversation } from '../../workspace/file-menu-actions'
 
 interface Props {
+  addFileRef?: Ref<AddFileToConversation>
   target: AttachmentImportTarget
   bindingKey?: string
   disabled?: boolean
@@ -26,11 +28,12 @@ interface Props {
   onConnectorChange: (id?: ConnectorId) => void
 }
 
-export function AttachmentComposer({ target, bindingKey, disabled = false, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer, connectorId, onConnectorChange }: Props) {
+export function AttachmentComposer({ target, bindingKey, disabled = false, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer, connectorId, onConnectorChange, addFileRef }: Props) {
   const { capture } = useOperationFeedback(bindingKey)
   const notice = capture()
   const composer = useAttachmentComposer({ target, bindingKey, disabled, retainedState, onError: message => notice.show(message), onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished })
   const attachments = composer.attachments
+  useImperativeHandle(addFileRef, () => composer.addFile, [composer.addFile])
   const chip = <ComposerConnectorChip value={connectorId} disabled={disabled || composer.busy} onRemove={() => onConnectorChange(undefined)} />
   useEffect(() => { onChange?.(attachments) }, [attachments, onChange])
   useEffect(() => { onSessionChange?.(composer.session) }, [composer.session, onSessionChange])

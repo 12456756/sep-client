@@ -268,6 +268,7 @@ const electronAPI = {
   previewResultFile: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_PREVIEW, input),
   releaseResultFilePreview: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_RELEASE, input),
   revealResultFile: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_REVEAL, input),
+  runResultFileAction: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_ACTION, input),
   openWorkDeliverable: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE, input),
   confirmArrangementNodes: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES, input),
   listArrangementDrafts: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS),

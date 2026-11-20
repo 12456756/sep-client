@@ -20,7 +20,7 @@ export interface AttachmentStorePort {
   begin(scope: TaskOwnerScope, target: AttachmentImportTarget, now?: number): Promise<AttachmentImportSession>
   get(scope: TaskOwnerScope, sessionId: string): Promise<AttachmentImportSession | null>
   list(scope: TaskOwnerScope): Promise<AttachmentImportSession[]>
-  importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource']): Promise<AttachmentView>
+  importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource'], displayName?: string): Promise<AttachmentView>
   importBytes(scope: TaskOwnerScope, sessionId: string, bytes: Uint8Array, displayName: string, mediaType: string, source?: AttachmentView['importSource']): Promise<AttachmentView>
   remove(scope: TaskOwnerScope, sessionId: string, attachmentId: string, expectedRevision?: number): Promise<AttachmentImportSession>
   cancel(scope: TaskOwnerScope, sessionId: string): Promise<boolean>
@@ -79,7 +79,7 @@ export class AttachmentStore implements AttachmentStorePort {
     return sessions.filter((item): item is AttachmentImportSession => item !== null)
   }
 
-  async importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource']): Promise<AttachmentView> {
+  async importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource'], displayName = basename(path)): Promise<AttachmentView> {
     let handle: Awaited<ReturnType<typeof open>> | undefined
     try {
       handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
@@ -102,7 +102,7 @@ export class AttachmentStore implements AttachmentStorePort {
       const sameIdentity = info.dev === after.dev && info.ino === after.ino && info.size === after.size && info.mtimeMs === after.mtimeMs && info.ctimeMs === after.ctimeMs
       if (!sameIdentity || total > attachmentImportLimits.maxFileBytes) throw new Error('ATTACHMENT_SOURCE_CHANGED')
       if (total <= 0) throw new Error('ATTACHMENT_EMPTY')
-      return this.importBuffer(scope, sessionId, Buffer.concat(chunks, total), basename(path), mimeFor(path), source)
+      return this.importBuffer(scope, sessionId, Buffer.concat(chunks, total), displayName, mimeFor(displayName), source)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ELOOP') throw new Error('ATTACHMENT_NOT_REGULAR_FILE')
       throw error

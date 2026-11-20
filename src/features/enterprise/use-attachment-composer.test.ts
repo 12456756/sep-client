@@ -71,6 +71,23 @@ test('ordinary composers still cancel their open import session on unmount', asy
   assert.deepEqual(cancelled, ['ordinary'])
 })
 
+test('adding a result targets the active compose session and updates the draft attachment list', async () => {
+  const session = { sessionId: 'draft-session', status: 'open', attachments: [] } as unknown as NonNullable<RetainedAttachmentState['session']>
+  const retained: RetainedAttachmentState = { session, attachments: [] }
+  const calls: unknown[] = []
+  const file = { taskId: 'result-task', fileId: 'result-task-file-0' }
+  const attachment = { attachmentId: 'added-file' }
+  const hook = mountHook({ runResultFileAction: async (input: unknown) => {
+    calls.push(input)
+    return { success: true, data: { ...session, attachments: [attachment] } }
+  } }, { target: { kind: 'compose', composerId: 'current' }, retainedState: retained })
+  await hook.render().addFile(file)
+  assert.deepEqual(calls, [{ action: 'attach', file, sessionId: 'draft-session' }])
+  assert.deepEqual(hook.render().attachments, [attachment])
+  assert.deepEqual(retained.attachments, [attachment])
+  hook.unmount()
+})
+
 test('a late session created after unmount is cancelled even when retaining drafts', async () => {
   let resolve!: (value: unknown) => void
   const result = new Promise(done => { resolve = done })

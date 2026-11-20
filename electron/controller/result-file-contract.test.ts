@@ -13,16 +13,28 @@ test('result file routes only accept trusted main-frame identities and never ren
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   const module = { exports: {} as { resultFileRoutes: Array<Route & { options: unknown }> } }
   const dependencies: Record<string, unknown> = {
+    electron: {}, '../../errors/app-error': {},
     '../../../src/shared/result-files': contracts, '../channels': { INVOKE_CHANNELS },
     '../router': { route: (channel: string, schema: z.ZodType, handle: Route['handle'], options: unknown) => ({ channel, schema, handle, options }) },
   }
   compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => { assert.ok(Object.hasOwn(dependencies, id), id); return dependencies[id] }, module.exports, module)
   const routes = module.exports.resultFileRoutes
-  assert.equal(routes.length, 3)
+  assert.equal(routes.length, 4)
   const calls: string[] = []
   const ctx = { resultFiles: { async preview() { calls.push('preview'); return { url: 'url' } }, async release() { calls.push('release') }, async reveal() { calls.push('reveal') } } }
   for (const route of routes) {
     assert.deepEqual(route.options, { trustedMainFrame: true })
+    if (route.channel === INVOKE_CHANNELS.RESULT_FILE_ACTION) {
+      const file = { taskId: 'task', attachmentId: 'att', sha256: 'a'.repeat(64) }
+      for (const action of ['open', 'copy-path', 'save-as']) {
+        assert.equal(route.schema.safeParse({ action, file }).success, true)
+        assert.equal(route.schema.safeParse({ action, file: { ...file, path: 'C:/private' } }).success, false)
+        assert.equal(route.schema.safeParse({ action, file, destination: 'C:/private' }).success, false)
+      }
+      assert.equal(route.schema.safeParse({ action: 'attach', file, sessionId: 'session' }).success, true)
+      assert.equal(route.schema.safeParse({ action: 'attach', file, sessionId: '../session' }).success, false)
+      continue
+    }
     const release = route.channel === INVOKE_CHANNELS.RESULT_FILE_RELEASE
     const input = release ? { url: `sep-result://preview/${'a'.repeat(64)}` } : { taskId: 'task', nodeId: 'node', deliverableId: 'file' }
     assert.equal(route.schema.safeParse(input).success, true)

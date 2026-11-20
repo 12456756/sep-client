@@ -1,8 +1,9 @@
 /* global document, window, innerWidth */
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { build } from 'esbuild'
 import { _electron } from 'playwright-core'
 import { createServer } from 'vite'
@@ -15,6 +16,30 @@ const errors = []
 const loadFailures = []
 let reactUrl = ''
 let domUrl = ''
+
+async function assertImageCopy(image, copy) {
+  const expected = await image.evaluate(async element => {
+    await element.decode()
+    return { width: element.naturalWidth, height: element.naturalHeight }
+  })
+  const saved = await electron.evaluate(({ clipboard }) => clipboard.availableFormats().map(format => ({ format, bytes: [...clipboard.readBuffer(format)] })))
+  try {
+    await electron.evaluate(({ clipboard }) => clipboard.clear())
+    await copy()
+    for (let i = 0; i < 50; i++) {
+      const size = await electron.evaluate(({ clipboard }) => clipboard.readImage().getSize())
+      if (size.width || size.height) { assert.deepEqual(size, expected); return }
+      await delay(100)
+    }
+    assert.fail('No image was written to the system clipboard')
+  } finally {
+    await electron.evaluate(({ clipboard }, previous) => {
+      clipboard.clear()
+      for (const item of previous) clipboard.writeBuffer(item.format, Buffer.from(item.bytes))
+    }, saved)
+  }
+}
+
 try {
   await build({ entryPoints: ['scripts/fixtures/result-files-main.ts'], bundle: true, platform: 'node', format: 'cjs',
     external: ['electron'], outfile: join(directory, 'main.cjs'), logLevel: 'silent' })
@@ -72,8 +97,63 @@ try {
   await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 2) < 0.1 && !document.querySelector('video').seeking)
   await mkdir(screenshotDirectory, { recursive: true })
   await page.screenshot({ path: join(screenshotDirectory, 'result-files-desktop.png'), fullPage: true })
+  await page.evaluate(() => window.resultTest.secure())
+  const resultImage = page.getByRole('img', { name: 'product.png', exact: true })
+  const localPage = join(directory, 'file-origin.html')
+  await writeFile(localPage, '<!doctype html><title>Result file-origin test</title>')
+  const fileOriginResponse = await electron.evaluate(async ({ BrowserWindow }, { path, url }) => {
+    const window = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } })
+    try {
+      await window.loadFile(path)
+      return await window.webContents.executeJavaScript(`fetch(${JSON.stringify(url)}).then(async response => ({
+        ok: response.ok, mime: response.headers.get('Content-Type'), bytes: (await response.arrayBuffer()).byteLength
+      }))`)
+    } finally { window.destroy() }
+  }, { path: localPage, url: await resultImage.getAttribute('src') })
+  assert.equal(fileOriginResponse.ok, true)
+  assert.equal(fileOriginResponse.mime, 'image/png')
+  assert.ok(fileOriginResponse.bytes > 0)
+  const arrangementMenu = page.getByRole('menu', { name: '文件操作' })
+  const arrangementActions = ['打开文件夹', '在默认应用打开', '复制路径', '另存为']
+  await page.getByRole('article', { name: '产物 brief.md' }).getByText('brief.md', { exact: true }).click({ button: 'right' })
+  await arrangementMenu.waitFor()
+  assert.deepEqual(await arrangementMenu.getByRole('menuitem').allTextContents(), arrangementActions)
+  await page.keyboard.press('Escape')
+  await assertImageCopy(resultImage, async () => {
+    await resultImage.click({ button: 'right' })
+    await arrangementMenu.waitFor()
+    assert.deepEqual(await arrangementMenu.getByRole('menuitem').allTextContents(), [...arrangementActions, '复制图片'])
+    await page.getByRole('menuitem', { name: '复制图片', exact: true }).click()
+  })
+  const priorClipboard = await electron.evaluate(({ clipboard }) => clipboard.availableFormats().map(format => ({ format, bytes: [...clipboard.readBuffer(format)] })))
+  try {
+    await electron.evaluate(({ clipboard }) => clipboard.clear())
+    await resultImage.click({ button: 'right' })
+    await page.getByRole('menuitem', { name: '复制路径', exact: true }).click()
+    const expectedPath = join(directory, 'workspace', 'product.png')
+    let copiedPath = ''
+    for (let attempt = 0; attempt < 50 && copiedPath !== expectedPath; attempt++) {
+      copiedPath = await electron.evaluate(({ clipboard }) => clipboard.readText())
+      if (copiedPath !== expectedPath) await delay(100)
+    }
+    assert.equal(copiedPath, expectedPath)
+  } finally {
+    await electron.evaluate(({ clipboard }, previous) => {
+      clipboard.clear()
+      for (const item of previous) clipboard.writeBuffer(item.format, Buffer.from(item.bytes))
+    }, priorClipboard)
+  }
   await page.getByRole('button', { name: '放大查看 product.png', exact: true }).click()
-  await page.getByRole('dialog', { name: '图片预览 product.png' }).waitFor()
+  const imageDialog = page.getByRole('dialog', { name: '图片预览 product.png' })
+  const largeImage = imageDialog.getByRole('img', { name: 'product.png', exact: true })
+  await largeImage.press('Shift+F10')
+  await imageDialog.getByRole('menuitem', { name: '复制图片' }).waitFor()
+  assert.deepEqual(await imageDialog.getByRole('menuitem').allTextContents(), [...arrangementActions, '复制图片'])
+  await page.keyboard.press('Escape')
+  assert.equal(await imageDialog.isVisible(), true)
+  await assertImageCopy(largeImage, async () => {
+    await imageDialog.getByRole('button', { name: '复制图片', exact: true }).click()
+  })
   await page.keyboard.press('Escape')
   assert.equal(await page.getByRole('dialog', { name: '图片预览 product.png' }).count(), 0)
   assert.equal(await page.locator('.ent-wk-inspector[open]').count(), 1)
@@ -100,6 +180,12 @@ try {
   assert.equal(await inlineResults.locator('.result-file-card').count(), 2)
   const inlineSource = await inlineResults.locator('video').getAttribute('src')
   await page.evaluate(() => window.resultTest.secure())
+  const inlineImage = inlineResults.locator('img')
+  await assertImageCopy(inlineImage, async () => {
+    await inlineImage.click({ button: 'right' })
+    assert.equal(await inlineResults.getByRole('menuitem', { name: '添加到对话框', exact: true }).isEnabled(), true)
+    await inlineResults.getByRole('menuitem', { name: '复制图片', exact: true }).click()
+  })
   await inlineResults.locator('video').hover()
   // Chromium's native media buttons live in a user-agent shadow root.
   const cdp = await page.context().newCDPSession(page)
@@ -173,7 +259,11 @@ try {
   const conversationState = await page.evaluate(() => window.resultTest.state())
   assert.ok(conversationState.revealCalls.some(input => input.jobId === 'video-job' && input.outputId === 'video-output-1'))
   await resultCards.nth(0).getByRole('button', { name: /放大查看/ }).click()
-  await page.locator('.result-image-dialog[open]').waitFor()
+  const conversationPreview = page.locator('.result-image-dialog[open]')
+  await assertImageCopy(conversationPreview.locator('img'), async () => {
+    await conversationPreview.locator('img').click({ button: 'right' })
+    await conversationPreview.getByRole('menuitem', { name: '复制图片', exact: true }).click()
+  })
   await page.keyboard.press('Escape')
   assert.equal(await page.locator('.ent-wk-inspector[open]').count(), 1)
   await page.setViewportSize({ width: 420, height: 800 })
@@ -203,7 +293,7 @@ try {
   }
   assert.deepEqual((await page.evaluate(() => window.resultTest.state())).blockedRequests, [])
   assert.deepEqual(errors, [])
-  console.log('PASS Electron results: specific failures and replay guards for images and videos; preview, playback, Range, reveal, narrow layout, release and logout; no generation requests')
+  console.log('PASS Electron results: native image copy, file-origin reads, preview, playback, Range, reveal, narrow layout, release and logout; no generation requests')
 } catch (error) {
   console.error({ errors, loadFailures })
   const page = electron?.windows()[0]

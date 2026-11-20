@@ -1,5 +1,5 @@
 import '../../electron/common/undici-polyfill'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain } from 'electron'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -13,6 +13,7 @@ import { ResultFileService } from '../../electron/service/result-file-service'
 import { installResultFileProtocol, registerResultFileScheme } from '../../electron/bootstrap/result-file-protocol'
 import type { WorkPlan } from '../../electron/domain/arrangement-plan'
 import type { TaskReadView } from '../../src/shared/types'
+import { resultFileActionSchema } from '../../src/shared/result-files'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { seedConversationResults } from './result-files-conversation'
 import { installSpeechPermissions } from '../../electron/bootstrap/speech-permissions'
@@ -81,6 +82,11 @@ void app.whenReady().then(async () => {
   invoke('release', service.release.bind(service))
   const revealCalls: unknown[] = []
   invoke('reveal', async (input: Parameters<typeof service.reveal>[0]) => { revealCalls.push(input); await service.reveal(input) })
+  invoke('action', async raw => {
+    const input = resultFileActionSchema.parse(raw)
+    if (input.action !== 'copy-path') throw new Error('Unexpected fixture action')
+    await service.withPath(input.file, path => clipboard.writeText(path))
+  })
   const blockedRequests: string[] = []
   ipcMain.handle('result-test:state', () => ({ revealed, revealCalls, requests, blockedRequests, imagePath: conversation.imagePath, videoPath: conversation.videoPath }))
   ipcMain.handle('result-test:images', (_event, taskId: string) => ({ success: true, data: taskId === 'conversation-test' ? conversation.images

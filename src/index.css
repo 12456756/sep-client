@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "./components/workspace/document-preview.css";
 @import "./components/workspace/result-file-card.css";
+@import "./components/content-copy-menu.css";
 
 .context-usage-indicator { display: inline-flex; flex: 0 0 58px; width: 58px; height: 28px; align-items: center; justify-content: center; gap: 5px; border-radius: 7px; color: var(--ent-ink-3, var(--color-text-secondary)); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: help; }
 .context-usage-indicator:hover, .context-usage-indicator[data-state="delayed-open"], .context-usage-indicator[data-state="instant-open"] { color: var(--ent-ink, var(--color-text-primary)); background: var(--ent-panel-subtle, var(--color-surface-panel)); }

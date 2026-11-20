@@ -1,5 +1,5 @@
-import { Download, ImagePlus, Image as ImageIcon, LoaderCircle, Play, RefreshCw, RotateCcw, Square, X } from 'lucide-react'
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { Copy, Download, ImagePlus, Image as ImageIcon, LoaderCircle, Play, RefreshCw, RotateCcw, Square, X } from 'lucide-react'
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaOperation, MediaPreview, MediaProfile, MediaTaskView } from '../../shared/media'
 import { mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile } from '../../shared/media-view'
@@ -16,6 +16,8 @@ import { useFeedback } from '../feedback/FeedbackProvider'
 import { operationFailure, responseError, feedbackMessage, type FeedbackOperation } from '../../shared/arrangement-feedback'
 import { mediaIssueMessage, mediaSpecFailureMessage } from '../../shared/media-feedback'
 import { ResultFileCard } from './ResultFileCard'
+import { useImagePreviewCopy } from '../ContentCopyMenu'
+import { useFileMenuCommands } from './file-menu-actions'
 import type { WorkDeliverable } from '../../features/enterprise/types'
 
 type Command = 'import' | 'video-import' | 'selection' | 'generate' | 'export' | 'retry' | 'cancel' | 'resume' | 'redo'
@@ -113,18 +115,30 @@ function useAssetPreview(taskId: string, asset: MediaAssetView): { url: string |
   return { url, error, retry: () => setAttempt(value => value + 1) }
 }
 
-function AssetImage({ taskId, asset, large = false }: { taskId: string; asset: MediaAssetView; large?: boolean }) {
+function AssetImage({ taskId, asset, presentation }: { taskId: string; asset: MediaAssetView; presentation:
+  { kind: 'thumbnail'; onOpen: () => void; label: string } | { kind: 'dialog'; header: (copyButton: ReactNode) => ReactNode; onAdded: () => void } }) {
   const { capture } = useOperationFeedback(`${taskId}:${asset.localAssetId}`)
   const preview = useAssetPreview(taskId, asset)
   const [decodeError, setDecodeError] = useState(false)
   useEffect(() => setDecodeError(false), [preview.url])
   const error = preview.error || (decodeError ? operationFailure('imagePreview') : null)
+  const url = error ? null : preview.url
+  const commands = useFileMenuCommands(asset.status === 'SAVED' ? { taskId, assetId: asset.localAssetId } : null,
+    'image.' + asset.mime.slice('image/'.length), presentation.kind === 'dialog' ? presentation.onAdded : undefined)
+  const { imageProps, copyButtonProps, triggerProps, menu } = useImagePreviewCopy(url, undefined, commands)
+  const large = presentation.kind === 'dialog'
   useEffect(() => { if (decodeError) capture().show(operationFailure('imagePreview'), 'error', `image-decode:${taskId}:${asset.localAssetId}`, true) }, [decodeError, capture, taskId, asset.localAssetId])
-  return <div className={`media-image ${large ? 'media-image-large' : ''}`}>
-    {preview.url && !error ? <img src={preview.url} alt={asset.source === 'reference' ? '商品参考图' : '图片成果'} onError={() => setDecodeError(true)} /> :
+  const image = <div className={`media-image ${large ? 'media-image-large' : ''}`}>
+    {url ? <img {...(large ? imageProps : undefined)} src={url} alt={asset.source === 'reference' ? '商品参考图' : '图片成果'}
+      onError={() => { imageProps.onError(); setDecodeError(true) }} /> :
       <span className="media-image-placeholder"><ImageIcon size={20} /><span>{error ? '预览不可用' : (asset.status === 'SAVED' ? '读取图片' : mediaSaveLabels[asset.status].label)}</span></span>}
     {error && large && <button type="button" className="media-command" onClick={preview.retry}><RefreshCw size={14} />重新读取</button>}
   </div>
+  return <>{presentation.kind === 'dialog'
+    ? <>{presentation.header(<button type="button" className="media-icon-button" {...copyButtonProps}><Copy size={18} aria-hidden /></button>)}{image}</>
+    : <button type="button" className="media-preview-button" disabled={asset.status !== 'SAVED'} onClick={presentation.onOpen}
+      title={presentation.label} aria-label={presentation.label} {...triggerProps}>{image}</button>}
+    {menu}</>
 }
 
 export function MediaAssetGrid({ taskId, assets, references = false, selected = [], disabled = false, onSelect, onPreview, onExport, compact = false, selectionProblem }: {
@@ -134,9 +148,8 @@ export function MediaAssetGrid({ taskId, assets, references = false, selected = 
   onSelect?: (id: string) => void; onPreview: (asset: MediaAssetView) => void; onExport?: (asset: MediaAssetView) => void
 }) {
   return <div className="media-grid">{assets.map((asset, index) => <div className="media-asset" key={asset.localAssetId}>
-    <button type="button" className="media-preview-button" disabled={asset.status !== 'SAVED'} onClick={() => onPreview(asset)} title={`放大查看${references ? '参考图' : '成果'} ${index + 1}`} aria-label={`放大查看${references ? '参考图' : '成果'} ${index + 1}`}>
-      <AssetImage key={`${taskId}:${asset.localAssetId}:${asset.status}`} taskId={taskId} asset={asset} />
-    </button>
+    <AssetImage key={`${taskId}:${asset.localAssetId}:${asset.status}`} taskId={taskId} asset={asset}
+      presentation={{ kind: 'thumbnail', onOpen: () => onPreview(asset), label: `放大查看${references ? '参考图' : '成果'} ${index + 1}` }} />
     {!compact && <div className="media-asset-caption">
       {references ? <label className="media-reference-select" title={selectionProblem?.(asset) ?? undefined}><input type="checkbox" checked={selected.includes(asset.localAssetId)} disabled={disabled || asset.status !== 'SAVED' || !selected.includes(asset.localAssetId) && !!selectionProblem?.(asset)} onChange={() => onSelect?.(asset.localAssetId)} />参考图 {index + 1}{selected.includes(asset.localAssetId) ? ` · ${selected.indexOf(asset.localAssetId) + 1}` : ''}</label> : <span>成果 {index + 1}</span>}
       {!references && asset.status === 'SAVED' && <button type="button" className="media-icon-button" disabled={disabled} title={`导出成果 ${index + 1}`} aria-label={`导出成果 ${index + 1}`} onClick={() => onExport?.(asset)}><Download size={14} /></button>}
@@ -272,9 +285,10 @@ function MediaPreviewDialog({ taskId, asset, busy, onClose, onExport, feedback }
     closeButton.current?.focus()
   }, [])
   return <dialog className="media-preview-dialog" ref={dialog} aria-label="图片大图预览" onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
-    <div className="media-dialog-heading"><strong>{asset.source === 'reference' ? '商品参考图' : '图片成果'}</strong><div className="media-dialog-tools"><button type="button" className="media-icon-button" title="导出图片" aria-label="导出图片" disabled={busy} onClick={onExport}><Download size={18} /></button><button type="button" className="media-icon-button" title="关闭大图预览" aria-label="关闭大图预览" ref={closeButton} onClick={onClose}><X size={18} /></button></div></div>
-    <MediaCommandFeedback {...feedback} />
-    <AssetImage key={`${taskId}:${asset.localAssetId}`} taskId={taskId} asset={asset} large />
+    <AssetImage key={`${taskId}:${asset.localAssetId}`} taskId={taskId} asset={asset} presentation={{ kind: 'dialog', onAdded: onClose, header: copyButton => <>
+      <div className="media-dialog-heading"><strong>{asset.source === 'reference' ? '商品参考图' : '图片成果'}</strong><div className="media-dialog-tools">{copyButton}<button type="button" className="media-icon-button" title="导出图片" aria-label="导出图片" disabled={busy} onClick={onExport}><Download size={18} /></button><button type="button" className="media-icon-button" title="关闭大图预览" aria-label="关闭大图预览" ref={closeButton} onClick={onClose}><X size={18} /></button></div></div>
+      <MediaCommandFeedback {...feedback} />
+    </> }} />
     <p>{asset.width} × {asset.height} · {asset.mime} · {mediaSaveLabels[asset.status].label}</p>
   </dialog>
 }

@@ -65,6 +65,24 @@ export class AttachmentService {
     return { name: item.displayName, version: item.sha256, format, bytes }
   }
 
+  async resolveTaskFile(scope: TaskOwnerScope, taskId: string, attachmentId: string, sha256: string) {
+    const current = this.currentScope()
+    if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    const { item } = await this.readTaskAttachment(taskId, attachmentId, sha256)
+    const path = this.store.taskReadPath?.(scope, taskId, attachmentId)
+    if (!path) throw new AppError('NOT_FOUND')
+    return { path, name: item.displayName, size: item.byteLength }
+  }
+
+  async attachResultFile(scope: TaskOwnerScope, sessionId: string, path: string, name: string): Promise<AttachmentImportSession> {
+    const session = await this.require(scope, sessionId)
+    const current = this.currentScope()
+    if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    if (session.status !== 'open' || session.target.kind !== 'compose') throw new AppError('INVALID_STATE')
+    await this.store.importPath(scope, sessionId, path, 'picker', name)
+    return this.require(scope, sessionId)
+  }
+
   private async readTaskAttachment(taskId: string, attachmentId: string, sha256: string) {
     const scope = this.currentScope()
     const metadata = await this.store.readTaskMetadata(scope, taskId)

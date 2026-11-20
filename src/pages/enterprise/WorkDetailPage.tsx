@@ -16,6 +16,7 @@ import { MediaArtifactsPanel, type MediaArtifactsSummary } from '../../component
 import { mediaRetryNotice, type MediaRetryState } from '../../shared/media-retry';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { ResultFileCard } from '../../components/workspace/ResultFileCard';
+import { FileAttachmentTarget, type AddFileToConversation } from '../../components/workspace/file-menu-actions';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
@@ -68,6 +69,12 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const mediaPhaseLabel = mediaPhase === 'preparing' ? '正在准备媒体请求' : mediaPhase === 'awaiting-approval' ? '等待确认媒体请求' : mediaPhase === 'submitted' ? '媒体已提交，等待供应商' : mediaPhase === 'tracking' ? '供应商正在生成媒体' : mediaPhase === 'saving' ? '正在下载并保存媒体' : mediaPhase === 'materializing' ? '正在整理媒体交付结果' : null;
   const [panel, setPanel] = useState<Panel>(null);
   const inspector = useRef<HTMLDialogElement | null>(null);
+  const addToConversation = useRef<AddFileToConversation>(null);
+  const addFromResults: AddFileToConversation = useCallback(async file => {
+    if (!addToConversation.current) throw new Error('对话输入框未就绪，请重试。');
+    await addToConversation.current(file);
+    setPanel(null);
+  }, []);
   const [mediaSummary, setMediaSummary] = useState<MediaArtifactsSummary>({ images: null, videos: null, error: null, retryState: 'checking' });
   const [conversationSkipped, setConversationSkipped] = useState(false);
   const handleMediaSummary = useCallback((summary: typeof mediaSummary) => setMediaSummary(summary), []);
@@ -182,7 +189,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           {work.kind === 'flow' ? <FailedNodeActions work={work} busy={workspace.busy} onRetry={workspace.retryWork} /> : null}
 
           {isConversation ? <section className="ent-chat-panel" aria-label="工作对话">
-            <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} onSkippedChange={setConversationSkipped} />
+            <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} onSkippedChange={setConversationSkipped} addFileRef={addToConversation} />
           </section> : <ArrangementTranscript work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey}
             busy={workspace.busy} onStop={workspace.stopWork} onResults={() => openInspector('results')} />}
         </div>
@@ -212,6 +219,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             <WorkSkills work={work} scopeKey={workspace.attachmentScopeKey} visible={panel === 'skills'} />
           </section>
           <section className="ent-panel ent-wk-inspector-content" aria-label="产出结果" hidden={panel !== 'results'}>
+            <FileAttachmentTarget.Provider value={isConversation ? addFromResults : null}>
             {isConversation ? <MediaArtifactsPanel taskId={work.id} visible={panel === 'results'} onSummary={handleMediaSummary} presentation="results" /> : null}
             {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel media={work.arrangementExecution.media} deliverables={work.deliverables} /> : null}
             {work.deliverables.length ? (
@@ -226,6 +234,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                 ))}
               </div>
             ) : showEmptyResults ? <p className="ent-hint">暂无产出结果</p> : null}
+            </FileAttachmentTarget.Provider>
           </section>
 
           {/* 普通会话的结构化活动仍可单独查看。 */}

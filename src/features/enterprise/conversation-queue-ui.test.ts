@@ -38,6 +38,7 @@ const dependencies: Record<string, unknown> = {
   '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {}, async prioritize() {} }) },
   './ConversationMessages': { ConversationMessages: empty },
   '../workspace/ContextUsageIndicator': { ContextUsageIndicator: empty },
+  '../workspace/file-menu-actions': { FileAttachmentTarget: React.createContext(null) },
 }
 const filename = fileURLToPath(new URL('../../components/enterprise/WorkTalkDrawer.tsx', import.meta.url))
 const source = ts.transpileModule(readFileSync(filename, 'utf8'), {

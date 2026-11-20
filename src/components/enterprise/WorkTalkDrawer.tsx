@@ -1,5 +1,5 @@
 import { ArrowDown, Send, SkipForward, StopCircle, X } from 'lucide-react';
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Ref } from 'react';
 import type { SetStateAction } from 'react';
 import { isSubmitEnter } from '../../shared/composer-shortcut';
 import type { WorkItem } from '../../features/enterprise/types';
@@ -22,6 +22,7 @@ import { ContextUsageIndicator } from '../workspace/ContextUsageIndicator';
 import { ModelSelector } from './ModelSelector';
 import { ConversationEmployeePicker } from './ConversationEmployeePicker';
 import { mediaRetryNotice, type MediaRetryState } from '../../shared/media-retry';
+import { FileAttachmentTarget, type AddFileToConversation } from '../workspace/file-menu-actions';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -45,6 +46,7 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
 }
 
 interface ConversationProps {
+  addFileRef?: Ref<AddFileToConversation>;
   work: WorkItem;
   workspace: EnterpriseWorkspace;
   onClose?: () => void;
@@ -52,7 +54,7 @@ interface ConversationProps {
   onSkippedChange?: (skipped: boolean) => void;
 }
 
-export function WorkConversation({ work, workspace, onClose, mediaRetryState = 'clear', onSkippedChange }: ConversationProps) {
+export function WorkConversation({ work, workspace, onClose, mediaRetryState = 'clear', onSkippedChange, addFileRef }: ConversationProps) {
   const queued = useConversationQueue(work.id, workspace.attachmentScopeKey);
   const skipped = queued.queue.skipped === true;
   useEffect(() => { onSkippedChange?.(skipped); }, [onSkippedChange, skipped]);
@@ -73,6 +75,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
   const [attachments, setAttachments] = useState<AttachmentView[]>(retainedAttachments.attachments);
   const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(retainedAttachments.session);
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const importFileRef = useRef<AddFileToConversation>(null);
   const knowledge = savedSession.knowledge ?? work.knowledge ?? noKnowledgeSelection();
   const setKnowledge = savedSession.setKnowledge;
   useEffect(() => {
@@ -173,6 +176,13 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
     } finally { savedSession.finishSend(); }
   };
 
+  const addFile: AddFileToConversation = useCallback(async file => {
+    if (!importFileRef.current) throw new Error('附件输入框未就绪，请重试。');
+    await importFileRef.current(file);
+    requestAnimationFrame(() => speech.inputProps.ref.current?.focus());
+  }, [speech.inputProps.ref]);
+  useImperativeHandle(addFileRef, () => addFile, [addFile]);
+
   return (
     <>
         <header className="ent-drawer-head">
@@ -195,7 +205,9 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
           if (followsLatest.current) setHasNewContent(false);
         }}>
           <div className="ent-talk">
-            <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} />
+            <FileAttachmentTarget.Provider value={addFile}>
+              <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} />
+            </FileAttachmentTarget.Provider>
           </div>
         </div>
 
@@ -231,7 +243,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
               />
               <div className="ent-ask-bar">
                 <div className="ent-ask-tools">
-                  <AttachmentComposer connectorId={savedSession.connectorId} onConnectorChange={savedSession.setConnector} key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+                  <AttachmentComposer addFileRef={importFileRef} connectorId={savedSession.connectorId} onConnectorChange={savedSession.setConnector} key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
                   {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                       在这里换掉「当前员工」会和步骤上的安排对不上。 */}
                   {work.kind === 'conversation' ? (

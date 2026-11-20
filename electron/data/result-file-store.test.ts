@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, writeFile, mkdir, symlink, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile, mkdir, symlink, realpath, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -14,6 +14,7 @@ import { MediaStore } from './media-store'
 import { VideoStore } from './video-store'
 import { seedConversationResults } from '../../scripts/fixtures/result-files-conversation'
 import { MOCK_VIDEO_BYTES } from './mock-video-media-gateway'
+import { validateDeliveryFiles } from './arrangement-delivery-files'
 
 const scope = { memberId: 'member', enterpriseId: 'enterprise' }
 const input = { taskId: 'task', nodeId: 'node', deliverableId: 'file' }
@@ -108,4 +109,22 @@ test('streams persisted conversation image and video outputs with owner and inte
   await assert.rejects(store.open(scope, imageInput))
   await writeFile(seeded.videoPath, Buffer.from('tampered'))
   await assert.rejects(store.open(scope, videoInput))
+})
+
+test('result actions retain the original name when using an accepted document snapshot', async t => {
+  const f = await fixture()
+  t.after(() => rm(f.root, { recursive: true, force: true }))
+  const path = join(f.workspace, 'brief.txt')
+  await writeFile(path, 'accepted text')
+  const verified = await validateDeliveryFiles(f.workspace, {
+    id: 'node', title: 'Write', subscriptionId: 'sub', modelId: 'model', instruction: 'Write', expectedOutput: 'Brief',
+    dependsOn: [], skillIds: [], requiresUserConfirmation: false,
+    deliverables: [{ id: 'file', name: 'brief.txt', format: 'txt', path: 'brief.txt', contentOutline: [], acceptanceCriteria: [] }],
+  }, { nodeId: 'node', summary: 'Brief', finalDeliverables: [{ id: 'file', path: 'brief.txt' }] }, 'run', undefined, { taskDirectory: new ScopePath(f.root).taskDir(scope, 'task') })
+  assert.ok(verified.ok)
+  Object.assign(f.file, verified.files[0])
+  const file = await f.store.actionFile(scope, input)
+  assert.equal(file.name, 'brief.txt')
+  assert.notEqual(file.path, path)
+  assert.equal(await readFile(file.path, 'utf8'), 'accepted text')
 })

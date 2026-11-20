@@ -18,6 +18,7 @@ import { ResultFileCard } from '../../components/workspace/ResultFileCard'
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton'
 import { SaveWordCopyButton } from '../../components/workspace/SaveWordCopyButton'
 import { FeedbackProvider } from '../../components/feedback/FeedbackProvider'
+import * as fileMenuActions from '../../components/workspace/file-menu-actions'
 
 const filename = fileURLToPath(new URL('../../components/enterprise/ConversationMessages.tsx', import.meta.url))
 const dependencies: Record<string, unknown> = {
@@ -27,11 +28,13 @@ const dependencies: Record<string, unknown> = {
   './ConversationProcess': { ConversationProcessView },
   './EmployeeFace': { EmployeeFace: () => null },
   './MessageContent': { MessageContent: ({ content }: { content: string }) => React.createElement('div', null, content) },
+  '../ContentCopyMenu': { useContentCopy: () => ({ showMenu() {}, menu: null }), imageCopyHandlers: () => ({}) },
   '../../features/enterprise/conversation-media': {},
   '../../features/enterprise/conversation-results': conversationResults,
   '../workspace/ResultFileCard': { ResultFileCard },
   '../workspace/DocumentPreviewButton': { DocumentPreviewButton },
   '../workspace/SaveWordCopyButton': { SaveWordCopyButton },
+  '../workspace/file-menu-actions': fileMenuActions,
   '../workspace/result-file-card.css': {},
 }
 const componentModule = { exports: {} }

@@ -18,6 +18,7 @@ export const INVOKE_CHANNELS = {
   RESULT_FILE_PREVIEW: 'result-file:preview',
   RESULT_FILE_RELEASE: 'result-file:release',
   RESULT_FILE_REVEAL: 'result-file:reveal',
+  RESULT_FILE_ACTION: 'result-file:action',
   SCHEDULE_LIST: 'schedule:list',
   SCHEDULE_WORK_SOURCE: 'schedule:work-source',
   SCHEDULE_CREATE_FROM_WORK: 'schedule:create-from-work',

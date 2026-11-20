@@ -294,3 +294,10 @@ export async function readDeliveryPreviewFile(workspace: string, file: FinalDeli
   }
   return { bytes, source: snapshot ? snapshot.source === 'workspace-recovery' ? 'recovered-snapshot' : 'snapshot' : 'verified-original' }
 }
+
+/** Resolve the exact version that document preview displays, without repairing or writing anything. */
+export async function resolveDocumentSnapshot(workspace: string, file: FinalDeliveryFile, taskDirectory: string): Promise<string> {
+  if (!file.snapshot) throw new Error('SNAPSHOT_UNAVAILABLE')
+  await readDeliveryPreviewFile(workspace, file, taskDirectory)
+  return resolve(await realpath(taskDirectory), snapshotRelativePath(file))
+}

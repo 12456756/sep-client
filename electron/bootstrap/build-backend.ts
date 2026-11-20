@@ -434,7 +434,8 @@ class BackendRuntime {
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
     this.resultFiles = new ResultFileService({
       scope: this,
-      store: new ResultFileStore(userDataDir, previewFiles, taskId => this.tasks.get(taskId), mediaStore, videoStore),
+      store: new ResultFileStore(userDataDir, previewFiles, taskId => this.tasks.get(taskId), mediaStore, videoStore,
+        (...args) => this.attachments.resolveTaskFile(...args)),
       reveal: path => shell.showItemInFolder(path),
     })
     this.documentPreviews = new DocumentPreviewService({

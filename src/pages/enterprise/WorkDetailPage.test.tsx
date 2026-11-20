@@ -21,6 +21,9 @@ import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMed
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
 import { SaveWordCopyButton } from '../../components/workspace/SaveWordCopyButton';
 import { useResultFilePreview } from '../../features/enterprise/use-result-file-preview';
+import * as contentCopy from '../../components/ContentCopyMenu';
+import * as fileMenuActions from '../../components/workspace/file-menu-actions';
+import { resultFileReleaseSchema } from '../../shared/result-files';
 import type { WorkItem } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import * as workProcess from '../../features/enterprise/work-process';
@@ -33,7 +36,9 @@ const cardSource = ts.transpileModule(readFileSync(cardFilename, 'utf8'), { comp
 const cardModule = { exports: {} };
 const cardDependencies: Record<string, unknown> = { react: React, 'react/jsx-runtime': jsxRuntime, 'lucide-react': icons,
   '../../features/enterprise/use-result-file-preview': { useResultFilePreview }, './DocumentPreviewButton': { DocumentPreviewButton },
-  './SaveWordCopyButton': { SaveWordCopyButton }, './result-file-card.css': {} };
+  './SaveWordCopyButton': { SaveWordCopyButton }, '../ContentCopyMenu': contentCopy,
+  './file-menu-actions': fileMenuActions,
+  '../../shared/result-files': { resultFileReleaseSchema }, './result-file-card.css': {} };
 compileFunction(cardSource, ['require', 'exports', 'module'], { filename: cardFilename })((id: string) => { assert.ok(Object.hasOwn(cardDependencies, id), `unexpected card import: ${id}`); return cardDependencies[id] }, cardModule.exports, cardModule);
 const { ResultFileCard, ResultFileMedia, resultFileRequest } = cardModule.exports as typeof import('../../components/workspace/ResultFileCard');
 
@@ -57,6 +62,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
   '../../components/workspace/ResultFileCard': { ResultFileCard },
+  '../../components/workspace/file-menu-actions': fileMenuActions,
   '../../components/feedback/use-operation-feedback': { useOperationFeedback },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },

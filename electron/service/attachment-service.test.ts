@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
@@ -97,4 +97,27 @@ test('does not preview non-image task attachments', async () => {
   const ref = { attachmentId: file.attachmentId, sha256: file.sha256 }
   await service.claimTask(session.sessionId, 'task-text', [ref])
   await assert.rejects(service.previewTaskAttachment('task-text', ref.attachmentId, ref.sha256), /ATTACHMENT_PREVIEW_UNSUPPORTED/)
+})
+
+test('reuses a saved attachment in a compose session with the original name and content', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-attachment-reuse-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const imagePath = join(root, 'reference.png')
+  await writeFile(imagePath, png)
+  let scope = ownerA
+  const store = new AttachmentStore(root)
+  const service = new AttachmentService(store, () => scope)
+  const original = await service.beginSession({ kind: 'conversation', taskId: 'task-a' })
+  const { item } = (await service.importFiles(original.sessionId, 'original', [imagePath]))[0]!
+  await service.claimTask(original.sessionId, 'task-a', [item])
+  const file = await service.resolveTaskFile(ownerA, 'task-a', item.attachmentId, item.sha256)
+  const draft = await service.beginSession({ kind: 'compose', composerId: 'draft' })
+  const reused = await service.attachResultFile(ownerA, draft.sessionId, file.path, file.name)
+  assert.equal(reused.attachments[0]?.displayName, 'reference.png')
+  assert.equal(reused.attachments[0]?.mediaType, 'image/png')
+  assert.deepEqual(await store.read(ownerA, draft.sessionId, reused.attachments[0]!.attachmentId), png)
+  await assert.rejects(service.attachResultFile(ownerA, original.sessionId, file.path, file.name))
+  scope = ownerB
+  await assert.rejects(service.attachResultFile(ownerA, draft.sessionId, file.path, file.name))
+  await assert.rejects(service.resolveTaskFile(ownerA, 'task-a', item.attachmentId, item.sha256))
 })
