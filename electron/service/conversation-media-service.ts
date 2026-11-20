@@ -37,15 +37,32 @@ export class ConversationMediaService implements ConversationMediaPort {
       validate()
       if (!current || current.subscriptionId !== task.subscriptionId) throw new AppError('AUTH_REQUIRED')
     }
-    const sources: MediaReferenceSource[] = []
-    for (const attachment of input.attachments) {
-      if (!['image/png', 'image/jpeg', 'image/webp'].includes(attachment.mediaType)) continue
+    const sources = new Map<string, MediaReferenceSource>()
+    const addAttachment = async (attachment: (typeof input.attachments)[number], signal: AbortSignal) => {
+      if (!['image/png', 'image/jpeg', 'image/webp'].includes(attachment.mediaType)) return
       await check()
       if (!this.options.assets.attachmentReference) throw new AppError('SERVICE_UNAVAILABLE')
-      const reference = await this.options.assets.attachmentReference(scope, input.taskId, attachment, input.signal, validate)
+      const reference = await this.options.assets.attachmentReference(scope, input.taskId, attachment, signal, validate)
+      signal.throwIfAborted()
       await check()
-      sources.push({ localAssetId: reference.artifactId, source: 'attachment', attachmentId: attachment.attachmentId,
+      sources.set(attachment.attachmentId, { localAssetId: reference.artifactId, source: 'attachment', attachmentId: attachment.attachmentId,
         displayName: attachment.displayName })
+    }
+    for (const attachment of input.attachments) await addAttachment(attachment, input.signal)
+    const discovered = new Set(input.attachments.map(attachment => attachment.attachmentId))
+    const discoverAttachments = async (signal: AbortSignal) => {
+      for (const attachment of input.historicalAttachments ?? []) {
+        if (discovered.has(attachment.attachmentId)) continue
+        try { await addAttachment(attachment, signal) }
+        catch (error) {
+          signal.throwIfAborted()
+          await check()
+          if (error instanceof AppError) throw error
+          // An old missing or damaged snapshot must not hide other usable references.
+          continue
+        }
+        discovered.add(attachment.attachmentId)
+      }
     }
     const generated = new Map<string, MediaReferenceSource>()
     const reference = async (id: string, signal: AbortSignal): Promise<string> => {
@@ -64,6 +81,7 @@ export class ConversationMediaService implements ConversationMediaPort {
       return converted.artifactId
     }
     const discoverGenerated = async (signal: AbortSignal) => {
+      await discoverAttachments(signal)
       // Capability discovery can still use saved outputs when another image failed or remains unconfirmed.
       await this.options.media.waitForRun(input.taskId, input.runId, { allowIncomplete: true, signal })
       signal.throwIfAborted()
@@ -110,7 +128,7 @@ export class ConversationMediaService implements ConversationMediaPort {
         if (name !== 'media_get_capabilities') return result
         const view = z.object({ capabilities: z.unknown(), referenceAssets: z.array(z.object({ localAssetId: z.string() }).passthrough()),
           unconfirmedJobs: mediaUnconfirmedJobsSchema.optional() }).parse(result)
-        const mappedSources = [...sources, ...generated.values()]
+        const mappedSources = [...sources.values(), ...generated.values()]
         const ids = new Set([...view.referenceAssets.map(asset => asset.localAssetId), ...mappedSources.map(source => source.localAssetId)])
         const referenceAssets = []
         for (const id of ids) {
@@ -147,7 +165,7 @@ export class ConversationMediaService implements ConversationMediaPort {
         if (!query || query.jobId) return result
         const view = z.object({ referenceAssets: z.array(z.object({ localAssetId: z.string(), status: z.string() }).passthrough()).optional() }).passthrough().parse(result)
         const available = new Set(view.referenceAssets?.filter(asset => asset.status === 'SAVED').map(asset => asset.localAssetId))
-        return { ...view, referenceSources: [...sources, ...generated.values()].filter(source => available.has(source.localAssetId)) }
+        return { ...view, referenceSources: [...sources.values(), ...generated.values()].filter(source => available.has(source.localAssetId)) }
       } } : undefined,
     }
   }

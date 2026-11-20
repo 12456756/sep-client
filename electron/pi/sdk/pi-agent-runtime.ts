@@ -65,6 +65,7 @@ export interface PiAgentSessionConfig {
   enableCommonTools?: boolean
   mediaTools?: import('../../domain/media-tools').MediaHostTools
   videoTools?: import('../../domain/video-tools').VideoHostTools
+  conversationAttachments?: import('../../domain/attachment-input').ConversationAttachmentReader
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
   /** Host-owned instructions retained outside compacted conversation history. */
   fixedSystemPrompt?: string

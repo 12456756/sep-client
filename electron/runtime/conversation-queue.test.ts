@@ -40,7 +40,7 @@ test('task retry with an empty paused queue drains follow-ups only after the rec
       gates.set(options.context.runId, release)
       return { async run(prompt) {
         assert.equal(disposed.length, started.length, 'dispose the previous worker before executing a follow-up')
-        started.push(prompt)
+        started.push(prompt.split('\n\n【', 1)[0]!)
         await mkdir(options.context.sessionDir, { recursive: true })
         const file = join(options.context.sessionDir, 'session.jsonl')
         await writeFile(file, '{}\n')
@@ -90,6 +90,7 @@ test('real conversation runs drain FIFO only after disposal, pause on failure an
     resolveEmployee: () => ({ subscriptionId: 'employee', modelId: 'model', gatewayUrl: 'http://unused' }),
     getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
     attachmentInputs: {
+      async describeTaskInputs() { return [] },
       async resolveTaskInputs(_scope, _taskId, refs) { inputRefs.push(structuredClone(refs)); return { attachments: [], images: [], digest: '' } },
       async resolvePlannerMaterials() { return [] },
     },
@@ -101,13 +102,14 @@ test('real conversation runs drain FIFO only after disposal, pause on failure an
       gates.set(id, release)
       return { async run(prompt) {
         if (started.length) assert.equal(disposed.length, started.length, 'previous worker must be disposed before next starts')
-        started.push(prompt)
+        const userPrompt = prompt.split('\n\n【', 1)[0]!
+        started.push(userPrompt)
         await mkdir(options.context.sessionDir, { recursive: true })
         const file = join(options.context.sessionDir, 'session.jsonl')
         await writeFile(file, '{}\n')
         await options.onSessionCreated?.({ sessionId: 'shared', sessionFile: file })
         await gate
-        if (prompt === 'one' && failOne) { failOne = false; throw new Error('Request timed out.') }
+        if (userPrompt === 'one' && failOne) { failOne = false; throw new Error('Request timed out.') }
       }, async abort() { release() }, async dispose() { disposed.push(id) } }
     },
   })

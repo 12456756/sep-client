@@ -120,14 +120,25 @@ export class AttachmentService {
     return this.store.readTaskSnapshot(scope, taskId)
   }
 
+  async describeTaskInputs(scope: TaskOwnerScope, taskId: string, refs: readonly AttachmentRef[]): Promise<ResolvedAttachmentInput[]> {
+    return this.describeInputs(scope, taskId, refs, (await this.store.readTaskMetadata(scope, taskId)).items)
+  }
+
+  private describeInputs(scope: TaskOwnerScope, taskId: string, refs: readonly AttachmentRef[], views: readonly AttachmentView[]): ResolvedAttachmentInput[] {
+    const items = new Map(views.map(item => [item.attachmentId, item]))
+    return refs.flatMap(ref => {
+      const item = items.get(ref.attachmentId)
+      if (!item || item.sha256 !== ref.sha256) return []
+      return [{ attachmentId: item.attachmentId, sha256: item.sha256, displayName: item.displayName, mediaType: item.mediaType, byteLength: item.byteLength, width: item.width, height: item.height, extractionStatus: item.extractionStatus, readPath: this.store.taskReadPath?.(scope, taskId, item.attachmentId) }]
+    })
+  }
+
   async resolveTaskInputs(scope: TaskOwnerScope, taskId: string, inputRefs: readonly (AttachmentRef | { kind: string; attachment?: AttachmentRef })[]): Promise<{ attachments: ResolvedAttachmentInput[]; images: Array<ResolvedAttachmentInput & { bytes: Uint8Array }>; digest: string }> {
     const refs = inputRefs.flatMap(ref => 'attachmentId' in ref ? [ref] : ref.kind === 'attachment' && ref.attachment ? [ref.attachment] : [])
     const metadata = await this.store.readTaskMetadata(scope, taskId)
-    const attachments = refs.map(ref => {
-      const item = metadata.items.find(candidate => candidate.attachmentId === ref.attachmentId && candidate.sha256 === ref.sha256)
-      if (!item) throw new Error('ATTACHMENT_REFERENCE_INVALID')
-      return { attachmentId: item.attachmentId, sha256: item.sha256, displayName: item.displayName, mediaType: item.mediaType, byteLength: item.byteLength, width: item.width, height: item.height, extractionStatus: item.extractionStatus, extractedText: metadata.extractionTextById[item.attachmentId], readPath: this.store.taskReadPath?.(scope, taskId, item.attachmentId) } satisfies ResolvedAttachmentInput
-    })
+    const attachments = this.describeInputs(scope, taskId, refs, metadata.items)
+      .map(item => ({ ...item, extractedText: metadata.extractionTextById[item.attachmentId] }))
+    if (attachments.length !== refs.length) throw new Error('ATTACHMENT_REFERENCE_INVALID')
     const images: Array<ResolvedAttachmentInput & { bytes: Uint8Array }> = []
     for (const ref of refs) {
       const bytes = await this.store.readTask(scope, taskId, ref.attachmentId)

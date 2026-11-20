@@ -18,6 +18,7 @@ import { VideoStore } from '../data/video-store'
 import { createVideoScopeAdapter } from '../data/video-scope-adapter'
 import { TaskManager } from '../runtime/task-manager'
 import { TaskRuntime } from '../runtime/task-runtime'
+import { extractAttachment } from '../runtime/attachment-extractor'
 import { TaskRunStore } from '../data/task-run-store'
 import { WorkPlanStore } from '../data/work-plan-store'
 import { effectivePermissionPolicy } from '../domain/arrangement-plan'
@@ -43,7 +44,7 @@ async function fixture() {
   await manager.setCurrentUser(owner.memberId, owner.enterpriseId)
   const task = await manager.createTask('Product video', 'Animate the uploaded product', join(root, 'workspace'), 'subscription-a')
   const scope = { currentScope: () => manager.getCurrentUserScope() }
-  const attachments = new AttachmentService(new AttachmentStore(root), () => scope.currentScope())
+  const attachments = new AttachmentService(new AttachmentStore(root, undefined, extractAttachment), () => scope.currentScope())
   const images = new MediaStore(root), videos = new VideoStore(root)
   const assets = new ArrangementMediaAssets(root, images, videos, attachments)
   const videoRuntime = videoRuntimeSchema.parse(videoFixture.runtime)
@@ -297,7 +298,7 @@ test('cancelling while attachment conversion is pending prevents publication and
 })
 
 for (const mediaKind of ['image', 'video'] as const) for (const kind of ['general', 'employee'] as const)
-test(`${kind} conversation runtime connects first-turn and follow-up images to the ${mediaKind} host`, async () => {
+test(`${kind} conversation runtime connects current and previous attachments to the ${mediaKind} host`, async () => {
   const f = await fixture(), attached = await f.attach(), runs = new TaskRunStore(f.root)
   f.videoOptions.tracker = { ...f.videoOptions.tracker, maxAttempts: 1 }
   const conversationVideo = new ConversationVideoRunService(f.video, f.videoOptions)
@@ -324,13 +325,30 @@ test(`${kind} conversation runtime connects first-turn and follow-up images to t
           const result = await options.context.mediaTools!.execute('media_generate_image', { creativeBrief: 'A new product photograph',
             parameters: { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' } }) as { jobId: string }
           generatedJobId = result.jobId
-        } else assert.equal(options.context.inputImages?.length, 1)
+        } else if (executed < 2) assert.equal(options.context.inputImages?.length, 1)
+        else assert.equal(options.context.inputImages, undefined, 'history must not re-inject original images into each model prompt')
         const view = await (mediaKind === 'image' ? options.context.mediaTools!.execute('media_get_capabilities', {}) :
           options.context.videoTools!.execute('video_get_job', {})) as ReferenceView
+        const target = executed === 0 ? 'product.png' : 'follow-up.png'
         const source = view.referenceSources.find(source => executed === 2
-          ? source.source === 'generated' && source.jobId === generatedJobId : source.source === 'attachment')
+          ? source.source === 'generated' && source.jobId === generatedJobId : source.source === 'attachment' && source.displayName === target)
         assert.ok(source)
-        if (source.source === 'attachment') assert.equal(source.displayName, executed === 0 ? 'product.png' : 'follow-up.png')
+        if (executed === 3) {
+          assert.equal(source.source, 'attachment')
+          const reader = options.context.conversationAttachments!
+          const { files } = reader.list(0)
+          assert.deepEqual(files.map(file => [file.name, file.messageNumber, file.imageNumber]), [
+            ['product.png', 1, 1], ['follow-up.png', 2, 2], ['product-notes.txt', 2, undefined],
+          ])
+          assert.equal(files[1]!.attachmentId, source.attachmentId)
+          const note = await reader.read(files[2]!.attachmentId, 0)
+          assert.equal(JSON.parse(note.text).text, 'Care instructions: cold wash.')
+          const selected = await reader.read(files[1]!.attachmentId, 0)
+          assert.deepEqual(Buffer.from(selected.image!.data, 'base64'), MOCK_MEDIA_PNG)
+          await assert.rejects(reader.read(unsentAttachmentId, 0), /not available/)
+          assert.ok(!view.referenceSources.some(entry => entry.source === 'attachment' && entry.attachmentId === unsentAttachmentId))
+          assert.doesNotMatch(prompt, /Care instructions: cold wash/)
+        }
         if (mediaKind === 'image') {
           assert.equal(options.context.videoTools, undefined, 'Image editing must work without video authorization')
           assert.match(prompt, /图片参考素材/)
@@ -355,26 +373,31 @@ test(`${kind} conversation runtime connects first-turn and follow-up images to t
     }
     if (failure) throw failure
   }
+  const unsentAttachmentId = (await f.attach(png, 'unsent.png')).item.attachmentId
   await runtime.executeTask(f.task.id, { conversation: true })
   await settle()
   const followup = await f.attach(MOCK_MEDIA_PNG, 'follow-up.png')
-  await runtime.continueConversation(f.task.id, 'Animate the new photo', { attachmentRefs: followup.snapshot.attachments })
+  const notes = await f.attach(Buffer.from('Care instructions: cold wash.'), 'product-notes.txt')
+  await runtime.continueConversation(f.task.id, 'Animate the new photo', { attachmentRefs: [...followup.snapshot.attachments, ...notes.snapshot.attachments] })
   await settle()
   await runtime.continueConversation(f.task.id, 'Generate a new image and animate it')
   await settle()
-  assert.equal(executed, 3)
+  await runtime.continueConversation(f.task.id, 'Use only the second originally uploaded photo and check the notes')
+  await settle()
+  assert.equal(executed, 4)
   assert.equal(approvals, 0, 'unrestricted conversation media must not request approval')
-  assert.equal(f.gateway.calls.submit, mediaKind === 'video' ? 3 : 0)
-  assert.equal(f.gateway.calls.quote, mediaKind === 'video' ? 3 : 0)
+  assert.equal(f.gateway.calls.submit, mediaKind === 'video' ? 4 : 0)
+  assert.equal(f.gateway.calls.quote, mediaKind === 'video' ? 4 : 0)
   assert.equal((await f.manager.getTask(f.task.id))?.status, 'completed')
   if (mediaKind === 'video') {
     assert.deepEqual(Buffer.from(f.uploaded[0]!), png)
     assert.deepEqual(Buffer.from(f.uploaded[1]!), MOCK_MEDIA_PNG)
     assert.deepEqual(Buffer.from(f.uploaded[2]!), MOCK_MEDIA_PNG)
+    assert.deepEqual(Buffer.from(f.uploaded[3]!), MOCK_MEDIA_PNG)
   } else {
     const jobs = await f.images.listJobs(owner, f.task.id)
-    assert.equal(jobs.length, 4)
-    assert.deepEqual(jobs.map(job => job.input.operation), ['edit', 'edit', 'generate', 'edit'])
+    assert.equal(jobs.length, 5)
+    assert.deepEqual(jobs.map(job => job.input.operation), ['edit', 'edit', 'generate', 'edit', 'edit'])
     assert.ok(jobs.every(job => job.saveStatus === 'SAVED'))
   }
 })
