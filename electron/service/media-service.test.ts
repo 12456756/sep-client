@@ -33,6 +33,8 @@ import { PiTaskWorker } from '../pi/sdk/pi-task-worker'
 import { runtimeFeedback } from '../errors/runtime-feedback'
 
 const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+const GENERATE_PREFIX = 'Create a new image from the following text description.\n\n'
+const EDIT_PREFIX = 'Edit the provided image(s) according to the following instructions.\n\n'
 
 for (const [status, expected] of [
   ['SUBMISSION_UNKNOWN', 'MEDIA_SUBMISSION_UNKNOWN'], ['RUNNING', 'MEDIA_QUERY_UNAVAILABLE'],
@@ -292,9 +294,11 @@ describe('real media billing recovery and canonical sizes', () => {
       const submitted = f.calls.find(call => call.path === '/requests')!.body!
       assert.deepEqual(quoted.parameters, { size: expectedSize, count: 1, quality: 'medium' })
       assert.deepEqual(submitted.parameters, quoted.parameters)
+      assert.equal(quoted.creativeBrief, GENERATE_PREFIX + input().creativeBrief)
+      assert.equal(submitted.creativeBrief, quoted.creativeBrief)
       const job = (await f.store.getJob(owner, 'task-a', view.jobId))!
       const expectedHash = realMediaSemanticHash({ profileId: 'image-prod', configVersion: 'cfg-v1',
-        operation: 'generate', creativeBrief: input().creativeBrief, parameters: { aspectRatio, size: expectedSize, count: 1 }, referenceHashes: [] })
+        operation: 'generate', creativeBrief: GENERATE_PREFIX + input().creativeBrief, parameters: { aspectRatio, size: expectedSize, count: 1 }, referenceHashes: [] })
       assert.equal(job.requestHash, expectedHash)
       assert.equal(job.quote.requestHash, expectedHash)
       assert.equal(job.request.requestHash, expectedHash)
@@ -697,7 +701,7 @@ it('cannot accept a late image risk confirmation after stopping the task', async
 })
 
 describe('media capability and handoff regressions', () => {
-  for (const scenario of ['prompt', 'reference-count', 'reference-mime', 'reference-bytes', 'reference-width'] as const) {
+  for (const scenario of ['reference-count', 'reference-mime', 'reference-bytes', 'reference-width'] as const) {
     it(`${scenario === 'reference-bytes' ? 'validates local reference safety for' : 'does not duplicate backend business limits for'} real ${scenario}`, async context => {
       const f = await realFixture()
       const runtime = f.employee.media as { profiles: { capabilities: { supportsReferenceImage: boolean } }[] }
@@ -709,15 +713,10 @@ describe('media capability and handoff regressions', () => {
         width: scenario === 'reference-width' ? 4097 : 1, height: 1, sha256: MOCK_MEDIA_PNG_SHA256, createdAt: Date.now() }
       context.mock.method(f.store, 'getAsset', async (_scope: TaskOwnerScope, _taskId: string, id: string) => ({ ...reference, localAssetId: id }))
       const requested = input({ profileId: 'image-prod',
-        creativeBrief: scenario === 'prompt' ? 'x'.repeat(4001) : 'Edit this reference',
-        localAssetIds: scenario === 'prompt' ? [] : scenario === 'reference-count'
+        creativeBrief: 'Edit this reference',
+        localAssetIds: scenario === 'reference-count'
           ? Array.from({ length: 5 }, (_, index) => `reference-${index}`) : ['reference-a'] })
-      if (scenario === 'prompt') {
-        const view = await f.service.generateTaskMedia('task-a', requested)
-        await f.service.waitForRun('task-a', view.runId)
-      } else {
-        await assert.rejects(f.service.generateTaskMedia('task-a', requested))
-      }
+      await assert.rejects(f.service.generateTaskMedia('task-a', requested))
       if (scenario === 'reference-bytes') {
         assert.equal(f.calls.length, 0)
         assert.equal(f.approvalRequests.length, 0)
@@ -725,12 +724,35 @@ describe('media capability and handoff regressions', () => {
     })
   }
 
-  it('accepts a real prompt at the UTF-16 boundary without changing its content', async () => {
+  it('preserves the body and counts the prefix against the real prompt UTF-16 limit before network activity', async () => {
     const f = await realFixture({ billingStatus: 'SETTLED' })
-    const creativeBrief = '😀'.repeat(2000)
+    const budget = 4000 - GENERATE_PREFIX.length
+    const creativeBrief = '😀'.repeat(Math.floor(budget / 2)) + 'x'.repeat(budget % 2)
+    await assert.rejects(f.service.generateTaskMedia('task-a', input({ profileId: 'image-prod', creativeBrief: creativeBrief + 'x' })), error => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.code, 'INVALID_ARGUMENT')
+      assert.equal(error.details?.field, 'creativeBrief')
+      assert.equal(error.details?.submissionState, 'not_submitted')
+      return true
+    })
+    assert.equal(f.calls.length, 0)
+    assert.deepEqual(f.approvalRequests, [])
     const job = await f.service.generateTaskMedia('task-a', input({ profileId: 'image-prod', creativeBrief }))
     await f.service.waitForRun('task-a', job.runId)
-    assert.equal(f.calls.find(call => call.path === '/requests')?.body?.creativeBrief, creativeBrief)
+    assert.equal(f.calls.find(call => call.path === '/requests')?.body?.creativeBrief, GENERATE_PREFIX + creativeBrief)
+  })
+
+  it('still blocks a duplicate of an unconfirmed image stored before the prefix was introduced', async () => {
+    const f = await realFixture()
+    const legacy = unconfirmedImage()
+    const { parameters } = input({ profileId: 'image-prod' })
+    legacy.input.parameters = parameters
+    legacy.request.parameters = parameters
+    await f.store.saveJob(owner, legacy)
+    await assert.rejects(f.generate(), code('CONFLICT'))
+    assert.deepEqual(f.calls, [])
+    assert.deepEqual(f.approvalRequests, [])
+    assert.deepEqual(await f.store.getJob(owner, legacy.taskId, legacy.jobId), legacy)
   })
 
   it('keeps an accepted download alive after the real SDK hands off its tool turn', { timeout: 20_000 }, async context => {
@@ -957,6 +979,14 @@ describe('MediaService authorization and request semantics', () => {
     assert.equal(quoted.referenceIds.length, 1)
     assert.deepEqual(quoted.referenceIds, gateway.calls.submit[0].request.referenceIds)
     assert.equal(quoted.requestHash, realMediaSemanticHash(quoted))
+    assert.equal(quoted.creativeBrief, EDIT_PREFIX + input().creativeBrief)
+    assert.equal(gateway.calls.submit[0].request.creativeBrief, quoted.creativeBrief)
+    const stored = (await f.store.getJob(owner, 'task-a', view.jobId))!
+    assert.equal(stored.request.creativeBrief, quoted.creativeBrief)
+    const repeated = await f.service.redo('task-a', view.jobId)
+    await f.service.waitForRun('task-a', repeated.runId)
+    assert.equal(gateway.calls.quote[1].request.creativeBrief, quoted.creativeBrief, 'Redo must not stack mode prefixes.')
+    assert.equal(gateway.calls.submit[1].request.creativeBrief, quoted.creativeBrief)
   })
 
   it('does not upload or quote when the separate SEP reference transfer approval is denied', async () => {
@@ -2418,6 +2448,47 @@ describe('MediaService review lifecycle regressions', () => {
 })
 
 describe('V3 image specifications', () => {
+  it('rejects invalid real image specifications before reference approval, upload, quote, or submit', async context => {
+    const fetch = context.mock.fn<typeof globalThis.fetch>(async () => assert.fail('Preflight must not request SEP.'))
+    const token = context.mock.fn(async () => 'fixture-token-not-real')
+    const gateway = new SepRealMediaGateway({ baseUrl: 'https://sep.invalid/api', token, fetch })
+    const f = await fixture({ gateway })
+    const media = structuredClone(MOCK_MEDIA_CAPABILITIES)
+    media.protocolVersion = 3
+    media.profiles[0]!.parameters = { count: { label: 'Count', type: 'integer', support: 'supported', required: true,
+      operations: ['generate', 'edit'], valuesMode: 'unknown', maximum: 2, source: 'profile-config', confidence: 'declared', observedAt: null } }
+    f.employee.media = media
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const [asset] = await f.service.importReferences('task-a', [selected])
+    type Spec = NonNullable<MediaGenerationInput['requestedSpec']>
+    const valid = { size: '1024x1536', count: 1, quality: 'high' }
+    const cases: [Spec, string, string][] = [
+      [{ ...valid, outputFormat: 'image/png' }, 'ADAPTER_FIELD_UNMAPPED', 'outputFormat'],
+      [{ count: 1, quality: 'high', aspectRatio: '2:3' }, 'MISSING_SPEC', 'requestedSpec.size'],
+      [{ ...valid, count: undefined }, 'MISSING_SPEC', 'requestedSpec.count'],
+      [{ ...valid, quality: undefined }, 'MISSING_SPEC', 'requestedSpec.quality'],
+      [{ ...valid, count: 3 }, 'INVALID_ARGUMENT', 'requestedSpec.count'],
+    ]
+    for (const [spec, expected, field] of cases) {
+      const parameterSources = Object.fromEntries(Object.entries(spec).filter(([, value]) => value !== undefined).map(([key]) => [key, 'user' as const]))
+      await assert.rejects(f.service.generateTaskMedia('task-a', { profileId: 'mock-image', operation: 'edit', localAssetIds: [asset.localAssetId],
+        creativeBrief: 'poster', protocolVersion: 3, requestedSpec: spec, parameters: spec, parameterSources, specRevision: 1 }), error => {
+        assert.ok(error instanceof AppError, String(error))
+        assert.equal(error.code, expected)
+        assert.equal(error.details?.field, field)
+        assert.equal(error.details?.stage, 'input-validation')
+        assert.equal(error.details?.submissionState, 'not_submitted')
+        assert.equal(error.details?.billingState, 'not_reserved')
+        return true
+      })
+    }
+    assert.equal(f.approvalRequests.length, 0)
+    assert.equal(token.mock.callCount(), 0)
+    assert.equal(fetch.mock.callCount(), 0)
+    assert.deepEqual(await f.store.listJobs(owner), [])
+  })
+
   it('accepts a quoted pixel size derived from explicit dimensions without adding generation defaults', async () => {
     const gateway = new MockMediaGateway({ initialStatus: 'SUCCEEDED' })
     const quote = gateway.quote.bind(gateway)

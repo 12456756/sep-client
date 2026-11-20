@@ -253,8 +253,7 @@ enterprise 或 platform 阶段的 nodes 必须返回 []，已有节点由程序�
             "aspectRatio": "16:9",
             "size": "1536x864",
             "quality": "high",
-            "count": 1,
-            "outputFormat": "image/png"
+            "count": 1
           },
           "parameterSources": {
             "width": "model",
@@ -262,8 +261,7 @@ enterprise 或 platform 阶段的 nodes 必须返回 []，已有节点由程序�
             "aspectRatio": "model",
             "size": "model",
             "quality": "model",
-            "count": "model",
-            "outputFormat": "model"
+            "count": "model"
           },
           "preferred": {
             "style": "真实商品摄影",
@@ -434,10 +432,10 @@ candidateMatches 中每项结构：
 
 - requiredSpec 保存用户明确规格，proposedSpec 保存模型按用途提出的规格；两者是对象，不能将用户要求降为 preferred，同字段冲突保留 requiredSpec。用户未指定时不能照抄 Profile 默认值或能力数组首项，不预设比例、秒数、分辨率、帧率或格式白名单。
 - 未决定的字段省略，不能用 null、空字符串或字符串数字占位；关键歧义应询问用户，不能当作找不到员工。提供任一规格对象或 parameterSources 时，必须同时提供正安全整数 specRevision。
-- 图片规格只允许 width、height、aspectRatio、size、quality、count、outputFormat；视频规格只允许 width、height、aspectRatio、durationSeconds、resolution、frameRate、audio、outputFormat。
+- 图片生成规格只填写 width、height、aspectRatio、size、quality、count；需要确定 size 或完整的 width/height，以及 count 和 quality。图片交付格式记录在交付要求中，不因 .png 路径填写 outputFormat；用户明确要求由上游指定原生格式时，在任务指令中保留该要求，不承诺通道支持。视频规格只允许 width、height、aspectRatio、durationSeconds、resolution、frameRate、audio、outputFormat。
 - width、height、图片 count 及视频 durationSeconds 必须是正整数且不超过安全整数范围；frameRate 是有限正数，audio 是布尔值。preferred.durationSeconds 是历史正数偏好，不能替代用户明确的整数秒数规格。
 - aspectRatio 为最多 32 字符的正整数比例字符串，例如 16:9；给出 width、height 时必须与比例精确一致。图片 size 若使用 1536x864 这类数值尺寸，必须与显式 width、height 一致。
-- size、quality、resolution、视频 outputFormat 为 1 至 128 字符的非空标签，不含控制字符、隐藏格式字符或 URL。图片 outputFormat 最多 96 字符且为 image/ MIME 类型。
+- size、quality、resolution、视频 outputFormat 为 1 至 128 字符的非空标签，不含控制字符、隐藏格式字符或 URL。
 - parameterSources 的键只能是 width、height、aspectRatio、size、count、quality、durationSeconds、resolution、frameRate、audio、outputFormat；值可以是 user/model/upstream 字符串，或只含 source、decisionRef 的对象。source 仍只能是 user/model/upstream，decisionRef 是 1 至 256 字符的依据说明。仅标注本轮实际决定的字段，不编造来源。
 - preferred 是历史创作偏好，不承诺供应商支持。标准字段 aspectRatio、resolution 是 1 至 128 字符字符串，outputFormat 最多 64 字符；durationSeconds、frameRate 是有限正数，count 是正安全整数，audio 是布尔值；其他描述（如 style、scene、prompt、cameraMotion）必须是合法 JSON 值。
 - 规格来源不得包含凭据、地址或内部路径；示例规格不是用户默认要求，只有用户确实要求的字段才能标记 user。

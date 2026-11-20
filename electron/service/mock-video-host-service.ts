@@ -25,6 +25,16 @@ const log = logger.child('mock-video-host')
 // cannot protect a task while approval, upload or submit is still in flight.
 const submissions = new Set<string>()
 const trackingOwners = new Map<string, symbol>()
+const VIDEO_BRIEF_PREFIX = {
+  'text-to-video': 'Create a new video from the following text description.',
+  'image-to-video': 'Animate the provided image(s) according to the following instructions.',
+} as const
+
+function videoBriefWithMode(operation: VideoGenerationInput['operation'], brief: string): string {
+  const prefix = `${VIDEO_BRIEF_PREFIX[operation]}\n\n`
+  return brief.startsWith(prefix) ? brief : prefix + brief
+}
+
 export interface MockVideoHostGateway extends VideoGatewayPort {
   uploadReference(bytes: Uint8Array, signal: AbortSignal): Promise<z.infer<typeof videoReferenceSchema>>
 }
@@ -484,6 +494,8 @@ export class MockVideoHostService {
       try {
         const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
         const input = videoGenerationInputSchema.parse(resolve(runtime))
+        const briefForRequest = (brief: string) => this.options.mock ? brief : videoBriefWithMode(input.operation, brief)
+        const creativeBrief = briefForRequest(input.creativeBrief)
         const jobs = await context.service.listJobsSnapshot(taskId)
         this.assert(scope, epoch, signal)
         const runId = run?.runId ?? randomUUID()
@@ -491,12 +503,17 @@ export class MockVideoHostService {
         // avoids a second quote/submit after a successful response was lost.
         const duplicate = input.localAssetIds.length === 0 ? jobs.find(job => job.taskId === taskId && job.runId === runId && !videoSubmissionRejected(job) &&
           job.request.operation === input.operation && job.request.profileId === input.profileId &&
-          job.request.creativeBrief === input.creativeBrief &&
+          briefForRequest(job.request.creativeBrief) === creativeBrief &&
           job.request.specRevision === input.specRevision && mediaSpecsEqual(job.request.parameters, input.parameters) && job.request.referenceIds.length === 0) : undefined
         if (duplicate) return jobView(duplicate)
         const unconfirmed = jobs.filter(job => job.taskId === taskId && !videoSubmissionRejected(job)
           && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))
         if (unconfirmed.some(job => job.runId === runId)) throw new AppError('CONFLICT', { message: '本轮视频提交结果尚未确认，请查询原任务；如需重新生成，请在后续消息中明确提出。' })
+        if (!videoGenerationInputSchema.shape.creativeBrief.safeParse(creativeBrief).success) {
+          throw new AppError('INVALID_ARGUMENT', { message: '视频创作提示过长，请缩短正文，为自动添加的模式说明留出空间。',
+            details: { resource: 'video', field: 'creativeBrief', stage: 'input-validation', source: 'client',
+              submissionState: 'not_submitted', billingState: 'not_reserved' } })
+        }
         const profile = this.profile(runtime, input)
         const policy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
         const toolName = input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
@@ -541,10 +558,10 @@ export class MockVideoHostService {
           }
         }
         const { localAssetIds: _localAssetIds, ...semantic } = input
-        const job = await context.service.prepare(taskId, { ...semantic, configVersion: profile.configVersion, referenceIds }, signal, runId,
+        const job = await context.service.prepare(taskId, { ...semantic, creativeBrief, configVersion: profile.configVersion, referenceIds }, signal, runId,
           unconfirmed.map(previous => previous.jobId))
         if (this.options.mock ? job.quote.amount !== '0.000000' || job.quote.currency !== 'MOCK' : job.quote.currency !== 'CNY' || !/^\d+\.\d{6}$/.test(job.quote.amount ?? '')) throw new AppError('PERMISSION_DENIED')
-        await approve({ profile: profile.displayName, parameters: input.parameters, creativeBrief: input.creativeBrief,
+        await approve({ profile: profile.displayName, parameters: input.parameters, creativeBrief,
           mock: this.options.mock, quote: { amount: job.quote.amount, currency: job.quote.currency, expiresAt: job.quote.expiresAt,
             ...(!this.options.mock ? { amountUsd: job.quote.amountUsd, funding: job.quote.funding, pricingVersion: job.quote.pricingVersion } : {}) } })
         // Approval is for the captured task/subscription and frozen configuration only.

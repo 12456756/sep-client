@@ -28,6 +28,12 @@ import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runti
 const log = logger.child('media-service')
 const terminal = new Set(['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'])
 const explicitStop = Symbol('explicit-media-stop')
+// SEP's real image DTO applies this limit to the complete prompt, including the prefix.
+const SEP_IMAGE_BRIEF_MAX_LENGTH = 4_000
+const IMAGE_BRIEF_PREFIX = {
+  generate: 'Create a new image from the following text description.',
+  edit: 'Edit the provided image(s) according to the following instructions.',
+} as const
 type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
 interface TaskBinding { subscriptionId?: string | null }
 export type MediaEmployeeRuntime = Pick<EmployeeRuntimeConfig, 'subscriptionId' | 'media' | 'runtimeSnapshot' | 'systemPrompt'>
@@ -57,6 +63,11 @@ interface Activity { taskId: string; controller: AbortController; promise: Promi
 
 function imageSubmissionUnconfirmed(job: LocalMediaJob): boolean {
   return job.submission !== 'NOT_SENT' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus) && !missingImageTargetFailure(job)
+}
+
+function imageBriefWithMode(operation: MediaGenerationInput['operation'], brief: string): string {
+  const prefix = IMAGE_BRIEF_PREFIX[operation]
+  return brief.startsWith(`${prefix}\n\n`) ? brief : `${prefix}\n\n${brief}`
 }
 
 function canGenerateImages(policy: TaskToolPolicy | undefined): boolean {
@@ -419,7 +430,7 @@ export class MediaService {
     }
   }
 
-  private async generate(taskId: string, input: MediaGenerationInput, binding: { runId: string; subscriptionId: string; toolPolicy?: TaskToolPolicy; capabilities: MediaCapabilities; requestApproval: Approval; onJobCreated?: RunInput['onJobCreated'] }, signal?: AbortSignal, replacesJobId?: string): Promise<MediaJobView> {
+  private async generate(taskId: string, originalInput: MediaGenerationInput, binding: { runId: string; subscriptionId: string; toolPolicy?: TaskToolPolicy; capabilities: MediaCapabilities; requestApproval: Approval; onJobCreated?: RunInput['onJobCreated'] }, signal?: AbortSignal, replacesJobId?: string): Promise<MediaJobView> {
     const epoch = this.epoch, initialScope = this.scope(), stopKey = this.key(initialScope, taskId)
     const stopVersion = this.taskStops.get(stopKey) ?? 0
     const { scope, subscriptionId } = await this.task(taskId)
@@ -428,6 +439,9 @@ export class MediaService {
     if (stopVersion !== (this.taskStops.get(stopKey) ?? 0)) throw new AppError('INVALID_STATE')
     if (subscriptionId !== binding.subscriptionId) throw new AppError('AUTH_REQUIRED')
     if (!canGenerateImages(binding.toolPolicy)) throw new AppError('PERMISSION_DENIED')
+    const gateway = this.gateway()
+    const realGateway = gateway.quoteRequiresUploadedReferences === true
+    const input = realGateway ? { ...originalInput, creativeBrief: imageBriefWithMode(originalInput.operation, originalInput.creativeBrief) } : originalInput
     const profile = binding.capabilities.profiles.find(profile => profile.profileId === input.profileId)
     const negotiated = input.protocolVersion === 3 && binding.capabilities.protocolVersion === 3
     if ((input.protocolVersion === 3) !== (binding.capabilities.protocolVersion === 3)) throw new AppError('UPGRADE_REQUIRED')
@@ -441,8 +455,26 @@ export class MediaService {
       || new Set(input.localAssetIds).size !== input.localAssetIds.length) throw new AppError('INVALID_ARGUMENT', {
         message: '图片参数不受当前配置支持，请查询 media_get_capabilities，按返回的操作、比例、尺寸、数量和质量选项重试；未提供质量选项时不要传 quality。这不是权限拒绝。',
       })
-    const realGateway = this.gateway().quoteRequiresUploadedReferences === true
+    if (realGateway && input.creativeBrief.length > SEP_IMAGE_BRIEF_MAX_LENGTH) {
+      const maxBodyLength = SEP_IMAGE_BRIEF_MAX_LENGTH - IMAGE_BRIEF_PREFIX[input.operation].length - 2
+      throw new AppError('INVALID_ARGUMENT', { message: `图片创作提示过长，请将正文缩短至 ${maxBodyLength} 字符以内，为自动添加的模式说明留出空间。`,
+        details: { resource: 'image', field: 'creativeBrief', stage: 'input-validation', source: 'client',
+          submissionState: 'not_submitted', billingState: 'not_reserved' } })
+    }
     if (negotiated && (!input.requestedSpec || !mediaSpecsEqual(input.parameters, input.requestedSpec))) throw new AppError('SPEC_CONFLICT')
+    if (negotiated && input.requestedSpec) {
+      gateway.validateV3Spec?.(input.requestedSpec)
+      const count = profile.parameters?.count
+      const maxCount = count?.support === 'supported' && count.operations.includes(input.operation) ? count.maximum : undefined
+      if (input.requestedSpec.count !== undefined && maxCount !== undefined && input.requestedSpec.count > maxCount) {
+        throw new AppError('INVALID_ARGUMENT', { message: `当前图片配置最多生成 ${maxCount} 张。`, details: { resource: 'image',
+          field: 'requestedSpec.count', stage: 'input-validation', source: 'client', requestedValue: input.requestedSpec.count,
+          recovery: 'revise_request', submissionState: 'not_submitted', billingState: 'not_reserved' } })
+      }
+      if (realGateway && input.operation === 'generate' && input.localAssetIds.length > 0) {
+        throw new AppError('INVALID_ARGUMENT', { message: '文生图不能携带参考图；使用参考图时请选择图片编辑。' })
+      }
+    }
     if (!negotiated) {
     const size = input.parameters.size
     if ((realGateway || profile.allowedSizes?.length) && size === undefined) throw new AppError('MISSING_SPEC', { details: { field: 'size' } })
@@ -473,14 +505,15 @@ export class MediaService {
       else {
         const duplicates = (await this.options.store.listJobs(scope, taskId)).some(previous =>
           previous.subscriptionId === subscriptionId && imageSubmissionUnconfirmed(previous) &&
-          previous.input.creativeBrief === input.creativeBrief && previous.input.operation === input.operation &&
+          previous.input.operation === input.operation &&
+          (realGateway ? imageBriefWithMode(previous.input.operation, previous.input.creativeBrief) : previous.input.creativeBrief) === input.creativeBrief &&
           mediaSpecsEqual(previous.input.parameters, input.parameters) &&
           previous.input.localAssetIds.length === input.localAssetIds.length &&
           previous.input.localAssetIds.every((id, index) => id === input.localAssetIds[index]))
         this.assert(scope, epoch); parent.throwIfAborted()
         if (duplicates) throw new AppError('CONFLICT', { message: '这张图片的原任务是否提交尚未确认，请查看原任务，不要重复提交。' })
       }
-      const gateway = this.gateway(), referenceHashes: string[] = [], referenceIds: string[] = []
+      const referenceHashes: string[] = [], referenceIds: string[] = []
       const references: MediaReferenceInfo[] = []
       for (const id of input.localAssetIds) {
         const asset = await this.options.store.getAsset(scope, taskId, id)

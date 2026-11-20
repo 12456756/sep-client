@@ -7,7 +7,7 @@ import { platformSourceHeaders } from '../common/platform/platform-source-header
 import { AppError } from '../errors/app-error'
 import { isErrorCode, type ErrorCode } from '../errors/error-codes'
 import { inspectMediaImage } from './media-image'
-import { imageEffectiveSpecMatches, imageRequestedSpecSchema } from '../../src/shared/media-spec-contract'
+import { imageEffectiveSpecMatches, imageRequestedSpecSchema, type ImageRequestedSpec } from '../../src/shared/media-spec-contract'
 import { mediaUpstreamErrorSchema } from '../../src/shared/media-upstream-error'
 import { safeMediaUpstreamError, safeMediaUpstreamMessage } from '../common/media-upstream-error'
 import { readApiDiagnostic, transportApiDiagnostic } from '../common/platform/api-diagnostic'
@@ -60,6 +60,8 @@ const receiptV3Schema = legacyReceiptSchema.extend({ profileId: v3ProfileId, con
   effectiveSpec: imageSepSpecSchema, actualSpec: imageSepSpecSchema.optional(), acceptance: acceptanceSchema })
 const receiptSchema = z.union([receiptV3Schema, legacyReceiptSchema])
 const MAX_JSON = 64 * 1024
+const MIN_OUTPUT_METADATA_BYTES = Buffer.byteLength(JSON.stringify({ outputId: 'x', kind: 'image', mimeType: 'image/png',
+  byteLength: 1, width: 1, height: 1, sha256: '0'.repeat(64), expiresAt: null }), 'utf8') + 1
 const MAX_CONTENT = 25 * 1024 * 1024
 const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,95}$/
 const SAFE_ERROR_FIELD = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/
@@ -118,7 +120,7 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
 
   async quote(subscriptionId: string, request: Omit<MediaRequest, 'clientRequestId' | 'quoteId'>, signal: AbortSignal): Promise<MediaQuote> {
-    this.validateV3AdapterFields(request)
+    if (request.protocolVersion === 3) this.validateV3Spec(request.requestedSpec, 'image-quote')
     const requestHash = realMediaSemanticHash(request)
     if (request.protocolVersion === 3) {
       const raw = await this.json(subscriptionId, '/quotes', 'POST', this.body(request), quoteV3Schema, signal)
@@ -143,7 +145,7 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
 
   async submit(subscriptionId: string, request: MediaRequest, signal: AbortSignal) {
-    this.validateV3AdapterFields(request)
+    if (request.protocolVersion === 3) this.validateV3Spec(request.requestedSpec, 'image-submit')
     return this.normalReceipt(await this.json(subscriptionId, '/requests', 'POST', { ...this.body(request), clientRequestId: request.clientRequestId,
       quoteId: request.quoteId }, receiptSchema, signal))
   }
@@ -200,15 +202,6 @@ export class SepRealMediaGateway implements MediaGatewayPort {
 
   private body(request: Omit<MediaRequest, 'clientRequestId' | 'quoteId'>) {
     if (request.protocolVersion === 3) {
-      // A returned output needs at least this much JSON metadata. Refuse only
-      // counts that cannot fit the existing byte budget even at their minimum.
-      const minimumOutputBytes = Buffer.byteLength(JSON.stringify({ outputId: 'x', kind: 'image', mimeType: 'image/png',
-        byteLength: 1, width: 1, height: 1, sha256: '0'.repeat(64), expiresAt: null }), 'utf8') + 1
-      if (request.requestedSpec?.count !== undefined && request.requestedSpec.count > Math.floor(MAX_JSON / minimumOutputBytes)) {
-        throw new AppError('INVALID_ARGUMENT', { message: '请求的图片数量无法容纳在本地回执的 64 KiB 安全预算内，请拆分为多次明确的生成请求。',
-          details: { resource: 'image', stage: 'image-quote', field: 'count', source: 'client', requestedValue: request.requestedSpec.count,
-            reasonCode: 'LOCAL_RESPONSE_SIZE_LIMIT', submissionState: 'not_submitted', billingState: 'not_reserved' } })
-      }
       return {
       protocolVersion: 3, profileId: v3ProfileId.parse(request.profileId), configVersion: v3ConfigVersion.parse(request.configVersion), operation: request.operation,
       referenceIds: request.referenceIds.map(value => this.safeId(value)), creativeBrief: request.creativeBrief.trim(),
@@ -219,10 +212,32 @@ export class SepRealMediaGateway implements MediaGatewayPort {
     return { profileId: this.safeId(request.profileId), configVersion: this.safeId(request.configVersion), operation: request.operation,
       referenceIds: request.referenceIds.map(value => this.safeId(value)), creativeBrief: request.creativeBrief.trim(), parameters }
   }
-  private validateV3AdapterFields(request: Pick<MediaRequest, 'protocolVersion' | 'requestedSpec'>) {
-    if (request.protocolVersion === 3 && request.requestedSpec?.outputFormat !== undefined) {
-      throw new AppError('ADAPTER_FIELD_UNMAPPED', { details: { resource: 'image', stage: 'image-quote', field: 'outputFormat', source: 'adapter',
-        requestedValue: request.requestedSpec.outputFormat, submissionState: 'not_submitted', billingState: 'not_reserved' } })
+  validateV3Spec(spec: ImageRequestedSpec | undefined, stage: 'input-validation' | 'image-quote' | 'image-submit' = 'input-validation'): void {
+    const details = { resource: 'image', stage, submissionState: 'not_submitted', billingState: 'not_reserved' }
+    if (spec?.outputFormat !== undefined) {
+      throw new AppError('ADAPTER_FIELD_UNMAPPED', { message: '当前图片通道不能指定原生输出格式；普通 PNG 交付不需要填写该字段。',
+        details: { ...details, field: 'outputFormat', source: 'adapter', requestedValue: spec.outputFormat, recovery: 'revise_request' } })
+    }
+    // Even minimum-size output metadata must fit the local response budget.
+    if (spec?.count !== undefined && spec.count > Math.floor(MAX_JSON / MIN_OUTPUT_METADATA_BYTES)) {
+      throw new AppError('INVALID_ARGUMENT', { message: '请求的图片数量无法容纳在本地回执的 64 KiB 安全预算内，请拆分为多次明确的生成请求。',
+        details: { ...details, field: 'count', source: 'client', requestedValue: spec.count, reasonCode: 'LOCAL_RESPONSE_SIZE_LIMIT' } })
+    }
+    const hasWidth = spec?.width !== undefined, hasHeight = spec?.height !== undefined
+    if (hasWidth !== hasHeight) {
+      throw new AppError('SPEC_CONFLICT', { message: '图片的像素宽高必须同时填写。',
+        details: { ...details, field: hasWidth ? 'requestedSpec.height' : 'requestedSpec.width', source: 'client', recovery: 'revise_request' } })
+    }
+    const missing = spec?.size === undefined && !hasWidth ? 'size' : spec?.count === undefined ? 'count' : spec.quality === undefined ? 'quality' : undefined
+    if (missing) {
+      throw new AppError('MISSING_SPEC', { details: { ...details, field: `requestedSpec.${missing}`, source: 'client', recovery: 'revise_request' } })
+    }
+    const incompatible = spec?.size !== undefined && !/^[1-9]\d*x[1-9]\d*$/.test(spec.size)
+      ? (hasWidth ? 'width' : spec.aspectRatio !== undefined ? 'aspectRatio' : undefined)
+      : undefined
+    if (incompatible) {
+      throw new AppError('ADAPTER_FIELD_UNMAPPED', { message: '命名尺寸不能与无法核验的像素宽高或比例一起提交。',
+        details: { ...details, field: `requestedSpec.${incompatible}`, source: 'adapter', recovery: 'revise_request' } })
     }
   }
   private safeId(value: string) { const parsed = id.safeParse(value); if (!parsed.success) throw new AppError('INVALID_ARGUMENT'); return parsed.data }

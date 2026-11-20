@@ -66,6 +66,7 @@ export interface MediaRequest {
 
 export interface MediaGatewayPort {
   readonly quoteRequiresUploadedReferences?: boolean
+  validateV3Spec?(requestedSpec: ImageRequestedSpec): void
   uploadReference(subscriptionId: string, input: { bytes: Uint8Array; mime: ImageMime; sha256: string }, signal: AbortSignal): Promise<{ referenceId: string; sha256: string; expiresAt: number }>
   quote(subscriptionId: string, request: Omit<MediaRequest, 'clientRequestId' | 'quoteId'>, signal: AbortSignal): Promise<unknown>
   submit(subscriptionId: string, request: MediaRequest, signal: AbortSignal): Promise<unknown>

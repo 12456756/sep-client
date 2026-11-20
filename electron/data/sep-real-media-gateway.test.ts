@@ -393,18 +393,31 @@ describe('V3 image quotes', () => {
       quoteId: 'quote-v3', expiresAt: new Date(Date.now() + 60000).toISOString(),
       semanticSha256: 'c'.repeat(64), effectiveSpec: spec, pricingStatus: 'quoted', amountCny: '1.000000', pricingVersion: 'p1',
       billingStatus: 'NOT_RESERVED', funding: { creditCny: '1.000000', memberWalletCny: '0.000000', personalCny: '0.000000' } }
-    const { gateway, calls } = create(async () => json(quote))
+    const { gateway, calls } = create(async url => String(url).endsWith('/quotes') ? json(quote) : json({ ...receipt,
+      clientRequestId: 'request-v3', protocolVersion: 3, semanticHashVersion: 3, specRevision: 2, effectiveSpec: spec,
+      acceptance: { status: 'matched', mismatchedFields: [], unknownFields: [] } }))
     const result = await gateway.quote('sub-1', input, signal())
     assert.deepEqual(result.effectiveSpec, spec)
     const body = JSON.parse(calls[0].body)
     assert.deepEqual(body.requestedSpec, spec)
     assert.equal('parameters' in body, false)
     assert.equal('aspectRatio' in body.requestedSpec, false)
+    assert.equal('outputFormat' in body.requestedSpec, false)
+    await gateway.submit('sub-1', { ...input, quoteId: result.quoteId, clientRequestId: 'request-v3' }, signal())
+    assert.deepEqual(calls.map(call => new URL(call.url).pathname.split('/').at(-1)), ['quotes', 'requests'])
+    assert.deepEqual(JSON.parse(calls[1]!.body).requestedSpec, spec)
     const changed = create(async () => json({ ...quote, effectiveSpec: { ...spec, width: 1024 } }))
     await assert.rejects(changed.gateway.quote('sub-1', input, signal()), safeError('SPEC_CONFLICT'))
     const unmapped = create(async () => assert.fail('Unsupported adapter fields must be rejected before network access.'))
     await assert.rejects(unmapped.gateway.quote('sub-1', { ...input, requestedSpec: { ...spec, outputFormat: 'image/png' } }, signal()),
       error => error instanceof AppError && error.code === 'ADAPTER_FIELD_UNMAPPED')
+    await assert.rejects(unmapped.gateway.submit('sub-1', { ...input, quoteId: 'quote-v3', clientRequestId: 'request-v3',
+      requestedSpec: { ...spec, outputFormat: 'image/png' } }, signal()), error => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.code, 'ADAPTER_FIELD_UNMAPPED')
+      assert.equal(error.details?.stage, 'image-submit')
+      return true
+    })
     assert.equal(unmapped.calls.length, 0)
   })
 })
