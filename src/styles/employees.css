@@ -28,7 +28,7 @@
 .ent-emp-avatar-header .ent-emp-card-id { align-items: flex-start; gap: 6px; }
 .ent-emp-avatar-header .ent-emp-card-id strong { max-width: 100%; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .ent-emp-avatar-header .ent-chip { min-height: 20px; padding-inline: 7px; font-size: 10px; }
-.ent-emp-avatar-intro { display: -webkit-box; min-height: 2.8em; margin: 0; overflow: hidden; color: var(--ent-ink-2); font-size: 12px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.ent-emp-avatar-intro { display: -webkit-box; min-height: 2.8em; margin: 0; overflow: hidden; color: var(--ent-ink-2); font-size: var(--ent-fs-body); line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
 .ent-emp-avatar-skills { display: flex; min-height: 22px; flex-wrap: wrap; align-items: flex-start; gap: 5px; }
 .ent-emp-avatar-skills .ent-tag { max-width: 100%; height: 21px; padding: 0 7px; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .ent-emp-avatar-skills .ent-tag.more { color: var(--ent-ink-3); background: var(--ent-panel-subtle); }

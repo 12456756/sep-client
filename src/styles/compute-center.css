@@ -181,7 +181,7 @@
 .compute-list-head h3 { margin: 0; font-size: 14px; font-weight: 650; }
 
 .compute-table-wrap { overflow-x: auto; }
-.compute-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+.compute-table { width: 100%; border-collapse: collapse; text-align: left; font-size: var(--ent-fs-body); }
 .compute-table th { padding: 10px 22px; color: var(--ent-ink-3); background: var(--ent-panel-subtle); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .compute-table td { padding: 13px 22px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .compute-table tbody tr:hover { background: var(--ent-brand-softer); }
@@ -220,7 +220,7 @@
 
 /* ── 状态 ─────────────────────────────────────────────────────────── */
 
-.compute-empty, .compute-error { display: flex; min-height: 170px; align-items: center; justify-content: center; gap: 9px; color: var(--ent-ink-3); font-size: 13px; }
+.compute-empty, .compute-error { display: flex; min-height: 170px; align-items: center; justify-content: center; gap: 9px; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
 .compute-error { flex-direction: column; color: var(--ent-danger); }
 .compute-error button { border: 0; background: transparent; color: var(--ent-brand-deep); cursor: pointer; font-size: 13px; }
 
@@ -243,7 +243,7 @@
 .compute-detail-list { margin: 0; }
 .compute-detail-list > div { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--ent-line-soft); }
 .compute-detail-list dt { color: var(--ent-ink-3); font-size: 13px; }
-.compute-detail-list dd { max-width: 220px; margin: 0; color: var(--ent-ink); font-size: 13px; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.compute-detail-list dd { max-width: 220px; margin: 0; color: var(--ent-ink); font-size: var(--ent-fs-body); text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 @keyframes compute-drawer-in { from { transform: translateX(20px); opacity: .4; } to { transform: translateX(0); opacity: 1; } }
 
 /* ── 响应式 ───────────────────────────────────────────────────────── */

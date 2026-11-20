@@ -60,7 +60,7 @@
 
 .ent-arr-head { display: flex; flex-direction: column; gap: 8px; margin: 0 0 28px; }
 .ent-arr-head h1 { margin: 0; color: var(--arr-title); font-size: 26px; font-weight: 600; line-height: 1.3; }
-.ent-arr-head p { margin: 0; color: var(--arr-sub); font-size: 14px; line-height: 1.6; }
+.ent-arr-head p { margin: 0; color: var(--arr-sub); font-size: var(--ent-fs-body); line-height: 1.6; }
 .ent-arr-kicker { color: var(--ent-brand-ink); font-size: 12px; font-weight: 600; letter-spacing: .02em; }
 .ent-arr-mode-head { margin-bottom: 18px; }
 .ent-arr-workbench-head { display: flex; align-items: center; gap: 18px; margin: 0 0 26px; }
@@ -83,7 +83,7 @@
 .ent-arr-back { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 14px -6px; padding: 4px 8px; border: 0; border-radius: 8px; color: var(--ent-ink-3); background: none; font-size: 13px; cursor: pointer; transition: color 180ms var(--arr-ease), background 180ms var(--arr-ease); }
 .ent-arr-back:hover { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
 
-.ent-arr-note { margin: 18px 0 0; color: var(--ent-ink-3); font-size: 13px; line-height: 1.7; }
+.ent-arr-note { margin: 18px 0 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); line-height: 1.7; }
 
 /* ── 三种按钮。整页只有一个实心红色按钮，就是「往下走」的那个。 ──────────── */
 
@@ -126,7 +126,7 @@
 
 .ent-mode-icon { display: grid; width: 48px; height: 48px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: var(--ent-brand-ink); background: var(--arr-icon-bg); }
 .ent-mode-title { margin-top: 18px; color: var(--arr-strong); font-size: 18px; font-weight: 600; }
-.ent-mode-desc { display: -webkit-box; margin-top: 10px; overflow: hidden; color: var(--arr-desc); font-size: 14px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.ent-mode-desc { display: -webkit-box; margin-top: 10px; overflow: hidden; color: var(--arr-desc); font-size: var(--ent-fs-body); line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 /* 底部是文字按钮，不是实心块 —— 整张卡本身才是那个按钮。 */
 .ent-mode-cta { display: inline-flex; align-items: center; gap: 6px; margin-top: auto; padding-top: 22px; color: var(--ent-brand-ink); font-size: 14px; font-weight: 500; }
 .ent-mode-cta svg { transition: transform 180ms ease-out; }
@@ -141,7 +141,7 @@
  */
 .ent-goal { display: flex; width: min(780px, 100%); flex-direction: column; padding: 20px 22px 10px; border: 1px solid var(--arr-input-line); border-radius: 12px; background: var(--ent-panel); box-shadow: var(--arr-shadow); transition: border-color 200ms ease-out, box-shadow 200ms ease-out; }
 .ent-goal:focus-within { border-color: var(--arr-card-hover); box-shadow: var(--ent-glow-ring); }
-.ent-goal-input { width: 100%; min-height: 132px; max-height: 320px; border: 0; color: var(--arr-input-ink); background: none; font-family: inherit; font-size: 15px; line-height: 1.75; resize: none; outline: none; }
+.ent-goal-input { width: 100%; min-height: 132px; max-height: 320px; border: 0; color: var(--arr-input-ink); background: none; font-family: inherit; font-size: var(--ent-fs-composer); line-height: 1.75; resize: none; outline: none; }
 .ent-goal-input::placeholder { color: var(--arr-place); }
 
 /* 已经准备好的资料。一条一个小片，右边一个叉。 */
@@ -172,13 +172,13 @@
 
 .ent-aa-head { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 0 0 22px; text-align: center; }
 .ent-aa-head h1 { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--arr-title); font-size: 21px; font-weight: 600; line-height: 1.4; }
-.ent-aa-head p { margin: 0; color: var(--arr-sub); font-size: 14px; }
+.ent-aa-head p { margin: 0; color: var(--arr-sub); font-size: var(--ent-fs-body); }
 /* 完成只用一个很小的绿勾。没有弹窗、没有烟花、没有粒子。 */
 .ent-aa-ok { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; color: #fff; background: var(--arr-ok); }
 
 /* 第一拍：三行判断依次淡入。没有转圈的 Loading，只有一个很小的 Spark。 */
 .ent-aa-think { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: 6px 0 0; padding: 0; list-style: none; }
-.ent-aa-think li { display: inline-flex; align-items: center; gap: 8px; color: var(--ent-ink-2); font-size: 14px; opacity: 0; transform: translateY(4px); transition: opacity 320ms ease-out, transform 320ms ease-out; }
+.ent-aa-think li { display: inline-flex; align-items: center; gap: 8px; color: var(--ent-ink-2); font-size: var(--ent-fs-body); opacity: 0; transform: translateY(4px); transition: opacity 320ms ease-out, transform 320ms ease-out; }
 .ent-aa-think li.in { opacity: 1; transform: none; }
 .ent-aa-think li svg { color: var(--ent-brand); }
 .ent-aa-think li.in svg { animation: arr-spark 1.8s ease-in-out infinite; }
@@ -210,7 +210,7 @@
 .ent-aa-goalnode { display: flex; width: min(520px, 100%); flex-direction: column; gap: 4px; padding: 12px 16px; border: 1px dashed var(--arr-card-hover); border-radius: 12px; background: var(--ent-brand-softer); opacity: 0; transform: translateY(6px); transition: opacity 300ms ease-out, transform 300ms ease-out; }
 .ent-aa-goalnode.in { opacity: 1; transform: none; }
 .ent-aa-goalnode span { color: var(--ent-brand-ink); font-size: 12px; font-weight: 600; }
-.ent-aa-goalnode p { margin: 0; display: -webkit-box; overflow: hidden; color: var(--ent-ink); font-size: 13px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.ent-aa-goalnode p { margin: 0; display: -webkit-box; overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-body); line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
 
 /* 连线：1.5px，用 stroke-dasharray 从上一个节点向下画出来，箭头稍后淡入。 */
 .ent-aa-link { display: block; flex: 0 0 auto; overflow: visible; opacity: 0; transition: opacity 200ms ease-out; }
@@ -232,7 +232,7 @@
 .ent-flowcard-who strong { color: var(--ent-ink); font-size: 14px; font-weight: 600; }
 .ent-flowcard-who small { overflow: hidden; color: var(--ent-ink-3); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .ent-flowcard-stage { color: var(--ent-brand-ink); font-size: 13px; font-weight: 600; }
-.ent-flowcard p { margin: 0; color: var(--arr-desc); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.ent-flowcard p { margin: 0; color: var(--arr-desc); font-size: var(--ent-fs-body); line-height: 1.6; overflow-wrap: anywhere; }
 .ent-flowcard-output { padding-top: 7px; border-top: 1px solid var(--arr-card-line); }
 .ent-flowcard-output > span { margin-right: 8px; color: var(--ent-ink-3); font-size: 12px; }
 
@@ -243,7 +243,7 @@
 .ent-mn-flow { display: flex; min-width: 0; flex-direction: column; gap: 22px; padding: 0 30px 8px 0; }
 .ent-mn-side { display: flex; min-width: 0; flex-direction: column; gap: 16px; padding: 0 0 8px 30px; border-left: 1px solid var(--ent-line-soft); }
 
-.ent-mn-goal { width: min(420px, 100%); padding: 10px 14px; border: 1px solid var(--arr-input-line); border-radius: 8px; background: var(--ent-panel); color: var(--arr-input-ink); font-family: inherit; font-size: 14px; transition: border-color 180ms var(--arr-ease), box-shadow 180ms var(--arr-ease); }
+.ent-mn-goal { width: min(420px, 100%); padding: 10px 14px; border: 1px solid var(--arr-input-line); border-radius: 8px; background: var(--ent-panel); color: var(--arr-input-ink); font-family: inherit; font-size: var(--ent-fs-body); transition: border-color 180ms var(--arr-ease), box-shadow 180ms var(--arr-ease); }
 .ent-mn-goal::placeholder { color: var(--arr-place); }
 .ent-mn-goal:focus { border-color: var(--ent-brand); outline: none; box-shadow: var(--ent-glow-ring); }
 
@@ -276,7 +276,7 @@
 .ent-mn-item:hover .ent-mn-del, .ent-mn-del:focus-visible { opacity: 1; }
 .ent-mn-del:hover { border-color: var(--ent-danger-line); color: var(--ent-danger); }
 
-.ent-mn-blank { width: min(340px, 100%); margin: 0; padding: 26px 20px; border: 1px dashed var(--ent-line-strong); border-radius: 12px; color: var(--ent-ink-3); background: var(--ent-panel-subtle); font-size: 13px; line-height: 1.7; }
+.ent-mn-blank { width: min(340px, 100%); margin: 0; padding: 26px 20px; border: 1px dashed var(--ent-line-strong); border-radius: 12px; color: var(--ent-ink-3); background: var(--ent-panel-subtle); font-size: var(--ent-fs-body); line-height: 1.7; }
 
 .ent-mn-add { position: relative; width: min(340px, 100%); }
 .ent-mn-addbtn { display: flex; width: 100%; align-items: center; justify-content: center; gap: 6px; min-height: 42px; border: 1px dashed var(--arr-card-hover); border-radius: 12px; color: var(--ent-brand-ink); background: var(--ent-panel); font-family: inherit; font-size: 14px; cursor: pointer; transition: background 180ms var(--arr-ease), border-color 180ms var(--arr-ease); }
@@ -289,7 +289,7 @@
 .ent-mn-pick small { color: var(--ent-ink-3); font-size: 12px; }
 
 .ent-mn-side h2 { margin: 0; color: var(--arr-strong); font-size: 16px; font-weight: 600; }
-.ent-mn-side-hint { margin: -8px 0 0; color: var(--ent-ink-3); font-size: 13px; line-height: 1.7; }
+.ent-mn-side-hint { margin: -8px 0 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); line-height: 1.7; }
 .ent-mn-side-head { display: flex; align-items: center; gap: 10px; }
 /* 头像本身也是 span，:not() 挡掉它，否则它会被当成文字块拉宽。 */
 .ent-mn-side-head > span:not(.ent-face) { display: flex; min-width: 0; flex: 1; flex-direction: column; }
@@ -317,7 +317,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-chat-head { margin-bottom: 18px; }
 .ent-chat-step-card { display: flex; min-height: 220px; align-items: center; justify-content: center; flex-direction: column; gap: 8px; padding: 28px 24px; border: 1px solid var(--arr-card-line); border-radius: 16px; color: var(--ent-ink-2); background: var(--ent-panel); text-align: center; }
 .ent-chat-step-card strong { color: var(--ent-ink); font-size: 16px; font-weight: 600; }
-.ent-chat-step-card p { max-width: 480px; margin: 0; color: var(--arr-desc); font-size: 13px; line-height: 1.7; }
+.ent-chat-step-card p { max-width: 480px; margin: 0; color: var(--arr-desc); font-size: var(--ent-fs-body); line-height: 1.7; }
 .ent-chat-step-card > svg { color: var(--ent-brand-ink); }
 .ent-chat-review-card, .ent-chat-confirm-card { align-items: flex-start; text-align: left; }
 .ent-chat-review-card .ent-arr-ghost { margin-top: 8px; }
@@ -330,7 +330,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-chat-open { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
 .ent-chat-open strong { margin-top: 10px; color: var(--ent-ink); font-size: 16px; font-weight: 600; }
 .ent-chat-open small { color: var(--ent-ink-3); font-size: 13px; }
-.ent-chat-open p { max-width: 460px; margin: 8px 0 0; color: var(--arr-desc); font-size: 13px; line-height: 1.7; }
+.ent-chat-open p { max-width: 460px; margin: 8px 0 0; color: var(--arr-desc); font-size: var(--ent-fs-body); line-height: 1.7; }
 .ent-chat-tips { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 14px; }
 .ent-chat-tips button { padding: 6px 12px; border: 1px solid var(--ent-line); border-radius: 999px; color: var(--ent-ink-2); background: var(--ent-panel); font-family: inherit; font-size: 12px; cursor: pointer; transition: border-color 180ms var(--arr-ease), color 180ms var(--arr-ease), background 180ms var(--arr-ease); }
 .ent-chat-tips button:hover { border-color: var(--arr-card-hover); color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
@@ -394,7 +394,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-attachment-summary label, .ent-attachment-summary div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .ent-attachment-summary small { color: var(--ent-ink-3); }
 .ent-chat-ask:focus-within { border-color: var(--arr-card-hover); }
-.ent-chat-input { width: 100%; min-height: 68px; max-height: 200px; border: 0; color: var(--arr-input-ink); background: none; font-family: inherit; font-size: 15px; line-height: 1.75; resize: none; outline: none; }
+.ent-chat-input { width: 100%; min-height: 68px; max-height: 200px; border: 0; color: var(--arr-input-ink); background: none; font-family: inherit; font-size: var(--ent-fs-composer); line-height: 1.75; resize: none; outline: none; }
 .ent-chat-input::placeholder { color: var(--arr-place); }
 .ent-chat-askbar { display: flex; align-items: center; gap: 10px; min-height: 44px; }
 .ent-chat-askbar > small { color: var(--ent-ink-3); font-size: 12px; }
@@ -413,7 +413,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-rs-head { display: flex; align-items: flex-start; gap: 10px; padding: 16px 0 12px; }
 .ent-rs-head > div { min-width: 0; flex: 1; }
 .ent-rs-head h2 { margin: 0; color: var(--arr-title); font-size: 16px; font-weight: 600; }
-.ent-rs-head p { margin: 4px 0 0; color: var(--ent-ink-3); font-size: 12px; line-height: 1.5; }
+.ent-rs-head p { margin: 4px 0 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); line-height: 1.5; }
 
 
 /* 中等宽度：工作台保持双模式，底部设置改为纵向排列。 */
@@ -484,7 +484,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-aa-waiting { display: flex; flex-direction: column; gap: 18px; margin-top: 18px; }
 .ent-aa-waiting-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid var(--arr-input-line); border-radius: 10px; background: var(--ent-panel); }
 .ent-aa-waiting-head h2 { margin: 0; color: var(--arr-strong); font-size: 16px; font-weight: 600; }
-.ent-aa-waiting-head p { max-width: 620px; margin: 6px 0 0; color: var(--arr-desc); font-size: 12px; line-height: 1.6; }
+.ent-aa-waiting-head p { max-width: 620px; margin: 6px 0 0; color: var(--arr-desc); font-size: var(--ent-fs-body); line-height: 1.6; }
 .ent-aa-missing-list { display: flex; flex-direction: column; gap: 12px; }
 .ent-aa-missing { display: flex; flex-direction: column; gap: 9px; padding: 14px; border: 1px solid var(--arr-input-line); border-radius: 10px; background: var(--ent-panel); }
 .ent-aa-missing-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
@@ -508,7 +508,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-arr-chat { width: min(780px, 100%); flex: 1 1 auto; align-self: center; justify-content: flex-end; padding-bottom: 18px; }
 .ent-chat-head, .ent-chat-room { display: none; }
 .ent-chat-ask { width: 100%; padding: 18px 18px 12px; border-radius: 18px; box-shadow: var(--arr-shadow-lift); }
-.ent-chat-input { min-height: 96px; font-size: 15px; }
+.ent-chat-input { min-height: 96px; font-size: var(--ent-fs-composer); }
 .ent-chat-askbar { min-height: 40px; }
 .ent-chat-send { display: grid; width: 36px; height: 36px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; color: #fff; background: var(--ent-brand); cursor: pointer; transition: background 180ms var(--arr-ease), transform 180ms var(--arr-ease); }
 .ent-chat-send:hover:not(:disabled) { background: var(--ent-brand-hover); transform: translateY(-1px); }

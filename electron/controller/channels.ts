@@ -178,6 +178,7 @@ export const SEND_CHANNELS = {
 
 /** main -> renderer，`webContents.send` / `ipcRenderer.on`。 */
 export const EVENT_CHANNELS = {
+  WINDOW_EXPANDED_CHANGED: 'window:expanded-changed',
   SKILL_IMPORT_STATE_CHANGED: 'skill-import:state-changed',
   UPDATE_STATE_CHANGED: 'update:state-changed',
   NOTIFICATION_UPDATED: 'notifications:updated',

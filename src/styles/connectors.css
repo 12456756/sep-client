@@ -8,7 +8,7 @@
 .connector-card footer > span { overflow-wrap: anywhere; min-width: 0; }
 .connector-status.connected { color: var(--ent-ready); }
 .connector-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; max-width: 100%; }
-.connector-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; color: var(--ent-danger); font-size: 13px; }
+.connector-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; color: var(--ent-danger); font-size: var(--ent-fs-body); }
 .connectors-heading { padding-bottom: 24px; border-bottom: 1px solid var(--ent-line-soft); }
 .connectors-heading h1 { margin: 0; font-size: 20px; font-weight: 600; }
 .connectors-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin: 24px 0 20px; }
@@ -26,7 +26,7 @@
 .connector-card-heading > div { min-width: 0; }
 .connector-card-heading > div > span { color: var(--ent-ink-3); font-size: 11px; }
 .connector-status { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; margin-left: auto; color: var(--ent-ink-3); font-size: 11px; }
-.connector-card-description { margin: 22px 0 12px; color: var(--ent-ink-2); font-size: 13px; }
+.connector-card-description { margin: 22px 0 12px; color: var(--ent-ink-2); font-size: var(--ent-fs-body); }
 .connector-capabilities { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--ent-ink-3); font-size: 11px; }
 .connector-card footer { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--ent-line-soft); }
 .connector-card > :nth-last-child(2) { margin-bottom: 24px; }

@@ -12,7 +12,7 @@
 .ent-update-version strong { color: var(--ent-ink-2); }
 .ent-update-status p { margin: 6px 0; }
 .ent-update-notes { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--ent-line-soft); }
-.ent-update-notes h3 { display: inline; margin-right: 10px; font-size: var(--ent-fs-body); font-weight: 600; }
+.ent-update-notes h3 { display: inline; margin-right: 10px; font-size: var(--ent-fs-nav); font-weight: 600; }
 .ent-update-notes ul { margin: 8px 0; padding-left: 20px; }
 .ent-update-notes li { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ent-update-progress { margin-top: 14px; }

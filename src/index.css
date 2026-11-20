@@ -3113,7 +3113,7 @@ select:focus-visible {
 .login-subtitle {
   margin: 10px 0 0;
   color: var(--login-muted);
-  font-size: 13px;
+  font-size: var(--ent-fs-body);
   letter-spacing: 0;
 }
 .login-field-label-row label { color: #514a52; letter-spacing: 0; }

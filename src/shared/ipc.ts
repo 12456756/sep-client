@@ -380,6 +380,7 @@ export interface ElectronAPI {
   onNotificationUpdate: (callback: (event: NotificationUpdate) => void) => () => void
   platform: RuntimePlatform
   windowChrome: WindowChromeRuntime
+  onWindowExpandedChanged: (callback: (expanded: boolean) => void) => () => void
   setWindowTheme: (theme: WindowTheme) => Promise<IpcCommandResult>
   listSkillLibrary: (input?: SkillLibraryQuery) => Promise<IpcCommandResult & { data?: SkillLibraryItem[]; skippedCount?: number; updatedAt?: number; retryAt?: number }>
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: string }>

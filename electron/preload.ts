@@ -20,6 +20,14 @@ export type { ElectronAPI } from '../src/shared/ipc';
 const runtimePlatform = process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux' ? process.platform : 'unknown';
 const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
 
+let windowExpanded = false;
+const windowExpansionListeners = new Set<(expanded: boolean) => void>();
+ipcRenderer.on(EVENT_CHANNELS.WINDOW_EXPANDED_CHANGED, (_event, expanded: unknown) => {
+  if (typeof expanded !== 'boolean' || expanded === windowExpanded) return;
+  windowExpanded = expanded;
+  for (const listener of windowExpansionListeners) listener(expanded);
+});
+
 type PasteTarget = { composerId: string; sessionId: string; target: AttachmentImportTarget; isEnabled?: () => boolean; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean };
 const pasteTargets = new Map<string, PasteTarget>();
 const pasteListeners = new Set<(event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void>();
@@ -227,6 +235,11 @@ const electronAPI = {
   selectDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY),
   clearDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY),
   setWindowTheme: theme => ipcRenderer.invoke(INVOKE_CHANNELS.WINDOW_SET_THEME, theme),
+  onWindowExpandedChanged: callback => {
+    windowExpansionListeners.add(callback);
+    callback(windowExpanded);
+    return () => { windowExpansionListeners.delete(callback); };
+  },
   onPiEvent: callback => {
     const handler = (_event: IpcRendererEvent, data: TaskExecutionEvent) => callback(data);
     ipcRenderer.on(EVENT_CHANNELS.PI_EVENT, handler);

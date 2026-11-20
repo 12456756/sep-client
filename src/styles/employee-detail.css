@@ -17,14 +17,14 @@
 .ent-employee-skill-list > li { display: flex; min-height: 68px; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--ent-line-soft); }
 .ent-employee-skill-list > li:last-child, .ent-employee-work-list > li:last-child { border-bottom: 0; }
 .ent-employee-skill-copy { min-width: 0; }
-.ent-employee-skill-copy strong { color: var(--ent-ink); font-size: var(--ent-fs-body); font-weight: 600; }
+.ent-employee-skill-copy strong { color: var(--ent-ink); font-size: var(--ent-fs-nav); font-weight: 600; }
 .ent-employee-skill-copy p { margin: 4px 0 0; overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
-.ent-employee-inline-link { display: inline-flex; min-height: 36px; flex: 0 0 auto; align-items: center; gap: 3px; border: 0; background: none; color: var(--ent-brand-ink); font: inherit; font-size: var(--ent-fs-body); cursor: pointer; }
+.ent-employee-inline-link { display: inline-flex; min-height: 36px; flex: 0 0 auto; align-items: center; gap: 3px; border: 0; background: none; color: var(--ent-brand-ink); font: inherit; font-size: var(--ent-fs-ui); cursor: pointer; }
 .ent-employee-inline-link:hover { color: var(--ent-brand-hover); text-decoration: underline; text-underline-offset: 3px; }
 .ent-employee-work-list > li { border-bottom: 1px solid var(--ent-line-soft); }
 .ent-employee-work-link { display: grid; width: 100%; min-height: 52px; grid-template-columns: minmax(0, 1fr) auto minmax(58px, auto) 16px; align-items: center; gap: 14px; padding: 8px 0; border: 0; background: transparent; color: var(--ent-ink-2); font: inherit; text-align: left; cursor: pointer; }
 .ent-employee-work-link:hover strong { color: var(--ent-brand-ink); }
-.ent-employee-work-link strong { overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-body); font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.ent-employee-work-link strong { overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-nav); font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .ent-employee-work-link time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-align: right; white-space: nowrap; }
 .ent-employee-detail-muted { margin: 8px 0 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
 .ent-employee-detail-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--ent-ink-2); font-size: var(--ent-fs-body); }
