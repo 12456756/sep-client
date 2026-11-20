@@ -10,6 +10,7 @@ import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { WriteChain } from './write-chain'
 import type { InputSnapshotRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentExtractor, AttachmentExtraction } from '../domain/attachment-extraction'
+import { attachmentExtractionSchema } from '../domain/attachment-extraction'
 import { inspectMediaImage } from './media-image'
 import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
 
@@ -25,6 +26,7 @@ export interface AttachmentStorePort {
   remove(scope: TaskOwnerScope, sessionId: string, attachmentId: string, expectedRevision?: number): Promise<AttachmentImportSession>
   cancel(scope: TaskOwnerScope, sessionId: string): Promise<boolean>
   read(scope: TaskOwnerScope, sessionId: string, attachmentId: string): Promise<Buffer>
+  readExtraction?(scope: TaskOwnerScope, sessionId: string, attachmentId: string): Promise<AttachmentExtraction | null>
   freeze(scope: TaskOwnerScope, taskId: string, sessionId: string, refs: readonly { attachmentId: string; sha256: string }[]): Promise<InputSnapshotRef>
   readTask(scope: TaskOwnerScope, taskId: string, attachmentId: string): Promise<Buffer>
   taskReadPath?(scope: TaskOwnerScope, taskId: string, attachmentId: string): string
@@ -177,6 +179,13 @@ export class AttachmentStore implements AttachmentStorePort {
     const bytes = await readFile(this.paths.attachmentBlobFile(scope, sessionId, attachmentId))
     if (bytes.length !== item.byteLength || createHash('sha256').update(bytes).digest('hex') !== item.sha256) throw new Error('ATTACHMENT_INTEGRITY_MISMATCH')
     return bytes
+  }
+
+  readExtraction(scope: TaskOwnerScope, sessionId: string, attachmentId: string): Promise<AttachmentExtraction | null> {
+    return readJsonWithBackup(this.paths.attachmentExtractionFile(scope, sessionId, attachmentId), value => {
+      const result = attachmentExtractionSchema.safeParse(value)
+      return result.success ? result.data : null
+    })
   }
 
   async freeze(scope: TaskOwnerScope, taskId: string, sessionId: string, refs: readonly { attachmentId: string; sha256: string }[]): Promise<InputSnapshotRef> {

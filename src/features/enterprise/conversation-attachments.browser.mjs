@@ -24,6 +24,302 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close() })
 
+test('production home composer binds file mentions without sending, and preserves draft ownership', async () => {
+  const page = await browser.newPage({ viewport: { width: 736, height: 680 } })
+  page.setDefaultTimeout(7_000)
+  const browserErrors = []
+  page.on('pageerror', error => browserErrors.push(error.message))
+  page.on('console', message => { if (message.type() === 'error') browserErrors.push(message.text()) })
+  try {
+    await page.addInitScript(() => {
+      const fixture = window.fileMentionFixture = { selects: [], sent: [], mode: 'file', items: [] }
+      const item = (id, name, digit) => ({ attachmentId: id, displayName: name, sha256: digit.repeat(64), byteLength: 12, mediaType: 'text/plain', importSource: 'picker', extractionStatus: 'ready', warnings: [] })
+      fixture.items = [item('first', 'budget.txt', '1'), item('second', 'budget.txt', '2')]
+      window.electronAPI = {
+        beginAttachmentImport: async ({ target }) => ({ success: true, data: { target, sessionId: 'references', status: 'open', attachments: fixture.items } }),
+        selectAttachments: async request => {
+          fixture.selects.push(request)
+          if (fixture.mode === 'cancel') return { success: true, cancelled: true, data: fixture.items }
+          if (fixture.mode === 'fail') return { success: false, error: { message: 'Fixture read failed' } }
+          if (fixture.mode === 'defer') await new Promise(resolve => { fixture.finish = resolve })
+          fixture.items = [...fixture.items, item(`local-${fixture.selects.length}`, 'local.txt', '3')]
+          return { success: true, data: fixture.items }
+        },
+        listAttachments: async () => ({ success: true, data: fixture.items }),
+        cancelAttachmentImport: async () => ({ success: true }),
+      }
+    })
+    await page.route(/\/main\.tsx(?:\?.*)?$/, route => route.fulfill({ contentType: 'text/javascript', body: `${entry}
+      import '/index.css';
+      import '/styles/enterprise.css';
+      import { createHomeDraft } from '/features/enterprise/home-draft.ts';
+      import { generalAssistant } from '/features/enterprise/general-assistant.ts';
+      import { HomeAssistantCard } from '/components/enterprise/home/HomeAssistantCard.tsx';
+      import { FeedbackProvider } from '/components/feedback/FeedbackProvider.tsx';
+      const inDrawer = new URL(location.href).searchParams.has('drawer');
+      const card = React.createElement(HomeAssistantCard, { draft: createHomeDraft(), employees: [generalAssistant([{ allowedModels: ['fixture-model'] }])], busy: false, demo: false,
+        onSubmit: async (...args) => { window.fileMentionFixture.sent.push(args); return false }, onCreate() {}, onManageConnectors() {} });
+      ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider, null,
+        React.createElement('div', { className: inDrawer ? 'ent-shell dark' : 'ent-shell', style: { display: 'block' } },
+          inDrawer ? React.createElement('aside', { role: 'dialog', className: 'ent-drawer wide', 'aria-modal': true }, card) : card)));
+    ` }))
+    await page.goto(base)
+    const input = page.getByRole('textbox', { name: '工作需求' })
+    const list = page.getByRole('listbox', { name: '可引用文件' })
+    const send = page.getByRole('button', { name: '发送需求' })
+    const mirror = page.locator('.ent-file-mention-mirror')
+    const highlight = mirror.locator('.ent-file-mention-highlight')
+    const color = locator => locator.evaluate(element => window.getComputedStyle(element).color)
+    const sent = () => page.evaluate(() => window.fileMentionFixture.sent)
+    await page.getByRole('button', { name: '移除 budget.txt' }).first().waitFor()
+    await input.fill('contact@example.com')
+    assert.equal(await list.count(), 0)
+    assert.equal(await highlight.count(), 0)
+    await input.fill('对比＠bud')
+    await list.getByRole('option', { name: /第 2 份附件/ }).waitFor()
+    assert.equal(await highlight.count(), 0)
+    await input.press('ArrowDown')
+    await input.press('Enter')
+    assert.equal(await input.inputValue(), '对比@budget.txt ')
+    assert.equal(await highlight.textContent(), '@budget.txt')
+    assert.equal(await color(highlight), 'rgb(23, 90, 196)')
+    assert.equal(await color(mirror), await color(input))
+    assert.equal(await mirror.getAttribute('aria-hidden'), 'true')
+    await page.getByRole('button', { name: '解除引用 budget.txt' }).waitFor()
+    assert.equal(await page.getByRole('button', { name: '移除 budget.txt' }).count(), 1)
+    assert.deepEqual(await sent(), [])
+    assert.ok(await input.evaluate(element => element === document.activeElement))
+    await input.press('Enter')
+    await page.waitForFunction(() => window.fileMentionFixture.sent.length === 1)
+    const [[, text, options]] = await sent()
+    assert.match(text, /@budget\.txt（本轮附件 2）/)
+    assert.equal(options.attachmentSessionId, 'references')
+    assert.deepEqual(options.attachmentRefs.map(file => file.attachmentId), ['first', 'second'])
+    await page.getByRole('button', { name: '解除引用 budget.txt' }).click()
+    assert.equal(await highlight.count(), 0)
+    assert.equal(await page.getByRole('button', { name: '移除 budget.txt' }).count(), 2)
+    await input.press('Control+z')
+    await page.getByRole('button', { name: '解除引用 budget.txt' }).waitFor()
+    assert.equal(await highlight.textContent(), '@budget.txt')
+    assert.equal(await page.getByRole('button', { name: '移除 budget.txt' }).count(), 1)
+
+    const chooseLocal = async mode => {
+      await page.evaluate(value => { window.fileMentionFixture.mode = value }, mode)
+      await input.fill('')
+      await input.fill('阅读 @local')
+      await list.getByRole('option', { name: '选择本地文件…' }).click()
+    }
+    await chooseLocal('cancel')
+    await page.waitForFunction(() => !document.querySelector('[aria-busy="true"]'))
+    assert.equal(await input.inputValue(), '阅读 @local')
+    assert.deepEqual(await page.evaluate(() => window.fileMentionFixture.selects), [{ sessionId: 'references', single: true }])
+    await input.press('Escape')
+    assert.equal(await list.count(), 0)
+
+    await chooseLocal('fail')
+    await page.getByText('Fixture read failed').first().waitFor()
+    assert.equal(await send.isEnabled(), false)
+    await input.press('Escape')
+    await input.press('Enter')
+    assert.equal((await sent()).length, 1)
+
+    await chooseLocal('defer')
+    await page.waitForFunction(() => typeof window.fileMentionFixture.finish === 'function')
+    await input.fill('更改后的草稿')
+    await page.evaluate(() => window.fileMentionFixture.finish())
+    await page.getByRole('button', { name: '引用文件' }).isEnabled({ timeout: 7_000 })
+    await page.waitForFunction(() => !document.querySelector('.ent-file-mention-trigger:disabled'))
+    assert.equal(await input.inputValue(), '更改后的草稿')
+    assert.equal(await page.getByRole('button', { name: '移除 local.txt' }).count(), 0)
+    await input.fill('阅读 @local')
+    await list.getByRole('option', { name: /local.txt/ }).click()
+    const localChip = page.getByRole('button', { name: '解除引用 local.txt' })
+    await localChip.waitFor()
+    assert.equal(await page.getByRole('button', { name: '移除 local.txt' }).count(), 0)
+    await send.click()
+    const [, , localOptions] = (await sent())[1]
+    assert.equal(localOptions.attachmentRefs.filter(file => file.attachmentId.startsWith('local-')).length, 1)
+    await localChip.click()
+    assert.equal(await page.getByRole('button', { name: '移除 local.txt' }).count(), 0)
+    await input.press('Control+z')
+    await localChip.waitFor()
+    assert.equal(await page.getByRole('button', { name: '移除 local.txt' }).count(), 0)
+
+    await page.setViewportSize({ width: 320, height: 600 })
+    await page.goto(new URL('?drawer', base).href)
+    await page.getByRole('button', { name: '移除 budget.txt' }).first().waitFor()
+    await input.fill('@bud')
+    const popup = page.getByRole('dialog').locator('.ent-file-mention-popup')
+    await popup.waitFor()
+    await popup.getByRole('option', { name: /第 1 份附件/ }).click()
+    assert.equal(await input.inputValue(), '@budget.txt ')
+    assert.equal(await color(highlight), 'rgb(138, 182, 255)')
+    await input.dispatchEvent('compositionstart')
+    await mirror.waitFor({ state: 'detached' })
+    assert.notEqual(await input.evaluate(element => window.getComputedStyle(element).webkitTextFillColor), 'rgba(0, 0, 0, 0)')
+    await input.dispatchEvent('compositionend')
+    await highlight.waitFor()
+    const suffix = ` ${'长文换行和滚动 lots_of_text '.repeat(30)}\n`
+    await input.press('Control+End')
+    await page.keyboard.insertText(suffix)
+    assert.equal(await highlight.textContent(), '@budget.txt')
+    assert.equal((await mirror.textContent()).slice(0, -1), await input.inputValue())
+    const measure = () => input.evaluate(element => {
+      const layer = element.nextElementSibling
+      return { inputWidth: element.clientWidth, layerWidth: layer.clientWidth, inputHeight: element.scrollHeight, layerHeight: layer.scrollHeight,
+        inputTop: element.scrollTop, layerTop: layer.scrollTop }
+    })
+    await input.evaluate(element => { element.scrollTop = element.scrollHeight })
+    await page.waitForFunction(() => {
+      const element = document.querySelector('.ent-file-mention-editor textarea')
+      return element.scrollTop > 0 && element.scrollTop === element.nextElementSibling.scrollTop
+    })
+    const sizes = await measure()
+    assert.equal(sizes.inputWidth, sizes.layerWidth)
+    assert.equal(sizes.inputHeight, sizes.layerHeight)
+    await page.setViewportSize({ width: 410, height: 600 })
+    await page.waitForFunction(() => {
+      const element = document.querySelector('.ent-file-mention-editor textarea')
+      return element.clientWidth === element.nextElementSibling.clientWidth
+    })
+    const resized = await measure()
+    assert.notEqual(resized.inputWidth, sizes.inputWidth)
+    assert.equal(resized.inputHeight, resized.layerHeight)
+    await page.setViewportSize({ width: 320, height: 600 })
+    await input.fill('@bud')
+    const bounds = await popup.boundingBox()
+    assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320 && bounds.y >= 0 && bounds.y + bounds.height <= 600, JSON.stringify(bounds))
+    assert.equal(await popup.evaluate(element => window.getComputedStyle(element).backgroundColor), 'rgb(26, 29, 38)')
+  } catch (error) {
+    throw new Error(`${error.message}\n${browserErrors.join('\n')}`, { cause: error })
+  } finally { await page.close() }
+})
+
+test('image mentions load visible thumbnails before hover and reuse them for viewport-safe previews', async () => {
+  const page = await browser.newPage({ viewport: { width: 1100, height: 740 } })
+  page.setDefaultTimeout(7_000)
+  try {
+    await page.addInitScript(() => {
+      const fixture = window.mentionImageFixture = { requests: [], released: [], revoked: [], deferred: false }
+      const canvas = document.createElement('canvas')
+      canvas.width = 720
+      canvas.height = 480
+      const context = canvas.getContext('2d')
+      context.fillStyle = '#307d83'
+      context.fillRect(0, 0, 720, 480)
+      const image = canvas.toDataURL('image/png')
+      const bytes = Uint8Array.from(window.atob(image.split(',')[1]), value => value.charCodeAt(0))
+      const revoke = URL.revokeObjectURL.bind(URL)
+      URL.revokeObjectURL = url => { fixture.revoked.push(url); revoke(url) }
+      window.electronAPI = {
+        async previewAttachment(input) {
+          fixture.requests.push(input)
+          if (fixture.deferred) await new Promise(resolve => { fixture.finish = resolve })
+          return { success: true, data: { ...input, mediaType: 'image/png', bytes } }
+        },
+        async previewResultFile(input) {
+          fixture.requests.push(input)
+          return { success: true, data: { kind: 'image', url: image } }
+        },
+        async releaseResultFilePreview(input) { fixture.released.push(input); return { success: true } },
+      }
+    })
+    await page.route(/\/main\.tsx(?:\?.*)?$/, route => route.fulfill({ contentType: 'text/javascript', body: `${entry}
+      import '/index.css';
+      import '/styles/enterprise.css';
+      import { FileMentionPicker, FileMentionChips, useFileMention } from '/components/enterprise/attachments/FileMentionPicker.tsx';
+      const draft = [{ attachmentId: 'draft-image', displayName: 'draft.png', sha256: 'a'.repeat(64), mediaType: 'image/png' }];
+      const candidates = [
+        { key: 'history', name: 'history.png', source: '本会话历史', file: { taskId: 'work-1', attachmentId: 'old-image', sha256: 'b'.repeat(64) } },
+        { key: 'result', name: 'result.png', source: '本工作成果', file: { taskId: 'work-1', assetId: 'generated-image' } },
+        ...Array.from({ length: 12 }, (_, index) => ({ key: 'note-' + index, name: 'note-' + index + '.txt', source: '本工作成果', file: { taskId: 'work-1', assetId: 'note-' + index } })),
+        { key: 'last', name: 'last.png', source: '本工作成果', file: { taskId: 'work-1', assetId: 'last-image' } },
+      ];
+      function Fixture() {
+        const input = React.useRef(null);
+        const [text, update] = React.useState('');
+        const mention = useFileMention({ input, text, update, attachments: draft, attachmentSessionId: 'draft-session', candidates });
+        return React.createElement('div', { className: 'ent-shell dark' }, React.createElement('aside', { role: 'dialog', className: 'ent-drawer wide', 'aria-modal': true, style: { animation: 'none' } },
+          React.createElement('div', { style: { marginTop: 'auto', padding: '0 12px 50px' } },
+            React.createElement('textarea', { ref: input, value: text, ...mention.editorAria, 'aria-label': '会话', style: { display: 'block', width: '100%' }, onChange: e => mention.change(e.currentTarget), onKeyDown: mention.keyDown }),
+            React.createElement(FileMentionChips, { mention }), React.createElement(FileMentionPicker, { mention }))));
+      }
+      ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(Fixture));
+    ` }))
+    await page.goto(base)
+    const input = page.getByRole('textbox', { name: '会话' })
+    const dialog = page.getByRole('dialog')
+    const preview = dialog.locator('.ent-file-mention-image-preview')
+    const list = dialog.getByRole('listbox', { name: '可引用文件' })
+    const loaded = async locator => locator.evaluate(image => image.decode())
+    await input.fill('@')
+    const draft = list.getByRole('option', { name: 'draft.png' })
+    const history = list.getByRole('option', { name: 'history.png' })
+    const result = list.getByRole('option', { name: 'result.png' })
+    const last = list.getByRole('option', { name: 'last.png' })
+    const thumbnail = draft.locator('img')
+    await Promise.all([thumbnail, history.locator('img'), result.locator('img')].map(loaded))
+    assert.equal((await thumbnail.boundingBox()).width, 48)
+    assert.equal(await last.locator('img').count(), 0)
+    assert.equal(await page.evaluate(() => window.mentionImageFixture.requests.length), 3)
+    assert.equal(await preview.count(), 0)
+    await draft.hover()
+    await loaded(preview.locator('img'))
+    const wide = await preview.boundingBox()
+    const menu = await dialog.locator('.ent-file-mention-popup').boundingBox()
+    assert.ok(wide.width >= 300 && wide.x + wide.width < menu.x, JSON.stringify({ wide, menu }))
+    assert.equal(await input.inputValue(), '@')
+    assert.ok(await input.evaluate(element => element === document.activeElement))
+
+    await history.hover()
+    await loaded(preview.locator('img'))
+    await result.hover()
+    await loaded(preview.locator('img'))
+    assert.equal(await thumbnail.count(), 1)
+    assert.equal(await page.evaluate(() => window.mentionImageFixture.requests.length), 3)
+    await page.mouse.move(0, 0)
+    await preview.waitFor({ state: 'hidden' })
+    await list.locator('.ent-file-mention-list').evaluate(element => { element.scrollTop = element.scrollHeight })
+    await loaded(last.locator('img'))
+    assert.equal(await preview.count(), 0)
+    assert.equal(await thumbnail.count(), 0)
+    assert.equal(await page.evaluate(() => window.mentionImageFixture.requests.at(-1).assetId), 'last-image')
+    await input.press('Escape')
+    await preview.waitFor({ state: 'hidden' })
+    await page.waitForFunction(() => window.mentionImageFixture.released.length === 2)
+
+    await page.setViewportSize({ width: 320, height: 600 })
+    await input.fill('@draft')
+    await draft.hover()
+    await loaded(preview.locator('img'))
+    const narrow = await preview.boundingBox()
+    assert.ok(narrow.width > 200 && narrow.x >= 0 && narrow.x + narrow.width <= 320 && narrow.y >= 0 && narrow.y + narrow.height <= 600, JSON.stringify(narrow))
+    assert.equal(await preview.evaluate(element => window.getComputedStyle(element).backgroundColor), 'rgb(26, 29, 38)')
+    await draft.click()
+    await preview.waitFor({ state: 'hidden' })
+    const chip = dialog.getByRole('button', { name: '解除引用 draft.png' })
+    await chip.hover()
+    await loaded(preview.locator('img'))
+    const label = await chip.boundingBox()
+    const chipPreview = await preview.boundingBox()
+    assert.ok(chipPreview.y + chipPreview.height < label.y, JSON.stringify({ chipPreview, label }))
+    await input.hover()
+    await preview.waitFor({ state: 'hidden' })
+    assert.equal(await input.inputValue(), '@draft.png ')
+
+    const revoked = await page.evaluate(() => {
+      window.mentionImageFixture.deferred = true
+      return window.mentionImageFixture.revoked.length
+    })
+    await chip.hover()
+    await page.waitForFunction(() => typeof window.mentionImageFixture.finish === 'function')
+    await input.hover()
+    await page.evaluate(() => window.mentionImageFixture.finish())
+    assert.equal(await preview.count(), 0)
+    assert.equal(await page.evaluate(() => window.mentionImageFixture.revoked.length), revoked)
+  } finally { await page.close() }
+})
+
 async function openFixture(page, { fail = false, deferred = false, assets = false } = {}) {
   await page.addInitScript(({ fail, deferred }) => {
     const fixture = window.attachmentPreviewFixture = { calls: [], actions: [], created: [], revoked: [], fail, deferred }

@@ -146,6 +146,15 @@ export class TaskService {
     const conversation = await this.isConversation(taskId)
     if (conversation && (nodeId || inputReply)) throw new AppError('INVALID_ARGUMENT')
     if (inputReply && (!nodeId || conversation || !arrangementInputReplySchema.safeParse(inputReply).success)) throw new AppError('INVALID_ARGUMENT')
+    if (inputReply?.referenceMaterials) throw new AppError('INVALID_ARGUMENT')
+    const requestScope = this.scope()
+    if (inputReply?.referenceFiles) {
+      if (!this.deps.attachments) throw new AppError('SERVICE_UNAVAILABLE')
+      const { referenceFiles, ...reply } = inputReply
+      const referenceMaterials = await this.deps.attachments.referenceMaterials(requestScope, referenceFiles)
+      this.assertScope(requestScope)
+      inputReply = { ...reply, referenceMaterials }
+    }
     try {
       if (conversation && this.deps.conversationQueue) {
         await this.deps.conversationQueue.resume(taskId, { retryOriginal: true })

@@ -11,11 +11,12 @@ interface Props {
   employees: SiliconEmployee[]
   onChange(patch: Partial<Pick<ScheduledTaskDraft, 'mode' | 'subscriptionId'>> & { settings?: Partial<ScheduledTaskDraft['settings']> }): void
   onChooseFolder(path?: string): Promise<string | null>
+  leadingAction?: ReactNode
   action?: ReactNode
   naturalLanguage?: boolean
 }
 
-export function ScheduledExecutionFields({ value, employees, onChange, onChooseFolder, action, naturalLanguage = false }: Props) {
+export function ScheduledExecutionFields({ value, employees, onChange, onChooseFolder, leadingAction, action, naturalLanguage = false }: Props) {
   const { defaultModelId } = useModelPreference()
   const available = employees.filter(item => item.assignedToMe && !['unavailable', 'needs-auth'].includes(item.availability))
   const employee = available.find(item => item.id === value.subscriptionId)
@@ -44,6 +45,7 @@ export function ScheduledExecutionFields({ value, employees, onChange, onChooseF
       </div>
   return <>
     <div className={`ent-sch-composer-tools${naturalLanguage ? ' ent-sch-composer-tools-inline' : ''}`}>
+      {leadingAction}
       {naturalLanguage ? <div className="ent-sch-composer-settings">{execution}{environment}</div> : execution}
       {action}
     </div>

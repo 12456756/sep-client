@@ -1,6 +1,8 @@
 import type { SkillRewriteInput, SkillRewriteOutput } from '../../src/shared/skill-rewrite'
+import type { ReferenceMaterials } from '../../src/shared/attachment-contracts'
 
 export interface SkillRewriteRuntimeInput extends SkillRewriteInput {
+  referenceMaterials?: ReferenceMaterials
   subscriptionId: string
   skillName: string
 }

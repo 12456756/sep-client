@@ -40,7 +40,7 @@ const cancelInput = z.union([taskId, z.object({ taskId, reason: z.string().trim(
   .transform(value => typeof value === 'string' ? { taskId: value, reason: undefined } : value)
 const retryInput = z.union([
   taskId,
-  z.object({ taskId, nodeId: z.string().min(1).optional(), inputReply: arrangementInputReplySchema.optional() }).strict()
+  z.object({ taskId, nodeId: z.string().min(1).optional(), inputReply: arrangementInputReplySchema.omit({ referenceMaterials: true }).optional() }).strict()
     .refine(value => !value.inputReply || !!value.nodeId),
 ]).transform(value => typeof value === 'string' ? { taskId: value, nodeId: undefined, inputReply: undefined } : value)
 const rerunInput = z.object({

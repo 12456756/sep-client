@@ -12,6 +12,25 @@ const ownerA: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise
 const ownerB: TaskOwnerScope = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
 
+test('resolves scoped reference excerpts from imported bytes and rejects stale digests and sessions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-reference-material-'))
+  let owner = ownerA
+  const service = new AttachmentService(new AttachmentStore(root, undefined, async (_type, bytes) => ({ status: 'ready', text: Buffer.from(bytes).toString(), warnings: [] })), () => owner)
+  const session = await service.beginSession({ kind: 'compose', composerId: 'reference-compose' })
+  const path = join(root, 'brief.txt')
+  await writeFile(path, 'a'.repeat(4_500))
+  const { attachmentId, sha256 } = (await service.importFiles(session.sessionId, 'op-ref', [path]))[0].item
+  const request = { sessionId: session.sessionId, attachments: [{ attachmentId, sha256 }] }
+  await writeFile(path, 'source changed')
+  assert.deepEqual(await service.referenceMaterials(ownerA, request), [{ name: 'brief.txt', text: 'a'.repeat(4_000), truncated: true }])
+  await assert.rejects(service.referenceMaterials(ownerA, { ...request, attachments: [{ attachmentId, sha256: 'b'.repeat(64) }] }), /文件引用已变化/)
+  owner = ownerB
+  await assert.rejects(service.referenceMaterials(ownerA, request), (error: unknown) => error instanceof AppError && error.code === 'AUTH_REQUIRED')
+  owner = ownerA
+  await service.cancelSession(session.sessionId)
+  await assert.rejects(service.referenceMaterials(ownerA, request), /文件引用已失效/)
+})
+
 test('imports files, claims draft, freezes task, and resolves durable metadata', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sep-attachment-service-'))
   const source = join(root, 'reference.png')
@@ -85,6 +104,29 @@ test('previews only an image claimed by the current task and verifies its digest
   current = ownerA
   await writeFile(store.taskReadPath(ownerA, 'task-preview', ref.attachmentId), 'corrupted')
   await assert.rejects(service.previewTaskAttachment('task-preview', ref.attachmentId, ref.sha256), /ATTACHMENT_INTEGRITY_MISMATCH/)
+})
+
+test('previews a draft image only while the matching composer session is open for the current owner', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-draft-preview-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  let owner = ownerA
+  const store = new AttachmentStore(root)
+  const service = new AttachmentService(store, () => owner)
+  const { sessionId } = await service.beginSession({ kind: 'compose', composerId: 'image-compose' })
+  const { item: image } = await service.importImageForSession(sessionId, 'op-image', png, 'preview.png', 'image/png')
+  const preview = () => service.previewDraftAttachment(sessionId, image.attachmentId, image.sha256)
+  assert.deepEqual(Buffer.from((await preview()).bytes), png)
+  await assert.rejects(service.previewDraftAttachment(sessionId, image.attachmentId, 'b'.repeat(64)))
+  owner = ownerB
+  await assert.rejects(preview())
+  owner = ownerA
+  const read = store.read.bind(store)
+  store.read = async (...args) => { const bytes = await read(...args); owner = ownerB; return bytes }
+  await assert.rejects(preview(), (error: unknown) => error instanceof AppError && error.code === 'AUTH_REQUIRED')
+  owner = ownerA
+  store.read = read
+  await service.cancelSession(sessionId)
+  await assert.rejects(preview())
 })
 
 test('does not preview non-image task attachments', async () => {

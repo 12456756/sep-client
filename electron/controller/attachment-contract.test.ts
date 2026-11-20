@@ -42,7 +42,11 @@ test('all attachment routes require trusted main-frame calls and bounded strict 
   assert.equal(image.schema.safeParse({ ...base, bytes: [1] }).success, false)
   const preview = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_PREVIEW)!
   const previewInput = { taskId: 'task-a', attachmentId: 'attachment-a', sha256: 'a'.repeat(64) }
+  const draftPreviewInput = { sessionId: 'session-a', attachmentId: previewInput.attachmentId, sha256: previewInput.sha256 }
   assert.deepEqual(preview.schema.parse(previewInput), previewInput)
+  assert.deepEqual(preview.schema.parse(draftPreviewInput), draftPreviewInput)
+  assert.equal(preview.schema.safeParse({ ...draftPreviewInput, taskId: 'task-a' }).success, false)
+  assert.equal(preview.schema.safeParse({ ...draftPreviewInput, sessionId: '../session' }).success, false)
   for (const invalid of [{ ...previewInput, taskId: '../task' }, { ...previewInput, attachmentId: '../image' }, { ...previewInput, sha256: 'A'.repeat(64) }, { ...previewInput, path: 'secret' }]) assert.equal(preview.schema.safeParse(invalid).success, false)
 })
 
@@ -75,4 +79,12 @@ test('preview checks task access before reading attachment bytes', async () => {
   calls.length = 0
   await assert.rejects(async () => preview.handle(ctx as never, input as never))
   assert.deepEqual(calls, [])
+})
+
+test('draft image preview routes only through the scoped attachment service', async () => {
+  const preview = routes().find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_PREVIEW)!
+  const input = { sessionId: 'session-a', attachmentId: 'image-a', sha256: 'a'.repeat(64) }
+  const data = { bytes: new Uint8Array([1]), mediaType: 'image/png' }
+  const ctx = { attachments: { async previewDraftAttachment(...args: string[]) { assert.deepEqual(args, Object.values(input)); return data } } }
+  assert.deepEqual(await preview.handle(ctx as never, input as never), { success: true, data })
 })

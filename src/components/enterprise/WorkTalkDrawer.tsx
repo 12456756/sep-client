@@ -9,7 +9,11 @@ import { EmployeeFace } from './EmployeeFace';
 import '../../styles/conversation.css';
 import { useSpeechInput } from '../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../speech/SpeechInputActions';
-import { AttachmentComposer } from './attachments/AttachmentComposer';
+import { AttachmentComposer, type AttachmentComposerOperations } from './attachments/AttachmentComposer';
+import { FileMentionChips, FileMentionPicker, useFileMention, type MentionCandidate } from './attachments/FileMentionPicker';
+import { FileMentionEditor } from './attachments/FileMentionEditor';
+import { resultFileRequest } from '../workspace/ResultFileCard';
+import { useConversationMedia } from '../../features/enterprise/conversation-media';
 import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
 import { ConversationSessionsContext, createConversationSessions } from '../../features/enterprise/conversation-sessions';
 import { generalAssistant, GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
@@ -76,6 +80,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
   const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(retainedAttachments.session);
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
   const importFileRef = useRef<AddFileToConversation>(null);
+  const attachmentOps = useRef<AttachmentComposerOperations>(null);
   const knowledge = savedSession.knowledge ?? work.knowledge ?? noKnowledgeSelection();
   const setKnowledge = savedSession.setKnowledge;
   useEffect(() => {
@@ -100,6 +105,22 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
     return true;
   }, [editorVersion, setDraft]);
   const speech = useSpeechInput({ contextKey: `work:${work.id}`, value: draft, onChange: setDraft, disabled: workspace.busy });
+  const mediaState = useConversationMedia(work.id, workspace.attachmentScopeKey);
+  const candidates = useMemo(() => {
+    const history = new Map<string, MentionCandidate>();
+    let round = 0;
+    for (const message of work.messages ?? []) {
+      if (message.role === 'user') round++;
+      for (const item of message.attachments ?? []) history.set(item.attachmentId, { key: `history:${item.attachmentId}`, name: item.displayName, source: '本会话历史', detail: `第 ${round} 轮`, file: { taskId: work.id, attachmentId: item.attachmentId, sha256: item.sha256 } });
+    }
+    const results = (work.deliverables ?? []).flatMap<MentionCandidate>(item => {
+      const file = resultFileRequest(work.id, item);
+      return file ? [{ key: `result:${item.id}`, name: item.name, source: '本工作成果', detail: item.nodeTitle, file }] : [];
+    });
+    const media = mediaState.results.flatMap<MentionCandidate>(({ file, request }) => request ? [{ key: `media:${file.id}`, name: file.name, source: '本工作成果', file: request }] : []);
+    return [...Array.from(history.values()).reverse(), ...results, ...media];
+  }, [work.id, work.messages, work.deliverables, mediaState.results]);
+  const mention = useFileMention({ input: speech.inputProps.ref, text: draft, update: value => { setDraft(value); setEditorVersion(version => version + 1); }, attachments, attachmentSessionId: attachmentSession?.sessionId, operations: attachmentOps, candidates, disabled: workspace.busy || sending || speech.busy || attachmentsBusy, memory: retainedAttachments.fileMentions ??= {} });
   const over = work.status === 'completed' || work.status === 'paused' || work.status === 'failed';
 
   const followsLatest = useRef(savedSession.followsLatest);
@@ -159,15 +180,15 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
   }, [savedSession]);
 
   const send = async () => {
-    if (!draft.trim() || workspace.busy || queued.busy || canSkip || speech.busy || attachmentsBusy || savedSession.sending) return;
-    const text = withComposerConnector(draft, savedSession.connectorId);
-    const fingerprint = JSON.stringify([text, attachmentSession?.sessionId, attachments.map(item => item.attachmentId), knowledge]);
+    if (!draft.trim() || workspace.busy || queued.busy || canSkip || speech.busy || attachmentsBusy || mention.invalid || mention.pending || savedSession.sending) return;
+    const text = withComposerConnector(mention.submissionText, savedSession.connectorId);
+    const fingerprint = JSON.stringify([text, attachmentSession?.sessionId, mention.attachments.map(item => item.attachmentId), knowledge]);
     const messageId = savedSession.beginSend(fingerprint);
     if (!messageId) return;
     followsLatest.current = true;
     setHasNewContent(false);
     try {
-      const sent = await workspace.sendMessage(work.id, text, attachments, attachmentSession?.sessionId, knowledge, messageId);
+      const sent = await workspace.sendMessage(work.id, text, mention.attachments, attachmentSession?.sessionId, knowledge, messageId);
       if (!sent) return;
       savedSession.acceptSend(draft);
       setAttachments([]);
@@ -206,7 +227,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
         }}>
           <div className="ent-talk">
             <FileAttachmentTarget.Provider value={addFile}>
-              <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} />
+              <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} mediaState={mediaState} />
             </FileAttachmentTarget.Provider>
           </div>
         </div>
@@ -230,7 +251,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
           {unstarted ? <button type="button" className="ent-btn sm" disabled={queued.busy || workspace.busy} onClick={() => void queued.resume()}>开始执行</button> : null}
           <div className="ent-ask">
           <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
-          <textarea
+          <FileMentionEditor mention={mention}
             data-composer-id={composerId}
             data-editor-version={editorVersion}
                 {...speech.inputProps}
@@ -238,12 +259,17 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
                 value={draft}
                 placeholder={canSkip ? '队列已暂停，跳过本轮后可发送新消息' : queued.queue.paused ? blockedRetry ? '新消息将排队，当前队列已暂停' : '可继续添加信息，点击继续处理后依次执行' : isReplying ? '补充信息将排队依次处理' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
                 aria-label="给员工的下一句话"
-                onChange={event => { setDraft(event.target.value); setEditorVersion(version => version + 1); }}
-                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
+                {...mention.editorAria}
+                onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)}
+                onCompositionStart={() => { speech.inputProps.onCompositionStart(); mention.compositionStart(); }}
+                onCompositionEnd={event => { speech.inputProps.onCompositionEnd(); mention.compositionEnd(event.currentTarget); }}
+                onKeyDown={event => { mention.keyDown(event); speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
               />
+              <FileMentionChips mention={mention} />
               <div className="ent-ask-bar">
                 <div className="ent-ask-tools">
-                  <AttachmentComposer addFileRef={importFileRef} connectorId={savedSession.connectorId} onConnectorChange={savedSession.setConnector} key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+                  <AttachmentComposer operationsRef={attachmentOps} visibleAttachments={mention.unreferencedAttachments} addFileRef={importFileRef} connectorId={savedSession.connectorId} onConnectorChange={savedSession.setConnector} key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+                  <FileMentionPicker mention={mention} />
                   {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                       在这里换掉「当前员工」会和步骤上的安排对不上。 */}
                   {work.kind === 'conversation' ? (
@@ -269,7 +295,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
                   )}
                   <ContextUsageIndicator taskId={work.id} scopeKey={workspace.attachmentScopeKey} />
                   <SpeechInputActions speech={speech} disabled={workspace.busy} />
-                  <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || queued.busy || canSkip || sending || speech.busy || attachmentsBusy} aria-label="发送">
+                  <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || queued.busy || canSkip || sending || speech.busy || attachmentsBusy || mention.invalid || mention.pending} aria-label="发送">
                     <Send size={15} aria-hidden />
                   </button>
                 </div>

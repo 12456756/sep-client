@@ -11,6 +11,7 @@ import { AppError } from '../errors/app-error'
 import { withTimeout } from '../common/with-timeout'
 import { logger } from '../common/logger'
 import type { ScheduledTaskService } from './scheduled-task-service'
+import type { AttachmentService } from './attachment-service'
 
 const log = logger.child('scheduled-creation')
 const employeeSchema = z.object({ subscriptionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), name: z.string().max(300),
@@ -21,6 +22,7 @@ export interface ScheduledCreationOptions {
   repository: ScheduledRepository
   scope: { currentScope(): TaskOwnerScope | null }
   schedules: ScheduledTaskService
+  attachments?: Pick<AttachmentService, 'referenceMaterials'>
   catalog(): Promise<Employee[]>
   authorize(subscriptionId: string, modelId: string): Promise<unknown>
   validateWorkspace(workDir: string): Promise<void>
@@ -64,6 +66,13 @@ export class ScheduledCreationService {
   private async run(scope: TaskOwnerScope, generation: number, request: ScheduledCreationRequest, submissionKey: string, controller: AbortController): Promise<ScheduledCreation> {
     const { requestId, expectedRevision, ...input } = request
     const guard = () => { this.assertScope(scope, generation); controller.signal.throwIfAborted() }
+    const prior = input.referenceFiles ? (await this.options.repository.read(scope)).creations?.find(item => item.id === requestId) : undefined
+    guard()
+    const message = { role: 'user' as const, content: input.message, receivedAt: this.now() }
+    if (input.referenceFiles && prior?.submissionKey !== submissionKey && !this.options.attachments) throw new AppError('SERVICE_UNAVAILABLE')
+    const referenceMaterials = input.referenceFiles && prior?.submissionKey !== submissionKey
+      ? await this.options.attachments!.referenceMaterials(scope, input.referenceFiles) : undefined
+    const messageWithReferences = referenceMaterials ? { ...message, referenceMaterials } : message
     let record = await this.options.repository.update(scope, data => {
       guard()
       const records = data.creations ??= []
@@ -74,13 +83,13 @@ export class ScheduledCreationService {
         if (['completed', 'cancelled'].includes(existing.stage)) throw new AppError('INVALID_STATE', { message: '本次创建已结束，请从任务详情修改配置，或新建任务。' })
         if (existing.messages.length >= 20) throw new AppError('INVALID_ARGUMENT', { message: '补充次数已达上限，请重新描述并新建任务。' })
         Object.assign(existing, { request: input, submissionKey,
-          messages: [...existing.messages, { role: 'user', content: input.message, receivedAt: this.now() }], stage: 'parsing', error: null,
+          messages: [...existing.messages, messageWithReferences], stage: 'parsing', error: null,
           revision: existing.revision + 1, updatedAt: this.now() })
         return existing
       }
       if (expectedRevision !== undefined) throw new AppError('DRAFT_REVISION_CONFLICT')
       const created: ScheduledCreation = { id: requestId, revision: 1, request: input, submissionKey,
-        referenceNow: this.now(), messages: [{ role: 'user', content: input.message, receivedAt: this.now() }], interpretation: null, parsedSubmissionKey: null, definitionSubmissionKey: null,
+        referenceNow: this.now(), messages: [messageWithReferences], interpretation: null, parsedSubmissionKey: null, definitionSubmissionKey: null,
         stage: 'parsing', definitionId: null, definitionInput: null, error: null, createdAt: this.now(), updatedAt: this.now() }
       records.push(created)
       return created

@@ -7,6 +7,12 @@ export const attachmentImportLimits = Object.freeze({ maxFiles: 128, maxImportFi
 
 export const attachmentRefSchema = z.object({ attachmentId: safeId, sha256 }).strict()
 export type AttachmentRef = z.infer<typeof attachmentRefSchema>
+export const referenceFileLimit = 6
+export const referenceTextLimit = 4_000
+export const referenceAttachmentSelectionSchema = z.object({ sessionId: safeId, attachments: z.array(attachmentRefSchema).min(1).max(referenceFileLimit) }).strict()
+export type ReferenceAttachmentSelection = z.infer<typeof referenceAttachmentSelectionSchema>
+export const referenceMaterialsSchema = z.array(z.object({ name: z.string().min(1).max(255), text: z.string().min(1).max(referenceTextLimit), truncated: z.boolean() }).strict()).min(1).max(referenceFileLimit)
+export type ReferenceMaterials = z.infer<typeof referenceMaterialsSchema>
 export interface InputSnapshotRef {
   snapshotId: string
   attachments: AttachmentRef[]
@@ -50,6 +56,11 @@ export const attachmentViewSchema = z.object({
 export type AttachmentView = z.infer<typeof attachmentViewSchema>
 
 export type AttachmentPreviewMediaType = 'image/png' | 'image/jpeg' | 'image/webp'
+export const attachmentPreviewRequestSchema = z.union([
+  attachmentRefSchema.extend({ taskId: safeId }).strict(),
+  attachmentRefSchema.extend({ sessionId: safeId }).strict(),
+])
+export type AttachmentPreviewRequest = z.infer<typeof attachmentPreviewRequestSchema>
 export interface AttachmentPreview {
   attachmentId: string
   sha256: string

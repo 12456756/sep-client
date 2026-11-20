@@ -6,7 +6,6 @@ import { buildConversationReplies, buildConversationTranscript, type Conversatio
 import { ConversationProcessView } from './ConversationProcess'
 import { EmployeeFace } from './EmployeeFace'
 import { MessageContent } from './MessageContent'
-import { useConversationMedia } from '../../features/enterprise/conversation-media'
 import { groupConversationResults, type ConversationResult } from '../../features/enterprise/conversation-results'
 import { imageCopyHandlers, useContentCopy, useImagePreviewCopy, type CopyMenuHandler } from '../ContentCopyMenu'
 import { ResultFileCard } from '../workspace/ResultFileCard'
@@ -20,22 +19,22 @@ interface Props {
   employees: SiliconEmployee[]
   scopeKey: string
   preparing: boolean
+  mediaState: { results: ConversationResult[]; error: string | null; retry: () => void }
 }
 
-export const ConversationMessages = React.memo(function ConversationMessages({ work, employees, scopeKey, preparing }: Props) {
-  return <ConversationMessagesContent key={`${scopeKey}:${work.id}`} work={work} employees={employees} scopeKey={scopeKey} preparing={preparing} />
+export const ConversationMessages = React.memo(function ConversationMessages({ work, employees, scopeKey, preparing, mediaState }: Props) {
+  return <ConversationMessagesContent key={`${scopeKey}:${work.id}`} work={work} employees={employees} scopeKey={scopeKey} preparing={preparing} mediaState={mediaState} />
 })
 
-function ConversationMessagesContent({ work, employees, scopeKey, preparing }: Props) {
+function ConversationMessagesContent({ work, employees, scopeKey, preparing, mediaState: media }: Props) {
   const transcript = useArrangementTranscript(work.id, scopeKey)
-  const media = useConversationMedia(work.id, scopeKey)
   const runs = useMemo(() => buildConversationTranscript(transcript.events), [transcript.events])
   return <><ConversationMessagesView work={work} employees={employees} preparing={preparing} runs={runs} media={media.results}
     loading={transcript.loading} error={transcript.error} onReload={transcript.reload} />
     {media.error ? <div className="ent-conversation-results-error" role="alert"><span>{media.error}</span><button type="button" className="ent-btn sm ghost" onClick={media.retry}><RotateCcw size={14} />重新读取</button></div> : null}</>
 }
 
-export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, media = [] }: Omit<Props, 'scopeKey'> & {
+export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, media = [] }: Omit<Props, 'scopeKey' | 'mediaState'> & {
   media?: ConversationResult[]
   runs: readonly ConversationRunTranscript[]
   loading: boolean

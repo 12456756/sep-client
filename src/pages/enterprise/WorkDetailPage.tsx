@@ -17,6 +17,9 @@ import { mediaRetryNotice, type MediaRetryState } from '../../shared/media-retry
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { ResultFileCard } from '../../components/workspace/ResultFileCard';
 import { FileAttachmentTarget, type AddFileToConversation } from '../../components/workspace/file-menu-actions';
+import { FileMentionChips, FileMentionPicker } from '../../components/enterprise/attachments/FileMentionPicker';
+import { FileMentionEditor } from '../../components/enterprise/attachments/FileMentionEditor';
+import { useTextReferenceComposer } from '../../components/enterprise/attachments/use-text-reference-composer';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
@@ -354,20 +357,25 @@ function MediaInputReplyForm({ work, workspace, nodeId, request }: {
   work: WorkItem; workspace: EnterpriseWorkspace; nodeId: string; request: import('../../shared/arrangement-input').ArrangementInputRequest;
 }) {
   const [text, setText] = useState('');
+  const input = useRef<HTMLTextAreaElement>(null);
+  const files = useTextReferenceComposer({ input, value: text, update: setText, bindingKey: `${workspace.attachmentScopeKey}:${work.id}:${nodeId}:${request.requestId}`, disabled: workspace.busy });
+  const { mention } = files;
   const title = work.steps.find(step => step.id === nodeId)?.title ?? '当前媒体工作';
   return <form className="ent-media-input-form" onSubmit={event => {
     event.preventDefault();
-    if (!workspace.busy && text.trim()) void workspace.retryWork(work.id, nodeId, { requestId: request.requestId, text: text.trim() });
+    if (!workspace.busy && !files.blocked && text.trim()) void workspace.retryWork(work.id, nodeId, { requestId: request.requestId, text: mention.submissionText.trim(), ...(files.referenceFiles ? { referenceFiles: files.referenceFiles } : {}) });
   }}>
     <strong>{title}需要补充信息</strong>
     <p>{request.question}</p>
     <small>补充尚未确定的规格。已确认要求和已提交的生成任务会保留；修改它们需要重新编排。</small>
     <label>
       <span>补充规格或用途</span>
-      <textarea value={text} onChange={event => setText(event.target.value)} maxLength={4_000} rows={3}
+      <FileMentionEditor mention={mention} ref={input} {...mention.editorAria} value={text} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} onCompositionStart={mention.compositionStart} onCompositionEnd={event => mention.compositionEnd(event.currentTarget)} onKeyDown={mention.keyDown} maxLength={4_000} rows={3}
         placeholder="例如：用于手机竖屏展示，8 秒，无音频；其他规格请根据用途提出方案。" disabled={workspace.busy} required />
     </label>
-    <button type="submit" className="ent-btn primary sm" disabled={workspace.busy || !text.trim()}>提交补充并继续</button>
+    <FileMentionChips mention={mention} />
+    <div className="ent-file-reference-tools"><FileMentionPicker mention={mention} />{files.error && <span role="alert" className="ent-file-mention-error">{files.error}</span>}</div>
+    <button type="submit" className="ent-btn primary sm" disabled={workspace.busy || files.blocked || !text.trim()}>提交补充并继续</button>
   </form>;
 }
 

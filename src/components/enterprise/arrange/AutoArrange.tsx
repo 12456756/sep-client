@@ -132,10 +132,10 @@ export function AutoArrange({ employees, busy, onStart, onPlanningStart, setting
     setAttachmentDirty(true);
   };
 
-  const submitGoal = (prompt = goal) => {
+  const submitGoal = (prompt = goal, submittedAttachments?: AttachmentView[]) => {
     onPlanningStart?.();
     setSubmitted(true);
-    void start(prompt, settings.workDir, settings.modelId, attachmentRefs.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })), attachmentSession?.sessionId, mustUseAttachments, settings.permissions, settings.knowledge);
+    void start(prompt, settings.workDir, settings.modelId, (submittedAttachments ?? attachmentRefs).map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })), attachmentSession?.sessionId, mustUseAttachments, settings.permissions, settings.knowledge);
   };
 
   const requestAccess = async (stepId: string, employeeId: string): Promise<void> => {

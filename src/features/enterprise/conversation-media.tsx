@@ -44,7 +44,7 @@ export function useConversationMedia(taskId: string, scopeKey: string) {
     setImages(null); setVideos(null); setError(null)
     const refresh = async () => {
       const results = await Promise.allSettled([
-        window.electronAPI.getTaskMedia(taskId), window.electronAPI.getTaskVideo(taskId),
+        Promise.resolve().then(() => window.electronAPI.getTaskMedia(taskId)), Promise.resolve().then(() => window.electronAPI.getTaskVideo(taskId)),
       ])
       if (!active) return
       const [imageResult, videoResult] = results

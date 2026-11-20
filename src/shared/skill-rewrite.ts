@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { skillVersionIdSchema } from './platform-supplement-contracts'
+import { referenceAttachmentSelectionSchema } from './attachment-contracts'
 
 const content = z.string().max(100_000).refine(value => value.trim().length > 0)
 const prompt = z.string().trim().min(1).max(8_000)
@@ -10,6 +11,7 @@ export const skillRewriteInputSchema = skillRewriteCancelSchema.extend({
   modelId: z.string().trim().min(1).max(256),
   content,
   prompt,
+  referenceFiles: referenceAttachmentSelectionSchema.optional(),
   history: z.array(z.object({
     prompt, content, status: z.enum(['pending', 'accepted', 'ignored', 'superseded', 'undone', 'stale']),
   }).strict()).max(3),

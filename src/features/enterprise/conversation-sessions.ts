@@ -65,6 +65,7 @@ export function createConversationSessions(cancelSession: (sessionId: string) =>
             current.connectorId = undefined
             current.attachment.session = null
             current.attachment.attachments = []
+            current.attachment.fileMentions = {}
             current.attachmentEpoch++
             if (current.knowledge?.mode === 'manual') current.knowledge = { ...current.knowledge, sources: [] }
             notify()

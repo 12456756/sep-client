@@ -10,7 +10,7 @@ import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type { ModelCatalogEntry } from './model-catalog-contracts'
 import type { MultimediaSettings } from './multimedia-settings'
-import type { AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentView } from './attachment-contracts'
+import type { AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentPreviewRequest, AttachmentView } from './attachment-contracts'
 import type {
   ComputeAllowance,
   PersonalWallet,
@@ -389,11 +389,11 @@ export interface ElectronAPI {
   savePersonalSkill: (input: SaveSkillInput) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
   retryPersonalSkillUpload: (input: { capabilityId: string; idempotencyKey: string }) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
   beginAttachmentImport: (input: { target: AttachmentImportTarget; idempotencyKey?: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession }>
-  selectAttachments: (input: { sessionId: string; operationId?: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession | AttachmentView[] }>
+  selectAttachments: (input: { sessionId: string; operationId?: string; single?: boolean }) => Promise<IpcCommandResult & { cancelled?: boolean; data?: AttachmentImportSession | AttachmentView[] }>
   listAttachments: (input: { sessionId: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession | AttachmentView[] }>
   removeAttachment: (input: { sessionId: string; attachmentId: string; expectedRevision?: number }) => Promise<IpcCommandResult>
   cancelAttachmentImport: (input: { sessionId: string }) => Promise<IpcCommandResult>
-  previewAttachment: (input: { taskId: string; attachmentId: string; sha256: string }) => Promise<IpcCommandResult & { data?: AttachmentPreview }>
+  previewAttachment: (input: AttachmentPreviewRequest) => Promise<IpcCommandResult & { data?: AttachmentPreview }>
   bindAttachmentPaste: (input: { composerId: string; sessionId: string; target: AttachmentImportTarget; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean }) => () => void
   onAttachmentPaste: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
   login: (credentials: LoginRequest) => Promise<LoginResult>

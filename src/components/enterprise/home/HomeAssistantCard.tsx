@@ -20,6 +20,9 @@ import type { ConnectorId } from '../../../shared/connectors'
 import { withComposerConnector } from '../../../features/enterprise/composer-connectors'
 import { useModelPreference } from '../../workspace/model-preference-scope'
 import { resolveTaskModel } from '../../../shared/model-preferences'
+import { FileMentionChips, FileMentionPicker, useFileMention } from '../attachments/FileMentionPicker'
+import { FileMentionEditor } from '../attachments/FileMentionEditor'
+import type { AttachmentComposerOperations } from '../attachments/AttachmentComposer'
 
 interface Props {
   employees: SiliconEmployee[]
@@ -37,9 +40,11 @@ interface Editor {
 }
 interface Attachments {
   attachments: AttachmentView[]
+  sessionId?: string
   busy: boolean
   error: string | null
   select: () => void
+  operations: RefObject<AttachmentComposerOperations | null>
   remove: (id: string) => void
 }
 
@@ -67,8 +72,10 @@ function LiveAssistant(props: Props & { editor: Editor }) {
   }, [draft, update, version])
   const composer = useAttachmentComposer({ target, bindingKey: `${props.draft.composerId}:${props.draft.epoch}`, disabled: props.busy,
     retainedState: props.draft.attachment, onPasteEdit, onError: setAttachmentError })
-  return <AssistantForm {...props} attachment={{ attachments: composer.attachments, busy: composer.busy, error: attachmentError,
-    select: () => { setAttachmentError(null); void composer.select() }, remove: id => { setAttachmentError(null); void composer.remove(id) } }} />
+  const operations = useRef<AttachmentComposerOperations | null>(null)
+  operations.current = { select: composer.select, addFile: composer.addFile }
+  return <AssistantForm {...props} attachment={{ attachments: composer.attachments, sessionId: composer.session?.sessionId, busy: composer.busy, error: attachmentError,
+    operations, select: () => { setAttachmentError(null); void composer.select() }, remove: id => { setAttachmentError(null); void composer.remove(id) } }} />
 }
 
 function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnectors, demo, busy, editor, attachment }: Props & { editor: Editor; attachment?: Attachments }) {
@@ -92,7 +99,9 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
   const assistant = useMemo(() => generalAssistant(employees.filter(employee => employee.availability !== 'unavailable')), [employees])
   const employee = employeeId === GENERAL_ASSISTANT_ID ? assistant : employees.find(item => item.id === employeeId)
   const pickerEmployees = [assistant, ...employees].filter(item => !query.trim() || `${item.name} ${item.roleName}`.includes(query.trim()))
-  const blocked = busy || submitting || Boolean(attachment?.busy) || speech.busy
+  const disabled = busy || submitting || Boolean(attachment?.busy) || speech.busy
+  const mention = useFileMention({ input, text: editor.text, update: editor.update, attachments: attachment?.attachments ?? [], attachmentSessionId: attachment?.sessionId, operations: attachment?.operations, disabled: disabled || demo, memory: draft.attachment.fileMentions ??= {} })
+  const blocked = disabled || mention.pending
   const selectionProblem = !employee ? '所选员工已不在当前授权列表，请重新选择。'
     : !demo && (employee.availability === 'unavailable' || employee.availability === 'needs-auth' || !employee.allowedModels.length) ? '该员工当前不可用，请检查授权或选择其他员工。' : null
   const models = employee?.allowedModels ?? []
@@ -110,18 +119,18 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
   }
   const selectModel = (nextModelId: string) => { draft.modelId = nextModelId; setModelId(nextModelId); setError(null) }
   const submit = async () => {
-    if (blocked || submitLock.current || !editor.text.trim()) return
+    if (blocked || mention.invalid || submitLock.current || !editor.text.trim()) return
     if (demo) { setPanel('demo'); return }
     if (selectionProblem) { setError(selectionProblem); return }
     submitLock.current = true
     setSubmitting(true)
     setError(null)
     try {
-      const text = withComposerConnector(editor.text, connectorId)
+      const text = withComposerConnector(mention.submissionText, connectorId)
       const success = await onSubmit(employeeId, text, {
         modelId: selectedModel,
         attachmentSessionId: draft.attachment.session?.sessionId,
-        attachmentRefs: attachment?.attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })),
+        attachmentRefs: mention.attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })),
       })
       if (success) {
         editor.update('')
@@ -129,6 +138,7 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
         setConnectorId(undefined)
         draft.attachment.session = null
         draft.attachment.attachments = []
+        draft.attachment.fileMentions = {}
         draft.epoch++
       } else setError('需求尚未发送成功，请查看错误提示后重试，输入内容已保留。')
     } catch (cause) { setError(cause instanceof Error ? cause.message : '需求发送失败，请重试。') }
@@ -139,20 +149,24 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
     <div className="sep-home-assistant-heading"><img src={assistantImage} width={64} height={64} alt="" /><div><h2>AI 助手</h2><p>我可以帮您完成任务、分析数据、创建内容或调用企业员工</p></div><button type="button" aria-label="打开任务中心" onClick={onCreate}><ChevronRight size={19} aria-hidden /></button></div>
     <div className="sep-home-composer" data-composer-id={draft.composerId} data-editor-version={editor.version.current}>
       <ComposerResizeHandle inputRef={input} />
-      <textarea {...speech.inputProps} aria-label="工作需求" placeholder="请输入您的需求，例如：帮我分析本月销售数据，生成可视化报表" value={editor.text} onChange={event => editor.update(event.target.value)} disabled={busy || submitting} rows={2}
-        onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); void submit() } }} />
+      <FileMentionEditor mention={mention} {...speech.inputProps} {...mention.editorAria} aria-label="工作需求" placeholder="请输入您的需求，例如：帮我分析本月销售数据，生成可视化报表" value={editor.text} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} disabled={busy || submitting} rows={2}
+        onCompositionStart={() => { speech.inputProps.onCompositionStart(); mention.compositionStart() }}
+        onCompositionEnd={event => { speech.inputProps.onCompositionEnd(); mention.compositionEnd(event.currentTarget) }}
+        onKeyDown={event => { mention.keyDown(event); speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); void submit() } }} />
+      <FileMentionChips mention={mention} />
       {employeeId !== GENERAL_ASSISTANT_ID ? <div className="sep-home-draft-chips">
         <button type="button" disabled={blocked} title={employee?.name} onClick={() => selectEmployee(GENERAL_ASSISTANT_ID)}><Bot size={12} aria-hidden />{employee?.name ?? '请重新选择员工'}<X size={11} aria-hidden /></button>
       </div> : null}
       {connector ? <div className="sep-home-draft-chips"><button type="button" disabled={blocked} aria-label={`移除${connector.name}连接器`} onClick={() => selectConnector(undefined)}><Link size={12} aria-hidden />{connector.name}<X size={11} aria-hidden /></button></div> : null}
-      {attachment?.attachments.length ? <div className="sep-home-attachments" aria-label="已添加附件">{attachment.attachments.map(item => <div key={item.attachmentId}><FileText size={15} aria-hidden /><span title={item.displayName}>{item.displayName}<small>{item.extractionStatus === 'failed' ? '解析失败' : item.extractionStatus === 'pending' ? '正在处理' : '已添加'}</small></span><button type="button" disabled={blocked} onClick={() => attachment.remove(item.attachmentId)} aria-label={`移除 ${item.displayName}`}><X size={13} aria-hidden /></button></div>)}</div> : null}
+      {attachment && mention.unreferencedAttachments.length ? <div className="sep-home-attachments" aria-label="已添加附件">{mention.unreferencedAttachments.map(item => <div key={item.attachmentId}><FileText size={15} aria-hidden /><span title={item.displayName}>{item.displayName}<small>{item.extractionStatus === 'failed' ? '解析失败' : item.extractionStatus === 'pending' ? '正在处理' : '已添加'}</small></span><button type="button" disabled={blocked} onClick={() => attachment.remove(item.attachmentId)} aria-label={`移除 ${item.displayName}`}><X size={13} aria-hidden /></button></div>)}</div> : null}
       <div className="sep-home-composer-toolbar"><div className="sep-home-composer-actions">
         <ComposerAddMenu disabled={blocked} demo={demo} selected={connectorId} onFile={() => demo ? setPanel('file') : attachment?.select()} onSelect={selectConnector} onManage={onManageConnectors} />
+        {!demo && <FileMentionPicker mention={mention} />}
         <button type="button" disabled={blocked} onClick={() => { setQuery(''); setPanel('employee') }}><Settings size={15} aria-hidden /><span>选择员工</span></button>
         <div className="sep-home-model-control" aria-label="选择模型">
           <ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={blocked} onChange={selectModel} />
         </div>
-      </div><div className="sep-home-composer-send"><SpeechInputActions speech={speech} disabled={demo || busy || submitting || Boolean(attachment?.busy)} /><button type="button" className="sep-home-send" aria-label="发送需求" disabled={blocked || !editor.text.trim()} onClick={() => { void submit() }}>{submitting || attachment?.busy ? <LoaderCircle size={19} aria-hidden /> : <Send size={19} aria-hidden />}</button></div></div>
+      </div><div className="sep-home-composer-send"><SpeechInputActions speech={speech} disabled={demo || busy || submitting || Boolean(attachment?.busy)} /><button type="button" className="sep-home-send" aria-label="发送需求" disabled={blocked || mention.invalid || !editor.text.trim()} onClick={() => { void submit() }}>{submitting || attachment?.busy ? <LoaderCircle size={19} aria-hidden /> : <Send size={19} aria-hidden />}</button></div></div>
     </div>
     {error || attachment?.error ? <p role="alert" className="sep-home-composer-error">{error ?? attachment?.error}</p> : null}
     <Dialog.Root open={panel !== null} onOpenChange={open => { if (!open) setPanel(null) }}><Dialog.Portal><Dialog.Overlay className="sep-home-dialog-overlay" />

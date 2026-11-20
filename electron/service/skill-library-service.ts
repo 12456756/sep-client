@@ -13,6 +13,7 @@ import type { LocalSkillSubmission, SaveSkillInput, SaveSkillResult, SkillLibrar
 import { FOLLOW_PLATFORM_SKILL_VERSION, hasPersonalSkillVersionName, SKILL_VERSION_NAME_TAKEN } from '../../src/shared/skill-library'
 import { skillRewriteInputSchema, skillRewriteOutputSchema, splitSkillRewriteSource, type SkillRewriteInput, type SkillRewriteResult } from '../../src/shared/skill-rewrite'
 import type { SkillRewritePort } from '../domain/skill-rewrite'
+import type { AttachmentService } from './attachment-service'
 
 interface SkillPlatform {
   skills(employeeId: string, token: string): Promise<unknown>
@@ -28,6 +29,7 @@ interface Options {
   submissions: SkillSubmissionStore
   platform: SkillPlatform
   rewriter?: SkillRewritePort
+  attachments?: Pick<AttachmentService, 'referenceMaterials'>
   authorizeRewriteModel?: (modelId: string) => Promise<{ subscriptionId: string } | null>
   now?: () => number
 }
@@ -301,7 +303,12 @@ export class SkillLibraryService {
       signal.throwIfAborted()
       if (!grant) throw new AppError('MODEL_NOT_ALLOWED')
       if (!this.options.rewriter) throw new AppError('SERVICE_UNAVAILABLE')
-      const output = skillRewriteOutputSchema.parse(await this.options.rewriter.rewrite({ ...input, subscriptionId: grant.subscriptionId, skillName: item.capability.name }, signal))
+      const { referenceFiles, ...request } = input
+      if (referenceFiles && !this.options.attachments) throw new AppError('SERVICE_UNAVAILABLE')
+      const referenceMaterials = referenceFiles && await this.options.attachments!.referenceMaterials(scope, referenceFiles)
+      this.checkScope(scope)
+      signal.throwIfAborted()
+      const output = skillRewriteOutputSchema.parse(await this.options.rewriter.rewrite({ ...request, subscriptionId: grant.subscriptionId, skillName: item.capability.name, ...(referenceMaterials ? { referenceMaterials } : {}) }, signal))
       this.checkScope(scope)
       signal.throwIfAborted()
       if (splitSkillRewriteSource(output.body).metadata) throw new AppError('SKILL_REWRITE_FAILED')

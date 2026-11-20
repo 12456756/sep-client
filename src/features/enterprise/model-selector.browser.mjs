@@ -54,45 +54,92 @@ test('model catalog shows SEP display names and billing labels without widening 
   assert.equal(await page.getByText('未授权模型', { exact: true }).count(), 0)
 })
 
-test('scheduled creation submits the saved default until explicitly overridden', async t => {
+test('skill adjustments and scheduled creation submit the saved default until explicitly overridden', async t => {
   const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } })
   t.after(() => page.close())
   await page.route(/\/main\.tsx(?:\?.*)?$/, route => route.fulfill({ contentType: 'text/javascript', body: `${entry}
+    import '/index.css';
+    import '/styles/enterprise.css';
+    import '/styles/arrange.css';
+    import '/styles/scheduled-tasks.css';
+    import '/styles/skills.css';
+    import '/styles/skill-detail.css';
     import { DefaultModelSettings } from '/components/enterprise/DefaultModelSettings.tsx';
     import { ModelCatalogProvider } from '/components/enterprise/ModelCatalogContext.tsx';
     import { ModelPreferenceProvider } from '/components/workspace/model-preference-scope.tsx';
     import { ScheduledTaskHome } from '/components/enterprise/scheduled/ScheduledTaskHome.tsx';
+    import { SkillRewriteComposer } from '/components/enterprise/skills/SkillRewriteComposer.tsx';
+    import { SkillRewriteSession } from '/features/enterprise/skill-rewrite-session.ts';
     const models = ['first', 'preferred', 'next-default', 'manual'];
     const catalog = models.map(modelId => ({ modelId, displayName: modelId, billingMultiplier: '1', discountLabel: '', isFree: false }));
     const employees = [{ id: 'employee', assignedToMe: true, availability: 'ready', allowedModels: models }];
     const workspace = { myEmployees: employees, route: { name: 'scheduled' }, chooseFolder: async () => 'D:/reports' };
+    const session = new SkillRewriteSession();
     const noop = () => {};
     window.electronAPI = { getDefaultWorkspaceDirectory: async () => ({ success: false }) };
-    window.testModels = { scheduled: [] };
+    window.testModels = { scheduled: [], skill: [] };
     const scheduled = { submitCreation: async input => { window.testModels.scheduled.push(input.modelId); } };
+    const skill = { content: '# Skill', revision: 1, disabled: false, session, manualEdits: [], onCancel: noop, onApply: noop, onUndo: noop,
+      onRewrite: async input => { window.testModels.skill.push(input.modelId); return { requestId: input.requestId, content: '# Updated', summary: 'Updated', changes: [] }; } };
     const h = React.createElement;
     ReactDOM.createRoot(document.getElementById('root')).render(h(ModelPreferenceProvider, { scope: { enterpriseId: 'test', memberId: 'member' } },
-      h(ModelCatalogProvider, { models: catalog }, h(DefaultModelSettings, { models }),
-        h('section', { id: 'schedule' }, h(ScheduledTaskHome, { workspace, model: scheduled, onCreate: noop })))));` }))
+      h(ModelCatalogProvider, { models: catalog }, h('main', { className: 'ent-shell', style: { display: 'block', overflow: 'auto' } },
+        h(DefaultModelSettings, { models }),
+        h('section', { id: 'schedule', className: 'ent-sch-main-pane' }, h(ScheduledTaskHome, { workspace, model: scheduled, onCreate: noop })),
+        h('section', { id: 'skill', className: 'skill-detail' }, h(SkillRewriteComposer, skill))))));` }))
   await page.goto(base)
   const settings = page.getByLabel('默认模型', { exact: true })
-  const schedule = page.locator('#schedule')
+  const schedule = page.locator('#schedule'), skill = page.locator('#skill')
   const scheduleModel = schedule.getByRole('combobox', { name: '模型', exact: true })
+  const skillModel = skill.getByRole('combobox', { name: '模型', exact: true })
   await settings.selectOption('preferred')
   assert.match(await scheduleModel.textContent(), /preferred/)
+  assert.match(await skillModel.textContent(), /preferred/)
+  for (const width of [1200, 420]) {
+    await page.setViewportSize({ width, height: 1000 })
+    for (const [section, toolbar, model, inputName, sendName] of [
+      [schedule, '.ent-sch-composer-tools-inline', scheduleModel, '定时任务工作内容', '创建并启用定时任务'],
+      [skill, '.skill-rewrite-tools', skillModel, '技能调整要求', '发送调整要求'],
+    ]) {
+      const trigger = section.locator(toolbar).getByRole('button', { name: '引用文件', exact: true })
+      const send = section.locator(toolbar).getByRole('button', { name: sendName, exact: true })
+      const [atBox, modelBox, sendBox] = await Promise.all([trigger, model, send].map(control => control.boundingBox()))
+      const centerY = box => box.y + box.height / 2
+      assert.ok(Math.abs(centerY(atBox) - centerY(modelBox)) <= 1)
+      assert.ok(Math.abs(centerY(atBox) - centerY(sendBox)) <= 1)
+      assert.ok(atBox.x >= 0 && atBox.x + atBox.width <= modelBox.x && modelBox.x + modelBox.width <= sendBox.x && sendBox.x + sendBox.width <= width)
+      const input = section.getByLabel(inputName)
+      await trigger.click()
+      const picker = page.getByRole('listbox', { name: '可引用文件' })
+      await picker.waitFor()
+      assert.equal(await input.inputValue(), '@')
+      await input.press('Escape')
+      await picker.waitFor({ state: 'hidden' })
+      await input.fill('')
+    }
+  }
+  await page.setViewportSize({ width: 1200, height: 1000 })
   await schedule.getByRole('button', { name: '选择目录' }).click()
   await schedule.getByLabel('定时任务工作内容').fill('Create a report')
   await schedule.getByRole('button', { name: '创建并启用定时任务' }).click()
-  assert.deepEqual(await page.evaluate(() => window.testModels), { scheduled: ['preferred'] })
+  await skill.getByLabel('技能调整要求').fill('Update the skill')
+  await skill.getByRole('button', { name: '发送调整要求' }).click()
+  assert.deepEqual(await page.evaluate(() => window.testModels), { scheduled: ['preferred'], skill: ['preferred'] })
 
   await settings.selectOption('next-default')
   assert.match(await scheduleModel.textContent(), /next-default/)
-  await scheduleModel.click()
-  await page.getByRole('dialog', { name: '选择模型' }).getByRole('option', { name: 'manual', exact: true }).click()
+  assert.match(await skillModel.textContent(), /next-default/)
+  for (const model of [scheduleModel, skillModel]) {
+    await model.click()
+    await page.getByRole('dialog', { name: '选择模型' }).getByRole('option', { name: 'manual', exact: true }).click()
+  }
   await settings.selectOption('first')
   assert.match(await scheduleModel.textContent(), /manual/)
+  assert.match(await skillModel.textContent(), /manual/)
   await schedule.getByRole('button', { name: '创建并启用定时任务' }).click()
-  assert.deepEqual(await page.evaluate(() => window.testModels), { scheduled: ['preferred', 'manual'] })
+  await skill.getByLabel('技能调整要求').fill('Adjust the output')
+  await skill.getByRole('button', { name: '发送调整要求' }).click()
+  assert.deepEqual(await page.evaluate(() => window.testModels), { scheduled: ['preferred', 'manual'], skill: ['preferred', 'manual'] })
 })
 
 test('model selection opens a searchable popover above the trigger with the knowledge picker style', async t => {

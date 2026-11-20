@@ -47,7 +47,8 @@ export function creationAccepted(creation: ScheduledCreation, request: Scheduled
   return creation.id === request.requestId && (creation.stage === 'cancelled' || (
     creation.revision > (request.expectedRevision ?? 0) && creation.messages.at(-1)?.content === request.message &&
     creation.request.modelId === request.modelId && creation.request.workDir === request.workDir && creation.request.timezone === request.timezone &&
-    creation.request.permissions.preset === request.permissions.preset && creation.request.permissions.approvalMode === request.permissions.approvalMode
+    creation.request.permissions.preset === request.permissions.preset && creation.request.permissions.approvalMode === request.permissions.approvalMode &&
+    JSON.stringify(creation.request.referenceFiles) === JSON.stringify(request.referenceFiles)
   ))
 }
 

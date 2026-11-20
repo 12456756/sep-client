@@ -8,7 +8,7 @@ import { extname } from 'node:path'
 import type { AttachmentExtractor } from '../domain/attachment-extraction'
 import type { ResolvedAttachmentInput } from '../domain/attachment-input'
 import { AppError } from '../errors/app-error'
-import { attachmentImportLimits } from '../../src/shared/attachment-contracts'
+import { attachmentImportLimits, referenceAttachmentSelectionSchema, referenceTextLimit, type ReferenceAttachmentSelection, type ReferenceMaterials } from '../../src/shared/attachment-contracts'
 
 
 export interface AttachmentImportResult {
@@ -50,9 +50,58 @@ export class AttachmentService {
   removeFromSession(sessionId: string, attachmentId: string, expectedRevision?: number): Promise<AttachmentImportSession> { return this.remove(this.currentScope(), sessionId, attachmentId, expectedRevision) }
   cancelSession(sessionId: string): Promise<boolean> { return this.cancel(this.currentScope(), sessionId) }
 
+  async referenceMaterials(scope: TaskOwnerScope, raw: ReferenceAttachmentSelection): Promise<ReferenceMaterials> {
+    const selection = referenceAttachmentSelectionSchema.parse(raw)
+    const assertOwner = () => {
+      const current = this.currentScope()
+      if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    }
+    assertOwner()
+    const session = await this.get(scope, selection.sessionId)
+    if (!session || session.target.kind !== 'compose' || session.status !== 'open' || session.expiresAt <= Date.now()) {
+      throw new AppError('INVALID_ARGUMENT', { message: '文件引用已失效，请重新选择。' })
+    }
+    const materials: ReferenceMaterials = []
+    const seen = new Set<string>()
+    for (const ref of selection.attachments) {
+      const item = session.attachments.find(candidate => candidate.attachmentId === ref.attachmentId && candidate.sha256 === ref.sha256)
+      if (!item) throw new AppError('INVALID_ARGUMENT', { message: '文件引用已变化，请重新选择。' })
+      if (seen.has(item.attachmentId)) continue
+      seen.add(item.attachmentId)
+      await this.store.read(scope, selection.sessionId, item.attachmentId)
+      const extraction = await this.store.readExtraction?.(scope, selection.sessionId, item.attachmentId)
+      if (!extraction?.text.trim() || !['ready', 'partial'].includes(extraction.status)) throw new AppError('INVALID_ARGUMENT', { message: `无法读取「${item.displayName}」的文本，请选择可提取文本的文件。` })
+      materials.push({ name: item.displayName, text: extraction.text.slice(0, referenceTextLimit), truncated: extraction.status === 'partial' || extraction.text.length > referenceTextLimit })
+      assertOwner()
+    }
+    return materials
+  }
+
   async previewTaskAttachment(taskId: string, attachmentId: string, sha256: string): Promise<AttachmentPreview> {
     const { item, bytes } = await this.readTaskAttachment(taskId, attachmentId, sha256)
-    const mediaType = item.mediaType
+    return this.imagePreview(item, bytes)
+  }
+
+  async previewDraftAttachment(sessionId: string, attachmentId: string, sha256: string): Promise<AttachmentPreview> {
+    const scope = this.currentScope()
+    const findImage = async () => {
+      const session = await this.get(scope, sessionId)
+      const current = this.currentScope()
+      if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+      if (session?.target.kind !== 'compose' || session.status !== 'open' || session.expiresAt <= Date.now()) throw new AppError('NOT_FOUND')
+      const item = session.attachments.find(candidate => candidate.attachmentId === attachmentId && candidate.sha256 === sha256)
+      if (!item || item.byteLength > attachmentImportLimits.maxFileBytes) throw new AppError('NOT_FOUND')
+      return item
+    }
+    const item = await findImage()
+    if (!/^image\/(?:png|jpeg|webp)$/.test(item.mediaType)) throw new Error('ATTACHMENT_PREVIEW_UNSUPPORTED')
+    const bytes = await this.store.read(scope, sessionId, attachmentId)
+    await findImage()
+    return this.imagePreview(item, bytes)
+  }
+
+  private imagePreview(item: AttachmentView, bytes: Buffer): AttachmentPreview {
+    const { attachmentId, sha256, mediaType } = item
     if (mediaType !== 'image/png' && mediaType !== 'image/jpeg' && mediaType !== 'image/webp') throw new Error('ATTACHMENT_PREVIEW_UNSUPPORTED')
     return { attachmentId, sha256, mediaType, bytes: new Uint8Array(bytes),
       ...(item.width ? { width: item.width } : {}), ...(item.height ? { height: item.height } : {}) }

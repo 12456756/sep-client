@@ -13,6 +13,9 @@ import type { SkillDraftChange, SkillManualEdit } from '../../../features/enterp
 import { SkillEditRecord } from './SkillEditRecord';
 import type { AdjustmentRecord, RewriteRound, SkillRewriteSession } from '../../../features/enterprise/skill-rewrite-session';
 import { effectiveRewriteStatus } from '../../../features/enterprise/skill-rewrite-session';
+import { FileMentionChips, FileMentionPicker } from '../attachments/FileMentionPicker';
+import { FileMentionEditor } from '../attachments/FileMentionEditor';
+import { useTextReferenceComposer } from '../attachments/use-text-reference-composer';
 
 interface Props {
   content: string;
@@ -43,6 +46,8 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
   const generating = Boolean(state.activeRequestId);
   const setRounds = (update: (rounds: AdjustmentRecord[]) => AdjustmentRecord[]): void => session.setRounds(update);
   const input = useRef<HTMLTextAreaElement>(null);
+  const files = useTextReferenceComposer({ input, value: prompt, update: value => session.update({ prompt: value }), bindingKey: 'skill-rewrite', disabled: disabled || generating, retained: session.attachment });
+  const { mention } = files;
   const composer = useRef<HTMLDivElement>(null);
   const history = useRef<HTMLDivElement>(null);
   const catalog = useModelCatalog();
@@ -68,10 +73,10 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
     if (panel && last) panel.scrollTop += last.getBoundingClientRect().top - panel.getBoundingClientRect().top;
   }, [latestRound?.id, latestRound?.status]);
 
-  const preview = async (request = prompt, previousModelId?: string): Promise<void> => {
+  const preview = async (request = mention.submissionText, previousModelId?: string, previousFiles?: RewriteRound['referenceFiles']): Promise<void> => {
     const model = previousModelId && models.includes(previousModelId) ? previousModelId : selectedModel;
-    if (disabled || generating || !model || !request.trim() || !content.trim()) return;
-    const round: RewriteRound = { kind: 'rewrite', id: crypto.randomUUID(), prompt: request.trim(), source: content, revision, model, status: 'generating' };
+    if (disabled || generating || (!previousModelId && files.blocked) || !model || !request.trim() || request.trim().length > 8_000 || !content.trim()) return;
+    const round: RewriteRound = { kind: 'rewrite', id: crypto.randomUUID(), prompt: request.trim(), source: content, revision, model, status: 'generating', referenceFiles: previousModelId ? previousFiles : files.referenceFiles };
     input.current?.focus();
     await session.generate(round, onRewrite);
   };
@@ -110,7 +115,7 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
           <div className="skill-chat-user"><span className="skill-chat-speaker">你</span><p>{round.prompt}</p></div>
           <div className="skill-chat-assistant"><div className="skill-chat-assistant-heading"><Sparkles size={15} aria-hidden /><strong>修改建议</strong><span>{round.model}</span></div>
             {status === 'generating' ? <p className="skill-chat-round-status" role="status"><LoaderCircle size={14} className="ent-spin" aria-hidden />正在生成修改建议…</p>
-              : status === 'failed' ? <div className="skill-chat-round-status"><span className="skill-error" role="alert">{round.error}</span><button className="skill-text-button" type="button" disabled={disabled || generating} onClick={() => void preview(round.prompt, round.model)}><RefreshCw size={13} aria-hidden />重试</button></div>
+              : status === 'failed' ? <div className="skill-chat-round-status"><span className="skill-error" role="alert">{round.error}</span><button className="skill-text-button" type="button" disabled={disabled || generating} onClick={() => void preview(round.prompt, round.model, round.referenceFiles)}><RefreshCw size={13} aria-hidden />重试</button></div>
                 : status === 'pending' && round.result ? <>
                   <p className="skill-chat-response">{round.result.summary}</p>
                   <section className="skill-rewrite-preview" aria-label={`第 ${number} 轮修改预览`}>
@@ -121,7 +126,7 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
                   </section>
                 </> : round.result && (status === 'accepted' || status === 'undone') ? <SkillEditRecord label={statusLabels[status]} applied={status === 'accepted'} canUndo={canUndo} disabled={disabled || generating}
                   undoLabel="撤销本轮采纳" undoHint={undoHint} onUndo={() => undo(round)} before={round.source} after={round.result.content} summary={round.result.summary} changes={round.result.changes} />
-                  : <div className={`skill-chat-round-status is-${status}`} role="status"><span>{statusLabels[status as keyof typeof statusLabels]}</span>{status === 'stale' || status === 'cancelled' ? <button className="skill-text-button" type="button" disabled={disabled || generating} onClick={() => void preview(round.prompt, round.model)}><RefreshCw size={13} aria-hidden />重新生成</button> : null}</div>}
+                  : <div className={`skill-chat-round-status is-${status}`} role="status"><span>{statusLabels[status as keyof typeof statusLabels]}</span>{status === 'stale' || status === 'cancelled' ? <button className="skill-text-button" type="button" disabled={disabled || generating} onClick={() => void preview(round.prompt, round.model, round.referenceFiles)}><RefreshCw size={13} aria-hidden />重新生成</button> : null}</div>}
           </div>
         </article>;
       })}
@@ -131,8 +136,14 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
       {cancelError ? <p className="skill-error" role="alert">{cancelError}</p> : null}
       <div className="skill-rewrite-shortcuts" aria-label="快捷调整要求">{shortcuts.map(item => <button type="button" key={item.label} disabled={disabled} onClick={() => { session.update({ prompt: item.prompt }); input.current?.focus(); }}><item.icon size={13} aria-hidden />{item.label}</button>)}</div>
       <div ref={composer} className="skill-rewrite-composer">
-        <textarea ref={input} value={prompt} rows={1} maxLength={8_000} aria-label="技能调整要求" placeholder="描述你的调整要求…" disabled={disabled} onChange={event => session.update({ prompt: event.target.value })} onKeyDown={event => { if (isSubmitEnter(event, event.nativeEvent.isComposing)) { event.preventDefault(); void preview(); } }} />
-        <div className="skill-rewrite-tools"><div className="skill-rewrite-model"><ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={disabled || generating} onChange={modelId => session.update({ modelId })} /></div>{generating ? <IconHint label="停止生成" side="top"><button type="button" className="skill-rewrite-send" aria-label="停止生成" onClick={() => void cancel()}><Square size={14} aria-hidden /></button></IconHint> : <IconHint label="发送调整要求" side="top"><button type="button" className="skill-rewrite-send" aria-label="发送调整要求" disabled={disabled || !selectedModel || !prompt.trim() || !content.trim()} onClick={() => void preview()}><ArrowUp size={18} aria-hidden /></button></IconHint>}</div>
+        <FileMentionEditor mention={mention} ref={input} {...mention.editorAria} value={prompt} rows={1} maxLength={8_000} aria-label="技能调整要求" placeholder="描述你的调整要求…" disabled={disabled} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} onCompositionStart={mention.compositionStart} onCompositionEnd={event => mention.compositionEnd(event.currentTarget)} onKeyDown={event => { mention.keyDown(event); if (isSubmitEnter(event, event.nativeEvent.isComposing)) { event.preventDefault(); void preview(); } }} />
+        <FileMentionChips mention={mention} />
+        {files.error && <p className="skill-error" role="alert">{files.error}</p>}
+        <div className="skill-rewrite-tools">
+          <FileMentionPicker mention={mention} />
+          <div className="skill-rewrite-model"><ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={disabled || generating} onChange={modelId => session.update({ modelId })} /></div>
+          {generating ? <IconHint label="停止生成" side="top"><button type="button" className="skill-rewrite-send" aria-label="停止生成" onClick={() => void cancel()}><Square size={14} aria-hidden /></button></IconHint> : <IconHint label="发送调整要求" side="top"><button type="button" className="skill-rewrite-send" aria-label="发送调整要求" disabled={disabled || files.blocked || !selectedModel || !prompt.trim() || !content.trim()} onClick={() => void preview()}><ArrowUp size={18} aria-hidden /></button></IconHint>}
+        </div>
         <ComposerResizeHandle inputRef={input} resizeTargetRef={composer} />
       </div>
     </div>

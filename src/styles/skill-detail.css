@@ -80,10 +80,11 @@
 .skill-rewrite-shortcuts button:disabled { opacity:.5; }
 .skill-rewrite-composer { position:relative; display:flex; align-items:center; gap:12px; min-height:92px; max-height:224px; padding:12px 26px 12px 17px; border:1px solid var(--ent-line); border-radius:var(--ent-radius-sm); background:var(--ent-panel); box-shadow:var(--ent-shadow); }
 .skill-rewrite-composer:focus-within { border-color:var(--ent-brand-border); }
-.skill-rewrite-composer > textarea { display:block; align-self:stretch; flex:1; width:100%; min-width:0; min-height:32px; max-height:none; padding:5px 0; resize:none; border:0; color:var(--ent-ink); background:transparent; font-family:inherit; line-height:1.7; font-size:13px; }
-.skill-rewrite-composer > textarea::placeholder { color:var(--ent-ink-3); }
-.skill-rewrite-composer > textarea:focus-visible { outline:1px solid var(--ent-brand-border); outline-offset:3px; border-radius:3px; }
-.skill-rewrite-tools { display:flex; align-self:flex-end; align-items:center; gap:10px; min-width:0; }
+.skill-rewrite-composer > .ent-file-mention-editor { flex:1; align-self:stretch; }
+.skill-rewrite-composer textarea { display:block; width:100%; min-width:0; min-height:32px; max-height:none; padding:5px 0; resize:none; border:0; color:var(--ent-ink); background:transparent; font-family:inherit; line-height:1.7; font-size:13px; }
+.skill-rewrite-composer textarea::placeholder { color:var(--ent-ink-3); }
+.skill-rewrite-composer textarea:focus-visible { outline:1px solid var(--ent-brand-border); outline-offset:3px; border-radius:3px; }
+.skill-rewrite-tools { display:flex; flex:none; align-self:flex-end; align-items:center; gap:10px; min-width:0; }
 .skill-rewrite-model { min-width:0; max-width:240px; }
 .skill-rewrite-model .ent-model-trigger { max-width:100%; }
 .skill-rewrite-model .ent-model-trigger > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -114,9 +115,8 @@
 .skill-rewrite-preview-footer > p { margin:0; color:var(--ent-ink-3); font-size:11px; }
 @container (max-width:639px) {
  .skill-rewrite-composer { flex-direction:column; gap:8px; min-height:102px; padding:12px 26px 12px 12px; }
- .skill-rewrite-composer > textarea { flex:1 1 auto; }
- .skill-rewrite-tools { flex:none; width:100%; justify-content:flex-end; }
- .skill-rewrite-model { max-width:calc(100% - 46px); }
+ .skill-rewrite-composer > .ent-file-mention-editor { flex:1 1 auto; }
+ .skill-rewrite-tools { width:100%; justify-content:flex-end; }
  .skill-rewrite-comparison { grid-template-columns:minmax(0,1fr); gap:12px; }
  .skill-rewrite-comparison pre { height:180px; }
  .skill-chat-user { margin-left:20px; }

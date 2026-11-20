@@ -361,6 +361,7 @@ class BackendRuntime {
       scope: this, token: () => this.authSession.getValidAccessToken(),
       subscriptions: () => this.employees.list(), versions: skillVersions,
       submissions: new SkillSubmissionStore(userDataDir),
+      attachments: this.attachments,
       platform: { skills: getEmployeeSkills, list: listSkillVersions, preview: previewSkill, create: createPersonalSkillVersion },
       authorizeRewriteModel: modelId => this.employees.authorizeModel(modelId),
       rewriter: { rewrite: async (input, signal) => {
@@ -640,6 +641,7 @@ class BackendRuntime {
     })
     this.scheduledCreations = new ScheduledCreationService({
       repository: scheduledStorage, scope: this, schedules: this.scheduledTasks,
+      attachments: this.attachments,
       catalog: async () => (await this.employees.refresh()).filter(employee => employee.status === 'ACTIVE').map(employee => ({
         subscriptionId: employee.subscriptionId, name: employee.name, position: employee.position ?? '',
         functionalCategory: employee.functionalCategory ?? '', description: employee.description ?? '', allowedModels: [...employee.allowedModels],
