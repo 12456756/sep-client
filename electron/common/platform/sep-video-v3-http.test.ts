@@ -15,6 +15,8 @@ test('negotiates actual SEP V3 video runtime and saves a tool-generated video ov
   const scope = { enterpriseId: 'enterprise-http', memberId: 'member-http', subscriptionId: 'sub-video-http' }
   const spec = { durationSeconds: 5, aspectRatio: '9:16', resolution: '720p', audio: false, outputFormat: 'video/mp4' }
   const sources = Object.fromEntries(Object.keys(spec).map(field => [field, { source: 'model', decisionRef: 'video-brief' }]))
+  const creativeBrief = 'A short vertical product video'
+  const expectedBrief = `Create a new video from the following text description.\n\n${creativeBrief}`
   const calls: { path: string; body?: Record<string, unknown> }[] = []
   let clientRequestId = ''
   const sample = sepRuntimeV3Fixture('video')
@@ -49,6 +51,7 @@ test('negotiates actual SEP V3 video runtime and saves a tool-generated video ov
       const root = '/api/gateway/v1/media/video-real'
       if (path === `${root}/quotes`) {
         assert.equal(body?.protocolVersion, 3)
+        assert.equal(body?.creativeBrief, expectedBrief)
         assert.equal('parameters' in body!, false)
         assert.deepEqual(body?.referenceIds, [])
         assert.deepEqual(body?.requestedSpec, spec)
@@ -64,6 +67,7 @@ test('negotiates actual SEP V3 video runtime and saves a tool-generated video ov
       if (path === `${root}/requests` && request.method === 'POST') {
         assert.equal(clientRequestId, '')
         assert.equal(body?.quoteId, 'quote-video-http')
+        assert.equal(body?.creativeBrief, expectedBrief)
         assert.equal('parameters' in body!, false)
         assert.deepEqual(body?.requestedSpec, spec)
         assert.deepEqual(body?.parameterSources, sources)
@@ -119,13 +123,14 @@ test('negotiates actual SEP V3 video runtime and saves a tool-generated video ov
     employee, requestApproval: async () => true })
   assert.ok(tools)
   await assertMediaToolsInModelRequest(directory, { videoTools: tools }, ['video_generate', 'video_from_image', 'video_get_job'])
-  const result = await tools.execute('video_generate', { creativeBrief: 'A short vertical product video', protocolVersion: 3,
+  const result = await tools.execute('video_generate', { creativeBrief, protocolVersion: 3,
     requestedSpec: spec, parameterSources: sources, specRevision: 1 }) as { jobId: string }
   await service.waitForRun('task-video-http', 'run-video-http')
   const saved = await store.getJob(scope, 'task-video-http', result.jobId)
   assert.equal(saved?.saveStatus, 'SAVED')
   assert.equal(saved?.receipt?.status, 'SUCCEEDED')
   assert.equal(saved?.receipt?.billingStatus, 'SETTLED')
+  assert.equal(saved?.request.creativeBrief, expectedBrief)
   assert.deepEqual(saved?.request.requestedSpec, spec)
   assert.deepEqual(saved?.request.parameterSources, sources)
   assert.deepEqual(await store.readAsset(scope, 'task-video-http', result.jobId, 'output-video-http'), bytes)
