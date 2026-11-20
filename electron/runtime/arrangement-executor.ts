@@ -1,6 +1,5 @@
 import { withApprovedSkillReadPaths } from './run-skill-policy'
 import { runSkillDisplay } from '../common/run-skill-display'
-import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
 /**
  * 编排式任务的节点执行器。
  *
@@ -48,6 +47,7 @@ import type { AttachmentInputPort } from '../domain/attachment-input'
 import type { ArrangementMediaPort, ArrangementMediaSession } from '../domain/arrangement-media-runtime'
 import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import { logger } from '../common/logger'
+import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
 import { AppError } from '../errors/app-error'
 import type { ModelTraceFactory } from '../domain/model-trace'
 import type { DiagnosticPhase } from '../domain/arrangement-diagnostic'
@@ -523,6 +523,8 @@ export class ArrangementExecutor {
     let terminalMediaFailure: unknown
     let diagnosticPhase: DiagnosticPhase = 'node-setup'
     const mediaEvidence = this.options.arrangementDiagnostics ? trackMediaToolFailureEvidence() : undefined
+    const expectsVideo = node.mediaRequirements?.some(item => item.kind === 'video') === true ||
+      node.deliverables?.some(file => file.artifact?.kind === 'video') === true
     const requiresMediaBridge = !!node.mediaRequirements?.length ||
       !!node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')
     // File-only scheduled assistants have a model grant but no task-level employee binding.
@@ -723,13 +725,11 @@ export class ArrangementExecutor {
         onJobCreated: mediaSession?.onJobCreated,
         recoverJobIds: mediaSession?.recoverJobIds,
       })
-      const requiresVideoBridge = node.mediaRequirements?.some(item => item.kind === 'video') === true ||
-        node.deliverables?.some(file => file.artifact?.kind === 'video') === true
       const rawVideoTools = await video?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.onApprovalRequest(request),
         onJobCreated: mediaSession?.onJobCreated, recoverJobIds: mediaSession?.recoverJobIds,
-        autoApproveMedia: requiresVideoBridge,
+        autoApproveMedia: expectsVideo,
         onTerminalFailure: async error => {
           terminalMediaFailure ??= error
           await worker?.abort().catch(() => undefined)
