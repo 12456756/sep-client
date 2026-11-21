@@ -11,6 +11,7 @@ import { chromium } from 'playwright-core'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const creationNavigationOnly = process.argv.includes('--creation-navigation')
 const historyLabelsOnly = process.argv.includes('--history-labels')
+const defaultWorkspaceOnly = process.argv.includes('--default-workspace')
 const fixture = `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -95,7 +96,11 @@ window.electronAPI = {
  async acknowledgeScheduledRun(value) { counters.acknowledge++; if (value.confirmed !== true) throw Error('missing acknowledgement'); const run = data.occurrences.find(run => run.id === value.id); run.status = 'cancelled'; run.finishedAt = Date.now(); return {success: true}; },
  async cancelScheduledRun(id) { data.occurrences.find(run => run.id === id).status = 'cancelled'; return {success: true}; },
  async resumeScheduledTasks() { data.schedulerState = 'running'; return {success: true}; },
- async getDefaultWorkspaceDirectory() { return { success: true, path: null }; },
+ async getDefaultWorkspaceDirectory() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('defer-workspace')) return new Promise(resolve => { (window.pendingDefaultDirectories ??= []).push(resolve); });
+  return { success: true, path: params.get('default-workspace') };
+ },
  onPiEvent() { return () => {}; },
  async listTaskRuns() { return { success: true, runs: [] }; },
  async getTaskTimeline() { return { success: true, events: [] }; },
@@ -154,6 +159,44 @@ try {
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
     await page.goto(`http://127.0.0.1:${server.address().port}${viewport.width === 1280 ? '/?dark' : ''}`)
+    if (defaultWorkspaceOnly) {
+      const send = page.getByRole('button', { name: '创建并启用定时任务', exact: true })
+      const goal = page.getByLabel('定时任务工作内容', { exact: true })
+      await goal.fill('每天早上九点整理一份行业日报。')
+      assert.equal(await send.isDisabled(), true, 'A missing directory must still block submission')
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('default-workspace-directory-changed', { detail: 'D:/default-reports' })))
+      await page.locator('.ent-sch-home-compose .ent-rs-directory[title="D:/default-reports"]').waitFor()
+      assert.equal(await send.isEnabled(), true, 'The displayed default directory must enable submission')
+      await send.click()
+      await page.waitForFunction(() => window.creationCalls.length === 1)
+      assert.equal(await page.evaluate(() => window.creationCalls[0].workDir), 'D:/default-reports')
+
+      await page.goto(`http://127.0.0.1:${server.address().port}/?default-workspace=D:/saved-reports`)
+      await page.locator('.ent-sch-home-compose .ent-rs-directory[title="D:/saved-reports"]').waitFor()
+      await goal.fill('每天早上九点整理另一份行业日报。')
+      assert.equal(await send.isEnabled(), true, 'A saved default directory must enable submission')
+      await page.screenshot({ path: resolve(screenshots, `default-workspace-${viewport.width}.png`), fullPage: true })
+      await send.click()
+      await page.waitForFunction(() => window.creationCalls.length === 1)
+      assert.equal(await page.evaluate(() => window.creationCalls[0].workDir), 'D:/saved-reports')
+      await page.locator('.ent-sch-home-compose .ent-rs-directory').click()
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('default-workspace-directory-changed', { detail: 'D:/changed-default' })))
+      await goal.fill('每天早上九点整理第三份行业日报。')
+      await send.click()
+      await page.waitForFunction(() => window.creationCalls.length === 2)
+      assert.equal(await page.evaluate(() => window.creationCalls[1].workDir), 'D:/客户资料/报告成果/包含较长路径的目录/项目资料', 'A default change must not replace an explicit directory')
+
+      await page.goto(`http://127.0.0.1:${server.address().port}/?defer-workspace`)
+      await page.getByRole('button', { name: '选择目录', exact: true }).click()
+      await page.evaluate(() => { for (const resolve of window.pendingDefaultDirectories) resolve({ success: true, path: 'D:/late-default' }); })
+      await goal.fill('每天早上九点整理第四份行业日报。')
+      await send.click()
+      await page.waitForFunction(() => window.creationCalls.length === 1)
+      assert.equal(await page.evaluate(() => window.creationCalls[0].workDir), 'D:/客户资料/报告成果/包含较长路径的目录/项目资料', 'A delayed default read must not replace an explicit directory')
+      assert.deepEqual(errors, [])
+      await page.close()
+      continue
+    }
     if (historyLabelsOnly) {
       await page.evaluate(async () => {
         const api = window.electronAPI
