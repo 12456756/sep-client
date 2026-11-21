@@ -90,14 +90,7 @@ const ALLOWANCE_TONE_LABEL: Record<AllowanceProgressTone, string> = {
   daily: '每日额度',
 }
 
-/**
- * 一条额度进度。
- *
- * 原来把「已用 ¥x」「剩余 99.8%」拆成上下两行小字，再配上「¥x / ¥y」，
- * 一条进度条要读三段文字。这里压成一行：左边是已用，右边是剩余比例，
- * 上限放进 title —— 上限是低频信息，不该常驻在界面上。
- */
-function AllowanceProgress({ label, limit, used, remaining, tone, unlimited = false }: {
+export function AllowanceProgress({ label, limit, used, remaining, tone, unlimited = false }: {
   label: string
   limit: string | null | undefined
   used: string | undefined
@@ -106,11 +99,9 @@ function AllowanceProgress({ label, limit, used, remaining, tone, unlimited = fa
   unlimited?: boolean
 }): React.JSX.Element {
   const configured = unlimited || typeof limit === 'string'
-  const percent = unlimited ? null : formatRemainingPercent(limit, remaining)
-  // 进度条画的是「已用比例」，剩余 100% 对应已用 0%，空槽才是正确表达。
-  const usedWidth = unlimited ? 0 : percent === null ? 0 : Math.max(0, Math.min(100, 100 - percent))
+  const remainingPercent = unlimited ? null : formatRemainingPercent(limit, remaining)
   const limitText = unlimited ? '不限额' : formatConfiguredLimit(limit)
-  const statusText = !configured ? '未设置' : unlimited ? '不限额' : percent === null ? '—' : `剩余 ${percent.toFixed(1)}%`
+  const statusText = !configured ? '未设置' : unlimited ? '不限额' : remainingPercent === null ? '—' : `剩余 ${remainingPercent.toFixed(1)}%`
 
   return (
     <div className={`compute-allowance-progress ${tone}${configured ? '' : ' is-unconfigured'}`}>
@@ -124,10 +115,10 @@ function AllowanceProgress({ label, limit, used, remaining, tone, unlimited = fa
         aria-label={`${ALLOWANCE_TONE_LABEL[tone]}${!configured ? '未设置' : `，已用 ${formatOptionalComputeAmount(used)}，${statusText}`}`}
         aria-valuemin={configured && !unlimited ? 0 : undefined}
         aria-valuemax={configured && !unlimited ? 100 : undefined}
-        aria-valuenow={configured && !unlimited ? usedWidth : undefined}
+        aria-valuenow={remainingPercent ?? undefined}
         title={unlimited ? `${label}：不限额` : `${label}：已用 ${formatOptionalComputeAmount(used)} / ${limitText}`}
       >
-        <span style={{ width: `${usedWidth}%` }} />
+        <span style={{ width: `${remainingPercent ?? 0}%` }} />
       </div>
     </div>
   )
