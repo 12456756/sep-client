@@ -15,6 +15,7 @@ import { WriteChain } from './write-chain'
 import { mediaUpstreamErrorSchema } from '../../src/shared/media-upstream-error'
 import { mediaFailureSchema } from '../../src/shared/media-failure'
 import { mediaDiagnosticErrors } from '../domain/arrangement-diagnostic'
+import { mediaRetryGateSchema } from '../domain/media-retry-gate'
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const timestamp = z.number().int().nonnegative()
@@ -38,6 +39,7 @@ const jobSchema = z.object({
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']), saveStatus: saveSchema,
   outputs: z.array(mediaOutputSchema), actualSpec: imageRequestedSpecSchema.optional(), billingStatus: z.string().min(1).max(64), nextPollAt: timestamp,
   lastQueriedAt: timestamp.optional(),
+  queryRateLimit: mediaRetryGateSchema.optional(), downloadRateLimit: mediaRetryGateSchema.optional(),
   providerWaitMs: timestamp.optional(), downloadMs: timestamp.optional(),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(), upstreamError: mediaUpstreamErrorSchema.optional(),
   failure: mediaFailureSchema.optional(), submissionFailure: mediaFailureSchema.optional(), diagnosticErrors: mediaDiagnosticErrors.optional(),

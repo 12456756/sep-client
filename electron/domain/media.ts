@@ -120,6 +120,8 @@ export interface LocalMediaJob {
   providerWaitMs?: number
   downloadMs?: number
   nextPollAt: number
+  queryRateLimit?: import('./media-retry-gate').MediaRetryGate
+  downloadRateLimit?: import('./media-retry-gate').MediaRetryGate
   attempts: number
   error: string | null
   createdAt: number

@@ -1,6 +1,7 @@
 import type { LocalVideoJob } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { videoBillingPending } from '../../src/shared/video-media'
+import { mediaRateLimit } from '../errors/media-rate-limit'
 
 export interface VideoTrackerPort {
   recover(signal?: AbortSignal): Promise<LocalVideoJob[]>
@@ -38,7 +39,9 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 function pollable(job: LocalVideoJob): boolean {
-  if (job.submission === 'NOT_SENT' || job.trackingStatus === 'STOPPED') return false
+  if (job.submission === 'NOT_SENT') return false
+  if (job.downloadRateLimit?.automatic && job.saveStatus === 'SAVE_FAILED' && job.receipt?.recovery.canDownload) return true
+  if (job.trackingStatus === 'STOPPED' || job.queryRateLimit?.automatic === false) return false
   if (!job.receipt) return true
   const billingPending = !job.receipt.mock && videoBillingPending(job.receipt.billingStatus)
   return (!terminal.has(job.receipt.status) || billingPending) && job.receipt.recovery.canQuery && (job.receipt.pollAfterMs !== null || billingPending)
@@ -126,11 +129,21 @@ export class VideoTracker {
           const advertised = pending.reduce((ms, job) => Math.max(ms, job.receipt?.pollAfterMs ?? this.floorMs), this.floorMs)
           waitMs = Number.isFinite(advertised) ? Math.ceil(advertised) : this.budgetMs
           if (failed) waitMs = Math.max(waitMs, this.backoff(failures))
+          const now = this.now()
+          for (const job of pending) {
+            if (job.queryRateLimit?.automatic) waitMs = Math.max(waitMs, job.queryRateLimit.retryAt - now)
+            if (job.downloadRateLimit?.automatic && job.saveStatus === 'SAVE_FAILED') waitMs = Math.max(waitMs, job.downloadRateLimit.retryAt - now)
+          }
         } catch (error) {
           if (signal.aborted) return
           if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) return
-          if (!(error instanceof AppError) || !retryable.has(error.code)) throw error
-          waitMs = this.backoff(++failures)
+          const now = this.now()
+          const backoff = this.backoff(failures + 1)
+          const gate = mediaRateLimit(error, now, backoff)
+          if (gate?.automatic === false) throw error
+          if (!gate && (!(error instanceof AppError) || !retryable.has(error.code))) throw error
+          failures++
+          waitMs = Math.max(backoff, (gate?.retryAt ?? now) - now)
         }
         if (attempt + 1 >= this.maxAttempts) return
         const remaining = this.budgetMs - (this.now() - startedAt)

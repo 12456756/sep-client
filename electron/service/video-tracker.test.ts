@@ -66,6 +66,32 @@ function setup(t: TestContext, recover: VideoTrackerPort['recover'], options: Pa
 }
 
 describe('VideoTracker bounded scope polling', () => {
+  it('does not poll before Retry-After even when it exceeds the local error-backoff cap', async t => {
+    let first = true
+    const { tracker, clock, calls } = setup(t, async () => {
+      if (first) {
+        first = false
+        throw new AppError('SERVICE_UNAVAILABLE', { diagnostic: { httpStatus: 429, headers: { 'retry-after': '60' } } })
+      }
+      return []
+    }, { budgetMs: 90_000 })
+    const done = tracker.start()
+    await flush()
+    await clock.advance(59_999)
+    assert.deepEqual(calls, [0])
+    await clock.advance(1)
+    await done
+    assert.deepEqual(calls, [0, 60_000])
+  })
+
+  it('does not retry a 429 for exhausted quota or an explicit retry denial', async t => {
+    for (const diagnostic of [{ httpStatus: 429, code: 'INSUFFICIENT_QUOTA' }, { httpStatus: 429, retryable: false }]) {
+      const error = new AppError('RATE_LIMITED', { diagnostic })
+      const { tracker, calls } = setup(t, async () => { throw error })
+      await assert.rejects(tracker.start(), error)
+      assert.deepEqual(calls, [0])
+    }
+  })
   for (const status of ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'] as const) {
     for (const billingStatus of ['RESERVED', 'RECONCILING'] as const) {
       it(`continues ${status}/${billingStatus} reconciliation with a null server poll hint`, async t => {

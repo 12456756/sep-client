@@ -25,6 +25,7 @@ export const RUNTIME_FAILURE_MESSAGES = {
   MEDIA_SUBMISSION_UNKNOWN: '图片或视频提交结果尚未确认，请查询原任务；暂时无法查询时请联系平台管理员，勿重复生成。',
   IMAGE_MISSING_TARGET: IMAGE_MISSING_TARGET_MESSAGE,
   MEDIA_QUERY_UNAVAILABLE: '图片或视频任务跟踪已中断，尚未确认生成结果，请恢复原任务跟踪；持续失败请联系平台管理员，勿重复生成。',
+  MEDIA_WAIT_EXPIRED: '本轮视频等待已结束，尚未确认交付结果。请继续查询原任务，勿重复生成。',
   MEDIA_GENERATION_FAILED: '图片或视频生成未成功完成，请查看原任务的具体原因；原因不明时请联系平台管理员。',
   MEDIA_RESULT_EXPIRED: '原图片或视频结果已过期，无法重新下载；已保存的文件仍可使用。',
   MEDIA_DOWNLOAD_FAILED: '原图片或视频下载失败，自动恢复未成功，请恢复原任务下载，勿重复生成。',

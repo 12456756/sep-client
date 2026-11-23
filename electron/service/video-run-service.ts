@@ -212,10 +212,14 @@ export class VideoRunService implements VideoRunPort {
               if (!['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) throw new ArrangementMediaRecoveryError('query', error)
             }
             if (recoverOriginal && !terminalVideoFailure(error) && job && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
+              const gate = await run.host.downloadRateLimit(taskId, id, signal)
+              if (gate && (!gate.automatic || gate.retryAt > (this.options.now ?? Date.now)())) {
+                throw new ArrangementMediaRecoveryError('download', error)
+              }
               if ((recoveries.get(id) ?? 0) < 3) {
                 recoveries.set(id, (recoveries.get(id) ?? 0) + 1)
                 await delay(100 * 2 ** ((recoveries.get(id) ?? 1) - 1), undefined, { signal })
-                try { await abortableVideo(run.host.retrySave(taskId, id), signal) }
+                try { await abortableVideo(run.host.retrySave(taskId, id, signal, true), signal) }
                 catch (failure) {
                   signal.throwIfAborted()
                   await this.notifyTerminalFailure(run, failure)
