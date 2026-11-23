@@ -9,6 +9,7 @@ import { compileFunction } from 'node:vm'
 import * as ts from 'typescript'
 import { z } from 'zod'
 import type { ElectronAPI, UpdateState } from '../../src/shared/ipc'
+import { windowCloseRequestId } from '../../src/shared/window-close'
 import type { RendererBridge } from '../bootstrap/renderer-bridge'
 import { AppError, appError } from '../errors/app-error'
 import { EVENT_CHANNELS, INVOKE_CHANNELS } from './channels'
@@ -231,6 +232,7 @@ describe('auto-update IPC contract', () => {
       './controller/channels': { INVOKE_CHANNELS, EVENT_CHANNELS },
       './common/window-layout': { getWindowChromeConfig: () => ({ contentTop: 0, windowsRightInset: 0 }) },
       '../src/shared/attachment-contracts': { attachmentImportLimits: { maxFiles: 128, maxFileBytes: 20 * 1024 * 1024 } },
+      '../src/shared/window-close': { windowCloseRequestId },
     })
     for (const [method, channel] of updateCommands) assert.equal(await api[method](), responses.get(channel))
     assert.deepEqual(calls, updateCommands.map(([, channel]) => [channel]))
@@ -253,6 +255,16 @@ describe('auto-update IPC contract', () => {
     stop()
     publish({}, true)
     assert.deepEqual(expanded, [true, false])
+
+    const publishClose = listeners.get(EVENT_CHANNELS.WINDOW_CLOSE_REQUESTED)!
+    const closeRequests: number[] = []
+    publishClose({}, 1)
+    publishClose({}, 'invalid')
+    const stopClose = api.onWindowCloseRequested(id => closeRequests.push(id))
+    publishClose({}, 2)
+    stopClose()
+    publishClose({}, 3)
+    assert.deepEqual(closeRequests, [1, 2])
   })
 
   it('bridge pushes update snapshots only to an attached live window', () => {

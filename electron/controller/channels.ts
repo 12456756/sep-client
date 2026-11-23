@@ -170,6 +170,7 @@ export const INVOKE_CHANNELS = {
   WORKSPACE_SELECT_DEFAULT_DIRECTORY: 'workspace:select-default-directory',
   WORKSPACE_CLEAR_DEFAULT_DIRECTORY: 'workspace:clear-default-directory',
   WINDOW_SET_THEME: 'window:set-theme',
+  WINDOW_CLOSE: 'window:close-command',
 } as const
 
 /** renderer -> main，单向 `ipcRenderer.send` / `ipcMain.on`。 */
@@ -180,6 +181,7 @@ export const SEND_CHANNELS = {
 /** main -> renderer，`webContents.send` / `ipcRenderer.on`。 */
 export const EVENT_CHANNELS = {
   WINDOW_EXPANDED_CHANGED: 'window:expanded-changed',
+  WINDOW_CLOSE_REQUESTED: 'window:close-requested',
   SKILL_IMPORT_STATE_CHANGED: 'skill-import:state-changed',
   UPDATE_STATE_CHANGED: 'update:state-changed',
   NOTIFICATION_UPDATED: 'notifications:updated',

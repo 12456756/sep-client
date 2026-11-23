@@ -19,6 +19,8 @@ import type { SkillImportService } from './service/skill-import-service';
 import { registerResultFileScheme, installResultFileProtocol } from './bootstrap/result-file-protocol';
 import { RendererBridge } from './bootstrap/renderer-bridge';
 import { installShutdownHandler } from './bootstrap/shutdown';
+import { WindowCloseController } from './bootstrap/window-close';
+import { WindowCloseSettings } from './data/window-close-settings';
 import type { SpeechPermissionGate } from './bootstrap/speech-permissions';
 import { logger } from './common/logger';
 import { join } from 'node:path';
@@ -62,14 +64,6 @@ function presentFatalOnce(error: unknown): void {
   reportFatal('应用遇到未预期的错误', error, { stage: 'uncaught-exception' });
 }
 
-function openMainWindow(speech: SpeechPermissionGate, skillImport: SkillImportService, showOnReady = true): void {
-  const window = createMainWindow({ speech, showOnReady, onClosed: () => {
-    bridge.attach(null);
-    void skillImport.cancelActive();
-  } });
-  bridge.attach(window);
-}
-
 if (deepLinks.primary) app.whenReady().then(async () => {
   const stopFileLogging = installFileLogging(join(app.getPath('userData'), 'logs'));
   app.once('will-quit', stopFileLogging);
@@ -97,14 +91,31 @@ if (deepLinks.primary) app.whenReady().then(async () => {
     });
 
     const updater = createAppUpdater(backend, bridge);
+    const closeSettings = new WindowCloseSettings(app.getPath('userData'));
+    const windowClose = new WindowCloseController({
+      settings: closeSettings,
+      initialBehavior: await closeSettings.read(),
+      publish: requestId => bridge.windowCloseRequested(requestId),
+      quit: () => app.quit(),
+      isUpdateInstallPrepared: () => updater.isInstallPrepared(),
+    });
+    function openMainWindow(speech: SpeechPermissionGate, skillImport: SkillImportService, showOnReady = true): void {
+      const window = createMainWindow({ speech, showOnReady, onClosed: () => {
+        bridge.attach(null);
+        void skillImport.cancelActive();
+      } });
+      bridge.attach(window);
+      windowClose.attach(window);
+    }
     const uninstallResultFiles = installResultFileProtocol(backend.resultFiles);
     app.once('will-quit', uninstallResultFiles);
-    registerRoutes(createRequestContext(backend, () => bridge.currentWindow(), updater), { routes, listeners });
+    registerRoutes({ ...createRequestContext(backend, () => bridge.currentWindow(), updater), windowClose }, { routes, listeners });
     const onSystemResume = () => {
       backend.wakeScheduledTasks();
     };
     powerMonitor.on('resume', onSystemResume);
     app.once('before-quit', () => {
+      windowClose.beginShutdown();
       powerMonitor.removeListener('resume', onSystemResume);
       updater.dispose();
     });

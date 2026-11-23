@@ -14,6 +14,7 @@ import type { AttachmentImportTarget } from '../src/shared/attachment-contracts'
 import { attachmentImportLimits } from '../src/shared/attachment-contracts';
 import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './controller/channels';
 import { getWindowChromeConfig } from './common/window-layout';
+import { windowCloseRequestId } from '../src/shared/window-close';
 
 export type { ElectronAPI } from '../src/shared/ipc';
 
@@ -26,6 +27,15 @@ ipcRenderer.on(EVENT_CHANNELS.WINDOW_EXPANDED_CHANGED, (_event, expanded: unknow
   if (typeof expanded !== 'boolean' || expanded === windowExpanded) return;
   windowExpanded = expanded;
   for (const listener of windowExpansionListeners) listener(expanded);
+});
+
+let bufferedCloseRequest: number | undefined;
+const windowCloseListeners = new Set<(requestId: number) => void>();
+ipcRenderer.on(EVENT_CHANNELS.WINDOW_CLOSE_REQUESTED, (_event, raw: unknown) => {
+  const request = windowCloseRequestId.safeParse(raw);
+  if (!request.success) return;
+  if (!windowCloseListeners.size) bufferedCloseRequest = request.data;
+  for (const listener of windowCloseListeners) listener(request.data);
 });
 
 type PasteTarget = { composerId: string; sessionId: string; target: AttachmentImportTarget; isEnabled?: () => boolean; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean };
@@ -235,6 +245,14 @@ const electronAPI = {
   selectDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY),
   clearDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY),
   setWindowTheme: theme => ipcRenderer.invoke(INVOKE_CHANNELS.WINDOW_SET_THEME, theme),
+  windowClose: command => ipcRenderer.invoke(INVOKE_CHANNELS.WINDOW_CLOSE, command),
+  onWindowCloseRequested: callback => {
+    windowCloseListeners.add(callback);
+    const requestId = bufferedCloseRequest;
+    bufferedCloseRequest = undefined;
+    if (requestId !== undefined) callback(requestId);
+    return () => { windowCloseListeners.delete(callback); };
+  },
   onWindowExpandedChanged: callback => {
     windowExpansionListeners.add(callback);
     callback(windowExpanded);

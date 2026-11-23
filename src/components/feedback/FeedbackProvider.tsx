@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog'
-import { AlertCircle, CheckCircle2, TriangleAlert } from 'lucide-react'
+import { AlertCircle, CheckCircle2, TriangleAlert, X } from 'lucide-react'
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { FeedbackController, type FeedbackItem } from '../../shared/feedback-controller'
 
@@ -54,6 +54,9 @@ function FeedbackDialog({ controller, item }: { controller: FeedbackController; 
           if (target) target.focus({ preventScroll: true })
           else document.querySelector<HTMLElement>('#login-email, .ent-side-user')?.focus()
         }}>
+        {item.tone === 'confirm' && item.cancelPlacement === 'corner' &&
+          <button ref={cancel} type="button" className="feedback-corner-close" aria-label="关闭弹窗" title="关闭弹窗"
+            disabled={item.busy} onClick={() => controller.dismiss(item.id)}><X size={16} aria-hidden /></button>}
         <Icon className="feedback-status" size={24} aria-hidden />
         <div className="feedback-copy">
           <Dialog.Title className={item.title ? 'feedback-title' : 'feedback-sr-only'}>{item.title ?? (item.tone === 'success' ? '操作成功' : item.tone === 'confirm' ? '操作确认' : '提醒')}</Dialog.Title>
@@ -62,11 +65,16 @@ function FeedbackDialog({ controller, item }: { controller: FeedbackController; 
             aria-invalid={Boolean(item.validationMessage)} aria-describedby={item.validationMessage ? 'feedback-validation' : undefined}
             onChange={event => controller.setInput(item.id, event.target.value)} /></label>}
           {item.validationMessage && <p id="feedback-validation" className="feedback-validation" role="alert">{item.validationMessage}</p>}
+          {item.checkbox && <label className="feedback-checkbox"><input type="checkbox" checked={item.checkbox.checked} disabled={item.busy}
+            onChange={event => controller.setChecked(item.id, event.target.checked)} />{item.checkbox.label}</label>}
         </div>
         <footer className="feedback-actions">
           {item.tone === 'confirm' ? <>
-            <button ref={cancel} type="button" disabled={item.busy} onClick={() => controller.dismiss(item.id)}>{item.cancelLabel ?? '取消'}</button>
-            <button type="button" className="feedback-primary" disabled={item.busy} onClick={() => void controller.accept(item.id)}>{item.busy ? item.busyLabel : item.actionLabel}</button>
+            {item.cancelPlacement !== 'corner' &&
+              <button ref={cancel} type="button" disabled={item.busy} onClick={() => controller.dismiss(item.id)}>{item.cancelLabel ?? '取消'}</button>}
+            {item.alternateLabel && <button type="button" disabled={item.busy} onClick={() => void controller.accept(item.id, 'alternate')}>
+              {item.activeAction === 'alternate' ? item.alternateBusyLabel : item.alternateLabel}</button>}
+            <button type="button" className="feedback-primary" disabled={item.busy} onClick={() => void controller.accept(item.id)}>{item.activeAction === 'primary' ? item.busyLabel : item.actionLabel}</button>
           </> : <button ref={acknowledge} type="button" className="feedback-primary" onClick={() => controller.dismiss(item.id)}>{item.tone === 'success' ? '关闭' : '知道了'}</button>}
         </footer>
       </Dialog.Content>

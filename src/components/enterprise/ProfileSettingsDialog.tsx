@@ -6,6 +6,7 @@ import type { UploadInput } from '../../shared/ipc'
 import { EmployeeFace } from './EmployeeFace'
 import { SpeechSettings } from '../speech/SpeechSettings'
 import { DefaultModelSettings } from './DefaultModelSettings'
+import { WindowCloseSettings } from './WindowCloseSettings'
 import { DefaultWorkspaceSettings } from './DefaultWorkspaceSettings'
 import { MultimediaSettings } from './MultimediaSettings'
 import { getSettingsPages, type SettingsPageId, type SettingsSectionId } from '../../features/enterprise/settings-catalog'
@@ -82,6 +83,7 @@ export function ProfileSettingsDialog({
 
   const sections: Record<SettingsSectionId, ReactNode> = {
     models: <DefaultModelSettings models={models} />,
+    window: <WindowCloseSettings />,
     workspace: <DefaultWorkspaceSettings />,
     multimedia: <MultimediaSettings />,
     profile: <>

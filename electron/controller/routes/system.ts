@@ -8,6 +8,7 @@ import { dialog } from 'electron'
 import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { appError } from '../../errors/app-error'
+import { windowCloseCommand } from '../../../src/shared/window-close'
 import { WINDOW_CHROME_HEIGHT, WINDOW_THEME_COLORS } from '../../common/window-layout'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from '../channels'
 import { NO_INPUT, listener, route } from '../router'
@@ -28,6 +29,11 @@ const directorySelection = z.string().trim().max(32768).refine(path => !path || 
 const trusted = { trustedMainFrame: true } as const
 
 export const systemRoutes = [
+  route(INVOKE_CHANNELS.WINDOW_CLOSE, windowCloseCommand, async (ctx, input) => {
+    const window = ctx.window()
+    if (!window || !ctx.windowClose) throw appError('INVALID_STATE')
+    return { success: true, data: await ctx.windowClose.command(window, input) }
+  }, { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY, NO_INPUT, async ctx => ({ success: true, path: await ctx.tasks.getDefaultWorkspaceDirectory() }), { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY, NO_INPUT, async ctx => {
     const window = ctx.window()

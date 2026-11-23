@@ -4,6 +4,7 @@ import type { AutoPlanningInput, PlanningRecordChange, PlanningRecordSnapshot, P
 import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
 import type { DocumentPreview, DocumentPreviewRequest } from './document-preview'
 import type { ResultFileAction, ResultFileRequest, ResultFilePreview } from './result-files'
+import type { WindowCloseBehavior, WindowCloseCommand } from './window-close'
 import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from './speech-contracts'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
@@ -382,6 +383,8 @@ export interface ElectronAPI {
   windowChrome: WindowChromeRuntime
   onWindowExpandedChanged: (callback: (expanded: boolean) => void) => () => void
   setWindowTheme: (theme: WindowTheme) => Promise<IpcCommandResult>
+  windowClose: (command: WindowCloseCommand) => Promise<IpcCommandResult & { data?: WindowCloseBehavior }>
+  onWindowCloseRequested: (callback: (requestId: number) => void) => () => void
   listSkillLibrary: (input?: SkillLibraryQuery) => Promise<IpcCommandResult & { data?: SkillLibraryItem[]; skippedCount?: number; updatedAt?: number; retryAt?: number }>
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: string }>
   rewriteLibrarySkill: (input: SkillRewriteInput) => Promise<IpcCommandResult & { data?: SkillRewriteResult }>

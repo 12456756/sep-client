@@ -9,6 +9,7 @@ import { appError } from '../errors/app-error'
 import * as windowLayout from '../common/window-layout'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from './channels'
 import type { SelectDirectoryResult } from '../../src/shared/ipc'
+import { windowCloseCommand } from '../../src/shared/window-close'
 
 interface TestRoute {
   channel: string
@@ -28,6 +29,7 @@ function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'se
     'node:path': { isAbsolute },
     zod: { z },
     '../../errors/app-error': { appError },
+    '../../../src/shared/window-close': { windowCloseCommand },
     '../../common/window-layout': windowLayout,
     '../channels': { INVOKE_CHANNELS, SEND_CHANNELS },
     '../router': {
