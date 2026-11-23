@@ -1,0 +1,35 @@
+name: Native Local Media Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mac-media:
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Build pinned native FFmpeg
+        env:
+          FFMPEG_BUILD_JOBS: 3
+        run: bash scripts/build-local-media-mac.sh x64
+      - name: Exercise native media output
+        env:
+          SEP_LOCAL_MEDIA_DEV_DIR: ${{ github.workspace }}/resources/local-media/mac-x64
+        run: npx --no-install tsx --test electron/runtime/local-media-runtime.test.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-media-debug-x64
+          path: resources/local-media/mac-x64/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
