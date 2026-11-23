@@ -4,8 +4,8 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 arch=${1:-$(node -p 'process.arch')}
 case "$arch" in
-  x64) native=x86_64 ;;
-  arm64) native=arm64 ;;
+  x64) native=x86_64; asm_flags=(--disable-asm) ;;
+  arm64) native=arm64; asm_flags=(--disable-x86asm) ;;
   *) echo "Unsupported macOS FFmpeg target: $arch" >&2; exit 1 ;;
 esac
 test "$(uname -s)" = Darwin && test "$(uname -m)" = "$native" || {
@@ -28,7 +28,7 @@ cd "ffmpeg-$version"
 # Match Electron 33's minimum OS. Keep FFmpeg free of Homebrew dylibs.
 export MACOSX_DEPLOYMENT_TARGET=11.0
 ./configure --prefix=/usr --cc=/usr/bin/clang --disable-autodetect --disable-network --disable-doc \
-  --disable-ffplay --disable-debug --disable-x86asm --enable-videotoolbox --enable-zlib
+  --disable-ffplay --disable-debug "${asm_flags[@]}" --enable-videotoolbox --enable-zlib
 make -j"${FFMPEG_BUILD_JOBS:-4}" ffmpeg ffprobe
 for tool in ffmpeg ffprobe; do
   test "$(lipo -archs "$tool")" = "$native"

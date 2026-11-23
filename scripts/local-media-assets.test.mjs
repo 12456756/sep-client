@@ -71,3 +71,10 @@ test('native media builds retain PNG support when autodetection is disabled', as
     assert.match(script, /-c:v png/)
   }
 })
+
+test('Intel Mac builds avoid the SIMD path that corrupts composition colors', async () => {
+  const script = await readFile(new URL('./build-local-media-mac.sh', import.meta.url), 'utf8')
+  assert.match(script, /x64\) native=x86_64; asm_flags=\(--disable-asm\)/)
+  assert.match(script, /arm64\) native=arm64; asm_flags=\(--disable-x86asm\)/)
+  assert.ok(script.includes('"${asm_flags[@]}"'))
+})
