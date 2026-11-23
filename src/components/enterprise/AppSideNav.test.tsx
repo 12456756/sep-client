@@ -15,6 +15,7 @@ const dependencies: Record<string, unknown> = {
   'react/jsx-runtime': jsxRuntime,
   './EmployeeFace': { EmployeeFace: () => React.createElement('span', { className: 'ent-face' }) },
   './IconHint': { IconHint: ({ label, children }: { label: string; children: React.ReactElement }) => React.createElement('span', { 'data-hint': label }, children) },
+  './MarketplaceButton': { MarketplaceButton: () => React.createElement('button', { 'aria-label': '员工市场' }) },
   './icon-navigation.css': {},
 };
 const filename = fileURLToPath(new URL('./AppSideNav.tsx', import.meta.url));
@@ -71,4 +72,11 @@ test('places connectors between knowledge and compute and marks its page active'
   assert.match(html, /aria-label="连接器" aria-current="page"/);
   assert.ok(html.indexOf('aria-label="知识库"') < html.indexOf('aria-label="连接器"'));
   assert.ok(html.indexOf('aria-label="连接器"') < html.indexOf('aria-label="算力中心"'));
+});
+
+test('places the marketplace below internal navigation and above the account without selecting it', () => {
+  const html = render('records');
+  assert.ok(html.indexOf('aria-label="算力中心"') < html.indexOf('aria-label="员工市场"'));
+  assert.ok(html.indexOf('aria-label="员工市场"') < html.indexOf('class="ent-side-account'));
+  assert.doesNotMatch(html, /aria-label="员工市场"[^>]*aria-current/);
 });

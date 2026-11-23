@@ -5,6 +5,7 @@ import type { AppRoute, AppRouteName } from '../../features/enterprise/types';
 import type { EmployeeAvatarSource } from '../../shared/types';
 import { EmployeeFace } from './EmployeeFace';
 import { IconHint } from './IconHint';
+import { MarketplaceButton } from './MarketplaceButton';
 import './icon-navigation.css';
 
 interface Props {
@@ -145,6 +146,8 @@ export function AppSideNav({
           );
         })}
       </div>
+
+      <div className="ent-marketplace-entry"><MarketplaceButton collapsed={collapsed} /></div>
 
       <div className="ent-side-account ent-icon-account" ref={account}>
         <IconHint label={userName}>

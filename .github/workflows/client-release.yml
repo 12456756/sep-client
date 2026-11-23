@@ -113,6 +113,10 @@ jobs:
         arch: [arm64, x64]
     steps:
       - uses: actions/checkout@v4
+      - name: Select Xcode for layered Mac icons
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '^26'
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -127,6 +131,8 @@ jobs:
           restore-keys: |
             electron-downloads-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-
       - run: npm ci
+      - name: Verify layered Mac icon source
+        run: node --test scripts/mac-icon.test.mjs
       - name: Install pinned target macOS speech runtime
         run: npm install --no-save --package-lock=false --ignore-scripts --force sherpa-onnx-darwin-${{ matrix.arch }}@1.13.8
       - name: Cache pinned speech assets
