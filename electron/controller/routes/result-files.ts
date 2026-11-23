@@ -14,7 +14,7 @@ export const resultFileRoutes = [
   route(INVOKE_CHANNELS.RESULT_FILE_ACTION, resultFileActionSchema, async (ctx, input) => {
     switch (input.action) {
       case 'open': await ctx.resultFiles.openDefault(input.file, path => shell.openPath(path)); break
-      case 'copy-path': await ctx.resultFiles.withPath(input.file, path => clipboard.writeText(path)); break
+      case 'copy-path': await ctx.resultFiles.copyPath(input.file, path => clipboard.writeText(path)); break
       case 'retry-archive': await ctx.resultFiles.retryArchive(input.file); break
       case 'retry-archive-elsewhere': await ctx.resultFiles.retryArchive(input.file, input.confirmation); break
       case 'save-as': {

@@ -12,8 +12,10 @@ test('result file routes only accept trusted main-frame identities and never ren
   const source = readFileSync(new URL('./routes/result-files.ts', import.meta.url), 'utf8')
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   const module = { exports: {} as { resultFileRoutes: Array<Route & { options: unknown }> } }
+  const copied: string[] = []
+  const savedPath = 'D:/generated/2026-11-23/report/report.md'
   const dependencies: Record<string, unknown> = {
-    electron: {}, '../../errors/app-error': {},
+    electron: { clipboard: { writeText: (path: string) => copied.push(path) } }, '../../errors/app-error': {},
     '../../../src/shared/result-files': contracts, '../channels': { INVOKE_CHANNELS },
     '../router': { route: (channel: string, schema: z.ZodType, handle: Route['handle'], options: unknown) => ({ channel, schema, handle, options }) },
   }
@@ -24,6 +26,9 @@ test('result file routes only accept trusted main-frame identities and never ren
   const failed = { state: 'failed', message: '原文件已生成。保存位置空间不足，请释放空间或换个文件夹后重试。' }
   const ctx = { resultFiles: { async preview() { calls.push('preview'); return { url: 'url' } }, async release() { calls.push('release') }, async reveal() { calls.push('reveal') },
     async archiveStatus() { calls.push('status'); return failed },
+    async copyPath(file: unknown, write: (path: string) => void) {
+      assert.deepEqual(file, { taskId: 'task', fileId: 'task-file-0' }); calls.push('copy-path'); write(savedPath)
+    },
     async retryArchive(_file: unknown, confirmation?: string) { calls.push(confirmation ?? 'retry') } } }
   for (const route of routes) {
     assert.deepEqual(route.options, { trustedMainFrame: true })
@@ -43,6 +48,8 @@ test('result file routes only accept trusted main-frame identities and never ren
       assert.equal(route.schema.safeParse({ ...retry, destination: '/private/path' }).success, false)
       assert.equal(route.schema.safeParse({ action: 'retry-archive', file: retry.file, confirmation: retry.confirmation }).success, false)
       assert.deepEqual(await route.handle(ctx as never, confirmed.data as never), { success: true })
+      const copy = route.schema.parse({ action: 'copy-path', file: retry.file })
+      assert.deepEqual(await route.handle(ctx as never, copy as never), { success: true })
       continue
     }
     const release = route.channel === INVOKE_CHANNELS.RESULT_FILE_RELEASE
@@ -65,5 +72,6 @@ test('result file routes only accept trusted main-frame identities and never ren
     assert.equal(result.success, true)
     if (route.channel === INVOKE_CHANNELS.RESULT_FILE_SAVE_STATUS) assert.deepEqual(result.data, failed)
   }
-  assert.deepEqual(calls, ['preview', 'release', 'reveal', 'status', 'c'.repeat(64)])
+  assert.deepEqual(calls, ['preview', 'release', 'reveal', 'status', 'c'.repeat(64), 'copy-path'])
+  assert.deepEqual(copied, [savedPath])
 })

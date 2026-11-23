@@ -1,8 +1,8 @@
 /* global document, window, innerWidth */
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { build } from 'esbuild'
 import { _electron } from 'playwright-core'
@@ -125,24 +125,26 @@ try {
     assert.deepEqual(await arrangementMenu.getByRole('menuitem').allTextContents(), [...arrangementActions, '复制图片'])
     await page.getByRole('menuitem', { name: '复制图片', exact: true }).click()
   })
-  const priorClipboard = await electron.evaluate(({ clipboard }) => clipboard.availableFormats().map(format => ({ format, bytes: [...clipboard.readBuffer(format)] })))
-  try {
-    await electron.evaluate(({ clipboard }) => clipboard.clear())
-    await resultImage.click({ button: 'right' })
-    await page.getByRole('menuitem', { name: '复制路径', exact: true }).click()
-    const expectedPath = join(directory, 'workspace', 'product.png')
-    let copiedPath = ''
-    for (let attempt = 0; attempt < 50 && copiedPath !== expectedPath; attempt++) {
-      copiedPath = await electron.evaluate(({ clipboard }) => clipboard.readText())
-      if (copiedPath !== expectedPath) await delay(100)
+  const copyPath = async target => {
+    const priorClipboard = await electron.evaluate(({ clipboard }) => clipboard.availableFormats().map(format => ({ format, bytes: [...clipboard.readBuffer(format)] })))
+    try {
+      await electron.evaluate(({ clipboard }) => clipboard.clear())
+      await target.click({ button: 'right' })
+      await page.getByRole('menuitem', { name: '复制路径', exact: true }).click()
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const value = await electron.evaluate(({ clipboard }) => clipboard.readText())
+        if (value) return value
+        await delay(100)
+      }
+      assert.fail('No path was written to the system clipboard')
+    } finally {
+      await electron.evaluate(({ clipboard }, previous) => {
+        clipboard.clear()
+        for (const item of previous) clipboard.writeBuffer(item.format, Buffer.from(item.bytes))
+      }, priorClipboard)
     }
-    assert.equal(copiedPath, expectedPath)
-  } finally {
-    await electron.evaluate(({ clipboard }, previous) => {
-      clipboard.clear()
-      for (const item of previous) clipboard.writeBuffer(item.format, Buffer.from(item.bytes))
-    }, priorClipboard)
   }
+  assert.equal(await copyPath(resultImage), join(directory, 'workspace', 'product.png'))
   await page.getByRole('button', { name: '放大查看 product.png', exact: true }).click()
   const imageDialog = page.getByRole('dialog', { name: '图片预览 product.png' })
   const largeImage = imageDialog.getByRole('img', { name: 'product.png', exact: true })
@@ -258,6 +260,12 @@ try {
   })
   const conversationState = await page.evaluate(() => window.resultTest.state())
   assert.ok(conversationState.revealCalls.some(input => input.jobId === 'video-job' && input.outputId === 'video-output-1'))
+  const copiedVideo = await copyPath(resultVideo)
+  const savedVideo = relative(join(directory, 'generated'), copiedVideo)
+  assert.ok(isAbsolute(copiedVideo) && !isAbsolute(savedVideo) && !savedVideo.startsWith(`..${sep}`))
+  assert.match(savedVideo.split(sep)[0], /^\d{4}-\d{2}-\d{2}$/)
+  assert.equal(copiedVideo, conversationState.revealed.at(-1))
+  assert.deepEqual(await readFile(copiedVideo), await readFile(conversationState.videoPath))
   await resultCards.nth(0).getByRole('button', { name: /放大查看/ }).click()
   const conversationPreview = page.locator('.result-image-dialog[open]')
   await assertImageCopy(conversationPreview.locator('img'), async () => {

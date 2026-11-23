@@ -215,6 +215,9 @@ test('a replaced copy is not revealed or overwritten, and retry saves the origin
   assert.deepEqual(await restarted.archiveStatus(file), { state: 'missing' })
   assert.equal(await restarted.reveal(file), true)
   assert.equal(f.reveal.at(-1), f.original)
+  const copied: string[] = []
+  await restarted.copyPath(file, path => { copied.push(path) })
+  assert.deepEqual(copied, [f.original])
   assert.deepEqual(await readdir(dirname(saved)), [basename(saved)])
 
   await restarted.retryArchive(file)
@@ -268,6 +271,28 @@ test('a media job and document from the same run use its original root after a s
   await f.files.reveal(second)
   await f.files.reveal(media)
   assert.deepEqual(f.reveal.map(path => dirname(dirname(dirname(path)))), [f.root, next, f.root])
+  const copied: string[] = []
+  const restarted = f.restart()
+  for (const file of [first, second, media]) await restarted.copyPath(file, path => { copied.push(path) })
+  assert.deepEqual(copied, f.reveal)
+})
+
+test('copying a saved path does not write to the clipboard after the account changes', async t => {
+  const f = await fixture(t)
+  const file = { taskId: 'task-1', fileId: 'report' }
+  await f.archive.configure(async () => f.root)
+  const now = Date.now()
+  await f.save(file, 'Report', now, now)
+  const destination = f.store.destination.bind(f.store)
+  t.mock.method(f.store, 'destination', async (entry: ResultArchiveEntry) => {
+    const saved = await destination(entry)
+    assert.ok(saved)
+    f.switchAccount('other')
+    return saved
+  })
+  const copied: string[] = []
+  await assert.rejects(f.files.copyPath(file, path => { copied.push(path) }), { code: 'AUTH_REQUIRED' })
+  assert.deepEqual(copied, [])
 })
 
 test('an unavailable destination preserves the original and retry keeps the recorded date after changing root', async t => {

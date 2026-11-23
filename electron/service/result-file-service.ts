@@ -79,24 +79,28 @@ export class ResultFileService {
   }
 
   async reveal(raw: ResultFileRequest): Promise<boolean> {
-    const archive = this.options.archive, identity = archiveIdentity(raw)
-    if (archive && identity) {
-      const scope = requireScope(this.options.scope), assert = archive.assertOwner(scope)
-      const entry = await archive.store.entry(scope, raw.taskId, identity)
-      const path = entry && await archive.store.destination(entry)
-      assert()
-      if (path) { await this.options.reveal(path); return false }
-      if (entry) {
-        if (entry.subscriptionId && 'jobId' in raw) {
-          const source = await this.options.store.actionFile(scope, raw, entry.subscriptionId)
-          assert()
-          await this.options.reveal(source.path)
-        } else await this.withPath(raw, this.options.reveal)
-        return entry.state !== 'pending'
-      }
-    }
-    await this.withPath(raw, this.options.reveal)
-    return false
+    return this.withPreferredPath(raw, this.options.reveal)
+  }
+
+  async copyPath(raw: ResultFileRequest, write: (path: string) => void): Promise<void> {
+    await this.withPreferredPath(raw, write)
+  }
+
+  private async withPreferredPath(raw: ResultFileRequest, use: Options['reveal']): Promise<boolean> {
+    const input = resultFileRequestSchema.parse(raw), scope = requireScope(this.options.scope), epoch = this.epoch
+    const archive = this.options.archive, identity = archiveIdentity(input)
+    const assertOwner = archive && identity ? archive.assertOwner(scope) : undefined
+    const entry = archive && identity ? await archive.store.entry(scope, input.taskId, identity) : undefined
+    const saved = archive && entry ? await archive.store.destination(entry) : null
+    assertOwner?.()
+    this.assert(scope, epoch)
+    const path = saved ?? (entry?.subscriptionId && 'jobId' in input
+      ? (await this.options.store.actionFile(scope, input, entry.subscriptionId)).path
+      : await this.options.store.revealPath(scope, input))
+    assertOwner?.()
+    this.assert(scope, epoch)
+    await use(path)
+    return !saved && !!entry && entry.state !== 'pending'
   }
 
   async queueArchive(scope: TaskOwnerScope, file: ResultFileRequest, title: string, when: number, startedAt: number,
@@ -323,13 +327,6 @@ export class ResultFileService {
       return candidate === location ? join(dirname(location), `${stem} - 副本${extension}`) : candidate
     }
     return state?.mode !== 'off' && state?.available ? join(state.path, filename) : name
-  }
-
-  async withPath(raw: ResultFileRequest, use: (path: string) => void | Promise<void>): Promise<void> {
-    const input = resultFileRequestSchema.parse(raw), scope = requireScope(this.options.scope), epoch = this.epoch
-    const path = await this.options.store.revealPath(scope, input)
-    this.assert(scope, epoch)
-    await use(path)
   }
 
   async withFile<T>(raw: ResultFileRequest, use: (file: ResultActionFile, scope: TaskOwnerScope, assert: () => void) => Promise<T>): Promise<T> {
