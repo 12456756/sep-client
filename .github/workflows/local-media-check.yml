@@ -2,6 +2,11 @@ name: Native Local Media Check
 
 on:
   workflow_dispatch:
+    inputs:
+      binary_run:
+        description: Reuse a native-media-debug-x64 artifact from this run
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -18,9 +23,21 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Build pinned native FFmpeg
+        if: inputs.binary_run == ''
         env:
           FFMPEG_BUILD_JOBS: 3
         run: bash scripts/build-local-media-mac.sh x64
+      - uses: actions/download-artifact@v4
+        if: inputs.binary_run != ''
+        with:
+          name: native-media-debug-x64
+          run-id: ${{ inputs.binary_run }}
+          github-token: ${{ github.token }}
+          path: resources/local-media/mac-x64
+      - name: Diagnose native pixel formats
+        run: |
+          chmod +x resources/local-media/mac-x64/ffmpeg resources/local-media/mac-x64/ffprobe
+          node scripts/diagnose-native-media.mjs resources/local-media/mac-x64
       - name: Exercise native media output
         env:
           SEP_LOCAL_MEDIA_DEV_DIR: ${{ github.workspace }}/resources/local-media/mac-x64
