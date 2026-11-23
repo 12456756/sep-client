@@ -16,6 +16,8 @@ import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { SEP_TEST_SUBSCRIPTION } from './sep-platform-fixtures'
 import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
 import type { VideoHostTools, VideoRunPort } from '../domain/video-tools'
+import { ImageDownloadDeferredError } from '../domain/arrangement-media-runtime'
+import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 
 const temporaryDirectories: string[] = []
@@ -283,6 +285,38 @@ describe('TaskRuntime video lifecycle', () => {
     await runtime.stopAll()
   })
 })
+
+for (const kind of ['image cooldown', 'video wait expiry'] as const) {
+  it(`does not stop the whole media task on ${kind}`, async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-media', 'enterprise-media')
+    const task = await manager.createTask('media', 'deliver the original media', join(userData, 'workspace'), 'employee-media')
+    const employee: EmployeeRuntimeConfig = { subscriptionId: 'employee-media', modelId: 'model-media', gatewayUrl: 'http://gateway' }
+    const image = kind === 'image cooldown', stopped: string[] = []
+    let runId: string | undefined, finished: string | undefined
+    const runtime = new TaskRuntime({
+      taskManager: manager, getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {},
+      onApprovalRequest: () => {}, resolveEmployee: () => employee,
+      media: { async prepareRun(input) { runId = input.runId; return undefined }, async waitForRun() {
+        if (image) throw new ImageDownloadDeferredError(new Error('429'))
+      }, async stopTask() { stopped.push('image') } },
+      video: { async prepareRun() { return undefined }, async waitForRun() {
+        if (!image) throw new Error(RUNTIME_FAILURE_MESSAGES.MEDIA_WAIT_EXPIRED)
+      }, async stopTask() { stopped.push('video') }, async finishRun(_taskId, id) { finished = id } },
+      createWorker: () => ({ async run() {}, async abort() {}, async dispose() {} }),
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(async () => !!finished)
+      assert.ok(runId)
+      assert.equal(finished, runId)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.FAILED)
+      assert.deepEqual(stopped, image ? ['video'] : [])
+    } finally { await runtime.stopAll() }
+  })
+}
 
 describe('TaskRuntime resource boundaries', () => {
   it('runs tasks for the same employee concurrently in disjoint workspaces', async () => {

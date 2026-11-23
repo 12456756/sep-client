@@ -16,6 +16,7 @@ import { isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-c
 import { logger } from '../common/logger'
 import { mediaRetryDeferred } from '../domain/media-retry-gate'
 import { mediaCooldownError, mediaRateLimit } from '../errors/media-rate-limit'
+import type { VideoTrackingSelection } from './video-tracker'
 
 type VideoInput = z.infer<typeof videoRequestSchema>
 export interface VideoServiceOptions {
@@ -229,11 +230,11 @@ export class VideoService {
     return this.resumeOriginal(taskId, jobId, parent, false)
   }
 
-  async resumeTracked(taskId: string, jobId: string, parent?: AbortSignal): Promise<LocalVideoJob> {
-    return this.resumeOriginal(taskId, jobId, parent, true)
+  async resumeTracked(taskId: string, jobId: string, parent: AbortSignal, select: VideoTrackingSelection): Promise<LocalVideoJob> {
+    return this.resumeOriginal(taskId, jobId, parent, true, select)
   }
 
-  private async resumeOriginal(taskId: string, jobId: string, parent: AbortSignal | undefined, automatic: boolean): Promise<LocalVideoJob> {
+  private async resumeOriginal(taskId: string, jobId: string, parent: AbortSignal | undefined, automatic: boolean, select?: VideoTrackingSelection): Promise<LocalVideoJob> {
     return this.locked(taskId, jobId, async () => {
       const signal = this.signal(parent)
       signal.throwIfAborted()
@@ -242,10 +243,11 @@ export class VideoService {
       // Recheck under the activity lock: another recovery may just have lost auth.
       if (automatic && job.trackingStatus === 'AUTH_REQUIRED') return job
       if (job.submission === 'NOT_SENT') return this.update(job, { trackingStatus: 'STOPPED', error: 'NOT_SUBMITTED' })
-      if (!job.receipt || (tracking(job.receipt) && job.receipt.recovery.canQuery)) {
+      const actions = select?.(job) ?? { query: true, download: true }
+      if (actions.query && (!job.receipt || (tracking(job.receipt) && job.receipt.recovery.canQuery))) {
         if (mediaRetryDeferred(job.queryRateLimit, this.now(), automatic)) {
           if (!automatic && job.queryRateLimit) throw mediaCooldownError(job.queryRateLimit.retryAt, this.now())
-          return this.save(job, signal)
+          return actions.download ? this.save(job, signal) : job
         }
         let receipt: VideoReceipt | null
         const queriedAt = this.now()
@@ -256,17 +258,23 @@ export class VideoService {
             : await abortableVideo(this.gateway.findReceipt(job.request.clientRequestId, signal), signal)
         } catch (error) {
           const gate = mediaRateLimit(error, this.now(), this.retryFloorMs)
-          return this.update(job, { ...interrupted(error, 'VIDEO_QUERY_INTERRUPTED'),
+          const queryFailure = { ...interrupted(error, 'VIDEO_QUERY_INTERRUPTED'),
             ...(gate?.automatic === false ? { trackingStatus: 'STOPPED' as const } : {}), queryRateLimit: gate, failure: mediaJobFailure(error, 'video-query'),
             diagnosticErrors: appendMediaDiagnosticError(job.diagnosticErrors, 'video-query', error, queriedAt),
-            submissionFailure: job.submissionFailure ?? (job.failure?.stage === 'video-submit' ? job.failure : undefined), lastQueriedAt: queriedAt })
+            submissionFailure: job.submissionFailure ?? (job.failure?.stage === 'video-submit' ? job.failure : undefined), lastQueriedAt: queriedAt }
+          job = await this.update(job, queryFailure)
+          if (!select || !actions.download || job.saveStatus === 'SAVED' || !job.receipt?.outputs.length || job.trackingStatus === 'AUTH_REQUIRED') return job
+          const saved = await this.save(job, signal)
+          if (saved.trackingStatus === 'AUTH_REQUIRED') return saved
+          return this.update(saved, { trackingStatus: queryFailure.trackingStatus, error: queryFailure.error,
+            failure: saved.saveStatus === 'SAVE_FAILED' ? saved.failure ?? queryFailure.failure : queryFailure.failure })
         }
         if (!receipt) return this.update(job, { trackingStatus: 'INTERRUPTED', error: job.error ?? 'SUBMISSION_UNKNOWN', lastQueriedAt: queriedAt })
         signal.throwIfAborted()
         job = await this.accept(job, receipt)
         job = await this.update(job, { lastQueriedAt: queriedAt })
       }
-      return this.save(job, signal)
+      return actions.download ? this.save(job, signal) : job
     })
   }
 

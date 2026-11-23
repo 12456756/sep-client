@@ -837,7 +837,7 @@ export class TaskRuntime {
         occurredAt: Date.now(),
         data: null,
       })
-      await activeArrangement.executor.abort()
+      await activeArrangement.executor.abort({ preserveDeferredDownloads: true })
       await activeArrangement.completion
     })
     await Promise.all([Promise.all(arrangementStops), Promise.all(this.workers.list().map(async active => {
@@ -852,7 +852,7 @@ export class TaskRuntime {
         occurredAt: Date.now(),
         data: null,
       })
-      await Promise.all([active.worker.abort(), this.media?.stopTask(active.taskId), this.video?.stopTask(active.taskId)])
+      await Promise.all([active.worker.abort(), this.media?.stopTask(active.taskId, { preserveDeferredDownloads: true }), this.video?.stopTask(active.taskId)])
       await active.completion
     }))])
     await closingBrowsers

@@ -229,6 +229,7 @@ export class ArrangementExecutor {
   private readonly requestProgressWrites = new WriteChain()
   private readonly stateWrites = new WriteChain()
   private abortRequested = false
+  private preserveDeferredDownloadsOnAbort = false
   private stopRequested = false
   private liveRetryHandler: ((nodeId: string, inputReply?: ArrangementInputReply) => Promise<boolean>) | null = null
   private validationCancellation = new AbortController()
@@ -236,12 +237,13 @@ export class ArrangementExecutor {
 
   constructor(private readonly options: ArrangementExecutionOptions) {}
 
-  async abort(): Promise<void> {
+  async abort(options: { preserveDeferredDownloads?: boolean } = {}): Promise<void> {
+    if (!this.abortRequested || !options.preserveDeferredDownloads) this.preserveDeferredDownloadsOnAbort = !!options.preserveDeferredDownloads
     this.abortRequested = true
     this.validationCancellation.abort()
     await Promise.all([
       ...[...this.activeWorkers.values()].map(worker => worker.abort().catch(() => undefined)),
-      this.taskId ? this.options.media?.stopTask(this.taskId) : undefined,
+      this.taskId ? this.options.media?.stopTask(this.taskId, { preserveDeferredDownloads: this.preserveDeferredDownloadsOnAbort }) : undefined,
       this.taskId ? this.options.video?.stopTask(this.taskId) : undefined,
     ])
   }
@@ -765,7 +767,7 @@ export class ArrangementExecutor {
         } catch (error) { observeMissingSpec(mediaInputKey(name, raw), error); throw error }
       } } : bound.video
       if (this.abortRequested) {
-        await Promise.all([media?.stopTask(taskId), video?.stopTask(taskId)])
+        await Promise.all([media?.stopTask(taskId, { preserveDeferredDownloads: this.preserveDeferredDownloadsOnAbort }), video?.stopTask(taskId)])
         throw new Error('Arrangement execution was interrupted.')
       }
       checkControl()

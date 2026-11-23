@@ -41,6 +41,7 @@ const jobSchema = z.object({
   outputs: z.array(mediaOutputSchema), actualSpec: imageRequestedSpecSchema.optional(), billingStatus: z.string().min(1).max(64), nextPollAt: timestamp,
   lastQueriedAt: timestamp.optional(),
   queryRateLimit: mediaRetryGateSchema.optional(), downloadRateLimit: mediaRetryGateSchema.optional(),
+  downloadAutoResumeStopped: z.boolean().optional(),
   providerWaitMs: timestamp.optional(), downloadMs: timestamp.optional(),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(), upstreamError: mediaUpstreamErrorSchema.optional(),
   failure: mediaFailureSchema.optional(), submissionFailure: mediaFailureSchema.optional(), diagnosticErrors: mediaDiagnosticErrors.optional(),

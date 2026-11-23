@@ -344,6 +344,34 @@ async function setup(overrides: Partial<MockVideoHostOptions> = {}) {
   return { root, state, store, gateway, approvals, options, host: new MockVideoHostService(options) }
 }
 
+for (const phase of ['query', 'download'] as const) test(`recovery delivers another original video while one ${phase} is throttled`, async t => {
+  const f = await setup({ tracker: { floorMs: 1, budgetMs: 5_000 } })
+  const slow = await f.host.generate('task-a', input())
+  const fast = await f.host.generate('task-a', { ...input(), creativeBrief: 'A different video' })
+  await f.host.stopAll()
+  const slowReceiptId = (await f.store.getJob(scope, 'task-a', slow.jobId))!.receipt!.receiptId
+  const limited = new AppError('RATE_LIMITED', { diagnostic: { httpStatus: 429, headers: { 'retry-after': '60' } } })
+  const gateway = f.options.gateway(scope)
+  let rateLimits = 0
+  const reopened = new MockVideoHostService({ ...f.options, store: new VideoStore(f.root), gateway: () => ({ ...gateway,
+    getReceipt: async (id, signal) => {
+      if (phase === 'query' && id === slowReceiptId) { rateLimits++; throw limited }
+      return gateway.getReceipt(id, signal)
+    },
+    content: async (id, outputId, signal) => {
+      if (phase === 'download' && id === slowReceiptId) { rateLimits++; throw limited }
+      return gateway.content(id, outputId, signal)
+    },
+  }) })
+  t.after(() => reopened.stopAll())
+  await reopened.track('task-a')
+  const pending = await f.store.getJob(scope, 'task-a', slow.jobId)
+  assert.ok(phase === 'query' ? pending?.queryRateLimit : pending?.downloadRateLimit)
+  assert.equal(rateLimits, 1)
+  assert.equal((await f.store.getJob(scope, 'task-a', fast.jobId))?.saveStatus, 'SAVED')
+  assert.equal(f.gateway.calls.submit, 2)
+})
+
 async function arrangementOutput(real: boolean, overrides: Partial<ArrangementMediaLink> = {}) {
   const f = await (real ? realSetup() : setup())
   const job = await f.host.generate('task-a', input(), undefined, { runId: 'video-node-run', requestApproval: f.options.requestApproval })

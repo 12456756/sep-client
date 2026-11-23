@@ -31,5 +31,6 @@ export interface VideoRunPort {
   waitForRun(taskId: string, runId: string, options?: { recoverOriginal?: boolean; signal?: AbortSignal }): Promise<void>
   diagnosticJobIds?(taskId: string, runId: string): readonly string[]
   stopTask(taskId: string): Promise<void>
+  stopRun?(taskId: string, runId: string): Promise<void>
   finishRun?(taskId: string, runId: string): Promise<void>
 }

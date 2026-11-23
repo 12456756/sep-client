@@ -28,6 +28,7 @@ export const RUNTIME_FAILURE_MESSAGES = {
   MEDIA_WAIT_EXPIRED: '本轮视频等待已结束，尚未确认交付结果。请继续查询原任务，勿重复生成。',
   MEDIA_GENERATION_FAILED: '图片或视频生成未成功完成，请查看原任务的具体原因；原因不明时请联系平台管理员。',
   MEDIA_RESULT_EXPIRED: '原图片或视频结果已过期，无法重新下载；已保存的文件仍可使用。',
+  IMAGE_DOWNLOAD_DEFERRED: '图片已生成，下载暂时限流。冷却结束后会自动保存原结果，请勿重复生成。',
   MEDIA_DOWNLOAD_FAILED: '原图片或视频下载失败，自动恢复未成功，请恢复原任务下载，勿重复生成。',
   MEDIA_DELIVERY_FAILED: '图片或视频已生成，但无法保存到交付目录，请检查目录权限和磁盘空间后恢复交付，勿重复生成。',
   STORAGE_FAILED: '工作成果保存失败，请检查磁盘空间、成果目录读写权限后重试。',

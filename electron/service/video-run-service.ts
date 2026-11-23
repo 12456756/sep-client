@@ -249,12 +249,17 @@ export class VideoRunService implements VideoRunPort {
     this.stops.set(taskId, (this.stops.get(taskId) ?? 0) + 1)
     for (const controller of this.preparations.get(taskId) ?? []) controller.abort(new Error('Video preparation stopped.'))
     const runs = [...this.runs.entries()].filter(([, run]) => run.taskId === taskId)
-    for (const [, run] of runs) run.controller.abort(new Error('Video run stopped.'))
-    await Promise.all([this.ipcHost?.stopTask(taskId), ...runs.map(async ([key, run]) => {
-      await run.host.stopAll()
-      await Promise.allSettled([...run.pending])
-      if (this.runs.get(key) === run) this.runs.delete(key)
-    })])
+    await Promise.all([this.ipcHost?.stopTask(taskId), ...runs.map(([key, run]) => this.stopLocalRun(key, run))])
+  }
+  async stopRun(taskId: string, runId: string): Promise<void> {
+    const key = this.key(taskId, runId), run = this.runs.get(key)
+    if (run) await this.stopLocalRun(key, run)
+  }
+  private async stopLocalRun(key: string, run: Run): Promise<void> {
+    run.controller.abort(new Error('Video run stopped.'))
+    await run.host.stopAll()
+    await Promise.allSettled([...run.pending])
+    if (this.runs.get(key) === run) this.runs.delete(key)
   }
   async stopAll(): Promise<void> {
     await Promise.all([...new Set([...this.runs.values()].map(run => run.taskId).concat([...this.preparations.keys()]))].map(id => this.stopTask(id)))

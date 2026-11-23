@@ -9,7 +9,7 @@ import { isErrorCode } from '../errors/error-codes'
 import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
 import { logger } from '../common/logger'
 import { requireScope } from './scope-guard'
-import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
+import { hasVideoTrackingOwner, MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 
 type RunInput = Parameters<VideoRunPort['prepareRun']>[0]
@@ -91,7 +91,7 @@ export class ConversationVideoRunService implements VideoRunPort {
           ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.receipt?.status ?? '') && job.saveStatus !== 'SAVED')) jobs.add(job.jobId)
       }
     } catch (error) {
-      await this.stopTask(input.taskId)
+      await this.closeRun(this.key(input.taskId, input.runId), run, true)
       throw error
     }
     return { names: raw.names, execute: async (name, args, parent) => {
@@ -142,8 +142,12 @@ export class ConversationVideoRunService implements VideoRunPort {
   }
 
   private async trackOriginal(run: ConversationVideoRun, signal: AbortSignal, original: unknown): Promise<void> {
+    const nowMs = this.options.now ?? Date.now
+    const floor = this.options.tracker?.floorMs ?? 1000
     let failures = 0
-    const saveRecoveries = new Map<string, number>()
+    let nextQueryRoundAt = nowMs() + Math.max(floor, 1000)
+    const saveRecoveries = new Map<string, { attempts: number; nextAt: number }>()
+    const expiredSaves = new Set<string>()
     for (;;) {
       signal.throwIfAborted()
       this.validate(run)
@@ -153,35 +157,42 @@ export class ConversationVideoRunService implements VideoRunPort {
       const denied = relevant.find(job => job.trackingStatus === 'AUTH_REQUIRED')
       if (denied) throw new AppError(denied.error === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED', { cause: original })
       const pending = relevant.filter(job => job.submission !== 'NOT_SENT' && generating.has(job.receipt?.status ?? 'SUBMISSION_UNKNOWN'))
-      const failedSave = relevant.find(job => ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.receipt?.status ?? '') &&
+      const failedSaves = relevant.filter(job => ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.receipt?.status ?? '') &&
         ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
-      const downloadable = failedSave?.receipt?.recovery.canDownload ? failedSave : undefined
-      if (!pending.length && !downloadable) {
-        if (failedSave) throw new AppError('INVALID_STATE', { cause: original })
+      const now = nowMs()
+      const queryAt = Math.min(...pending.filter(job => job.trackingStatus !== 'STOPPED' && job.queryRateLimit?.automatic !== false &&
+        (!job.receipt || job.receipt.recovery.canQuery)).map(job => Math.max(nextQueryRoundAt,
+        job.lastQueriedAt === undefined ? 0 : job.lastQueriedAt + Math.max(floor, job.receipt?.pollAfterMs ?? 0), job.queryRateLimit?.retryAt ?? 0)))
+      const download = failedSaves.filter(job => job.receipt?.recovery.canDownload && job.downloadRateLimit?.automatic !== false &&
+        !expiredSaves.has(job.jobId) && isErrorCode(job.error) && recoverable.has(job.error)).map(job => {
+        const schedule = saveRecoveries.get(job.jobId) ?? { attempts: 0, nextAt: now + floor }
+        saveRecoveries.set(job.jobId, schedule)
+        return { job, at: Math.max(schedule.nextAt, job.downloadRateLimit?.retryAt ?? 0), schedule }
+      }).sort((a, b) => a.at - b.at)[0]
+      if (queryAt === Infinity && !download) {
+        if (pending.length) throw original
+        if (failedSaves.some(job => job.downloadRateLimit?.automatic === false)) throw new ArrangementMediaRecoveryError('download', original)
+        if (failedSaves.length) throw new AppError('INVALID_STATE', { cause: original })
         if (!relevant.length) throw original
         return
       }
-      if (pending.some(job => job.trackingStatus === 'STOPPED' || job.receipt && !job.receipt.recovery.canQuery)) throw original
-      if (!pending.length && downloadable) {
-        if (downloadable.downloadRateLimit?.automatic === false) throw new ArrangementMediaRecoveryError('download', original)
-        if (!isErrorCode(downloadable.error) || !recoverable.has(downloadable.error)) throw new AppError('INVALID_STATE', { cause: original })
+      if (download && download.at <= queryAt) {
+        const downloadable = download.job
         for (const output of downloadable.receipt!.outputs) {
-          if (!output.expiresAt || Date.parse(output.expiresAt) > Date.now()) continue
+          if (!output.expiresAt || Date.parse(output.expiresAt) > download.at) continue
           try {
             const asset = await this.options.store.getAsset(run.scope, run.input.taskId, downloadable.jobId, output.outputId)
             if (asset?.status === 'SAVED') continue
           } catch {
             // Treat unreadable local state as missing and let the save path report its concrete failure.
           }
-          throw new AppError('INVALID_STATE', { cause: original })
+          expiredSaves.add(downloadable.jobId)
+          break
         }
-        const nextAttempt = Math.min((saveRecoveries.get(downloadable.jobId) ?? 0) + 1, 52)
-        saveRecoveries.set(downloadable.jobId, nextAttempt)
-        const floor = this.options.tracker?.floorMs ?? 1000
-        const delayMs = Math.max(Math.min(MAX_RECOVERY_DELAY_MS, Math.max(floor, downloadable.receipt?.pollAfterMs ?? 0) * 2 ** (nextAttempt - 1)),
-          (downloadable.downloadRateLimit?.retryAt ?? 0) - (this.options.now ?? Date.now)())
+        if (expiredSaves.has(downloadable.jobId)) continue
+        const delayMs = download.at - nowMs()
         if (delayMs > 2_147_483_647) throw new ArrangementMediaRecoveryError('download', original)
-        await delay(delayMs, undefined, { signal })
+        if (delayMs > 0) await delay(delayMs, undefined, { signal })
         this.validate(run)
         try {
           await abortableVideo(run.host.retrySave(run.input.taskId, downloadable.jobId, signal, true), signal)
@@ -190,14 +201,14 @@ export class ConversationVideoRunService implements VideoRunPort {
           this.validate(run)
           if (!(error instanceof AppError) || !recoverable.has(error.code)) throw error
         }
+        const attempts = Math.min(download.schedule.attempts + 1, 52)
+        saveRecoveries.set(downloadable.jobId, { attempts, nextAt: nowMs() + Math.min(MAX_RECOVERY_DELAY_MS, floor * 2 ** attempts) })
         continue
       }
-      // Respect the original receipt's polling interval across bounded tracker rounds.
-      const interval = Math.max(this.options.tracker?.floorMs ?? 1000, ...pending.map(job => job.receipt?.pollAfterMs ?? 1000),
-        ...pending.map(job => (job.queryRateLimit?.retryAt ?? 0) - (this.options.now ?? Date.now)()),
-        Math.min(30_000, 1000 * 2 ** Math.min(failures, 5)))
+      // Wake for the first due job; the tracker will skip siblings whose deadlines have not arrived.
+      const interval = queryAt - nowMs()
       if (interval > 2_147_483_647) throw new ArrangementMediaRecoveryError('query', original)
-      await delay(interval, undefined, { signal })
+      if (interval > 0) await delay(interval, undefined, { signal })
       this.validate(run)
       try {
         await abortableVideo(run.host.track(run.input.taskId), signal)
@@ -209,6 +220,7 @@ export class ConversationVideoRunService implements VideoRunPort {
           error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
         if (!(error instanceof AppError) || !recoverable.has(error.code) || ++failures >= 3) throw error
       }
+      nextQueryRoundAt = nowMs() + Math.max(floor, Math.min(30_000, 1000 * 2 ** failures))
     }
   }
 
@@ -218,39 +230,33 @@ export class ConversationVideoRunService implements VideoRunPort {
 
   async stopTask(taskId: string): Promise<void> {
     const runs = [...this.runs.entries()].filter(([, run]) => run.input.taskId === taskId)
-    for (const [, run] of runs) {
-      clearTimeout(run.wait.timer)
-      run.controller.abort(new Error('Conversation video stopped.'))
-    }
-    await Promise.all([this.base.stopTask(taskId), ...runs.map(async ([, run]) => {
-      await run.host.stopAll()
-      await run.recovery?.catch(() => undefined)
-    })])
-    for (const [key, run] of runs) {
-      if (this.runs.get(key) !== run) continue
-      this.runs.delete(key)
-      if (!run.wait.controller.signal.aborted) continue
-      // Release a locally stopped wait without changing the provider's state.
-      for (const jobId of run.jobs) {
-        try {
-          await this.options.store.updateJob(run.scope, taskId, jobId, job =>
-            job.trackingStatus === 'ACTIVE' && generating.has(job.receipt?.status ?? 'SUBMISSION_UNKNOWN')
-              ? { ...job, trackingStatus: 'INTERRUPTED', updatedAt: Math.max(job.updatedAt, (this.options.now ?? Date.now)()) } : job)
-        } catch { log.warn('video wait interruption could not be persisted', { taskId, jobId }) }
-      }
+    await Promise.all([this.base.stopTask(taskId), ...runs.map(([key, run]) => this.closeRun(key, run, false))])
+  }
+
+  private async closeRun(key: string, run: ConversationVideoRun, stopBase: boolean): Promise<void> {
+    const { taskId, runId } = run.input
+    clearTimeout(run.wait.timer)
+    run.controller.abort(new Error('Conversation video run closed.'))
+    const baseCleanup = stopBase ? this.base.stopRun?.(taskId, runId) ?? this.base.finishRun?.(taskId, runId) : undefined
+    await Promise.all([baseCleanup, run.host.stopAll(), run.recovery?.catch(() => undefined)])
+    if (this.runs.get(key) !== run) return
+    this.runs.delete(key)
+    if (!stopBase || !run.wait.controller.signal.aborted) return
+    for (const jobId of run.jobs) {
+      try {
+        await this.options.store.updateJob(run.scope, taskId, jobId, job =>
+          !this.runs.has(key) && !hasVideoTrackingOwner(run.scope, taskId, jobId) && job.submission !== 'NOT_SENT' &&
+          job.trackingStatus === 'ACTIVE' && generating.has(job.receipt?.status ?? 'SUBMISSION_UNKNOWN')
+            ? { ...job, trackingStatus: 'INTERRUPTED', updatedAt: Math.max(job.updatedAt, (this.options.now ?? Date.now)()) } : job)
+      } catch { log.warn('video wait interruption could not be persisted', { taskId, jobId }) }
     }
   }
 
   async finishRun(taskId: string, runId: string): Promise<void> {
     const key = this.key(taskId, runId), run = this.runs.get(key)
-    if (run?.wait.controller.signal.aborted) { await this.stopTask(taskId); return }
-    if (run) {
-      clearTimeout(run.wait.timer)
-      run.controller.abort(new Error('Conversation video finished.'))
-      await run.host.stopAll()
-      await run.recovery?.catch(() => undefined)
-      if (this.runs.get(key) === run) this.runs.delete(key)
-    }
+    const expired = run?.wait.controller.signal.aborted === true
+    if (run) await this.closeRun(key, run, expired)
+    if (expired) return
     await this.base.finishRun?.(taskId, runId)
   }
 }

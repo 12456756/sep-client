@@ -11,6 +11,7 @@ import { readFile } from 'node:fs/promises'
 import { TaskStatus, type TaskExecutionEvent } from '../../src/shared/types'
 import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 import { runtimeFeedback, runtimeFailureEvent } from '../errors/runtime-feedback'
+import { ImageDownloadDeferredError } from '../domain/arrangement-media-runtime'
 import { ConversationContextStore, type ConversationMessage } from '../domain/conversation-context'
 import type { TaskRunStorePort, TaskRunOutcome } from '../data/task-run-store'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
@@ -268,7 +269,8 @@ export class ConversationExecutor {
       })
       if (active.control !== 'none') {
         // stopTask may have won before prepareRun published its tracking state.
-        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
+        await Promise.all([this.options.media?.stopTask(taskId, { preserveDeferredDownloads: active.control === 'interrupt' }),
+          this.options.video?.stopTask(taskId)])
         await this.finalize(active, queued, scope, runCreated)
         return
       }
@@ -423,7 +425,13 @@ export class ConversationExecutor {
           log.warn('conversation diagnostic could not be stored', { taskId, runId })
         }
       }
-      await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)]).catch(() => undefined)
+      // A video wait budget closes only its run in finally; an image cooldown still owns a background save.
+      if (runtimeFeedback(error).code !== 'MEDIA_WAIT_EXPIRED') {
+        await Promise.all([error instanceof ImageDownloadDeferredError ? undefined : this.options.media?.stopTask(taskId, {
+          preserveDeferredDownloads: active?.control === 'interrupt',
+        }),
+          this.options.video?.stopTask(taskId)]).catch(() => undefined)
+      }
       log.error('conversation run failed', {
         taskId,
         runId,

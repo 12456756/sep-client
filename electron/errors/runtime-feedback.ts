@@ -5,7 +5,7 @@ import { AuthenticationRequiredError } from '../common/platform/authentication-r
 import { AuthApiError } from '../common/platform/platform-api'
 import { AppError } from './app-error'
 import { transportKind } from './operation-feedback'
-import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
+import { ArrangementMediaRecoveryError, ImageDownloadDeferredError } from '../domain/arrangement-media-runtime'
 
 function failure(code: RuntimeFailureCode): RuntimeFailure { return { code, message: RUNTIME_FAILURE_MESSAGES[code] } }
 
@@ -34,6 +34,7 @@ const unrecoverableSessionMessages = new Set([
 
 export function runtimeFeedback(error: unknown): RuntimeFailure {
   if (error instanceof Error) {
+    if (error instanceof ImageDownloadDeferredError) return failure('IMAGE_DOWNLOAD_DEFERRED')
     if (error instanceof ArrangementMediaRecoveryError) {
       const codes: Record<ArrangementMediaRecoveryError['phase'], RuntimeFailureCode> = {
         submission: 'MEDIA_SUBMISSION_UNKNOWN', 'image-missing-target': 'IMAGE_MISSING_TARGET',

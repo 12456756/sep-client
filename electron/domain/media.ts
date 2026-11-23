@@ -123,6 +123,7 @@ export interface LocalMediaJob {
   nextPollAt: number
   queryRateLimit?: import('./media-retry-gate').MediaRetryGate
   downloadRateLimit?: import('./media-retry-gate').MediaRetryGate
+  downloadAutoResumeStopped?: boolean
   attempts: number
   error: string | null
   createdAt: number

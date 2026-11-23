@@ -40,7 +40,8 @@ async function setup(scenario: MockVideoScenario = 'success', waitBudgetMs?: num
     readReference: async () => { const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2S5cAAAAASUVORK5CYII=', 'base64'); return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') } },
     requestApproval: async () => true, tracker: { floorMs: 1, maxAttempts: 1, budgetMs: 5000 },
   }
-  const base = new VideoRunService(options)
+  const ipc = new MockVideoHostService(options)
+  const base = new VideoRunService(options, ipc)
   const video = new ConversationVideoRunService(base, options, waitBudgetMs)
   cleanup.push(() => base.stopAll())
   cleanup.push(() => video.stopTask('task-a'))
@@ -49,7 +50,7 @@ async function setup(scenario: MockVideoScenario = 'success', waitBudgetMs?: num
     employee: { subscriptionId: owner.subscriptionId, modelId: 'model-a', gatewayUrl: 'http://unused', video: runtime },
     requestApproval: async () => true,
   }
-  return { root, store, gateway, state, options, base, video, run }
+  return { root, store, gateway, state, options, base, video, run, ipc }
 }
 
 test('conversation continues the original video after a bounded tracker exits while it is running', { timeout: 10_000 }, async () => {
@@ -67,6 +68,7 @@ test('conversation continues the original video after a bounded tracker exits wh
 
 test('conversation video has one wait budget across tracker rounds and can resume the original job after expiry', { timeout: 10_000 }, async context => {
   const f = await setup('success', 2_500)
+  const sharedStop = context.mock.method(f.ipc, 'stopTask')
   const getReceipt = f.gateway.getReceipt.bind(f.gateway)
   const query = context.mock.method(f.gateway, 'getReceipt', async (...args: Parameters<typeof getReceipt>) => ({
     ...await getReceipt(...args), status: 'RUNNING' as const, outputs: [], pollAfterMs: 1,
@@ -74,9 +76,15 @@ test('conversation video has one wait budget across tracker rounds and can resum
   }))
   const tools = await f.video.prepareRun(f.run)
   assert.ok(tools)
+  const sibling = await f.video.prepareRun({ ...f.run, runId: 'run-b', recoverJobIds: [] })
+  assert.ok(sibling)
   await assert.rejects(tools.execute('video_from_image', input), error => runtimeFeedback(error).code === 'MEDIA_WAIT_EXPIRED')
   assert.ok(query.mock.callCount() >= 2)
   await f.video.finishRun('task-a', 'run-a')
+  assert.equal(sharedStop.mock.callCount(), 0)
+  await assert.rejects(tools.execute('video_get_job', {}), /run closed/)
+  await sibling.execute('video_get_job', {})
+  await f.video.finishRun('task-a', 'run-b')
   const [pending] = await f.store.listJobs(owner)
   assert.equal(pending?.receipt?.status, 'RUNNING')
   assert.equal(pending?.trackingStatus, 'INTERRUPTED')

@@ -25,6 +25,10 @@ const log = logger.child('mock-video-host')
 // cannot protect a task while approval, upload or submit is still in flight.
 const submissions = new Set<string>()
 const trackingOwners = new Map<string, symbol>()
+
+export function hasVideoTrackingOwner(scope: VideoScope, taskId: string, jobId: string): boolean {
+  return trackingOwners.has(JSON.stringify([scope.enterpriseId, scope.memberId, scope.subscriptionId, taskId, jobId]))
+}
 const VIDEO_BRIEF_PREFIX = {
   'text-to-video': 'Create a new video from the following text description.',
   'image-to-video': 'Animate the provided image(s) according to the following instructions.',
@@ -244,8 +248,7 @@ export class MockVideoHostService {
     const trackedKeys = new Set<string>()
     const context: Context = {
       taskId, scope, service, trackingOwner, trackedKeys, tracker: new VideoTracker({ now: this.now, ...this.options.tracker, service: {
-        resume: (id, jobId, signal) => service.resume(id, jobId, signal),
-        recover: async signal => {
+        recover: async (signal, select) => {
           const jobs = await service.listJobsSnapshot(taskId)
           if (jobs.some(job => job.trackingStatus === 'AUTH_REQUIRED')) return jobs
           const restored: LocalVideoJob[] = []
@@ -257,7 +260,7 @@ export class MockVideoHostService {
             if (owner && owner !== trackingOwner) { restored.push(job); continue }
             trackingOwners.set(key, trackingOwner)
             trackedKeys.add(key)
-            const current = await service.resumeTracked(taskId, job.jobId, signal)
+            const current = await service.resumeTracked(taskId, job.jobId, signal, select)
             restored.push(current)
             if (current.trackingStatus === 'AUTH_REQUIRED') break
           }
@@ -612,7 +615,7 @@ export class MockVideoHostService {
     const owner = requireScope(this.options.scope)
     return [...this.contexts.values()].some(({ scope, taskId: id }) => id === taskId &&
       scope.enterpriseId === owner.enterpriseId && scope.memberId === owner.memberId &&
-      trackingOwners.has(JSON.stringify([scope.enterpriseId, scope.memberId, scope.subscriptionId, taskId, jobId])))
+      hasVideoTrackingOwner(scope, taskId, jobId))
   }
 
   /** Only explicit host/run lifecycle calls wake recovery; reads never do. */
@@ -631,7 +634,7 @@ export class MockVideoHostService {
           context.trackedKeys.clear()
           context.tracking = undefined
         })
-      }
+      } else context.tracker.wake(true)
       await context.tracking
     })
   }

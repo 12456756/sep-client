@@ -1496,6 +1496,102 @@ describe('MediaService local delivery and original-request recovery', () => {
     assert.equal(f.calls.filter(call => call.path === '/requests' && call.method === 'POST').length, 1)
   })
 
+  for (const mode of ['settled', 'billing-blocked', 'restart', 'stopTask', 'cancel', 'nonretryable'] as const) {
+    it(`handles the deferred original image download: ${mode}`, { timeout: 8_000 }, async context => {
+      const f = await realFixture({ billingStatus: mode === 'billing-blocked' ? 'RECONCILING' : 'SETTLED' })
+      f.options.operationTimeoutMs = 4_000
+      const gateway = f.options.gateway!, content = gateway.content.bind(gateway), getReceipt = gateway.getReceipt.bind(gateway)
+      const inQuery = deferred<void>(), releaseQuery = deferred<void>()
+      let retryAt = Infinity
+      const times: number[] = []
+      context.mock.method(gateway, 'content', async (...args: Parameters<typeof content>) => {
+        times.push(Date.now())
+        if (times.length === 1) throw new AppError('RATE_LIMITED', { diagnostic: {
+          httpStatus: 429, headers: { 'retry-after': '1' }, retryable: mode !== 'nonretryable',
+        } })
+        assert.ok(Date.now() >= retryAt)
+        return content(...args)
+      })
+      const query = context.mock.method(gateway, 'getReceipt', async (...args: Parameters<typeof getReceipt>) => {
+        inQuery.resolve()
+        await releaseQuery.promise
+        return getReceipt(...args)
+      })
+      try {
+        const view = await f.generate()
+        const read = () => f.store.getJob(owner, 'task-a', view.jobId)
+        const pending = (await read())!
+        retryAt = pending.downloadRateLimit!.retryAt
+        assert.equal(pending.saveStatus, 'SAVE_FAILED')
+        if (mode !== 'nonretryable') await assert.rejects(f.service.waitForRun('task-a', view.runId, { recoverOriginal: true }),
+          error => runtimeFeedback(error).code === 'IMAGE_DOWNLOAD_DEFERRED')
+        if (mode === 'billing-blocked') await inQuery.promise
+        else await waitUntil(async () => (await read())?.trackingStatus === 'STOPPED')
+        if (mode === 'stopTask') await f.service.stopTask('task-a')
+        if (mode === 'cancel') await f.service.cancel('task-a', view.jobId, false)
+        let service = f.service
+        if (['restart', 'stopTask', 'cancel'].includes(mode)) {
+          await f.service.stopAll()
+          if (mode === 'restart') await f.service.stopTask('task-a', { preserveDeferredDownloads: true })
+          service = new MediaService({ ...f.options, store: new MediaStore(f.root) })
+          services.push(service)
+          await service.resumePending()
+        }
+        if (mode === 'billing-blocked') {
+          // Keep reconciliation genuinely blocked beyond the download's deadline.
+          f.state.billingStatus = 'SETTLED'
+        } else {
+          await assert.rejects(service.retrySave('task-a', view.jobId), code('RATE_LIMITED'))
+        }
+        assert.equal(times.length, 1)
+        if (['stopTask', 'cancel', 'nonretryable'].includes(mode)) {
+          await delay(Math.max(0, retryAt - Date.now()) + 100)
+          assert.equal(times.length, 1)
+          assert.equal((await read())?.saveStatus, 'SAVE_FAILED')
+          await service.retrySave('task-a', view.jobId)
+        }
+        await waitUntil(async () => (await read())?.saveStatus === 'SAVED', 4_000)
+        if (mode === 'billing-blocked') {
+          assert.equal((await read())?.billingStatus, 'RECONCILING')
+          releaseQuery.resolve()
+          await waitUntil(async () => (await read())?.billingStatus === 'SETTLED')
+        }
+        assert.equal(query.mock.callCount(), mode === 'billing-blocked' ? 1 : 0)
+        assert.equal(times.length, 2)
+        assert.equal((await read())?.receiptId, pending.receiptId)
+        assert.equal(f.calls.filter(call => call.path === '/requests' && call.method === 'POST').length, 1)
+      } finally { releaseQuery.resolve() }
+    })
+  }
+
+  it('automatically saves only the missing original images and serializes a competing manual retry', async context => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const content = f.gateway.content.bind(f.gateway)
+    const attempted: string[] = []
+    const retryStarted = deferred<void>(), release = deferred<void>()
+    context.mock.method(f.gateway, 'content', async (...args: Parameters<typeof content>) => {
+      attempted.push(args[2])
+      if (attempted.length === 2) throw new AppError('RATE_LIMITED', { diagnostic: { headers: { 'retry-after': '1' } } })
+      if (attempted.length === 3) { retryStarted.resolve(); await release.promise }
+      return content(...args)
+    })
+    try {
+      const view = await f.service.generateTaskMedia('task-a', input({ parameters: { count: 2 } }))
+      const read = () => f.store.getJob(owner, 'task-a', view.jobId)
+      await waitUntil(async () => (await read())?.saveStatus === 'SAVE_FAILED')
+      const keepAlive = delay(3_000).then(() => assert.fail('Deferred image download did not start.'))
+      await Promise.race([retryStarted.promise, keepAlive])
+      const manual = f.service.retrySave('task-a', view.jobId)
+      release.resolve()
+      await manual
+      await waitUntil(async () => (await read())?.saveStatus === 'SAVED')
+      assert.equal(attempted.length, 3)
+      assert.notEqual(attempted[0], attempted[1])
+      assert.equal(attempted[1], attempted[2])
+      assert.equal(f.gateway.calls.submit.length, 1)
+    } finally { release.resolve() }
+  })
+
   for (const recovered of [false, true]) it(`reports image generation failure before billing settles${recovered ? ' after recovery' : ''}`, async () => {
     const f = await realFixture({ status: 'FAILED', billingStatus: 'RECONCILING' })
     const queryStarted = deferred<void>()
