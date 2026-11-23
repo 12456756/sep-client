@@ -17,7 +17,7 @@ printf '%s  %s\n' "$sha256" "$source" | sha256sum --check --strict
 tar -xf "$source"
 cd "ffmpeg-$version"
 ./configure --prefix=/usr --disable-autodetect --disable-network --disable-doc \
-  --disable-ffplay --disable-debug --enable-mediafoundation --extra-ldflags=-static
+  --disable-ffplay --disable-debug --enable-mediafoundation --enable-d3d11va --extra-ldflags=-static
 make -j"${FFMPEG_BUILD_JOBS:-4}" ffmpeg.exe ffprobe.exe
 strip ffmpeg.exe ffprobe.exe
 ./ffmpeg.exe -hide_banner -v error -f lavfi -i 'testsrc2=s=320x180:r=24:d=1' \

@@ -54,3 +54,10 @@ test('macOS app signing skips the corresponding source archive, not the Mach-O t
   assert.ok(ignored('ffmpeg-8.1.2.tar.xz'))
   assert.ok(!ignored('ffmpeg') && !ignored('ffprobe'))
 })
+
+test('Windows Media Foundation enables its D3D11 dependency with autodetection disabled', async () => {
+  const script = await readFile(new URL('./build-local-media-win.sh', import.meta.url), 'utf8')
+  assert.match(script, /--disable-autodetect/)
+  assert.match(script, /--enable-mediafoundation/)
+  assert.match(script, /--enable-d3d11va/)
+})
