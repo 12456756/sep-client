@@ -200,7 +200,13 @@ jobs:
           key: officecli-v1-${{ runner.os }}-${{ hashFiles('resources/office/manifest.json') }}
       - name: Prepare pinned OfficeCLI assets
         run: npm run office:prepare
+      - name: Check bundled Bash corresponding sources
+        run: node scripts/bash-runtime-packaging.mjs --check-sources
       - run: npm run package:ci:stable:win
+      - name: Exercise the Bash runtime from the packaged resources
+        env:
+          SEP_TEST_BASH_RESOURCES: ${{ github.workspace }}/dist/local/stable/win-unpacked/resources
+        run: npx --no-install tsx --test electron/pi/sdk/pi-bash-shell.test.ts
       - uses: actions/upload-artifact@v4
         with:
           name: sep-client-win

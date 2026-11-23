@@ -16,6 +16,14 @@ Windows x64、macOS x64/arm64 构建的组件随平台产物合并，发布前�
 
 流水线在 macOS runner 构建 macOS ARM64/x64 DMG 与 ZIP，在 Windows runner 构建 Windows x64 NSIS EXE；Ubuntu runner 汇总并强制校验 10 个安装包及 blockmap。打包平台、缓存与完整性检查保持不变。
 
+### Windows 随包 Bash
+
+Windows x64 安装包在 `resources/bash-runtime/` 放置精简的 MSYS2 Bash 和常用文本、文件命令（含 `grep`、`sed`、`awk`、`find`，不含 Git、WSL 或包管理器）。客户端工具通过绝对路径优先使用这一份 Bash，仅为其子进程调整 `PATH`，不改系统配置或工具授权；开发环境没有随包目录时查找本机 Bash，但不使用 Windows 自带的 WSL 启动器。macOS/Linux 不打包该目录。
+
+打包钩子按 `resources/bash-runtime/packages.json` 锁定版本及 SHA-256，从 MSYS2 下载并仅提取白名单。在 Windows 构建机上，随后用限制后的 `PATH` 运行各命令；跨平台构建 Windows 安装包时需要支持 Zstandard 的系统 `tar`，只检查资源与体积。离线构建可以用 `SEP_BASH_ARCHIVE_DIR` 指向已准备好的同版本 `.pkg.tar.zst` 文件目录，仍须通过哈希校验。LZMA 压缩负载上限为 15,000,000 字节；这个校验不代替首次发布前同配置 NSIS 有/无 Bash 的实际差值测量。
+
+安装包内 `THIRD-PARTY-NOTICES.txt` 提供每个已锁定版本的 MSYS2 对应源码归档地址，许可证随运行时分发。Windows 发布作业会检查上游源码仍可获取；发布方应持续核对已发布版本所指向的对应源码，必要时为旧版提供可公开访问的镜像，不应只保留二进制。首次发布前，在未安装 Git 和 WSL 的 Windows x64 上从客户端对话触发并批准 Bash，核对基本管道、中文路径与失败退出码。
+
 ### 默认发布路径：服务器主动下载
 
 1. Actions 合并三平台文件、合并 macOS 清单、校验安装包和九个连接器组件，并生成带版本说明的更新清单。

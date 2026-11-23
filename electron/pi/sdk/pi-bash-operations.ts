@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { constants } from 'node:fs'
 import { access } from 'node:fs/promises'
-import type { PiBashOperations, PiEncodingToolSdk } from './pi-coding-agent-adapter'
+import type { PiBashOperations } from './pi-coding-agent-adapter'
+import { bashEnvironment, type BashShellResolver } from './pi-bash-shell'
 import { OrderedToolOutput } from './pi-text-encoding'
 
 const active = new Set<number>()
@@ -74,7 +75,7 @@ function waitForExit(child: ChildProcess): Promise<number | null> {
 }
 
 /** SDK operation hook: retain its bash schema, accumulator, truncation, updates and error formatting. */
-export function createEncodingBashOperations(getShellConfig: PiEncodingToolSdk['getShellConfig']): PiBashOperations {
+export function createEncodingBashOperations(getShellConfig: BashShellResolver): PiBashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0 || timeout * 1000 > 2_147_483_647)) {
@@ -88,7 +89,8 @@ export function createEncodingBashOperations(getShellConfig: PiEncodingToolSdk['
       const shell = getShellConfig()
       const stdin = shell.commandTransport === 'stdin'
       const child = spawn(shell.shell, stdin ? shell.args : [...shell.args, command], {
-        cwd, env, detached: process.platform !== 'win32', windowsHide: true,
+        cwd, env: shell.binPath ? bashEnvironment(env ?? process.env, shell.binPath) : env,
+        detached: process.platform !== 'win32', windowsHide: true,
         stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       })
       const output = new OrderedToolOutput(onData)
