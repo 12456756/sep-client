@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Build pinned native FFmpeg
         if: inputs.binary_run == ''
         env:
@@ -38,6 +38,7 @@ jobs:
         run: |
           chmod +x resources/local-media/mac-x64/ffmpeg resources/local-media/mac-x64/ffprobe
           node scripts/diagnose-native-media.mjs resources/local-media/mac-x64
+          npx --no-install tsx scripts/diagnose-native-composition.ts resources/local-media/mac-x64
       - name: Exercise native media output
         env:
           SEP_LOCAL_MEDIA_DEV_DIR: ${{ github.workspace }}/resources/local-media/mac-x64
