@@ -2,6 +2,7 @@ import { constants } from 'node:fs'
 import { access, readFile, stat } from 'node:fs/promises'
 import type { PiEncodingToolSdk, PiToolDefinition } from './pi-coding-agent-adapter'
 import { createEncodingBashOperations } from './pi-bash-operations'
+import { resolveBashShell } from './pi-bash-shell'
 import { decodeToolText, utf8ChildEnvironment } from './pi-text-encoding'
 
 function encodingReadTool(cwd: string, { createReadToolDefinition }: PiEncodingToolSdk): ReturnType<PiEncodingToolSdk['createReadToolDefinition']> {
@@ -41,7 +42,7 @@ export function encodingToolDefinitions(cwd: string, sdk: PiEncodingToolSdk): Pi
   const { createBashToolDefinition, createGrepToolDefinition, defineTool, getShellConfig } = sdk
   return [
     defineTool(createBashToolDefinition(cwd, {
-      operations: createEncodingBashOperations(getShellConfig),
+      operations: createEncodingBashOperations(() => resolveBashShell(getShellConfig)),
       spawnHook: context => ({ ...context, env: utf8ChildEnvironment(context.env) }),
     })),
     defineTool(encodingReadTool(cwd, sdk)),

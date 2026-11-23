@@ -11,6 +11,7 @@ import { setLogSink, type LogRecord } from '../../common/logger'
 import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 import { advanceModelRequestProgress, type ModelRequestProgress } from '../../domain/model-request-progress'
 import { GatewayRetryWait } from './gateway-retry-wait'
+import { conversationScheduleToolInput, CREATE_SCHEDULED_TASK_TOOL } from '../../../src/shared/scheduled-creation'
 
 const temporaryDirectories: string[] = []
 
@@ -201,6 +202,83 @@ describe('PiTaskWorker', () => {
       await worker.dispose()
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     }
+  })
+
+  it('rejects extra scheduled creation arguments, including a replacement request', () => {
+    assert.deepEqual(conversationScheduleToolInput.parse({}), {})
+    assert.equal(conversationScheduleToolInput.safeParse({ request: '每天早上八点发邮件' }).success, false)
+  })
+
+  it('advertises scheduled creation only in eligible sessions and hands its receipt off without a second model request', async () => {
+    const root = await makeDirectory()
+    const prompt = '每天早上八点生成销售简报'
+    let nextAction: 'reply' | 'schedule' = 'reply'
+    const requests: Array<{ tools?: Array<{ function: { name: string; parameters?: unknown } }> }> = []
+    let submissions = 0
+    const server = createServer(async (request, response) => {
+      let body = ''
+      for await (const part of request) body += String(part)
+      requests.push(JSON.parse(body))
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      if (nextAction === 'schedule') {
+        nextAction = 'reply'
+        writeChunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'schedule-1', type: 'function',
+          function: { name: CREATE_SCHEDULED_TASK_TOOL, arguments: '{}' } }] })
+        writeChunk(response, {}, 'tool_calls')
+      } else writeChunk(response, { role: 'assistant', content: 'Normal answer' }, 'stop')
+      response.end('data: [DONE]\n\n')
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    assert.ok(address && typeof address !== 'string')
+    const create = (enabled: boolean) => new PiTaskWorker({
+      context: { ...context(root), runId: `schedule-${enabled}`, gatewayUrl: `http://127.0.0.1:${address.port}/v1`,
+        conversationSchedule: enabled ? async () => {
+          submissions++
+          return { status: 'created', id: 'schedule-id', title: '销售简报', nextRunAt: 100, timezone: 'Asia/Shanghai' }
+        } : undefined },
+      runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
+      getRefreshToken: () => 'local-only', onAuthenticationRequired() {}, onApprovalRequest: async () => false,
+      createTokenManager: () => new FakeTokenManager(), onEvent() {},
+      shouldYieldAfterToolTurn: results => !!results?.every(result => result.toolName === CREATE_SCHEDULED_TASK_TOOL),
+    })
+    const ordinary = create(true), planned = create(false), creating = create(true)
+    try {
+      await ordinary.run('你好')
+      assert.equal(requests.length, 1)
+      assert.equal(submissions, 0)
+      const scheduleTool = requests[0].tools?.find(tool => tool.function.name === CREATE_SCHEDULED_TASK_TOOL)
+      assert.deepEqual(scheduleTool?.function.parameters, { type: 'object', properties: {}, additionalProperties: false })
+      await planned.run('Run a previously scheduled job')
+      assert.equal(requests.length, 2)
+      assert.ok(!requests[1].tools?.some(tool => tool.function.name === CREATE_SCHEDULED_TASK_TOOL))
+      nextAction = 'schedule'
+      await creating.run(prompt)
+      assert.equal(submissions, 1)
+      assert.equal(requests.length, 3)
+    } finally {
+      await Promise.all([ordinary.dispose(), planned.dispose(), creating.dispose()])
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
+
+  it('rebinds scheduled creation to the newest turn and revokes callbacks from a disposed session', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const shared = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession() } })
+    const root = await makeDirectory()
+    const base = { ...context(root), getAccessToken: async () => 'fake', authorizeTool: async () => false }
+    const bind = (message: string): NonNullable<PiAgentSessionConfig['conversationSchedule']> => async () => ({ status: 'needs_input', message })
+    try {
+      const session = await shared.open({ ...base, conversationSchedule: bind('first') })
+      const call = configs[0].conversationSchedule!
+      assert.deepEqual(await call(), { status: 'needs_input', message: 'first' })
+      assert.equal(await shared.open({ ...base, conversationSchedule: bind('second') }), session)
+      assert.deepEqual(await call(), { status: 'needs_input', message: 'second' })
+      await shared.open(base)
+      await shared.open({ ...base, conversationSchedule: bind('new session') })
+      await assert.rejects(call(), /not available/)
+    } finally { await shared.dispose() }
   })
 
   it('forwards the trusted system prompt and media facade to the session config', async () => {

@@ -9,7 +9,7 @@ import type {
 } from '../../src/shared/types'
 import { TaskStatus } from '../../src/shared/types'
 import { TaskPersistenceError, TaskStore, type TaskStorePort } from '../data/task-store'
-import { taskFileKey } from '../data/task-file-path'
+import { findTaskFileIndex } from '../data/task-file-path'
 import { ScopePath, TaskScopeError, assertSafeId, type TaskOwnerScope, type WorkspaceDirectoryNames } from '../data/scope-path'
 import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
 import { DefaultWorkspaceSettingsStore } from '../data/default-workspace-settings-store'
@@ -58,6 +58,7 @@ function cloneTask(task: Task): Task {
   return { ...task,
     ...(task.scheduledOrigin ? { scheduledOrigin: { ...task.scheduledOrigin } } : {}),
     ...(task.scheduledAdmission ? { scheduledAdmission: { ...task.scheduledAdmission } } : {}),
+    ...(task.fileSaveIntents ? { fileSaveIntents: structuredClone(task.fileSaveIntents) } : {}),
     files: [...task.files], logs: task.logs.map(log => ({ ...log })) }
 }
 
@@ -591,14 +592,17 @@ export class TaskManager {
     this.notifyTaskUpdate(taskId)
   }
 
-  async addTaskFile(taskId: string, filePath: string): Promise<void> {
+  async addTaskFile(taskId: string, filePath: string, beforeSave?: (task: Readonly<Task>, path: string, index: number) => Promise<import('../../src/shared/result-files').ResultSaveIntent | undefined>): Promise<void> {
     let changed = false
-    await this.commit(nextTasks => {
+    await this.commit(async nextTasks => {
       const nextTask = nextTasks.get(taskId)
       // C9：去重判断必须与写入同处一个闭包，否则并发两次同名文件都会被追加。
       if (!nextTask) return
-      const key = taskFileKey(nextTask.workDir, filePath)
-      if (nextTask.files.some(file => taskFileKey(nextTask.workDir, file) === key)) return
+      const index = await findTaskFileIndex(nextTask.workDir, nextTask.files, filePath)
+      const path = index < 0 ? filePath : nextTask.files[index]!
+      const intent = await beforeSave?.(nextTask, path, index < 0 ? nextTask.files.length : index)
+      if (intent) nextTask.fileSaveIntents = { ...nextTask.fileSaveIntents, [path]: intent }
+      if (index >= 0) return
       nextTask.files.push(filePath)
       nextTask.logs.push({ timestamp: Date.now(), message: `生成文件: ${filePath}`, level: 'info' })
       changed = true
@@ -807,7 +811,7 @@ export class TaskManager {
     }
   }
 
-  private async commit(mutate: (nextTasks: Map<string, Task>) => void, expectedGeneration?: number): Promise<void> {
+  private async commit(mutate: (nextTasks: Map<string, Task>) => void | Promise<void>, expectedGeneration?: number): Promise<void> {
     const scope = await this.requireCurrentUser()
     const generation = this.generation
     if (expectedGeneration !== undefined) this.assertCurrentScope(scope, expectedGeneration)
@@ -824,7 +828,8 @@ export class TaskManager {
       }
       if (this.persistenceDegraded) throw new TaskPersistenceError('Task history needs recovery before it can be changed.')
       const nextTasks = cloneTasks(this.tasks)
-      mutate(nextTasks)
+      await mutate(nextTasks)
+      if (this.generation !== generation) return
       for (const [id, task] of nextTasks) {
         const previous = this.tasks.get(id)
         if (!previous) {

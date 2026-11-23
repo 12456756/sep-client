@@ -23,7 +23,10 @@ import { appendMediaDiagnosticError } from '../errors/arrangement-diagnostic'
 import { IMAGE_MISSING_TARGET_MESSAGE, isImageMissingTargetRejection, mediaFailureCodeSchema, mediaFailureSchema } from '../../src/shared/media-failure'
 import { transportKind } from '../errors/operation-feedback'
 import { requireScope, type ScopeSource } from './scope-guard'
-import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
+import { ArrangementMediaRecoveryError, ImageDownloadDeferredError } from '../domain/arrangement-media-runtime'
+import { WriteChain } from '../data/write-chain'
+import { mediaRetryDeferred } from '../domain/media-retry-gate'
+import { mediaCooldownError, mediaRateLimit } from '../errors/media-rate-limit'
 
 const log = logger.child('media-service')
 const terminal = new Set(['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'])
@@ -38,6 +41,7 @@ type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'
 interface TaskBinding { subscriptionId?: string | null }
 export type MediaEmployeeRuntime = Pick<EmployeeRuntimeConfig, 'subscriptionId' | 'media' | 'runtimeSnapshot' | 'systemPrompt'>
 export interface MediaServiceOptions {
+  onOutputSaved?: (scope: TaskOwnerScope, taskId: string, assetId: string, when: number, startedAt: number) => void
   scope: ScopeSource
   store: MediaStorePort
   gateway?: MediaGatewayPort
@@ -59,7 +63,7 @@ interface RunInput {
   onJobCreated?: (job: MediaJobCreated) => Promise<void>
   recoverJobIds?: readonly string[]
 }
-interface Activity { taskId: string; controller: AbortController; promise: Promise<void> }
+interface Activity { taskId: string; controller: AbortController; promise: Promise<void>; job?: LocalMediaJob }
 
 function imageSubmissionUnconfirmed(job: LocalMediaJob): boolean {
   return job.submission !== 'NOT_SENT' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus) && !missingImageTargetFailure(job)
@@ -79,6 +83,8 @@ export class MediaService {
   private epoch = 0
   private sessionController = new AbortController()
   private readonly activities = new Map<string, Activity>()
+  private readonly deferredDownloads = new Map<string, Activity>()
+  private readonly jobWrites = new WriteChain()
   private readonly caps = new Map<string, MediaCapabilities | null>()
   private readonly capabilityLoads = new Map<string, Promise<void>>()
   private readonly selectedReferences = new Map<string, string[]>()
@@ -275,7 +281,7 @@ export class MediaService {
       if (!job || job.subscriptionId !== input.subscriptionId || job.submission === 'NOT_SENT') continue
       recovered.push(jobId)
       if (!missingImageTargetFailure(job) && (!(job.generationStatus === 'SUCCEEDED' || job.generationStatus === 'PARTIAL_SUCCEEDED') || job.saveStatus !== 'SAVED')) {
-        await this.resume(input.taskId, jobId)
+        await this.resume(input.taskId, jobId, false, true)
       }
     }
     if (recovered.length) this.runRecoveries.set(this.key(scope, input.taskId) + ':' + input.runId, recovered)
@@ -605,6 +611,7 @@ export class MediaService {
       } catch (error) {
         this.invalidateCapabilities(scope, taskId, epoch, error)
         job.failure = mediaJobFailure(error, 'image-submit')
+        job.queryRateLimit = mediaRateLimit(error, Date.now(), this.options.pollFloorMs ?? 1_000)
         job.diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, 'image-submit', error)
         job.error = job.failure.code
         if (isImageMissingTargetRejection(job.failure)) {
@@ -625,7 +632,7 @@ export class MediaService {
       // Once the submitted job is durable, model handoff cannot cancel host-owned saving.
       // Explicit task/session stops still abort the activity controller.
       const tracking = this.track(scope, submitted, controller.signal, epoch, { onInitialSave: saved }).finally(finish)
-      this.activities.set(activityKey, { taskId, controller, promise: tracking })
+      this.activities.set(activityKey, { taskId, controller, promise: tracking, job: submitted })
       trackingStarted = true
       void tracking.finally(() => this.releaseActivity(activityKey, controller)).catch(() => undefined)
       if (job.profile.executionMode === 'sync-response' && (job.generationStatus === 'SUCCEEDED' || job.generationStatus === 'PARTIAL_SUCCEEDED')) {
@@ -671,7 +678,8 @@ export class MediaService {
     job.upstreamError = safeMediaUpstreamError(receipt.upstreamError) ?? (sameGeneration ? job.upstreamError : undefined)
     job.submissionFailure = receipt.status === 'SUBMISSION_UNKNOWN'
       ? job.submissionFailure ?? (job.failure?.stage === 'image-submit' ? job.failure : undefined) : undefined
-    job.failure = undefined
+    job.failure = sameGeneration && job.failure?.stage === 'image-save' ? job.failure : undefined
+    job.queryRateLimit = undefined
     if (priorMismatch) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
     if (job.input.protocolVersion === 3 && receipt.actualSpec && job.input.requestedSpec && Object.entries(job.input.requestedSpec).some(([key, requested]) => {
       const actual = receipt.actualSpec![key as keyof typeof receipt.actualSpec]
@@ -710,7 +718,8 @@ export class MediaService {
     return (await this.options.store.listAssets(scope, job.taskId)).some(asset => asset.jobId === job.jobId && asset.outputId === outputId && asset.status === 'SAVED')
   }
 
-  private async save(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, repair = false): Promise<void> {
+  private async save(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, repair = false, automatic = true): Promise<void> {
+    parent.throwIfAborted()
     if (!job.outputs.length || !job.receiptId) return
     const downloadStartedAt = Date.now()
     let downloaded = 0
@@ -720,9 +729,13 @@ export class MediaService {
     if (!missing.length) {
       this.recordOutputMismatch(job, await this.options.store.listAssets(scope, job.taskId))
       if (job.failure?.stage === 'image-save') job.failure = undefined
+      job.downloadRateLimit = undefined
       job.saveStatus = 'SAVED'; await this.options.store.saveJob(scope, job)
       return
     }
+    if ((automatic && job.downloadAutoResumeStopped) || mediaRetryDeferred(job.downloadRateLimit, Date.now(), automatic)) return
+    // Keep the old deadline durable until the attempt finishes, including across shutdown.
+    let downloadRateLimit: LocalMediaJob['downloadRateLimit']
     job.saveStatus = 'SAVING'; await this.options.store.saveJob(scope, job)
     for (const output of job.outputs) {
       if (await this.outputSaved(scope, job, output.outputId)) continue
@@ -731,19 +744,23 @@ export class MediaService {
       try {
         await this.network(scope, parent, async signal => {
           const stream = await this.gateway().content(job.subscriptionId, job.receiptId!, output.outputId, signal)
-          await this.options.store.saveOutput(scope, job.taskId, job.jobId, output, stream, signal, { repairCorrupt: repair })
+          const asset = await this.options.store.saveOutput(scope, job.taskId, job.jobId, output, stream, signal, { repairCorrupt: repair })
+          this.options.onOutputSaved?.(scope, job.taskId, asset.localAssetId, asset.createdAt, job.createdAt)
         })
         downloaded++
       } catch (error) {
         if (parent.aborted) throw parent.reason
         job.failure = mediaJobFailure(error, 'image-save')
         job.diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, 'image-save', error)
+        downloadRateLimit = mediaRateLimit(error, Date.now(), this.options.pollFloorMs ?? 1_000)
         if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) throw error
         log.warn('original image download failed', { taskId: job.taskId, jobId: job.jobId, outputId: output.outputId,
           ...job.failure })
         failed++
+        if (downloadRateLimit) break
       }
     }
+    job.downloadRateLimit = downloadRateLimit
     job.saveStatus = failed ? 'SAVE_FAILED' : 'SAVED'
     if (!failed && job.failure?.stage === 'image-save') job.failure = undefined
     job.error = !failed ? null : expired === failed ? '未保存的原结果已过期，无法再次下载；已保存的图片仍可使用。'
@@ -751,15 +768,78 @@ export class MediaService {
     if (downloaded > 0) job.downloadMs = (job.downloadMs ?? 0) + (Date.now() - downloadStartedAt)
     this.recordOutputMismatch(job, await this.options.store.listAssets(scope, job.taskId))
     await this.options.store.saveJob(scope, job)
+    if (!parent.aborted) this.scheduleDownload(scope, job)
+  }
+
+  private downloadDeadline(job: LocalMediaJob): number | undefined {
+    const gate = job.downloadRateLimit
+    if (!gate?.automatic || job.downloadAutoResumeStopped || job.trackingStatus === 'AUTH_REQUIRED' || !job.receiptId ||
+      !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || !['SAVE_FAILED', 'SAVING'].includes(job.saveStatus) ||
+      job.recovery?.canDownload === false || !job.outputs.some(output => output.expiresAt === null || output.expiresAt > gate.retryAt)) return
+    return gate.retryAt
+  }
+
+  private scheduleDownload(scope: TaskOwnerScope, job: LocalMediaJob): void {
+    const deadline = this.downloadDeadline(job), { taskId, jobId } = job
+    const epoch = this.epoch, key = this.key(scope, jobId), taskKey = this.key(scope, taskId)
+    if (deadline === undefined || this.deferredDownloads.has(key)) return
+    const stop = this.taskStops.get(taskKey), jobStop = this.jobStops.get(key)
+    const controller = new AbortController()
+    const signal = controller.signal
+    const check = () => {
+      this.assert(scope, epoch); signal.throwIfAborted()
+      if (stop !== this.taskStops.get(taskKey) || jobStop !== this.jobStops.get(key)) throw explicitStop
+    }
+    const retry = async () => {
+      let at: number | undefined = deadline
+      while (at !== undefined) {
+        await delay(Math.min(2_147_483_647, Math.max(1, this.options.pollFloorMs ?? 1_000, at - Date.now())), undefined, { signal, ref: false })
+        at = await this.jobWrites.run(key, async () => {
+          check()
+          const current = this.activities.get(key)?.job ?? await this.options.store.getJob(scope, taskId, jobId)
+          check()
+          if (!current) return
+          const next = this.downloadDeadline(current)
+          if (next === undefined || next > Date.now()) return next
+          const binding = await this.options.getTask(taskId)
+          check()
+          if (!binding?.subscriptionId) return
+          try {
+            // The original job may belong to an arrangement employee, not the current task employee.
+            const employee = await this.network(scope, signal, () => this.options.authorize(current.subscriptionId))
+            check()
+            if (!employee || employee.subscriptionId !== current.subscriptionId) throw new AppError('AUTH_REQUIRED')
+            await this.save(scope, current, signal, true)
+          } catch (error) {
+            if (current.saveStatus === 'SAVING') current.saveStatus = 'SAVE_FAILED'
+            if (!signal.aborted && error instanceof AppError && ['AUTH_REQUIRED', 'PERMISSION_DENIED'].includes(error.code)) {
+              current.trackingStatus = 'AUTH_REQUIRED'
+              current.failure = mediaJobFailure(error, 'image-save')
+            }
+            await this.options.store.saveJob(scope, current)
+            throw error
+          }
+          return this.downloadDeadline(current)
+        })
+      }
+    }
+    const promise = retry().catch(error => {
+      if (!signal.aborted && error !== explicitStop) log.warn('deferred image download interrupted', { taskId, jobId })
+    }).finally(() => {
+      if (this.deferredDownloads.get(key)?.controller === controller) this.deferredDownloads.delete(key)
+    })
+    this.deferredDownloads.set(key, { taskId, controller, promise })
   }
   private async track(
     scope: TaskOwnerScope,
     job: LocalMediaJob,
     parent: AbortSignal,
     epoch = this.epoch,
-    options: { repair?: boolean; onInitialSave?: () => void } = {},
+    options: { repair?: boolean; onInitialSave?: () => void; manualDownload?: boolean; manualQuery?: boolean } = {},
   ): Promise<void> {
     const trackingStartedAt = Date.now()
+    const locked = <T>(work: () => Promise<T>) => this.jobWrites.run(this.key(scope, job.jobId), work)
+    let manualQuery = options.manualQuery === true
     let polls = 0
     let initialSaveNotified = false
     const notifyInitialSave = () => {
@@ -770,7 +850,7 @@ export class MediaService {
     try {
       // Generation may finish before billing. Deliver its outputs before querying the original receipt further.
       if (terminal.has(job.generationStatus)) {
-        await this.save(scope, job, parent, options.repair === true)
+        await locked(() => this.save(scope, job, parent, options.repair === true, !options.manualDownload))
         notifyInitialSave()
       }
       while (!terminal.has(job.generationStatus) || this.needsBillingQuery(job)) {
@@ -785,37 +865,61 @@ export class MediaService {
         if (!job.receiptId && !job.profile.capabilities.recoverByRequestId) {
           job.trackingStatus = 'STOPPED'; job.error = '该通道不支持按原请求找回，不能自动恢复。'; break
         }
-        await delay(Math.max(0, job.nextPollAt - Date.now()), undefined, { signal: parent })
+        const nextPollAt = Math.max(job.nextPollAt, job.queryRateLimit?.retryAt ?? 0)
+        if (job.queryRateLimit && !job.queryRateLimit.automatic && !manualQuery || nextPollAt - trackingStartedAt >= 86_400_000) {
+          job.trackingStatus = 'STOPPED'; job.error = job.failure?.code ?? 'RATE_LIMITED'; break
+        }
+        await delay(Math.max(0, nextPollAt - Date.now()), undefined, { signal: parent })
+        manualQuery = false
+        let stage: 'image-save' | 'image-query' = 'image-query'
         try {
-          job.lastQueriedAt = Date.now()
-          await this.options.store.saveJob(scope, job)
+          await locked(async () => {
+            parent.throwIfAborted()
+            job.lastQueriedAt = Date.now()
+            await this.options.store.saveJob(scope, job)
+          })
           const receipt = await this.network(scope, parent, signal => job.receiptId
             ? this.gateway().getReceipt(job.subscriptionId, job.receiptId, signal)
             : this.gateway().findReceipt(job.subscriptionId, job.clientRequestId, signal))
           if (receipt === null) throw new AppError('NOT_FOUND')
-          this.acceptReceipt(job, receipt)
-          await this.options.store.saveJob(scope, job)
-          await this.save(scope, job, parent, options.repair === true)
+          await locked(async () => {
+            parent.throwIfAborted()
+            this.acceptReceipt(job, receipt)
+            await this.options.store.saveJob(scope, job)
+            stage = 'image-save'
+            // Reconciliation must not retry failed downloads on its own cadence.
+            if (job.saveStatus !== 'SAVE_FAILED') await this.save(scope, job, parent, options.repair === true)
+          })
         } catch (error) {
           if (parent.aborted) throw parent.reason
-          const stage = job.saveStatus === 'SAVING' ? 'image-save' : 'image-query'
-          job.diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, stage, error)
-          if (!(error instanceof AppError && error.code === 'NOT_FOUND' && !job.receiptId && job.failure)) {
-            if (job.failure?.stage === 'image-submit') job.submissionFailure ??= job.failure
-            job.failure = mediaJobFailure(error, stage)
-          }
-          if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) {
-            job.trackingStatus = 'AUTH_REQUIRED'; job.error = '请恢复图片任务的读取授权。'; break
-          }
-          job.attempts++; job.nextPollAt = Date.now() + Math.min(30_000, (this.options.pollFloorMs ?? 1_000) * 2 ** Math.min(job.attempts, 5))
-          if (job.attempts >= (this.options.maxAttempts ?? 8)) {
-            const transport = transportKind(error)
-            job.trackingStatus = 'STOPPED'
-            job.error = transport === 'timeout' ? 'NETWORK_TIMEOUT' : transport === 'network' ? 'NETWORK_ERROR'
-              : error instanceof AppError && error.code === 'RATE_LIMITED' ? 'RATE_LIMITED' : '查询重试已达上限，可继续跟踪原请求。'
-            break
-          }
-          await this.options.store.saveJob(scope, job)
+          const stopped = await locked(async () => {
+            job.diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, stage, error)
+            if (!(error instanceof AppError && error.code === 'NOT_FOUND' && !job.receiptId && job.failure) &&
+              !(stage === 'image-query' && job.saveStatus === 'SAVE_FAILED' && job.failure?.stage === 'image-save')) {
+              if (job.failure?.stage === 'image-submit') job.submissionFailure ??= job.failure
+              job.failure = mediaJobFailure(error, stage)
+            }
+            if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) {
+              job.trackingStatus = 'AUTH_REQUIRED'; job.error = '请恢复图片任务的读取授权。'; return true
+            }
+            if (stage === 'image-save' && job.saveStatus === 'SAVING') job.saveStatus = 'SAVE_FAILED'
+            const now = Date.now()
+            job.attempts++
+            const backoff = Math.min(30_000, (this.options.pollFloorMs ?? 1_000) * 2 ** Math.min(job.attempts, 5))
+            const rateLimit = stage === 'image-query' ? mediaRateLimit(error, now, backoff) : undefined
+            if (rateLimit) job.queryRateLimit = rateLimit
+            job.nextPollAt = now + backoff
+            if (rateLimit?.automatic === false || job.attempts >= (this.options.maxAttempts ?? 8)) {
+              const transport = transportKind(error)
+              job.trackingStatus = 'STOPPED'
+              job.error = transport === 'timeout' ? 'NETWORK_TIMEOUT' : transport === 'network' ? 'NETWORK_ERROR'
+                : rateLimit ? mediaJobFailure(error, stage).code : '查询重试已达上限，可继续跟踪原请求。'
+              return true
+            }
+            await this.options.store.saveJob(scope, job)
+            return false
+          })
+          if (stopped) break
         }
       }
       if (terminal.has(job.generationStatus) && !this.needsBillingQuery(job) && job.trackingStatus === 'ACTIVE') {
@@ -834,8 +938,7 @@ export class MediaService {
       job.error = authRequired ? '请恢复图片任务的读取授权。' : parent.aborted ? '本地跟踪已停止，上游任务可能仍在执行。' : '本地跟踪暂不可用，可恢复原请求。'
       if (!parent.aborted) log.warn('media tracking interrupted', { taskId: job.taskId, jobId: job.jobId, authChanged: error instanceof AppError && error.code === 'AUTH_REQUIRED' })
     } finally {
-      job.updatedAt = Date.now()
-      try { await this.options.store.saveJob(scope, job) }
+      try { await locked(async () => { job.updatedAt = Date.now(); await this.options.store.saveJob(scope, job) }) }
       finally { notifyInitialSave() }
     }
   }
@@ -852,7 +955,7 @@ export class MediaService {
     const { scope, job } = await this.job(taskId, jobId)
     return this.viewJob(job, await this.options.store.listAssets(scope, taskId))
   }
-  async resume(taskId: string, jobId: string, repair = false): Promise<void> {
+  async resume(taskId: string, jobId: string, repair = false, automatic = false): Promise<void> {
     mediaId.parse(taskId); mediaId.parse(jobId)
     const epoch = this.epoch, scope = this.scope(), key = this.key(scope, jobId)
     const taskKey = this.key(scope, taskId), stopVersion = this.taskStops.get(taskKey) ?? 0
@@ -864,21 +967,35 @@ export class MediaService {
     this.activities.set(key, { taskId, controller, promise: pending })
     let trackingStarted = false
     try {
-      const { job } = await this.job(taskId, jobId)
-      if (missingImageTargetFailure(job)) return
-      if (controller.signal.aborted || stopVersion !== (this.taskStops.get(taskKey) ?? 0)) {
-        job.trackingStatus = epoch !== this.epoch && controller.signal.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
-        job.updatedAt = Date.now()
+      const job = await this.jobWrites.run(key, async () => {
+        const { job } = await this.job(taskId, jobId)
+        if (missingImageTargetFailure(job)) return
+        if (controller.signal.aborted || stopVersion !== (this.taskStops.get(taskKey) ?? 0)) {
+          job.trackingStatus = epoch !== this.epoch && controller.signal.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
+          job.updatedAt = Date.now()
+          await this.options.store.saveJob(scope, job)
+          return
+        }
+        this.assert(scope, epoch)
+        if (!automatic) {
+          const gate = repair ? job.downloadRateLimit : job.queryRateLimit
+          if (gate && gate.retryAt > Date.now()) throw mediaCooldownError(gate.retryAt)
+        }
+        job.trackingStatus = 'ACTIVE'; job.attempts = 0; job.nextPollAt = Date.now()
         await this.options.store.saveJob(scope, job)
-        return
-      }
-      this.assert(scope, epoch)
-      job.trackingStatus = 'ACTIVE'; job.attempts = 0; job.nextPollAt = Date.now()
-      await this.options.store.saveJob(scope, job)
-      const promise = this.track(scope, job, controller.signal, epoch, { repair }).finally(finish)
-      this.activities.set(key, { taskId, controller, promise })
+        this.activities.get(key)!.job = job
+        return job
+      })
+      if (!job) return
+      let saved: (() => void) | undefined
+      const initialSave = repair || !automatic && terminal.has(job.generationStatus) && job.saveStatus !== 'SAVED'
+        ? new Promise<void>(resolve => { saved = resolve }) : undefined
+      const promise = this.track(scope, job, controller.signal, epoch, { repair, manualDownload: repair && !automatic,
+        manualQuery: !repair && !automatic, onInitialSave: saved }).finally(finish)
+      this.activities.set(key, { taskId, controller, promise, job })
       trackingStarted = true
       void promise.finally(() => this.releaseActivity(key, controller)).catch(() => undefined)
+      await initialSave
     } catch (error) {
       if (controller.signal.aborted) {
         // Settle only the captured owner's local record, even after its session has ended.
@@ -894,7 +1011,27 @@ export class MediaService {
       if (!trackingStarted) { this.releaseActivity(key, controller); finish() }
     }
   }
-  async retrySave(taskId: string, jobId: string): Promise<void> { await this.resume(taskId, jobId, true) }
+  async retrySave(taskId: string, jobId: string, automatic = false, parent?: AbortSignal): Promise<void> {
+    const { scope, job } = await this.job(taskId, jobId)
+    const key = this.key(scope, jobId), activity = this.activities.get(key)
+    const epoch = this.epoch
+    parent?.throwIfAborted()
+    if (!activity?.job) { await this.resume(taskId, jobId, true, automatic); return }
+    const current = activity.job
+    const signal = parent ? AbortSignal.any([activity.controller.signal, parent]) : activity.controller.signal
+    await this.jobWrites.run(key, async () => {
+      this.assert(scope, epoch); signal.throwIfAborted()
+      if (current.taskId !== job.taskId || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(current.generationStatus)) return
+      if (!automatic && current.downloadRateLimit && current.downloadRateLimit.retryAt > Date.now()) throw mediaCooldownError(current.downloadRateLimit.retryAt)
+      try { await this.save(scope, current, signal, true, automatic) } catch (error) {
+        if (current.saveStatus === 'SAVING') {
+          current.saveStatus = 'SAVE_FAILED'
+          await this.options.store.saveJob(scope, current)
+        }
+        throw error
+      }
+    })
+  }
   async redo(taskId: string, jobId: string): Promise<MediaJobView> {
     const { job } = await this.job(taskId, jobId)
     if (missingImageTargetFailure(job)) throw new AppError('INVALID_ARGUMENT', { message: IMAGE_MISSING_TARGET_MESSAGE })
@@ -921,12 +1058,14 @@ export class MediaService {
         if (!approved) throw new AppError('PERMISSION_DENIED', { details: { reason: 'media-cancel-denied' } })
       }
     }
-    const activity = this.activities.get(key)
+    const activity = this.activities.get(key), download = this.deferredDownloads.get(key)
     this.jobStops.set(key, (this.jobStops.get(key) ?? 0) + 1)
     this.recoveryQueue.delete(key)
     activity?.controller.abort(explicitStop)
+    download?.controller.abort(explicitStop)
     let settlementError: unknown
     try { await activity?.promise } catch (error) { settlementError = error }
+    await download?.promise
     check()
     const { job } = await this.job(taskId, jobId)
     check()
@@ -935,7 +1074,7 @@ export class MediaService {
       this.acceptReceipt(job, await this.network(scope, parent, signal => this.gateway().cancel(job.subscriptionId, job.receiptId!, signal)))
     }
     check()
-    job.trackingStatus = 'STOPPED'; job.updatedAt = Date.now()
+    job.trackingStatus = 'STOPPED'; job.downloadAutoResumeStopped = true; job.updatedAt = Date.now()
     await this.options.store.saveJob(scope, job)
     check()
     if (settlementError) throw settlementError
@@ -961,7 +1100,7 @@ export class MediaService {
         if (saved && options.recoverOriginal) for (const output of job.outputs) {
           if (!await this.outputSaved(scope, job, output.outputId)) { saved = false; break }
         }
-        if (!saved) pending.push(job)
+        if (!saved) pending.push(job.saveStatus === 'SAVED' ? { ...job, saveStatus: 'MISSING' as const } : job)
       }
       if (!pending.length) return
       if (!options.allowIncomplete && pending.some(missingImageTargetFailure)) {
@@ -974,11 +1113,27 @@ export class MediaService {
         }
         throw new AppError('INVALID_STATE', { message: '图片尚未完整交付，请查看图片任务状态。' })
       }
-      const activity = pending.map(job => this.activities.get(this.key(scope, job.jobId))?.promise).find(Boolean)
+      const failedSave = pending.find(job => job.saveStatus === 'SAVE_FAILED' || job.saveStatus === 'MISSING')
+      const activity = pending.filter(job => job.saveStatus !== 'SAVE_FAILED' && job.saveStatus !== 'MISSING' &&
+        !['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus)).map(job => this.activities.get(this.key(scope, job.jobId))?.promise).find(Boolean)
+      if (failedSave && !options.allowIncomplete) {
+        if (!options.recoverOriginal) throw new AppError('INVALID_STATE', { message: '图片尚未完整交付，请查看图片任务状态。' })
+        if (failedSave.trackingStatus === 'AUTH_REQUIRED') throw new AppError('AUTH_REQUIRED')
+        if (this.downloadDeadline(failedSave) !== undefined) {
+          options.signal?.throwIfAborted()
+          this.assert(scope, epoch)
+          if ((this.taskStops.get(stopKey) ?? 0) !== stopVersion) throw new Error('Media run stopped.')
+          this.scheduleDownload(scope, failedSave)
+          throw new ImageDownloadDeferredError(new Error('Original image output is waiting for its download cooldown.'))
+        }
+        if (activity || mediaRetryDeferred(failedSave.downloadRateLimit, Date.now(), true)) {
+          throw new ArrangementMediaRecoveryError('download', new Error('Original image output could not be saved.'))
+        }
+      }
       if (activity) {
         // A tracker owns provider polling. Waiting here only blocks until generation
         // and local materialization are ready; billing reconciliation may continue.
-        await Promise.race([activity, delay(100)])
+        await Promise.race([activity, delay(100, undefined, { signal: options.signal })])
         continue
       }
       if (options.allowIncomplete) return
@@ -991,13 +1146,14 @@ export class MediaService {
           throw new ArrangementMediaRecoveryError('query', new Error('Original image tracking ended before a generation result was confirmed.'))
         }
         const recoverable = pending.find(job => (recoveries.get(job.jobId) ?? 0) < 3 && job.receiptId &&
-          job.recovery?.canDownload !== false && job.outputs.some(output => output.expiresAt === null || output.expiresAt > Date.now()))
+          !job.downloadAutoResumeStopped && job.recovery?.canDownload !== false && !mediaRetryDeferred(job.downloadRateLimit, Date.now(), true) &&
+          job.outputs.some(output => output.expiresAt === null || output.expiresAt > Date.now()))
         if (recoverable) {
           recoveries.set(recoverable.jobId, (recoveries.get(recoverable.jobId) ?? 0) + 1)
           await delay(100 * 2 ** ((recoveries.get(recoverable.jobId) ?? 1) - 1), undefined, { signal: options.signal })
           this.assert(scope, epoch)
           if ((this.taskStops.get(stopKey) ?? 0) !== stopVersion) throw new Error('Media run stopped.')
-          await this.retrySave(taskId, recoverable.jobId)
+          await this.retrySave(taskId, recoverable.jobId, true, options.signal)
           continue
         }
         throw new ArrangementMediaRecoveryError('download', new Error('Original image output unavailable or automatic saving exhausted.'))
@@ -1008,7 +1164,7 @@ export class MediaService {
       throw new AppError('INVALID_STATE', { message: '图片任务未在本地跟踪，请恢复原请求。' })
     }
   }
-  async stopTask(taskId: string): Promise<void> {
+  async stopTask(taskId: string, options: { preserveDeferredDownloads?: boolean } = {}): Promise<void> {
     mediaId.parse(taskId)
     const scope = this.options.scope.currentScope()
     if (scope) {
@@ -1019,13 +1175,24 @@ export class MediaService {
     for (const key of this.runRecoveries.keys()) if (key.startsWith(`${scope ? this.key(scope, taskId) : ''}:`)) this.runRecoveries.delete(key)
     for (const [key, job] of this.recoveryQueue) if (job.taskId === taskId) { this.recoveryQueue.delete(key); queued.push(job.jobId) }
     const matches = [...this.activities.values()].filter(activity => activity.taskId === taskId)
+    const downloads = [...this.deferredDownloads.values()].filter(activity => activity.taskId === taskId)
     for (const activity of matches) activity.controller.abort(explicitStop)
-    await Promise.allSettled(matches.map(activity => activity.promise))
+    for (const download of downloads) download.controller.abort(explicitStop)
+    await Promise.allSettled([...matches, ...downloads].map(activity => activity.promise))
     // An accepted local stop remains valid for this captured owner during logout.
-    if (scope) for (const jobId of queued) {
-      const job = await this.options.store.getJob(scope, taskId, jobId)
-      if (job && (job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED')) {
-        job.trackingStatus = 'STOPPED'; job.updatedAt = Date.now(); await this.options.store.saveJob(scope, job)
+    if (scope && (!options.preserveDeferredDownloads || queued.length)) {
+      const queuedIds = new Set(queued)
+      const jobs = await this.options.store.listJobs(scope, taskId)
+      for (const { jobId, downloadRateLimit, downloadAutoResumeStopped } of jobs) {
+        if (!queuedIds.has(jobId) && (options.preserveDeferredDownloads || !downloadRateLimit || downloadAutoResumeStopped)) continue
+        await this.jobWrites.run(this.key(scope, jobId), async () => {
+          const job = this.activities.get(this.key(scope, jobId))?.job ?? await this.options.store.getJob(scope, taskId, jobId)
+          if (!job) return
+          if (!options.preserveDeferredDownloads && job.downloadRateLimit) job.downloadAutoResumeStopped = true
+          if (queuedIds.has(jobId) && (job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED')) job.trackingStatus = 'STOPPED'
+          job.updatedAt = Date.now()
+          await this.options.store.saveJob(scope, job)
+        })
       }
     }
   }
@@ -1034,7 +1201,7 @@ export class MediaService {
     this.recoveryQueue.clear()
     this.sessionController.abort()
     this.sessionController = new AbortController()
-    const activities = [...this.activities.values()]
+    const activities = [...this.activities.values(), ...this.deferredDownloads.values()]
     for (const activity of activities) activity.controller.abort()
     await Promise.allSettled(activities.map(activity => activity.promise))
   }
@@ -1049,13 +1216,16 @@ export class MediaService {
       const taskKey = this.key(scope, job.taskId)
       if (jobStops.get(key) !== this.jobStops.get(key)) continue
       if (stops.get(taskKey) !== this.taskStops.get(taskKey)) {
-        const current = await this.options.store.getJob(scope, job.taskId, job.jobId)
-        this.assert(scope, epoch)
-        if (current && (current.trackingStatus === 'ACTIVE' || current.trackingStatus === 'INTERRUPTED')) {
-          current.trackingStatus = 'STOPPED'; current.updatedAt = Date.now(); await this.options.store.saveJob(scope, current)
-        }
+        await this.jobWrites.run(key, async () => {
+          const current = this.activities.get(key)?.job ?? await this.options.store.getJob(scope, job.taskId, job.jobId)
+          this.assert(scope, epoch)
+          if (current && (current.trackingStatus === 'ACTIVE' || current.trackingStatus === 'INTERRUPTED')) {
+            current.trackingStatus = 'STOPPED'; current.updatedAt = Date.now(); await this.options.store.saveJob(scope, current)
+          }
+        })
         continue
       }
+      this.scheduleDownload(scope, job)
       if ((job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED') && !missingImageTargetFailure(job) && !this.activities.has(key)) this.recoveryQueue.set(key, { taskId: job.taskId, jobId: job.jobId })
     }
     await this.drainRecoveryQueue()
@@ -1073,7 +1243,7 @@ export class MediaService {
       while (epoch === this.epoch && this.recoveryQueue.size && this.activities.size < 4) {
         const [key, job] = this.recoveryQueue.entries().next().value!
         this.recoveryQueue.delete(key)
-        try { await this.resume(job.taskId, job.jobId) } catch (error) {
+        try { await this.resume(job.taskId, job.jobId, false, true) } catch (error) {
           if (epoch !== this.epoch) return
           if (error instanceof AppError && error.code === 'RATE_LIMITED') { this.recoveryQueue.set(key, job); break }
           log.warn('media recovery unavailable', { taskId: job.taskId, jobId: job.jobId, errorType: error instanceof Error ? error.name : 'unknown' })

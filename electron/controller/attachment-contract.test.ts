@@ -5,9 +5,12 @@ import { compileFunction } from 'node:vm'
 import * as ts from 'typescript'
 import { z } from 'zod'
 import * as contracts from '../../src/shared/attachment-contracts'
+import type { ElectronAPI } from '../../src/shared/ipc'
+import * as channels from './channels'
 import { INVOKE_CHANNELS } from './channels'
 import { AppError } from '../errors/app-error'
 import type { Route } from './router'
+import { getWindowChromeConfig } from '../common/window-layout'
 
 function routes(): Route[] {
   const compiled = ts.transpileModule(readFileSync(new URL('./routes/attachments.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
@@ -28,7 +31,7 @@ function routes(): Route[] {
 
 test('all attachment routes require trusted main-frame calls and bounded strict inputs', () => {
   const list = routes()
-  assert.equal(list.length, 8)
+  assert.equal(list.length, 10)
   for (const route of list) assert.deepEqual((route as unknown as { options: unknown }).options, { trustedMainFrame: true })
   const files = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES)!
   const input = { sessionId: 'session-a', operationId: 'op-a', paths: ['/tmp/report.txt'] }
@@ -48,6 +51,57 @@ test('all attachment routes require trusted main-frame calls and bounded strict 
   assert.equal(preview.schema.safeParse({ ...draftPreviewInput, taskId: 'task-a' }).success, false)
   assert.equal(preview.schema.safeParse({ ...draftPreviewInput, sessionId: '../session' }).success, false)
   for (const invalid of [{ ...previewInput, taskId: '../task' }, { ...previewInput, attachmentId: '../image' }, { ...previewInput, sha256: 'A'.repeat(64) }, { ...previewInput, path: 'secret' }]) assert.equal(preview.schema.safeParse(invalid).success, false)
+})
+
+test('folder preview accepts one local drive path and confirmation accepts only distinct candidate IDs', () => {
+  const specs = routes()
+  const preview = specs.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_FOLDER_PREVIEW)!
+  const confirm = specs.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_FOLDER_IMPORT)!
+  const sessionId = 'session-a'
+  assert.ok(preview.schema.safeParse({ sessionId, path: 'D:\\资料\\素材' }).success)
+  for (const path of ['D:\\', '\\\\host\\share\\folder', 'D:\\folder\\..\\secrets', 'D:\\folder:stream', 'https://example.test', 'D:\\a\nD:\\b']) {
+    assert.equal(preview.schema.safeParse({ sessionId, path }).success, false, path)
+  }
+  const input = { sessionId, previewId: 'preview-a', candidateIds: ['media-a'] }
+  assert.ok(confirm.schema.safeParse(input).success)
+  for (const rejected of [{ ...input, path: 'D:\\a' }, { ...input, candidateIds: ['../other'] }, { ...input, candidateIds: ['a', 'a'] }, { ...input, candidateIds: [] }]) {
+    assert.equal(confirm.schema.safeParse(rejected).success, false)
+  }
+})
+
+test('the preload previews only a trusted clipboard path bound to the current composer', async () => {
+  const source = readFileSync(new URL('../preload.ts', import.meta.url), 'utf8')
+  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
+  let api!: ElectronAPI
+  const calls: unknown[][] = []
+  const dependencies: Record<string, unknown> = {
+    electron: { contextBridge: { exposeInMainWorld: (_name: string, value: ElectronAPI) => { api = value } },
+      ipcRenderer: { on() {}, invoke: async (...args: unknown[]) => { calls.push(args); return { success: true } } } },
+    '../src/shared/attachment-contracts': contracts, './controller/channels': channels,
+    './common/window-layout': { getWindowChromeConfig }, '../src/shared/window-close': {},
+  }
+  let handlePaste: ((event: unknown) => void) | undefined
+  const document = { addEventListener: (_type: string, listener: typeof handlePaste) => { handlePaste = listener }, removeEventListener: () => {} }
+  compileFunction(compiled, ['require', 'exports', 'process', 'globalThis'])((id: string) => {
+    assert.ok(Object.hasOwn(dependencies, id), id)
+    return dependencies[id]
+  }, {}, { platform: 'win32' }, { document })
+  let pasteId: string | null = null
+  const binding = { composerId: 'compose', sessionId: 'session', target: { kind: 'compose' as const, composerId: 'compose' } }
+  const dispose = api.bindAttachmentPaste(Object.freeze({ ...binding, onFolderPaste: id => { pasteId = id } }))
+  const clipboardData = { getData: () => '"D:\\商品 素材"', files: [] }
+  const target = { matches: () => true, closest: () => ({ getAttribute: () => binding.composerId }) }
+  handlePaste?.({ isTrusted: false, target, clipboardData })
+  assert.equal(pasteId, null)
+  handlePaste?.({ isTrusted: true, target, clipboardData, preventDefault: () => assert.fail('plain text paste must be preserved') })
+  assert.ok(pasteId)
+  assert.deepEqual(calls, [])
+  const request = { composerId: binding.composerId, sessionId: binding.sessionId, pasteId }
+  assert.deepEqual(await api.previewAttachmentFolder({ ...request, sessionId: 'another-session' }), { success: false })
+  assert.deepEqual(await api.previewAttachmentFolder(request), { success: true })
+  assert.deepEqual(calls, [[INVOKE_CHANNELS.ATTACHMENT_FOLDER_PREVIEW, { sessionId: 'session', path: 'D:\\商品 素材' }]])
+  dispose()
+  assert.deepEqual(await api.previewAttachmentFolder(request), { success: false })
 })
 
 test('draft-node imports reject stale revision and unknown nodes before opening a session', async () => {

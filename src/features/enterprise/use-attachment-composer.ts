@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../shared/attachment-contracts'
+import type { AttachmentFolderPreview, AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../shared/attachment-contracts'
 import type { ResultFileRequest } from '../../shared/result-files'
 import type { FileMentionMemory } from '../../shared/file-mention'
 
-type AttachmentApi = Pick<Window['electronAPI'], 'beginAttachmentImport' | 'selectAttachments' | 'listAttachments' | 'removeAttachment' | 'cancelAttachmentImport' | 'runResultFileAction'> & {
-  bindAttachmentPaste?: (input: { composerId: string; sessionId: string; target: AttachmentImportTarget; isEnabled?: () => boolean; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean }) => () => void
+type AttachmentApi = Pick<Window['electronAPI'], 'beginAttachmentImport' | 'selectAttachments' | 'listAttachments' | 'removeAttachment' | 'cancelAttachmentImport' | 'runResultFileAction'> & Partial<Pick<Window['electronAPI'], 'bindAttachmentPaste' | 'previewAttachmentFolder' | 'importAttachmentFolder' | 'platform'>> & {
   onAttachmentPaste?: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
 }
 
@@ -22,6 +21,7 @@ export interface AttachmentComposerOptions {
   target: AttachmentImportTarget
   bindingKey?: string
   disabled?: boolean
+  allowFolderPaste?: boolean
   retainedState?: RetainedAttachmentState
   onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean
   onPasteImported?: (operationId: string, attachments: AttachmentView[]) => void
@@ -30,10 +30,12 @@ export interface AttachmentComposerOptions {
   onSelectFinished?: (attachments: AttachmentView[] | null) => void
 }
 
-export function useAttachmentComposer({ target, bindingKey = '', disabled = false, retainedState, onError, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished }: AttachmentComposerOptions) {
+export function useAttachmentComposer({ target, bindingKey = '', disabled = false, allowFolderPaste = false, retainedState, onError, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished }: AttachmentComposerOptions) {
   const [session, setSession] = useState<AttachmentImportSession | null>(retainedState?.session ?? null)
   const [attachments, setAttachments] = useState<AttachmentView[]>(retainedState?.attachments ?? [])
   const [busy, setBusy] = useState(false)
+  const [folderPaste, setFolderPaste] = useState<string | null>(null)
+  const [folderPreview, setFolderPreview] = useState<AttachmentFolderPreview | null>(null)
   const onErrorRef = useRef(onError)
   onErrorRef.current = onError
   const reportError = useCallback((message: string) => onErrorRef.current?.(message), [])
@@ -50,6 +52,7 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
   const generatedComposerId = useRef(`composer-${crypto.randomUUID()}`)
   const composerId = target.kind === 'compose' ? target.composerId : generatedComposerId.current
   const api = (typeof window === 'undefined' ? undefined : window.electronAPI) as AttachmentApi
+  const folderEnabled = allowFolderPaste && api?.platform === 'win32' && !!api.previewAttachmentFolder && !!api.importAttachmentFolder
   const retention = useRef(retainedState)
   retention.current = retainedState
   useLayoutEffect(() => {
@@ -96,12 +99,53 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
   // Rebind an existing retained import session without creating another session.
   useEffect(() => {
     if (!session || !api?.bindAttachmentPaste) return
-    const dispose = api.bindAttachmentPaste({ composerId, sessionId: session.sessionId, target, isEnabled: () => !disabledRef.current && !busyRef.current, onPasteEdit: input => onPasteEditRef.current?.(input) ?? false })
+    const dispose = api.bindAttachmentPaste({ composerId, sessionId: session.sessionId, target, isEnabled: () => !disabledRef.current && !busyRef.current,
+      onPasteEdit: input => onPasteEditRef.current?.(input) ?? false,
+      onFolderPaste: folderEnabled ? pasteId => { setFolderPaste(pasteId); setFolderPreview(null) } : undefined })
     bindDispose.current = dispose
     return () => { dispose(); if (bindDispose.current === dispose) bindDispose.current = null }
     // target identity is represented by identityKey, avoiding a new binding for every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, composerId, identityKey, session])
+  }, [api, composerId, folderEnabled, identityKey, session])
+
+  const viewFolder = useCallback(async () => {
+    if (!api?.previewAttachmentFolder || !folderPaste || !session || disabledRef.current || busyRef.current) return
+    const requestGeneration = generation.current
+    busyRef.current = true
+    setBusy(true)
+    try {
+      const result = await api.previewAttachmentFolder({ composerId, sessionId: session.sessionId, pasteId: folderPaste })
+      if (requestGeneration !== generation.current) return
+      if (result.success && result.data) setFolderPreview(result.data)
+      else reportError(result.error?.message || '无法查看素材，请重新粘贴文件夹路径。')
+    } catch {
+      if (requestGeneration === generation.current) reportError('无法查看素材，请重新粘贴文件夹路径。')
+    } finally {
+      if (requestGeneration === generation.current) { busyRef.current = false; setBusy(false) }
+    }
+  }, [api, composerId, folderPaste, reportError, session])
+
+  const importFolder = useCallback(async (candidateIds: string[]) => {
+    if (!api?.importAttachmentFolder || !session || !folderPreview || disabledRef.current || busyRef.current) return
+    const requestGeneration = generation.current
+    busyRef.current = true
+    setBusy(true)
+    try {
+      const result = await api.importAttachmentFolder({ sessionId: session.sessionId, previewId: folderPreview.previewId, candidateIds })
+      if (requestGeneration !== generation.current) return
+      if (!result.success || !result.data) throw new AttachmentOperationError(result.error?.message || '无法添加素材，请重试。')
+      setSession(result.data)
+      setAttachments(result.data.attachments)
+      setFolderPaste(null)
+    } catch (error) {
+      if (requestGeneration !== generation.current) return
+      reportError(error instanceof AttachmentOperationError ? error.message : '无法添加素材，请重试。')
+      const latest = await api.listAttachments({ sessionId: session.sessionId }).catch(() => null)
+      if (requestGeneration === generation.current && latest?.success) setAttachments(Array.isArray(latest.data) ? latest.data : latest.data?.attachments ?? [])
+    } finally {
+      if (requestGeneration === generation.current) { setFolderPreview(null); busyRef.current = false; setBusy(false) }
+    }
+  }, [api, folderPreview, reportError, session])
 
   const select = useCallback(async (single = false) => {
     if (disabledRef.current || busyRef.current) return null
@@ -244,6 +288,8 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
     if (current?.status === 'open') void api.cancelAttachmentImport({ sessionId: current.sessionId })
     setSession(null)
     setAttachments([])
+    setFolderPaste(null)
+    setFolderPreview(null)
     setBusy(false)
     attempted.current = false
   }, [api, identityKey])
@@ -259,6 +305,7 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
     if (!retention.current && current?.status === 'open') void api.cancelAttachmentImport({ sessionId: current.sessionId })
   }, [api])
 
-  return { session, attachments, busy, select, remove, composerId, addFile }
+  return { session, attachments, busy, select, remove, composerId, addFile, folderPaste: !!folderPaste, folderPreview,
+    viewFolder, importFolder, closeFolder: () => setFolderPreview(null) }
 }
 

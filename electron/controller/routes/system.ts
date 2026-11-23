@@ -4,10 +4,11 @@
  * 原生目录弹框与主题同步由控制层持有窗口句柄；默认工作目录由任务服务准备。
  * 审批响应是执行层的控制信号。
  */
-import { dialog } from 'electron'
+import { dialog, shell } from 'electron'
 import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { appError } from '../../errors/app-error'
+import { windowCloseCommand } from '../../../src/shared/window-close'
 import { WINDOW_CHROME_HEIGHT, WINDOW_THEME_COLORS } from '../../common/window-layout'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from '../channels'
 import { NO_INPUT, listener, route } from '../router'
@@ -28,6 +29,41 @@ const directorySelection = z.string().trim().max(32768).refine(path => !path || 
 const trusted = { trustedMainFrame: true } as const
 
 export const systemRoutes = [
+  route(INVOKE_CHANNELS.WINDOW_CLOSE, windowCloseCommand, async (ctx, input) => {
+    const window = ctx.window()
+    if (!window || !ctx.windowClose) throw appError('INVALID_STATE')
+    return { success: true, data: await ctx.windowClose.command(window, input) }
+  }, { ...trusted, errorShape: 'ipc' }),
+  route(INVOKE_CHANNELS.LOCAL_MEDIA_SETTINGS, z.enum(['get', 'choose', 'use-default']), async (ctx, action) => {
+    const { localMediaSettings: settings } = ctx.backend
+    if (action === 'get') return { success: true, data: await settings.settings() }
+    const owner = ctx.backend.currentScope()
+    if (!owner) throw appError('AUTH_REQUIRED')
+    const assertActive = ctx.backend.resultArchive.assertOwner(owner)
+    if (action === 'use-default') return { success: true, data: await settings.configure(null, assertActive) }
+    const window = ctx.window()
+    if (!window || !settings.supported) throw appError('INVALID_STATE')
+    const { path } = await settings.settings()
+    const selected = await dialog.showOpenDialog(window, { title: '选择音视频临时文件位置', properties: ['openDirectory', 'createDirectory'], defaultPath: path })
+    if (selected.canceled || !selected.filePaths[0]) return { success: true }
+    assertActive()
+    return { success: true, data: await settings.configure(selected.filePaths[0], assertActive) }
+  }, { ...trusted, errorShape: 'ipc' }),
+  route(INVOKE_CHANNELS.RESULT_ARCHIVE_SETTINGS, z.enum(['get', 'choose', 'use-default', 'open']), async (ctx, action) => {
+    const archive = ctx.backend.resultArchive
+    if (action === 'get') return { success: true, data: await archive.settings() }
+    if (action === 'open') {
+      await archive.open(path => shell.openPath(path))
+      return { success: true }
+    }
+    const data = action === 'use-default' ? await archive.configure() : await archive.configure(async state => {
+      const window = ctx.window()
+      if (!window) throw appError('INVALID_STATE')
+      const selected = await dialog.showOpenDialog(window, { title: '选择生成文件的保存位置', properties: ['openDirectory', 'createDirectory'], defaultPath: state.path })
+      return selected.canceled ? null : selected.filePaths[0] ?? null
+    })
+    return { success: true, data: data ?? undefined }
+  }, { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY, NO_INPUT, async ctx => ({ success: true, path: await ctx.tasks.getDefaultWorkspaceDirectory() }), { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY, NO_INPUT, async ctx => {
     const window = ctx.window()

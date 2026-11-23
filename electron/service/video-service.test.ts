@@ -22,14 +22,14 @@ function input() {
   return { profileId: 'mock-video-from-image', configVersion: 'mock-video-v1', operation: 'image-to-video' as const, referenceIds: ['reference-a'],
     creativeBrief: 'Product animation', parameters: { durationSeconds: 5, aspectRatio: '9:16', resolution: '720p' as const, frameRate: 24, audio: false, outputFormat: 'video/mp4' as const } }
 }
-async function fixture(scenario: MockVideoScenario = 'success') {
+async function fixture(scenario: MockVideoScenario = 'success', now?: () => number) {
   const directory = await mkdtemp(join(await realpath(tmpdir()), 'sep-video-service-'))
   directories.push(directory)
   const root = join(directory, 'user-data')
   const store = new VideoStore(root)
   const gateway = new MockVideoMediaGateway(scenario)
-  const service = new VideoService({ scope, store, gateway })
-  const rebuilt = (port: VideoGatewayPort = gateway) => new VideoService({ scope, store: new VideoStore(root), gateway: port })
+  const service = new VideoService({ scope, store, gateway, now })
+  const rebuilt = (port: VideoGatewayPort = gateway) => new VideoService({ scope, store: new VideoStore(root), gateway: port, now })
   const task = join(new ScopePath(root).ownerRoot(scope), 'video', 'v1', encodeTaskScopeSegment(scope.subscriptionId, 'subscriptionId'), 'tasks', 'task-a')
   return { directory, root, task, store, gateway, service, rebuilt }
 }
@@ -285,7 +285,8 @@ describe('VideoService mock submission, disk recovery and original delivery', ()
 
   for (const code of ['AUTH_REQUIRED', 'PERMISSION_DENIED', 'RATE_LIMITED', 'NETWORK_ERROR'] as const) {
     it(`persists safe ${code} query state without losing the original receipt`, async context => {
-      const f = await fixture()
+      let now = Date.now()
+      const f = await fixture('success', () => now)
       const initial = await f.service.generate('task-a', input())
       const unavailable = context.mock.method(f.gateway, 'getReceipt', async () => { throw new AppError(code, { message: 'sensitive upstream detail must not persist' }) })
       const job = await f.service.resume('task-a', initial.jobId)
@@ -294,13 +295,47 @@ describe('VideoService mock submission, disk recovery and original delivery', ()
       assert.equal(job.trackingStatus, code === 'AUTH_REQUIRED' || code === 'PERMISSION_DENIED' ? 'AUTH_REQUIRED' : 'INTERRUPTED')
       const before = unavailable.mock.callCount()
       await f.rebuilt().recover()
-      if (job.trackingStatus === 'AUTH_REQUIRED') assert.equal(unavailable.mock.callCount(), before)
+      if (job.trackingStatus === 'AUTH_REQUIRED' || code === 'RATE_LIMITED') assert.equal(unavailable.mock.callCount(), before)
+      if (code === 'RATE_LIMITED') {
+        await assert.rejects(f.rebuilt().resume('task-a', initial.jobId), { code: 'RATE_LIMITED' })
+        now += 1_000
+      }
       unavailable.mock.restore()
       // Explicit resume can retry queries after authorization has been restored.
       assert.equal((await finish(f.rebuilt(), await f.rebuilt().resume('task-a', initial.jobId))).saveStatus, 'SAVED')
       assert.equal(f.gateway.calls.submit, 1)
     })
   }
+
+  it('reopens original video jobs without querying or downloading before their persisted cooldowns', async context => {
+    let now = Date.now()
+    const f = await fixture('success', () => now)
+    const original = await f.service.generate('task-a', input())
+    const getReceipt = f.gateway.getReceipt.bind(f.gateway)
+    const rate = (header: string) => new AppError('SERVICE_UNAVAILABLE', { diagnostic: { httpStatus: 429, headers: { 'retry-after': header } } })
+    const query = context.mock.method(f.gateway, 'getReceipt', async () => { throw rate('60') })
+    await f.service.resume('task-a', original.jobId)
+    const reopened = f.rebuilt()
+    now += 59_999
+    await reopened.recover()
+    await assert.rejects(reopened.resume('task-a', original.jobId), { code: 'RATE_LIMITED' })
+    assert.equal(query.mock.callCount(), 1)
+    now++
+    query.mock.mockImplementation(getReceipt)
+    const content = f.gateway.content.bind(f.gateway)
+    const download = context.mock.method(f.gateway, 'content', async () => { throw rate(new Date(now + 90_000).toUTCString()) })
+    const generated = await finish(reopened, original)
+    assert.equal(generated.saveStatus, 'SAVE_FAILED')
+    assert.ok(generated.downloadRateLimit)
+    now = generated.downloadRateLimit.retryAt - 1
+    await f.rebuilt().recover()
+    await assert.rejects(f.rebuilt().retrySave('task-a', original.jobId), { code: 'RATE_LIMITED' })
+    assert.equal(download.mock.callCount(), 1)
+    now++
+    download.mock.mockImplementation(content)
+    assert.equal((await f.rebuilt().retrySave('task-a', original.jobId)).saveStatus, 'SAVED')
+    assert.equal(f.gateway.calls.submit, 1)
+  })
 
   for (const [error, code] of [[new Error('Request timed out.'), 'NETWORK_TIMEOUT'], [Object.assign(new Error('private network diagnostics'), { code: 'ECONNRESET' }), 'NETWORK_ERROR']] as const) {
     it(`preserves typed transport ${code} while keeping the original receipt`, async context => {

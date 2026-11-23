@@ -15,7 +15,7 @@ import { ConversationArtifactStore } from '../data/conversation-artifact-store'
 import type { ConversationArtifactStorePort } from '../domain/conversation-artifacts'
 import type { TaskManager } from './task-manager'
 import { WorkspaceLockManager } from './workspace-lock-manager'
-import { ConversationExecutor } from './conversation-executor'
+import { ConversationExecutor, type ConversationExecutorOptions } from './conversation-executor'
 import { RunQueue } from './run-queue'
 import { EventPipeline } from './run-events'
 import { createRunCompletion, WorkerRegistry } from './run-workers'
@@ -34,7 +34,7 @@ import { runtimeFeedback, runtimeFailureEvent, sanitizeRuntimeErrorEvent } from 
 import { runtimeFailureNoticeSchema } from '../../src/shared/runtime-feedback'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
-import { ArrangementExecutor } from './arrangement-executor'
+import { ArrangementExecutor, type ArrangementExecutionOptions } from './arrangement-executor'
 import { WriteChain } from '../data/write-chain'
 import type { ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
 import { createArrangementExecutionState, confirmArrangementNode, interruptArrangement, resumeArrangement, retryArrangementNode, retryArrangementEmployeeReplacement, markArrangementNodeWaitingForEmployee, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
@@ -81,6 +81,9 @@ function filePathFromInput(input: unknown): string | null {
 }
 
 export interface TaskRuntimeOptions {
+  beforeArtifact?: ConversationExecutorOptions['beforeArtifact']
+  onArtifact?: ConversationExecutorOptions['onArtifact']
+  beforeNodeCompletion?: ArrangementExecutionOptions['beforeNodeCompletion']
   connectorBinding?: (owner: import('../data/scope-path').TaskOwnerScope) => Promise<import('../domain/connectors').ConnectorBinding | undefined>
   onConversationSettled?: (taskId: string, runId: string, owner: { memberId: string; enterpriseId: string }) => Promise<void>
   createModelTrace?: ModelTraceFactory
@@ -97,6 +100,7 @@ export interface TaskRuntimeOptions {
   createWorker?: (options: PiTaskWorkerOptions) => TaskWorkerPort
   taskRunStore?: TaskRunStorePort
   conversationArtifactStore?: ConversationArtifactStorePort
+  localMedia?: import('./local-media-runtime').LocalMediaRuntime
   userDataDir?: string
   getTaskWorkspaceRoot?: () => string
   workPlanStore?: WorkPlanStorePort
@@ -108,6 +112,7 @@ export interface TaskRuntimeOptions {
   arrangementMedia?: ArrangementMediaPort
   arrangementDiagnostics?: import('../service/arrangement-diagnostic-service').WorkFailureCapture
   conversationMedia?: ConversationMediaPort
+  submitConversationSchedule?: ConversationExecutorOptions['submitConversationSchedule']
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   findEmployeeReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
@@ -119,6 +124,7 @@ export class TaskRuntime {
   private readonly getRefreshToken: () => string
   private readonly onAuthenticationRequired: () => void
   private readonly onEvent: (event: TaskExecutionEvent) => void
+  private readonly beforeNodeCompletion?: TaskRuntimeOptions['beforeNodeCompletion']
   private readonly resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   private readonly authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   private readonly authorizeScheduledEmployee: (subscriptionId: string, modelId: string) => Promise<EmployeeRuntimeConfig>
@@ -166,6 +172,7 @@ export class TaskRuntime {
     this.getRefreshToken = options.getRefreshToken
     this.onAuthenticationRequired = options.onAuthenticationRequired
     this.onEvent = options.onEvent
+    this.beforeNodeCompletion = options.beforeNodeCompletion
     this.resolveEmployee = options.resolveEmployee
     this.authorizeModel = options.authorizeModel
     this.authorizeScheduledModel = options.authorizeScheduledModel ?? (async () => { throw new AppError('MODEL_NOT_ALLOWED') })
@@ -233,6 +240,9 @@ export class TaskRuntime {
       taskManager: this.taskManager,
       taskRunStore: this.taskRunStore,
       conversationArtifacts: options.conversationArtifactStore ?? new ConversationArtifactStore(),
+      localMedia: options.localMedia,
+      beforeArtifact: options.beforeArtifact,
+      onArtifact: options.onArtifact,
       workPlanStore: this.workPlanStore,
       createWorker: this.createWorker,
       getRefreshToken: this.getRefreshToken,
@@ -256,6 +266,7 @@ export class TaskRuntime {
       media: this.media,
       video: options.conversationVideo ?? this.video,
       conversationMedia: options.conversationMedia,
+      submitConversationSchedule: options.submitConversationSchedule,
       workDiagnostics: this.arrangementDiagnostics,
       createModelTrace: this.createModelTrace,
       knowledgeSearch: this.knowledgeSearch,
@@ -475,7 +486,7 @@ export class TaskRuntime {
   async continueConversation(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; runId?: string; signal?: AbortSignal } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number } = {},
   ): Promise<void> {
     this.startLifecycleAudit()
     const knowledge = recovery.knowledge ?? await this.latestKnowledgeSelection(taskId)
@@ -830,7 +841,7 @@ export class TaskRuntime {
         occurredAt: Date.now(),
         data: null,
       })
-      await activeArrangement.executor.abort()
+      await activeArrangement.executor.abort({ preserveDeferredDownloads: true })
       await activeArrangement.completion
     })
     await Promise.all([Promise.all(arrangementStops), Promise.all(this.workers.list().map(async active => {
@@ -845,7 +856,7 @@ export class TaskRuntime {
         occurredAt: Date.now(),
         data: null,
       })
-      await Promise.all([active.worker.abort(), this.media?.stopTask(active.taskId), this.video?.stopTask(active.taskId)])
+      await Promise.all([active.worker.abort(), this.media?.stopTask(active.taskId, { preserveDeferredDownloads: true }), this.video?.stopTask(active.taskId)])
       await active.completion
     }))])
     await closingBrowsers
@@ -1008,6 +1019,7 @@ export class TaskRuntime {
         onAuthenticationRequired: this.onAuthenticationRequired,
         onApprovalRequest: request => this.approvals.request(request),
         onEvent: event => this.enqueueEvent(event),
+        beforeNodeCompletion: this.beforeNodeCompletion,
         authorizeEmployee: (subscriptionId, modelId) => plan.scheduledOrigin?.execution === 'general'
           ? this.authorizeScheduledModel(modelId ?? '', subscriptionId)
           : plan.scheduledOrigin

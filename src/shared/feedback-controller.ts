@@ -5,6 +5,8 @@ export interface FeedbackNotice {
   once?: boolean
 }
 
+type ConfirmationAction = (value: string, checked: boolean) => Promise<{ success: boolean; message?: string }>
+
 export interface FeedbackConfirmation {
   title?: string
   message: string
@@ -13,8 +15,11 @@ export interface FeedbackConfirmation {
   key?: string
   input?: { label: string; value: string; maxLength: number; placeholder?: string }
   validate?: (value: string) => string | null
-  onConfirm?: (value: string) => Promise<{ success: boolean; message?: string }>
+  onConfirm?: ConfirmationAction
+  alternate?: { label: string; busyLabel: string; onConfirm: ConfirmationAction }
+  checkboxLabel?: string
   cancelLabel?: string
+  cancelPlacement?: 'corner' | 'footer'
 }
 
 export interface FeedbackItem {
@@ -27,7 +32,12 @@ export interface FeedbackItem {
   actionLabel?: string
   busyLabel?: string
   cancelLabel?: string
+  cancelPlacement?: FeedbackConfirmation['cancelPlacement']
   input?: FeedbackConfirmation['input']
+  alternateLabel?: string
+  alternateBusyLabel?: string
+  activeAction?: 'primary' | 'alternate'
+  checkbox?: { label: string; checked: boolean }
   validationMessage?: string
 }
 
@@ -71,7 +81,10 @@ export class FeedbackController {
     this.queue.push({
       item: { id: ++this.nextId, key, message: confirmation.message, title: confirmation.title,
         tone: 'confirm', busy: false, actionLabel: confirmation.actionLabel, busyLabel: confirmation.busyLabel,
-        cancelLabel: confirmation.cancelLabel, input: confirmation.input ? { ...confirmation.input } : undefined },
+        cancelLabel: confirmation.cancelLabel, cancelPlacement: confirmation.cancelPlacement,
+        input: confirmation.input ? { ...confirmation.input } : undefined,
+        alternateLabel: confirmation.alternate?.label, alternateBusyLabel: confirmation.alternate?.busyLabel,
+        checkbox: confirmation.checkboxLabel ? { label: confirmation.checkboxLabel, checked: false } : undefined },
       confirmation, promise, resolve,
     })
     this.emit()
@@ -108,9 +121,18 @@ export class FeedbackController {
     this.emit()
   }
 
-  accept = async (id: number): Promise<void> => {
+  setChecked = (id: number, checked: boolean): void => {
+    const entry = this.queue[0]
+    if (!entry || entry.item.id !== id || entry.item.busy || !entry.item.checkbox) return
+    entry.item = { ...entry.item, checkbox: { ...entry.item.checkbox, checked } }
+    this.emit()
+  }
+
+  accept = async (id: number, action: 'primary' | 'alternate' = 'primary'): Promise<void> => {
     const entry = this.queue[0]
     if (!entry || entry.item.id !== id || entry.item.busy || !entry.confirmation) return
+    if (action === 'alternate' && !entry.confirmation.alternate) return
+    const run = action === 'alternate' ? entry.confirmation.alternate?.onConfirm : entry.confirmation.onConfirm
     const value = entry.item.input?.value ?? ''
     const validationMessage = entry.confirmation.validate?.(value)
     if (validationMessage) {
@@ -118,16 +140,16 @@ export class FeedbackController {
       this.emit()
       return
     }
-    if (!entry.confirmation.onConfirm) {
+    if (!run) {
       this.queue.shift()
       entry.resolve?.(true)
       this.emit()
       return
     }
-    entry.item = { ...entry.item, busy: true }
+    entry.item = { ...entry.item, busy: true, activeAction: action }
     this.emit()
     let result: { success: boolean; message?: string }
-    try { result = await entry.confirmation.onConfirm(value) }
+    try { result = await run(value, entry.item.checkbox?.checked ?? false) }
     catch { result = { success: false, message: '操作未能完成，客户端没有取得具体原因，请重试；持续失败请联系平台管理员。' } }
     // A cleared session owns neither this response nor its confirmation promise.
     if (this.queue[0] !== entry) return

@@ -77,6 +77,7 @@ export interface MediaGatewayPort {
 }
 
 export interface LocalMediaAsset extends MediaAssetView {
+  saveIntent?: import('../../src/shared/result-files').ResultSaveIntent
   version: 1
   owner: TaskOwnerScope
   relativePath: string
@@ -120,6 +121,9 @@ export interface LocalMediaJob {
   providerWaitMs?: number
   downloadMs?: number
   nextPollAt: number
+  queryRateLimit?: import('./media-retry-gate').MediaRetryGate
+  downloadRateLimit?: import('./media-retry-gate').MediaRetryGate
+  downloadAutoResumeStopped?: boolean
   attempts: number
   error: string | null
   createdAt: number

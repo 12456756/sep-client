@@ -68,3 +68,6 @@ out-video-mock/
 # Pinned third-party Office executables are fetched and verified by office:prepare.
 resources/office/officecli-*
 resources/office/*.download
+resources/local-media/win-x64/
+resources/local-media/mac-x64/
+resources/local-media/mac-arm64/

@@ -13,8 +13,11 @@ test('settings catalog exposes only supported sections and authorized enterprise
 
 test('global search matches section keywords, category names and normalized multiple terms', () => {
   deepEqual(getSettingsPages(false, true, '  WORKSPACE  ').flatMap(page => page.sections.map(section => section.id)), ['workspace'])
+  deepEqual(getSettingsPages(false, true, '临时文件').flatMap(page => page.sections.map(section => section.id)), ['workspace'])
+  deepEqual(getSettingsPages(false, true, '自动保存 保存位置').flatMap(page => page.sections.map(section => section.id)), ['workspace'])
   deepEqual(getSettingsPages(false, true, '账号 邮箱').flatMap(page => page.sections.map(section => section.id)), ['profile'])
-  deepEqual(getSettingsPages(false, true, '常规').flatMap(page => page.sections.map(section => section.id)), ['models', 'workspace'])
+  deepEqual(getSettingsPages(false, true, '常规').flatMap(page => page.sections.map(section => section.id)), ['window', 'models', 'workspace'])
+  deepEqual(getSettingsPages(false, true, '退出').flatMap(page => page.sections.map(section => section.id)), ['window'])
   deepEqual(getSettingsPages(true, false, '麦克风'), [])
   deepEqual(getSettingsPages(true, true, '没有这项设置'), [])
   deepEqual(getSettingsPages(false, false, '视频 参数').map(page => page.id), ['multimedia'])

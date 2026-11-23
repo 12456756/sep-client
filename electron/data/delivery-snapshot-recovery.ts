@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { link, lstat, rename, unlink } from 'node:fs/promises'
 import { WriteChain } from './write-chain'
+import { ResultFilePathError } from '../errors/result-file-path-error'
 
 const writes = new WriteChain()
 
@@ -14,7 +15,8 @@ export async function publishDeliverySnapshot(part: string, target: string, veri
     try { await verify(target); return }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code
-      if (code !== 'ENOENT' && !(error instanceof Error && ['SNAPSHOT_CHANGED', 'MEDIA_INTEGRITY_MISMATCH'].includes(error.message))) throw error
+      if (code !== 'ENOENT' && !(error instanceof ResultFilePathError && error.reason === 'missing')
+        && !(error instanceof Error && ['SNAPSHOT_CHANGED', 'MEDIA_INTEGRITY_MISMATCH'].includes(error.message))) throw error
     }
     await checkPath()
     const existing = await lstat(target).catch(error => { if (error.code !== 'ENOENT') throw error; return undefined })

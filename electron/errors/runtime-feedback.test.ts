@@ -1,7 +1,8 @@
 import { it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { AuthApiError } from '../common/platform/platform-api'
-import { runtimeFeedback, sanitizeRuntimeErrorEvent } from './runtime-feedback'
+import { runtimeFailureEvent, runtimeFeedback, sanitizeRuntimeErrorEvent } from './runtime-feedback'
+import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import { AppError, appError } from './app-error'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
@@ -68,6 +69,21 @@ it('preserves controlled gateway feedback after SDK serializes an upstream 401 e
   assert.equal(runtimeFeedback(new Error(`401: ${JSON.stringify({ message })}`)).code, 'SERVICE_UNAVAILABLE')
   assert.equal(runtimeFeedback(new Error(`401 ${message}`)).code, 'SERVICE_UNAVAILABLE')
   assert.equal(runtimeFeedback(new Error('401: {"message":"Invalid token"}')).code, 'AUTH_REQUIRED')
+})
+
+it('turns a rejected model request body into actionable public feedback after SDK flattening', () => {
+  const message = RUNTIME_FAILURE_MESSAGES.MODEL_REQUEST_TOO_LARGE
+  const flattened = new Error('413: {"message":"request entity too large"}')
+  for (const error of [flattened, new Error(message), new AuthApiError({ statusCode: 413, message: 'PRIVATE' }),
+    Object.assign(new Error('PRIVATE'), { status: 413 })]) {
+    assert.deepEqual(runtimeFeedback(error), { code: 'MODEL_REQUEST_TOO_LARGE', message })
+  }
+  assert.equal(runtimeFeedback(new Error('request entity too large')).code, 'INTERNAL_ERROR')
+  const identity = { taskId: 't', runId: 'r', subscriptionId: 's' }
+  const owner = { memberId: 'm', enterpriseId: 'e' }
+  assert.deepEqual(runtimeFailureEvent({ ...identity, owner }, flattened).data, { owner, code: 'MODEL_REQUEST_TOO_LARGE' })
+  const event: TaskExecutionEvent = { ...identity, sequence: 1, occurredAt: 1, type: 'session_error', data: { error: flattened.message } }
+  assert.deepEqual(sanitizeRuntimeErrorEvent(event).data, { message })
 })
 
 it('uses the interrupted response message in normalized retry and session error events', () => {

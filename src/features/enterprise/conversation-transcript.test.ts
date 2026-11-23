@@ -3,9 +3,21 @@ import * as assert from 'node:assert/strict'
 import { buildConversationReplies, buildConversationTranscript } from './conversation-transcript'
 import type { WorkItem, WorkMessage } from './types'
 import type { TaskExecutionEvent } from '../../shared/types'
+import { CONVERSATION_SCHEDULE_EVENT } from '../../shared/scheduled-creation'
 
 const event = (sequence: number, type: string, data: unknown, runId = 'run-a'): TaskExecutionEvent => ({
   taskId: 'task', runId, subscriptionId: 'employee', sequence, type, data, occurredAt: sequence,
+})
+
+test('the durable receipt replaces pending in the same run and ignores unvalidated data', () => {
+  const created = { status: 'created', id: 'definition', title: '日报', nextRunAt: 100, timezone: 'Asia/Shanghai' }
+  const runs = buildConversationTranscript([
+    event(1, CONVERSATION_SCHEDULE_EVENT, { status: 'pending' }),
+    event(2, CONVERSATION_SCHEDULE_EVENT, created),
+    event(3, CONVERSATION_SCHEDULE_EVENT, { ...created, timezone: 'bad' }),
+    event(4, CONVERSATION_SCHEDULE_EVENT, { status: 'pending' }, 'run-b'),
+  ])
+  assert.deepEqual(runs.map(run => run.scheduleReceipt), [created, { status: 'pending' }])
 })
 
 test('groups streamed thinking and tool usage by run in execution order without duplicating history', () => {
@@ -33,6 +45,21 @@ test('history can recover thinking from message snapshots and separate later con
   assert.equal(runs[0]!.entries[0]!.text, '历史思考')
   assert.equal(runs[0]!.entries[1]!.state, 'failed')
   assert.equal(runs[1]!.entries[0]!.text, '下一轮思考')
+})
+
+test('shows only validated progress on the matching running local media operation', () => {
+  const tool = { toolId: 'encode', toolName: 'local_media_process' }
+  const events = [event(1, 'tool_execution_start', tool),
+    event(2, 'tool_execution_update', { ...tool, progress: { phase: 'render', percent: 40 }, output: 'private path' }),
+    event(3, 'tool_execution_update', { ...tool, progress: { phase: 'render', percent: 300 } }),
+    event(4, 'tool_execution_update', { ...tool, progress: { phase: 'save' } }, 'run-b')]
+  const [live] = buildConversationTranscript(events)
+  assert.equal(live.entries.length, 1)
+  assert.equal(live.entries[0].text, '渲染视频 40%')
+  assert.doesNotMatch(JSON.stringify(live), /private path/)
+  const [finished] = buildConversationTranscript([...events, event(5, 'tool_execution_end', { ...tool, success: true })])
+  assert.equal(finished.entries[0].text, '本地音视频处理')
+  assert.equal(finished.entries[0].state, 'completed')
 })
 
 test('a final snapshot does not repeat the same streamed thinking', () => {

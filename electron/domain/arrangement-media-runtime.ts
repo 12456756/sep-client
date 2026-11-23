@@ -15,6 +15,10 @@ export class ArrangementMediaRecoveryError extends Error {
   }
 }
 
+export class ImageDownloadDeferredError extends ArrangementMediaRecoveryError {
+  constructor(cause: unknown) { super('download', cause) }
+}
+
 export interface ArrangementMediaAsset {
   artifactId: string
   kind: 'image' | 'video'

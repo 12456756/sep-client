@@ -1,11 +1,10 @@
 import { z } from 'zod'
-import { scheduleInputSchema, scheduledWorkSourceSchema, type ScheduledDefinition, type ScheduledSnapshot } from '../../shared/scheduled-tasks'
+import { scheduledIssueSchema as issue, scheduleInputSchema, scheduledWorkSourceSchema, type ScheduledDefinition, type ScheduledSnapshot } from '../../shared/scheduled-tasks'
 import type { IpcCommandResult } from '../../shared/ipc'
 import { scheduledCreationSchema, type ScheduledCreation, type ScheduledCreationRequest } from '../../shared/scheduled-creation'
 
 const time = z.number().int().nonnegative()
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
-const issue = z.object({ code: z.string(), message: z.string(), action: z.enum(['retry', 'auth', 'blocked', 'review']), retryAfterMs: z.number().positive().optional() })
 const deliverables = z.array(z.object({ id: z.string(), name: z.string(), format: z.string(), path: z.string(), contentOutline: z.array(z.string()), acceptanceCriteria: z.array(z.string()) })).min(1)
 const plan = z.union([
   z.object({ status: z.literal('ready'), kind: z.literal('employee').optional(), objective: z.string().min(1), instruction: z.string().min(1), expectedOutput: z.string().min(1), deliverables }),

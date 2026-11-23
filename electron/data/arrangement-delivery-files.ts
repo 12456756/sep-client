@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { unzipSync } from 'fflate'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { PDFDocument } from 'pdf-lib'
@@ -11,11 +11,15 @@ import { finalDeliveryFileSchema, type DeliveryIssue, type DeliverySubmission, t
 import { resolveArrangementMediaFile, restoreArrangementMediaSnapshot } from './arrangement-media-files'
 import { publishDeliverySnapshot } from './delivery-snapshot-recovery'
 import { emptyTextFilenameSchema } from '../../src/shared/scheduled-tasks'
+import { AppError } from '../errors/app-error'
+import { ResultFilePathError } from '../errors/result-file-path-error'
+import { resolveUnlinkedChild, resolveWorkspaceResult } from './workspace-result-path'
 
 const MAX_BYTES = 64 * 1024 * 1024
 const MAX_XML_BYTES = 8 * 1024 * 1024
 const TEXT_FORMATS = new Set(['txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'yaml', 'yml', 'sql'])
 type FileResult = { ok: true; files: FinalDeliveryFile[] } | { ok: false; issues: DeliveryIssue[] }
+const SNAPSHOT_DIRECTORY = 'delivery-snapshots'
 
 export interface DeliveryFileOptions {
   taskDirectory?: string
@@ -35,7 +39,7 @@ export interface ResolvedDeliveryFiles {
 
 function snapshotRelativePath(file: FinalDeliveryFile): string {
   const extension = /^[a-z0-9]{1,32}$/i.test(file.format) ? file.format.toLowerCase() : 'bin'
-  return `delivery-snapshots/${file.snapshot!.sha256}.${extension}`
+  return `${SNAPSHOT_DIRECTORY}/${file.snapshot!.sha256}.${extension}`
 }
 
 async function saveSnapshot(taskDirectory: string, file: FinalDeliveryFile, bytes: Buffer, source: 'confirmed' | 'workspace-recovery', signal?: AbortSignal): Promise<FinalDeliveryFile> {
@@ -43,11 +47,14 @@ async function saveSnapshot(taskDirectory: string, file: FinalDeliveryFile, byte
   const saved = { ...file, snapshot }
   await mkdir(taskDirectory, { recursive: true })
   const root = await realpath(taskDirectory)
-  const directory = join(root, 'delivery-snapshots')
-  await mkdir(directory, { recursive: true })
-  if ((await lstat(directory)).isSymbolicLink() || await realpath(directory) !== directory) throw new Error('UNSAFE_PATH')
-  const target = resolve(root, snapshotRelativePath(saved))
-  const temporary = join(directory, `${randomUUID()}.tmp`)
+  await mkdir(join(root, SNAPSHOT_DIRECTORY), { recursive: true })
+  const directory = await resolveUnlinkedChild(root, SNAPSHOT_DIRECTORY, 'directory')
+  const checkDirectory = async () => {
+    const current = await resolveUnlinkedChild(root, SNAPSHOT_DIRECTORY, 'directory')
+    if (current.path !== directory.path || current.stat.dev !== directory.stat.dev || current.stat.ino !== directory.stat.ino) throw new Error('UNSAFE_PATH')
+  }
+  const target = join(directory.path, basename(snapshotRelativePath(saved)))
+  const temporary = join(directory.path, `${randomUUID()}.tmp`)
   try {
     signal?.throwIfAborted()
     await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 })
@@ -58,30 +65,23 @@ async function saveSnapshot(taskDirectory: string, file: FinalDeliveryFile, byte
         throw error
       })
       if (bytes.length !== snapshot.size || createHash('sha256').update(bytes).digest('hex') !== snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
-    }, async () => {
-      if ((await lstat(directory)).isSymbolicLink() || await realpath(directory) !== directory) throw new Error('UNSAFE_PATH')
-    }, signal)
+    }, checkDirectory, signal)
     const verified = await readWorkspaceFile(root, snapshotRelativePath(saved), signal, file.contentPolicy === 'empty')
     if (verified.length !== snapshot.size || createHash('sha256').update(verified).digest('hex') !== snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
     return saved
-  } finally { await rm(temporary, { force: true }) }
+  } finally { await checkDirectory().then(() => rm(temporary, { force: true }), () => undefined) }
 }
 
 export async function readWorkspaceFile(workspace: string, path: string, signal?: AbortSignal, allowEmpty = false): Promise<Buffer> {
   signal?.throwIfAborted()
-  if (!isSafeDeliveryPath(path)) throw new Error('UNSAFE_PATH')
-  const root = await realpath(workspace)
-  const requested = resolve(root, ...path.split(/[\\/]/))
-  const requestedInfo = await lstat(requested)
-  if (requestedInfo.isSymbolicLink()) throw new Error('UNSAFE_PATH')
-  if (!requestedInfo.isFile()) throw new Error('NOT_A_FILE')
-  const actual = await realpath(requested)
-  const inside = relative(root, actual)
-  if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw new Error('UNSAFE_PATH')
-  const file = await open(actual, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+  if (!isSafeDeliveryPath(path)) throw new ResultFilePathError('invalidPath')
+  const name = path.split(/[\\/]/).join(sep)
+  const source = await resolveWorkspaceResult(workspace, name)
+  const file = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
   try {
     const before = await file.stat()
     if (!before.isFile()) throw new Error('NOT_A_FILE')
+    if (before.dev !== source.stat.dev || before.ino !== source.stat.ino) throw new Error('FILE_CHANGED')
     if (!before.size && !allowEmpty) throw new Error('EMPTY_FILE')
     if (before.size > MAX_BYTES) throw new Error('FILE_TOO_LARGE')
     signal?.throwIfAborted()
@@ -97,8 +97,8 @@ export async function readWorkspaceFile(workspace: string, path: string, signal?
     const data = buffer.subarray(0, length)
     const after = await file.stat()
     if (data.length > MAX_BYTES || before.size !== after.size || before.mtimeMs !== after.mtimeMs || data.length !== after.size) throw new Error('FILE_CHANGED')
-    const current = await lstat(requested)
-    if (current.isSymbolicLink() || current.dev !== after.dev || current.ino !== after.ino || await realpath(requested) !== actual) throw new Error('UNSAFE_PATH')
+    const current = await resolveWorkspaceResult(workspace, name)
+    if (current.path !== source.path || current.stat.dev !== after.dev || current.stat.ino !== after.ino) throw new Error('FILE_CHANGED')
     return data
   } finally { await file.close() }
 }
@@ -163,10 +163,15 @@ async function validateFormat(bytes: Buffer, format: string, contentPolicy?: 'em
 }
 
 export function deliveryFileIssue(error: unknown, id: string, path: string): DeliveryIssue {
-  const errno = error && typeof error === 'object' && 'code' in error ? error.code : undefined
-  const code = typeof errno === 'string' ? errno : error instanceof Error ? error.message : ''
+  const original = error instanceof ResultFilePathError ? error.cause : error
+  const errno = original && typeof original === 'object' && 'code' in original ? original.code : undefined
+  const code = error instanceof ResultFilePathError
+    ? ({ outside: 'UNSAFE_PATH', link: 'UNSAFE_PATH', invalidPath: 'UNSAFE_PATH', notFile: 'NOT_A_FILE',
+        missing: 'ENOENT', workspaceUnavailable: 'WORKSPACE_INVALID', access: errno === 'EPERM' ? 'EPERM' : 'EACCES' } as const)[error.reason]
+    : typeof errno === 'string' ? errno : error instanceof Error ? error.message : ''
   const messages: Record<string, string> = {
     UNSAFE_PATH: '路径越界或使用了不安全的文件链接，请在共享工作区规定位置保存真实文件。',
+    WORKSPACE_INVALID: '本次工作的目录不存在或不可用，请检查工作目录。',
     NOT_A_FILE: '交付路径不是普通文件。', EMPTY_FILE: '文件为空，请写入实际成果。',
     FILE_MUST_BE_EMPTY: '此交付物必须恰好为 0 字节，不得包含换行、空格或字节顺序标记。',
     FILE_TOO_LARGE: '文件或解压内容超过 64 MiB（单个 XML 超过 8 MiB），请精简成果。', FILE_CHANGED: '校验时文件仍在变化，请完成保存后再提交。',
@@ -183,7 +188,7 @@ export function deliveryFileIssue(error: unknown, id: string, path: string): Del
     EBUSY: '成果文件暂时被占用，请完成保存后重试。',
     EIO: '保存或读取成果时发生磁盘 I/O 错误。',
   }
-  const missing = !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
+  const missing = code === 'ENOENT'
   return { code: missing ? 'FILE_MISSING' : messages[code] ? code : 'INVALID_FORMAT', deliverableId: id, path,
     message: missing ? '规定的最终交付文件不存在，请实际生成并保存文件。' : messages[code] ?? '文件无法读取或内容格式无效，请重新保存有效文件。' }
 }
@@ -222,11 +227,12 @@ export async function validateDeliveryFiles(workspace: string, node: Arrangement
 }
 
 export async function createScheduledEmptyText(workspace: string, occurrenceId: string, filename: string, checkControl: () => void): Promise<void> {
+  const directoryName = basename(workspace)
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(occurrenceId) || !isAbsolute(workspace) || workspace !== resolve(workspace)
-    || !workspace.endsWith(`${sep}scheduled-${occurrenceId}`) || !emptyTextFilenameSchema.safeParse(filename).success
-    || filename !== filename.trim() || !isSafeDeliveryPath(filename)) throw new Error('WORKSPACE_INVALID')
+    || relative(`scheduled-${occurrenceId}`, directoryName) !== '' || !emptyTextFilenameSchema.safeParse(filename).success
+    || filename !== filename.trim() || !isSafeDeliveryPath(filename)) throw new AppError('WORKSPACE_INVALID')
   const info = await lstat(workspace)
-  if (!info.isDirectory() || info.isSymbolicLink() || await realpath(workspace) !== workspace) throw new Error('WORKSPACE_INVALID')
+  if (!info.isDirectory() || info.isSymbolicLink() || await realpath(workspace) !== workspace) throw new AppError('WORKSPACE_INVALID')
   checkControl()
   // Exclusive open also rejects a pre-existing symlink or hard link; never truncate a file.
   const handle = await open(join(workspace, filename), 'wx', 0o600)

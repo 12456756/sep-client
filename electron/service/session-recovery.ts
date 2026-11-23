@@ -2,7 +2,7 @@ import { logger } from '../common/logger'
 import type { ScopeSource } from './scope-guard'
 
 export interface SessionRecoveryStep {
-  name: 'history' | 'images' | 'videos'
+  name: 'history' | 'images' | 'videos' | 'result-files'
   run: (signal: AbortSignal) => Promise<void>
 }
 

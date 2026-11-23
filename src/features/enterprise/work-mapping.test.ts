@@ -30,6 +30,10 @@ describe('arrangement retry display regressions', () => {
       ['task-a-file-0', 'docx'], ['task-a-file-1', 'xlsx'], ['task-a-file-2', 'md'],
     ])
   })
+  it('omits invalid historical file slots without changing the remaining file identities', () => {
+    const work = buildWorkItem({ task: { ...task, files: ['report.md', '', 'notes.md'] }, employees: [] })
+    assert.deepEqual(work.deliverables.map(file => file.id), ['task-a-file-0', 'task-a-file-2'])
+  })
   it('displays the general assistant instead of the authentication employee in history and messages', () => {
     const work = buildWorkItem({ task, employees: [], plan: { mode: 'conversation', conversation: { kind: 'general' } } as ArrangementPlanSnapshot,
       messages: [{ id: 'reply', role: 'assistant', content: 'hello', createdAt: 1, runId: 'run' }] })

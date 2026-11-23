@@ -1,2 +1,4 @@
 resources/common-skills/** text eol=lf
 resources/office/*.txt text eol=lf
+scripts/build-local-media-win.sh text eol=lf
+scripts/build-local-media-mac.sh text eol=lf

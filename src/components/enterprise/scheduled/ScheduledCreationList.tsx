@@ -39,8 +39,8 @@ export function ScheduledCreationList({ model, onResume, onOpen }: {
         {uncertain?.error ? <p className="ent-sch-modal-error" role="alert">{uncertain.error}</p> : null}
         <footer className="ent-sch-actions">
           {creation.stage === 'completed' && creation.definitionId ? <button type="button" className="ent-btn sm" onClick={() => onOpen(creation.definitionId!)}>查看执行记录<ArrowRight size={14} /></button> : null}
-          {!uncertain && (creation.stage === 'needs_input' || creation.stage === 'blocked') ? <button type="button" className="ent-btn sm" onClick={() => onResume(creation)}>继续填写<ArrowRight size={14} /></button> : null}
-          {!terminal && (uncertain || creation.stage === 'failed') ? <button type="button" className="ent-btn sm" disabled={uncertain?.sending} onClick={() => void model.submitCreation(uncertain?.request ?? { ...creation.request, requestId: creation.id, expectedRevision: creation.revision })}><RotateCcw size={14} />重试同一请求</button> : null}
+          {!creation.fromConversation && !uncertain && (creation.stage === 'needs_input' || creation.stage === 'blocked') ? <button type="button" className="ent-btn sm" onClick={() => onResume(creation)}>继续填写<ArrowRight size={14} /></button> : null}
+          {!creation.fromConversation && !terminal && (uncertain || creation.stage === 'failed') ? <button type="button" className="ent-btn sm" disabled={uncertain?.sending} onClick={() => void model.submitCreation(uncertain?.request ?? { ...creation.request, requestId: creation.id, expectedRevision: creation.revision })}><RotateCcw size={14} />重试同一请求</button> : null}
           {!terminal ? <button type="button" className="ent-btn ghost sm" disabled={cancelling} onClick={() => void model.cancelCreation(creation)}><X size={14} />{cancelling ? '正在取消…' : '取消创建'}</button> : null}
         </footer>
       </article>

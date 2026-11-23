@@ -8,9 +8,11 @@
  */
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { TaskStatus, type TaskExecutionEvent } from '../../src/shared/types'
 import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 import { runtimeFeedback, runtimeFailureEvent } from '../errors/runtime-feedback'
+import { ImageDownloadDeferredError } from '../domain/arrangement-media-runtime'
 import { ConversationContextStore, type ConversationMessage } from '../domain/conversation-context'
 import type { TaskRunStorePort, TaskRunOutcome } from '../data/task-run-store'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
@@ -19,7 +21,7 @@ import type { SharedPiSession } from '../pi/sdk/pi-shared-session'
 import { createDefaultSharedPiSession, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { ConversationRecoveryError } from './conversation-recovery-error'
 import { withApprovedSkillReadPaths } from './run-skill-policy'
-import { evaluateToolCall } from '../../pi-extension/guard'
+import { evaluateToolCall, isUnrestrictedToolPolicy } from '../../pi-extension/guard'
 import { prepareConversationAttachments } from './conversation-attachments'
 import { runSkillDisplay } from '../common/run-skill-display'
 import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
@@ -47,6 +49,11 @@ import { withTimeout } from '../common/with-timeout'
 import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
+import { bindConversationSchedule, type SubmitConversationSchedule } from './conversation-schedule'
+import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL } from '../../src/shared/scheduled-creation'
+import { redactValue } from '../common/redact'
+import { LOCAL_MEDIA_TOOL } from '../domain/local-media-tools'
+import type { LocalMediaRuntime } from './local-media-runtime'
 
 const log = logger.child('conversation-executor')
 
@@ -84,8 +91,13 @@ export interface ConversationExecutorOptions {
   workDiagnostics?: WorkFailureCapture
   createModelTrace?: ModelTraceFactory
   conversationArtifacts?: ConversationArtifactStorePort
+  localMedia?: LocalMediaRuntime
+  beforeArtifact?: (owner: { memberId: string; enterpriseId: string }, taskId: string, title: string, workspace: string,
+    file: string, index: number, startedAt: number, finishedAt: number) => Promise<import('../../src/shared/result-files').ResultSaveIntent | undefined>
+  onArtifact?: (owner: { memberId: string; enterpriseId: string }, taskId: string, index: number) => void
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
+  submitConversationSchedule?: SubmitConversationSchedule
 }
 
 export class ConversationExecutor {
@@ -103,7 +115,7 @@ export class ConversationExecutor {
   async continue(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number } = {},
   ): Promise<void> {
     await this.continueAs(taskId, prompt, undefined, recovery)
   }
@@ -149,6 +161,7 @@ export class ConversationExecutor {
     const mediaEvidence = modelEvidence ? trackMediaToolFailureEvidence() : undefined
     let artifactDirectory: ConversationArtifactDirectory | undefined
     let artifactsScanned = false
+    const startedAt = Date.now()
     const knowledgeCancellation = new AbortController()
     const mediaSignal = queued.signal ? AbortSignal.any([knowledgeCancellation.signal, queued.signal]) : knowledgeCancellation.signal
     const persistRun = async (attachmentMetadata?: AttachmentView[]) => {
@@ -157,7 +170,7 @@ export class ConversationExecutor {
       await this.options.taskRunStore.create(scope, {
         taskId, runId, subscriptionId: queued.subscriptionId, modelId: employee.modelId,
         runtimeKey: `${queued.subscriptionId}:${employee.modelId}`, workspaceDir: task.workDir ?? this.options.workspaceRoot(),
-        prompt: queued.prompt, executionKind: 'conversation',
+        prompt: queued.prompt, executionKind: 'conversation', startedAt,
         ...(queued.knowledge ? { knowledge: queued.knowledge } : {}),
         ...(attachmentMetadata ? { attachmentMetadata } : {}),
       })
@@ -253,6 +266,19 @@ export class ConversationExecutor {
             error: error instanceof Error ? error.message : String(error) })
         }
       }
+      const directory = artifactDirectory
+      const allowLocalMedia = !toolPolicy || (queued.arrangement?.mode === 'conversation' && !task.scheduledOrigin && isUnrestrictedToolPolicy(toolPolicy))
+      const localMedia = scope && queued.conversation && allowLocalMedia && directory?.status === 'ready'
+        ? this.options.localMedia?.bind({
+          attachments: [...resolvedAttachments, ...historicalAttachments],
+          resolveAttachment: async ({ attachmentId, sha256 }) => (await this.options.attachmentInputs?.resolveTaskInputs(scope, taskId, [{ attachmentId, sha256 }]))?.attachments[0],
+          assertActive: assertAttachmentScope,
+          runSignal: mediaSignal,
+          artifactPath: join(workspaceDir, directory.relativePath),
+          artifactRelativePath: directory.relativePath,
+          checkArtifact: async () => (await this.options.conversationArtifacts?.prepare(workspaceDir, taskId))?.status === 'ready',
+          authorize: input => this.options.approvals.request({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: LOCAL_MEDIA_TOOL, input: redactValue(input) }),
+        }) : undefined
       diagnosticPhase = 'media-setup'
       const rawMediaTools = await this.options.media?.prepareRun({
         taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy, allowImageReplacement: true,
@@ -264,7 +290,8 @@ export class ConversationExecutor {
       })
       if (active.control !== 'none') {
         // stopTask may have won before prepareRun published its tracking state.
-        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
+        await Promise.all([this.options.media?.stopTask(taskId, { preserveDeferredDownloads: active.control === 'interrupt' }),
+          this.options.video?.stopTask(taskId)])
         await this.finalize(active, queued, scope, runCreated)
         return
       }
@@ -279,6 +306,26 @@ export class ConversationExecutor {
       queued.signal?.throwIfAborted()
       diagnosticPhase = 'conversation-setup'
       const describeSkillRead = runSkillDisplay(general ? undefined : employee.runtimeSnapshot)
+      let scheduleReceiptReady = false
+      const submitSchedule = this.options.submitConversationSchedule
+      const conversationSchedule = submitSchedule && scope && task.workDir && queued.conversation && !task.scheduledOrigin &&
+        (!queued.arrangement || queued.arrangement.mode === 'conversation') && toolPolicy?.preset !== 'read-only'
+        ? bindConversationSchedule({
+          submit: submitSchedule, taskId, messageId: queued.messageId ? `message:${queued.messageId}` : 'initial', userMessage: queued.prompt,
+          receivedAt: queued.messageReceivedAt ?? (queued.messageId ? startedAt : task.createdAt), modelId: employee.modelId, workDir: task.workDir, signal: mediaSignal,
+          isCurrent: () => {
+            const current = this.options.taskManager.getCurrentUserScope()
+            return !!active && this.options.workers.isCurrent(active) && scope.enterpriseId === current?.enterpriseId && scope.memberId === current.memberId
+          },
+          approve: input => this.options.approvals.request({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: CREATE_SCHEDULED_TASK_TOOL,
+            input: redactValue({ title: input.name, goal: input.goal, timezone: input.timezone, firstRunAt: input.scheduledAt,
+              recurrence: input.recurrence?.frequency === 'cron' ? input.recurrence.expression : null }) }),
+          receipt: async receipt => {
+            await this.options.events.enqueue({ taskId, runId, subscriptionId: queued.subscriptionId, sequence: 0,
+              type: CONVERSATION_SCHEDULE_EVENT, occurredAt: Date.now(), data: receipt })
+            scheduleReceiptReady = receipt.status !== 'pending'
+          },
+        }) : undefined
       worker = this.options.createWorker({
         context: {
           taskId,
@@ -300,6 +347,8 @@ export class ConversationExecutor {
           videoTools: mediaEvidence ? mediaEvidence.wrap(videoTools) : videoTools,
           modelTrace: modelEvidence?.record,
           conversationAttachments: attachmentContext?.reader,
+          conversationSchedule,
+          localMedia,
           toolPolicy,
           employeeProfile: general ? undefined : employee.employeeProfile,
           inputImages: attachmentImages,
@@ -307,6 +356,7 @@ export class ConversationExecutor {
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
         onApprovalRequest: request => this.options.approvals.request(request),
+        shouldYieldAfterToolTurn: toolResults => scheduleReceiptReady && !!toolResults?.every(result => result.toolName === CREATE_SCHEDULED_TASK_TOOL),
         onResponseSettled: async () => { await waitForMedia() },
         onEvent: event => this.options.events.enqueue(describeSkillRead(event)),
         onSessionCreated: async session => {
@@ -390,7 +440,7 @@ export class ConversationExecutor {
       await waitForMedia()
       diagnosticPhase = 'run-persistence'
       await this.options.events.drain(taskId)
-      await this.collectConversationArtifacts(taskId, runId, workspaceDir, artifactDirectory)
+      await this.collectConversationArtifacts(taskId, runId, workspaceDir, artifactDirectory, startedAt, scope)
       artifactsScanned = true
       if (!this.options.workers.isCurrent(active)) return
       await this.finalize(active, queued, scope, runCreated)
@@ -419,7 +469,13 @@ export class ConversationExecutor {
           log.warn('conversation diagnostic could not be stored', { taskId, runId })
         }
       }
-      await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)]).catch(() => undefined)
+      // A video wait budget closes only its run in finally; an image cooldown still owns a background save.
+      if (runtimeFeedback(error).code !== 'MEDIA_WAIT_EXPIRED') {
+        await Promise.all([error instanceof ImageDownloadDeferredError ? undefined : this.options.media?.stopTask(taskId, {
+          preserveDeferredDownloads: active?.control === 'interrupt',
+        }),
+          this.options.video?.stopTask(taskId)]).catch(() => undefined)
+      }
       log.error('conversation run failed', {
         taskId,
         runId,
@@ -431,7 +487,7 @@ export class ConversationExecutor {
       })
       if (active) {
         if (!artifactsScanned) {
-          await this.collectConversationArtifacts(taskId, runId, task.workDir ?? this.options.workspaceRoot(), artifactDirectory)
+          await this.collectConversationArtifacts(taskId, runId, task.workDir ?? this.options.workspaceRoot(), artifactDirectory, startedAt, scope)
           artifactsScanned = true
         }
         await this.finalize(active, queued, scope, runCreated, error, diagnosticAvailable)
@@ -461,11 +517,22 @@ export class ConversationExecutor {
     runId: string,
     workspace: string,
     directory: ConversationArtifactDirectory | undefined,
+    startedAt: number,
+    scope: ReturnType<TaskManager['getCurrentUserScope']>,
   ): Promise<void> {
     if (!directory || directory.status === 'unsafe' || !this.options.conversationArtifacts) return
     try {
       const files = await this.options.conversationArtifacts.scan(workspace, taskId)
-      for (const file of files) await this.options.taskManager.addTaskFile(taskId, file)
+      const finishedAt = Date.now()
+      for (const file of files) {
+        let index: number | undefined
+        await this.options.taskManager.addTaskFile(taskId, file, scope ? async (task, path, position) => {
+          if (task.ownerId !== scope.memberId || task.ownerEnterpriseId !== scope.enterpriseId) return
+          index = position
+          return this.options.beforeArtifact?.(scope, taskId, task.title, workspace, path, position, startedAt, finishedAt)
+        } : undefined)
+        if (scope && index !== undefined) this.options.onArtifact?.(scope, taskId, index)
+      }
     } catch (error) {
       log.warn('conversation artifact scan failed', { taskId, runId,
         error: error instanceof Error ? error.message : String(error) })
@@ -499,7 +566,7 @@ export class ConversationExecutor {
     taskId: string,
     prompt: string,
     employeeOverride: string | undefined,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal },
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number },
   ): Promise<void> {
     recovery.signal?.throwIfAborted()
     const scope = this.options.taskManager.getCurrentUserScope()
@@ -574,6 +641,8 @@ export class ConversationExecutor {
       subscriptionId: employee.subscriptionId,
       employee,
       prompt: prompt.trim(),
+      messageId: recovery.messageId ?? runId,
+      messageReceivedAt: recovery.messageReceivedAt,
       conversation: true,
       signal: recovery.signal,
       arrangement: arrangement ?? undefined,

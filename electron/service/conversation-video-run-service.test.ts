@@ -14,6 +14,7 @@ import { AppError } from '../errors/app-error'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { VideoRunService } from './video-run-service'
 import { ConversationVideoRunService } from './conversation-video-run-service'
+import { runtimeFeedback } from '../errors/runtime-feedback'
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close() })
@@ -21,7 +22,7 @@ const owner = { enterpriseId: 'enterprise-a', memberId: 'member-a', subscription
 const input = { creativeBrief: 'A product video', localAssetIds: ['asset-a'],
   parameters: { ...fixture.quoteRequest.parameters, resolution: '720p', outputFormat: 'video/mp4' } }
 
-async function setup(scenario: MockVideoScenario = 'success') {
+async function setup(scenario: MockVideoScenario = 'success', waitBudgetMs?: number) {
   const root = await mkdtemp(join(await realpath(tmpdir()), 'sep-conversation-video-'))
   cleanup.push(() => rm(root, { recursive: true, force: true }))
   const store = new VideoStore(root), gateway = new MockVideoMediaGateway(scenario)
@@ -39,8 +40,9 @@ async function setup(scenario: MockVideoScenario = 'success') {
     readReference: async () => { const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2S5cAAAAASUVORK5CYII=', 'base64'); return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') } },
     requestApproval: async () => true, tracker: { floorMs: 1, maxAttempts: 1, budgetMs: 5000 },
   }
-  const base = new VideoRunService(options)
-  const video = new ConversationVideoRunService(base, options)
+  const ipc = new MockVideoHostService(options)
+  const base = new VideoRunService(options, ipc)
+  const video = new ConversationVideoRunService(base, options, waitBudgetMs)
   cleanup.push(() => base.stopAll())
   cleanup.push(() => video.stopTask('task-a'))
   const run: Parameters<VideoRunPort['prepareRun']>[0] = {
@@ -48,7 +50,7 @@ async function setup(scenario: MockVideoScenario = 'success') {
     employee: { subscriptionId: owner.subscriptionId, modelId: 'model-a', gatewayUrl: 'http://unused', video: runtime },
     requestApproval: async () => true,
   }
-  return { root, store, gateway, state, options, base, video, run }
+  return { root, store, gateway, state, options, base, video, run, ipc }
 }
 
 test('conversation continues the original video after a bounded tracker exits while it is running', { timeout: 10_000 }, async () => {
@@ -62,6 +64,36 @@ test('conversation continues the original video after a bounded tracker exits wh
   assert.equal(f.gateway.calls.quote, 1)
   assert.equal(f.gateway.calls.submit, 1)
   await f.video.finishRun('task-a', 'run-a')
+})
+
+test('conversation video has one wait budget across tracker rounds and can resume the original job after expiry', { timeout: 10_000 }, async context => {
+  const f = await setup('success', 2_500)
+  const sharedStop = context.mock.method(f.ipc, 'stopTask')
+  const getReceipt = f.gateway.getReceipt.bind(f.gateway)
+  const query = context.mock.method(f.gateway, 'getReceipt', async (...args: Parameters<typeof getReceipt>) => ({
+    ...await getReceipt(...args), status: 'RUNNING' as const, outputs: [], pollAfterMs: 1,
+    recovery: { canQuery: true, canDownload: false, canCancel: false },
+  }))
+  const tools = await f.video.prepareRun(f.run)
+  assert.ok(tools)
+  const sibling = await f.video.prepareRun({ ...f.run, runId: 'run-b', recoverJobIds: [] })
+  assert.ok(sibling)
+  await assert.rejects(tools.execute('video_from_image', input), error => runtimeFeedback(error).code === 'MEDIA_WAIT_EXPIRED')
+  assert.ok(query.mock.callCount() >= 2)
+  await f.video.finishRun('task-a', 'run-a')
+  assert.equal(sharedStop.mock.callCount(), 0)
+  await assert.rejects(tools.execute('video_get_job', {}), /run closed/)
+  await sibling.execute('video_get_job', {})
+  await f.video.finishRun('task-a', 'run-b')
+  const [pending] = await f.store.listJobs(owner)
+  assert.equal(pending?.receipt?.status, 'RUNNING')
+  assert.equal(pending?.trackingStatus, 'INTERRUPTED')
+  assert.equal(f.gateway.calls.submit, 1)
+  query.mock.restore()
+  const ipc = new MockVideoHostService(f.options)
+  try { assert.equal((await ipc.resume('task-a', pending!.jobId)).saveStatus, 'SAVED') }
+  finally { await ipc.stopAll() }
+  assert.equal(f.gateway.calls.submit, 1)
 })
 
 for (const stopped of [false, true]) test(`conversation confirms a fresh video and keeps later turns usable (old tracking stopped=${stopped})`, { timeout: 10_000 }, async context => {

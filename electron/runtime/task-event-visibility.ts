@@ -1,5 +1,6 @@
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import { hasSideEffects } from '../common/constants'
+import { CONVERSATION_SCHEDULE_EVENT } from '../../src/shared/scheduled-creation'
 
 export type TaskEventVisibility = 'stream' | 'important' | 'internal'
 
@@ -15,8 +16,10 @@ const INTERNAL_EVENT_TYPES = new Set([
 ])
 
 const IMPORTANT_EVENT_TYPES = new Set([
+  CONVERSATION_SCHEDULE_EVENT,
   'context_usage',
   'tool_execution_start',
+  'tool_execution_update',
   'tool_execution_end',
   'approval_requested',
   'approval_resolved',

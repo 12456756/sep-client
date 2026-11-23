@@ -414,6 +414,31 @@ describe('conversation attachments through the real Pi SDK', () => {
     assert.ok(!JSON.stringify(bodies[0].messages).includes(image.data))
     assert.match(JSON.stringify(bodies[1].messages), /data:image\/png;base64,aW1hZ2UtZGF0YQ==/)
   })
+
+  for (const sameImage of [true, false]) {
+    it(`keeps the attachment tool result while ${sameImage ? 'omitting the duplicate user image' : 'sending a distinct image'}`, async () => {
+      const original = 'aW1hZ2UtZGF0YQ=='
+      const data = sameImage ? original : 'b3RoZXItaW1hZ2U='
+      const receipt = { attachmentId: 'attachment-image', name: 'original.png' }
+      const { bodies } = await mediaSession({ vision: true, mediaTools: undefined, conversationAttachments: {
+        list: () => ({ files: [], nextOffset: null }),
+        read: async () => ({ text: JSON.stringify(receipt), image: { data, mimeType: 'image/png' } }),
+      } }, { name: 'conversation_attachment', input: { operation: 'read', attachmentId: receipt.attachmentId } },
+      undefined, undefined, undefined, true)
+      assert.equal(bodies.length, 2)
+      const images = (body: typeof bodies[number]) => body.messages.flatMap(message => Array.isArray(message.content)
+        ? message.content.flatMap(part => {
+          if (!part || typeof part !== 'object' || !('image_url' in part)) return []
+          const image = part.image_url
+          return image && typeof image === 'object' && 'url' in image ? [image.url] : []
+        }) : [])
+      const originalUrl = `data:image/png;base64,${original}`
+      assert.deepEqual(images(bodies[0]!), [originalUrl])
+      assert.deepEqual(images(bodies[1]!), sameImage ? [originalUrl] : [originalUrl, `data:image/png;base64,${data}`])
+      const result = bodies[1]!.messages.find(message => message.role === 'tool')!
+      assert.deepEqual(JSON.parse(messageText(result.content)), receipt)
+    })
+  }
 })
 
 describe('browser instructions in real provider requests', () => {

@@ -1,18 +1,21 @@
-import { constants } from 'node:fs'
-import { copyFile, mkdtemp, open, realpath, lstat, rm } from 'node:fs/promises'
+import { constants, type Stats } from 'node:fs'
+import { copyFile, mkdtemp, open, lstat, realpath, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, extname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ReadableStream } from 'node:stream/web'
-import type { ResultFileRequest } from '../../src/shared/result-files'
+import type { ResultFileRequest, ResultSaveIntent } from '../../src/shared/result-files'
 import type { TaskReadView } from '../../src/shared/types'
 import type { DocumentPreviewStore } from './document-preview-store'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 import { resolveArrangementMediaFile } from './arrangement-media-files'
 import { resolveDocumentSnapshot } from './arrangement-delivery-files'
 import { AppError } from '../errors/app-error'
+import { ResultFilePathError, resultFileSystemError } from '../errors/result-file-path-error'
 import type { MediaStorePort } from '../domain/media'
 import type { VideoStorePort } from '../domain/video-media'
+import { archiveSourceStamp } from './result-archive-store'
+import { resolveWorkspaceResult } from './workspace-result-path'
 
 type VerifiedVideoStore = VideoStorePort & {
   verifiedAssetPath(scope: { enterpriseId: string; memberId: string; subscriptionId: string }, taskId: string, jobId: string, outputId: string): Promise<string>
@@ -31,10 +34,28 @@ export interface OpenResultFile {
 export interface ResultFileStorePort {
   open(scope: TaskOwnerScope, input: ResultFileRequest): Promise<OpenResultFile>
   revealPath(scope: TaskOwnerScope, input: ResultFileRequest): Promise<string>
-  actionFile(scope: TaskOwnerScope, input: ResultFileRequest): Promise<ResultActionFile>
+  actionFile(scope: TaskOwnerScope, input: ResultFileRequest, videoSubscriptionId?: string): Promise<ResultActionFile>
+  saveIntents?(scope: TaskOwnerScope, taskId: string, input?: ResultFileRequest): Promise<CommittedResultSave[]>
 }
 
-export interface ResultActionFile { path: string; name: string; version: string; temporaryOpen?: boolean }
+export interface CommittedResultSave { file: ResultFileRequest; intent: ResultSaveIntent; subscriptionId?: string }
+
+export interface ResultActionFile { path: string; name: string; version: string; temporaryOpen?: boolean; modifiedAt?: number; sourceStamp?: string; archiveVersion?: string }
+
+const actionVersion = (version: string, info: Stats) =>
+  JSON.stringify([version, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs])
+
+async function managedResultPath(file: string): Promise<string> {
+  if (!isAbsolute(file)) throw new ResultFilePathError('invalidPath')
+  // Managed storage does not allow workspace aliases, even above the per-task directory.
+  return (await resolveWorkspaceResult(parse(file).root, file)).path
+}
+
+export async function describeConversationResult(workDir: string, file: string, startedAt: number) {
+  const source = await resolveWorkspaceResult(workDir, file)
+  return Math.max(source.stat.mtimeMs, source.stat.ctimeMs) < startedAt ? null
+    : { name: basename(source.path), version: actionVersion(file, source.stat) }
+}
 
 export async function saveResultCopy(file: ResultActionFile, destination: string): Promise<void> {
   if (!isAbsolute(destination)) throw new AppError('INVALID_ARGUMENT')
@@ -61,7 +82,8 @@ export async function createResultOpenCopy(file: ResultActionFile): Promise<{ pa
 export class ResultFileStore implements ResultFileStorePort {
   private readonly paths: ScopePath
   constructor(root: string, private readonly deliveries: DocumentPreviewStore, private readonly getTask: (taskId: string) => Promise<TaskReadView>,
-    private readonly media?: MediaStorePort, private readonly videos?: VideoStorePort,
+    private readonly media?: MediaStorePort & Partial<Pick<import('./media-store').MediaStore, 'saveIntents'>>,
+    private readonly videos?: VideoStorePort & Partial<Pick<import('./video-store').VideoStore, 'saveIntents'>>,
     private readonly attachment?: (scope: TaskOwnerScope, taskId: string, attachmentId: string, sha256: string) => Promise<{ path: string; name: string; size: number }>) {
     this.paths = new ScopePath(root)
   }
@@ -72,14 +94,12 @@ export class ResultFileStore implements ResultFileStorePort {
     return task
   }
 
-  private async resolve(scope: TaskOwnerScope, input: ResultFileRequest, original: boolean) {
+  private async resolve(scope: TaskOwnerScope, input: ResultFileRequest, original: boolean, videoSubscriptionId?: string) {
     const task = await this.task(scope, input.taskId)
     if ('attachmentId' in input) {
       const attachment = await this.attachment?.(scope, input.taskId, input.attachmentId, input.sha256)
       if (!attachment) throw new AppError('NOT_FOUND')
-      const path = await realpath(attachment.path)
-      const info = await lstat(attachment.path)
-      if (resolve(attachment.path) !== path || info.isSymbolicLink() || !info.isFile()) throw new AppError('PERMISSION_DENIED')
+      const path = await managedResultPath(attachment.path)
       return { path, name: basename(attachment.name.replaceAll('\\', '/')).replace(/[<>:"|?*]/g, '_') || 'attachment',
         temporaryOpen: true, format: extname(attachment.name).slice(1).toLowerCase(), version: input.sha256,
         expected: { size: attachment.size, sha256: input.sha256 } }
@@ -89,36 +109,31 @@ export class ResultFileStore implements ResultFileStorePort {
       if (!asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
       await this.media?.readAsset(scope, input.taskId, input.assetId)
       const root = resolve(this.paths.mediaRoot(scope, input.taskId))
-      const path = resolve(root, asset.relativePath)
-      const rel = relative(root, path)
-      if (!rel || isAbsolute(rel) || rel.startsWith(`..${sep}`) || rel === '..') throw new AppError('PERMISSION_DENIED')
-      const canonical = await realpath(path)
-      if (canonical !== path) throw new AppError('PERMISSION_DENIED')
-      const stat = await lstat(path)
-      if (stat.isSymbolicLink() || !stat.isFile()) throw new AppError('PERMISSION_DENIED')
-      return { path, format: asset.mime.slice(asset.mime.indexOf('/') + 1), version: `${asset.localAssetId}:${asset.sha256}:${asset.relativePath}`, expected: { size: asset.size, sha256: asset.sha256 } }
+      const requested = resolve(root, asset.relativePath)
+      const rel = relative(root, requested)
+      if (!rel) throw new ResultFilePathError('notFile')
+      if (isAbsolute(rel) || rel.startsWith(`..${sep}`) || rel === '..') throw new ResultFilePathError('outside')
+      const path = await managedResultPath(requested)
+      if (!path.startsWith((await realpath(root)) + sep)) throw new ResultFilePathError('outside')
+      return { path, name: asset.source === 'output' ? `图片${extname(path)}` : undefined, format: asset.mime.slice(asset.mime.indexOf('/') + 1), version: `${asset.localAssetId}:${asset.sha256}:${asset.relativePath}`, expected: { size: asset.size, sha256: asset.sha256 } }
     }
     if ('jobId' in input) {
-      if (!task.subscriptionId || !this.videos) throw new AppError('NOT_FOUND')
-      const videoScope = { ...scope, subscriptionId: task.subscriptionId }
+      const subscriptionId = videoSubscriptionId ?? task.subscriptionId
+      if (!subscriptionId || !this.videos) throw new AppError('NOT_FOUND')
+      const videoScope = { ...scope, subscriptionId }
       const job = await this.videos.getJob(videoScope, input.taskId, input.jobId)
       const output = job?.receipt?.outputs.find(item => item.outputId === input.outputId)
       const asset = output && await this.videos.getAsset(videoScope, input.taskId, input.jobId, input.outputId)
       if (!job || !output || !asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
       const path = await (this.videos as VerifiedVideoStore).verifiedAssetPath(videoScope, input.taskId, input.jobId, input.outputId)
-      return { path, format: output.mimeType.slice(output.mimeType.indexOf('/') + 1), version: `${asset.localAssetId}:${output.sha256}:${asset.relativePath}`, expected: { size: output.byteLength, sha256: output.sha256.toLowerCase() } }
+      return { path, name: `视频${extname(path)}`, format: output.mimeType.slice(output.mimeType.indexOf('/') + 1), version: `${asset.localAssetId}:${output.sha256}:${asset.relativePath}`, expected: { size: output.byteLength, sha256: output.sha256.toLowerCase() } }
     }
     if ('fileId' in input) {
-      if (task.workType.state !== 'resolved' || task.workType.kind !== 'conversation' || !task.workDir) throw new AppError('NOT_FOUND')
+      if (task.workType.state !== 'resolved' || task.workType.kind !== 'conversation') throw new AppError('NOT_FOUND')
       const name = task.files.find((_file, index) => `${task.id}-file-${index}` === input.fileId)
       if (!name) throw new AppError('NOT_FOUND')
-      const configuredRoot = resolve(task.workDir)
-      const root = await realpath(configuredRoot)
-      const rel = relative(configuredRoot, resolve(configuredRoot, name))
-      const path = resolve(root, rel)
-      const stat = await lstat(path)
-      if (!rel || isAbsolute(rel) || rel.startsWith(`..${sep}`) || rel === '..' || resolve(path) !== await realpath(path) || stat.isSymbolicLink() || !stat.isFile()) throw new AppError('PERMISSION_DENIED')
-      return { path, name: basename(path), format: extname(name).slice(1).toLowerCase(), version: name }
+      const file = await resolveWorkspaceResult(task.workDir ?? '', name)
+      return { path: file.path, name: basename(file.path), format: extname(file.path).slice(1).toLowerCase(), version: name }
     }
     const delivery = await this.deliveries.getDelivery(scope, input.taskId, input.nodeId, input.deliverableId)
     if (!delivery || delivery.status !== 'completed') throw new AppError('NOT_FOUND')
@@ -130,21 +145,58 @@ export class ResultFileStore implements ResultFileStorePort {
       format: file.format.toLowerCase(), version: `${file.nodeRunId}:${file.sha256}:${file.path}`, expected: { size: file.size, sha256: file.sha256 } }
   }
 
-  async revealPath(scope: TaskOwnerScope, input: ResultFileRequest): Promise<string> {
-    try { return (await this.resolve(scope, input, true)).path }
-    catch (error) { if (error instanceof AppError) throw error; throw new AppError('NOT_FOUND', { message: '产出文件不存在、已被修改或无法访问，请确认文件仍保存在原位置。' }) }
+  async saveIntents(scope: TaskOwnerScope, taskId: string, input?: ResultFileRequest): Promise<CommittedResultSave[]> {
+    const task = await this.getTask(taskId)
+    if (task.ownerId !== scope.memberId || task.ownerEnterpriseId !== scope.enterpriseId || (input && input.taskId !== taskId)) return []
+    if (task.workType.state !== 'resolved') return []
+    if (task.workType.kind !== 'conversation') {
+      if (input) {
+        if (!('nodeId' in input)) return []
+        const delivery = await this.deliveries.getDelivery(scope, taskId, input.nodeId, input.deliverableId)
+        return delivery?.status === 'completed' && delivery.file.saveIntent ? [{ file: input, intent: delivery.file.saveIntent }] : []
+      }
+      return (await this.deliveries.deliverySaveIntents(scope, taskId)).map(({ nodeId, deliverableId, intent }) => ({ file: { taskId, nodeId, deliverableId }, intent }))
+    }
+    const results: CommittedResultSave[] = []
+    const seenPaths = new Set<string>()
+    if (!input || 'fileId' in input) task.files.forEach((path, index) => {
+      // Path-keyed intents belong to the first slot for that exact path, as in addTaskFile.
+      if (!path || seenPaths.has(path)) return
+      seenPaths.add(path)
+      const fileId = `${taskId}-file-${index}`
+      if ((!input || input.fileId === fileId) && task.fileSaveIntents && Object.hasOwn(task.fileSaveIntents, path)) {
+        results.push({ file: { taskId, fileId }, intent: task.fileSaveIntents[path]! })
+      }
+    })
+    const [images, videos] = await Promise.all([
+      !input || 'assetId' in input ? this.media?.saveIntents?.(scope, taskId, input?.assetId) : undefined,
+      !input || 'jobId' in input ? this.videos?.saveIntents?.(scope, taskId, input) : undefined,
+    ])
+    for (const { assetId, intent } of images ?? []) results.push({ file: { taskId, assetId }, intent })
+    for (const { jobId, outputId, intent, subscriptionId } of videos ?? []) results.push({ file: { taskId, jobId, outputId }, intent, subscriptionId })
+    return results
   }
 
-  async actionFile(scope: TaskOwnerScope, input: ResultFileRequest): Promise<ResultActionFile> {
+  async revealPath(scope: TaskOwnerScope, input: ResultFileRequest): Promise<string> {
+    try { return (await this.resolve(scope, input, true)).path }
+    catch (error) {
+      if (error instanceof AppError) throw error
+      throw resultFileSystemError(error) ?? new AppError('NOT_FOUND', { message: '产出文件不存在、已被修改或无法访问，请确认文件仍保存在原位置。', cause: error })
+    }
+  }
+
+  async actionFile(scope: TaskOwnerScope, input: ResultFileRequest, videoSubscriptionId?: string): Promise<ResultActionFile> {
     try {
-      const file = await this.resolve(scope, input, false)
+      const file = await this.resolve(scope, input, false, videoSubscriptionId)
       const info = await lstat(file.path)
-      if (!info.isFile() || info.isSymbolicLink()) throw new AppError('PERMISSION_DENIED')
-      const version = JSON.stringify([file.version, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs])
-      return { path: file.path, name: file.name ?? basename(file.path), version, temporaryOpen: file.temporaryOpen }
+      if (info.isSymbolicLink()) throw new ResultFilePathError('link')
+      if (!info.isFile()) throw new ResultFilePathError('notFile')
+      const version = actionVersion(file.version, info)
+      return { path: file.path, name: file.name ?? basename(file.path), version, temporaryOpen: file.temporaryOpen,
+        modifiedAt: Math.max(info.mtimeMs, info.ctimeMs), sourceStamp: archiveSourceStamp(info), archiveVersion: file.expected ? file.version : version }
     } catch (error) {
       if (error instanceof AppError) throw error
-      throw new AppError('NOT_FOUND', { message: '文件不存在、已更改或无法访问，请检查原文件。' })
+      throw resultFileSystemError(error) ?? new AppError('NOT_FOUND', { message: '文件不存在、已更改或无法访问，请检查原文件。', cause: error })
     }
 }
 
@@ -200,7 +252,7 @@ export class ResultFileStore implements ResultFileStorePort {
     } catch (error) {
       await handle?.close().catch(() => undefined)
       if (error instanceof AppError) throw error
-      throw new AppError('NOT_FOUND', { message: '媒体文件无法读取，可能已被删除或修改，请检查原文件。' })
+      throw resultFileSystemError(error) ?? new AppError('NOT_FOUND', { message: '媒体文件无法读取，可能已被删除或修改，请检查原文件。', cause: error })
     }
   }
 }

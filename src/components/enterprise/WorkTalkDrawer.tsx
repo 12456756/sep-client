@@ -227,7 +227,8 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
         }}>
           <div className="ent-talk">
             <FileAttachmentTarget.Provider value={addFile}>
-              <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} mediaState={mediaState} />
+              <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} mediaState={mediaState}
+                onOpenSchedule={id => workspace.navigate({ name: 'scheduled', taskId: id, view: 'configuration' })} />
             </FileAttachmentTarget.Provider>
           </div>
         </div>
@@ -268,7 +269,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
               <FileMentionChips mention={mention} />
               <div className="ent-ask-bar">
                 <div className="ent-ask-tools">
-                  <AttachmentComposer operationsRef={attachmentOps} visibleAttachments={mention.unreferencedAttachments} addFileRef={importFileRef} connectorId={savedSession.connectorId} onConnectorChange={savedSession.setConnector} key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+                  <AttachmentComposer allowFolderPaste operationsRef={attachmentOps} visibleAttachments={mention.unreferencedAttachments} addFileRef={importFileRef} connectorId={savedSession.connectorId} onConnectorChange={savedSession.setConnector} key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
                   <FileMentionPicker mention={mention} />
                   {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                       在这里换掉「当前员工」会和步骤上的安排对不上。 */}

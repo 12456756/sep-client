@@ -10,10 +10,10 @@ import type {
   TaskExecutionEvent,
   ToolAuthorizationRequest,
 } from '../src/shared/types';
-import type { AttachmentImportTarget } from '../src/shared/attachment-contracts';
-import { attachmentImportLimits } from '../src/shared/attachment-contracts';
+import { attachmentImportLimits, pastedAttachmentFolderPath } from '../src/shared/attachment-contracts';
 import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './controller/channels';
 import { getWindowChromeConfig } from './common/window-layout';
+import { windowCloseRequestId } from '../src/shared/window-close';
 
 export type { ElectronAPI } from '../src/shared/ipc';
 
@@ -28,12 +28,23 @@ ipcRenderer.on(EVENT_CHANNELS.WINDOW_EXPANDED_CHANGED, (_event, expanded: unknow
   for (const listener of windowExpansionListeners) listener(expanded);
 });
 
-type PasteTarget = { composerId: string; sessionId: string; target: AttachmentImportTarget; isEnabled?: () => boolean; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean };
+let bufferedCloseRequest: number | undefined;
+const windowCloseListeners = new Set<(requestId: number) => void>();
+ipcRenderer.on(EVENT_CHANNELS.WINDOW_CLOSE_REQUESTED, (_event, raw: unknown) => {
+  const request = windowCloseRequestId.safeParse(raw);
+  if (!request.success) return;
+  if (!windowCloseListeners.size) bufferedCloseRequest = request.data;
+  for (const listener of windowCloseListeners) listener(request.data);
+});
+
+type PasteTarget = Parameters<ElectronAPI['bindAttachmentPaste']>[0] & { folder?: { id: string; path: string } };
 const pasteTargets = new Map<string, PasteTarget>();
 const pasteListeners = new Set<(event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void>();
 const pasteDisposers = new Map<string, () => void>();
 
-function registerPasteTarget(input: PasteTarget): () => void {
+function registerPasteTarget(binding: Parameters<ElectronAPI['bindAttachmentPaste']>[0]): () => void {
+  const input: PasteTarget = { ...binding };
+  pasteDisposers.get(input.composerId)?.();
   pasteTargets.set(input.composerId, input);
   const handler = (event: Event) => {
     if (!event.isTrusted) return;
@@ -48,6 +59,11 @@ function registerPasteTarget(input: PasteTarget): () => void {
     const clipboardData = (event as Event & { clipboardData?: { files?: ArrayLike<unknown>; getData: (type: string) => string } }).clipboardData;
     const files = Array.from(clipboardData?.files ?? []) as Array<{ name: string; type: string; size: number; arrayBuffer: () => Promise<ArrayBuffer> }>;
     const text = clipboardData?.getData('text/plain') || '';
+    if (runtimePlatform === 'win32' && current.onFolderPaste) {
+      const path = files.length === 0 ? pastedAttachmentFolderPath(text) : undefined;
+      current.folder = path ? { id: crypto.randomUUID(), path } : undefined;
+      current.onFolderPaste(current.folder?.id ?? null);
+    }
     if (!files.length) return;
     const operationId = crypto.randomUUID();
     const editor = target as { selectionStart?: number; selectionEnd?: number } | null;
@@ -83,7 +99,10 @@ function registerPasteTarget(input: PasteTarget): () => void {
   };
   const doc = (globalThis as unknown as { document: { addEventListener: (type: string, listener: (event: Event) => void, capture: boolean) => void; removeEventListener: (type: string, listener: (event: Event) => void, capture: boolean) => void } }).document;
   doc.addEventListener('paste', handler, true);
-  const dispose = () => { doc.removeEventListener('paste', handler, true); if (pasteTargets.get(input.composerId) === input) pasteTargets.delete(input.composerId); pasteDisposers.delete(input.composerId); };
+  const dispose = () => {
+    doc.removeEventListener('paste', handler, true);
+    if (pasteTargets.get(input.composerId) === input) { pasteTargets.delete(input.composerId); pasteDisposers.delete(input.composerId); }
+  };
   pasteDisposers.set(input.composerId, dispose);
   return dispose;
 }
@@ -174,6 +193,14 @@ const electronAPI = {
   deleteLocalSkillCopy: (input: { capabilityId: string; idempotencyKey: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_DELETE_LOCAL, input),
   beginAttachmentImport: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_BEGIN, input),
   selectAttachments: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_SELECT, input),
+  previewAttachmentFolder: ({ sessionId, composerId, pasteId }) => {
+    const target = pasteTargets.get(composerId);
+    if (runtimePlatform !== 'win32' || !target || target.sessionId !== sessionId || target.folder?.id !== pasteId) {
+      return Promise.resolve({ success: false });
+    }
+    return ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_FOLDER_PREVIEW, { sessionId, path: target.folder.path });
+  },
+  importAttachmentFolder: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_FOLDER_IMPORT, input),
   listAttachments: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_LIST, input),
   removeAttachment: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_REMOVE, input),
   cancelAttachmentImport: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_CANCEL, input),
@@ -232,9 +259,19 @@ const electronAPI = {
   getTaskStats: () => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_STATS),
   selectDirectory: currentPath => ipcRenderer.invoke(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, currentPath),
   getDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY),
+  resultArchiveSettings: action => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_ARCHIVE_SETTINGS, action),
+  localMediaSettings: action => ipcRenderer.invoke(INVOKE_CHANNELS.LOCAL_MEDIA_SETTINGS, action),
   selectDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY),
   clearDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY),
   setWindowTheme: theme => ipcRenderer.invoke(INVOKE_CHANNELS.WINDOW_SET_THEME, theme),
+  windowClose: command => ipcRenderer.invoke(INVOKE_CHANNELS.WINDOW_CLOSE, command),
+  onWindowCloseRequested: callback => {
+    windowCloseListeners.add(callback);
+    const requestId = bufferedCloseRequest;
+    bufferedCloseRequest = undefined;
+    if (requestId !== undefined) callback(requestId);
+    return () => { windowCloseListeners.delete(callback); };
+  },
   onWindowExpandedChanged: callback => {
     windowExpansionListeners.add(callback);
     callback(windowExpanded);
@@ -283,6 +320,7 @@ const electronAPI = {
   previewResultFile: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_PREVIEW, input),
   releaseResultFilePreview: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_RELEASE, input),
   revealResultFile: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_REVEAL, input),
+  getResultFileSaveStatus: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_SAVE_STATUS, input),
   runResultFileAction: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_ACTION, input),
   openWorkDeliverable: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE, input),
   confirmArrangementNodes: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES, input),

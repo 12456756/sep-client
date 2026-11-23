@@ -25,6 +25,10 @@ const log = logger.child('mock-video-host')
 // cannot protect a task while approval, upload or submit is still in flight.
 const submissions = new Set<string>()
 const trackingOwners = new Map<string, symbol>()
+
+export function hasVideoTrackingOwner(scope: VideoScope, taskId: string, jobId: string): boolean {
+  return trackingOwners.has(JSON.stringify([scope.enterpriseId, scope.memberId, scope.subscriptionId, taskId, jobId]))
+}
 const VIDEO_BRIEF_PREFIX = {
   'text-to-video': 'Create a new video from the following text description.',
   'image-to-video': 'Animate the provided image(s) according to the following instructions.',
@@ -39,6 +43,7 @@ export interface MockVideoHostGateway extends VideoGatewayPort {
   uploadReference(bytes: Uint8Array, signal: AbortSignal): Promise<z.infer<typeof videoReferenceSchema>>
 }
 interface VideoHostOptionsBase {
+  onOutputSaved?: import('./video-service').VideoServiceOptions['onOutputSaved']
   scope: ScopeSource
   store: VideoStorePort
   /** Persisted node associations are the authority for cross-employee saved outputs. */
@@ -237,13 +242,13 @@ export class MockVideoHostService {
         })()
       }, false),
     }
-    const service = new VideoService({ scope, executionMode: this.options.mock ? 'mock' : 'real', store: this.options.store, gateway, now: this.now })
+    const service = new VideoService({ scope, executionMode: this.options.mock ? 'mock' : 'real', store: this.options.store, gateway, now: this.now,
+      retryFloorMs: this.options.tracker?.floorMs, onOutputSaved: this.options.onOutputSaved })
     const trackingOwner = Symbol('video-tracker')
     const trackedKeys = new Set<string>()
     const context: Context = {
-      taskId, scope, service, trackingOwner, trackedKeys, tracker: new VideoTracker({ ...this.options.tracker, service: {
-        resume: (id, jobId, signal) => service.resume(id, jobId, signal),
-        recover: async signal => {
+      taskId, scope, service, trackingOwner, trackedKeys, tracker: new VideoTracker({ now: this.now, ...this.options.tracker, service: {
+        recover: async (signal, select) => {
           const jobs = await service.listJobsSnapshot(taskId)
           if (jobs.some(job => job.trackingStatus === 'AUTH_REQUIRED')) return jobs
           const restored: LocalVideoJob[] = []
@@ -255,7 +260,7 @@ export class MockVideoHostService {
             if (owner && owner !== trackingOwner) { restored.push(job); continue }
             trackingOwners.set(key, trackingOwner)
             trackedKeys.add(key)
-            const current = await service.resume(taskId, job.jobId, signal)
+            const current = await service.resumeTracked(taskId, job.jobId, signal, select)
             restored.push(current)
             if (current.trackingStatus === 'AUTH_REQUIRED') break
           }
@@ -588,21 +593,29 @@ export class MockVideoHostService {
       return jobView(job)
     })
   }
-  async retrySave(taskId: string, jobId: string): Promise<VideoJobView> {
-    const signal = this.signal(taskId)
+  async retrySave(taskId: string, jobId: string, parent?: AbortSignal, automatic = false): Promise<VideoJobView> {
+    const signal = this.signal(taskId, parent)
     return this.operation(taskId, async () => {
       const { scope, epoch, context } = await this.localBinding(taskId, signal)
-      const job = await context.service.retrySave(taskId, jobId, signal)
+      const job = await context.service.retrySave(taskId, jobId, signal, automatic)
       this.assert(scope, epoch, signal)
       return jobView(job)
     })
+  }
+
+  async downloadRateLimit(taskId: string, jobId: string, parent: AbortSignal): Promise<LocalVideoJob['downloadRateLimit']> {
+    const signal = this.signal(taskId, parent)
+    const { scope, epoch } = await this.task(taskId, signal)
+    const job = await abortableVideo(this.options.store.getJob(scope, taskId, jobId), signal)
+    this.assert(scope, epoch, signal)
+    return job?.downloadRateLimit
   }
   /** Observers may wait on another host's bounded tracker without starting one. */
   hasActiveTracker(taskId: string, jobId: string): boolean {
     const owner = requireScope(this.options.scope)
     return [...this.contexts.values()].some(({ scope, taskId: id }) => id === taskId &&
       scope.enterpriseId === owner.enterpriseId && scope.memberId === owner.memberId &&
-      trackingOwners.has(JSON.stringify([scope.enterpriseId, scope.memberId, scope.subscriptionId, taskId, jobId])))
+      hasVideoTrackingOwner(scope, taskId, jobId))
   }
 
   /** Only explicit host/run lifecycle calls wake recovery; reads never do. */
@@ -621,7 +634,7 @@ export class MockVideoHostService {
           context.trackedKeys.clear()
           context.tracking = undefined
         })
-      }
+      } else context.tracker.wake(true)
       await context.tracking
     })
   }

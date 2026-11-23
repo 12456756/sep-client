@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, readdir, rm, statfs, writeFile } from 'node:fs/promises'
 import { constants as fsConstants } from 'node:fs'
-import { basename, extname } from 'node:path'
+import { basename, dirname, extname } from 'node:path'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../src/shared/attachment-contracts'
 import { attachmentImportSessionSchema, attachmentImportLimits, attachmentRefSchema, attachmentViewSchema } from '../../src/shared/attachment-contracts'
 import type { TaskOwnerScope } from './scope-path'
@@ -13,6 +13,8 @@ import type { AttachmentExtractor, AttachmentExtraction } from '../domain/attach
 import { attachmentExtractionSchema } from '../domain/attachment-extraction'
 import { inspectMediaImage } from './media-image'
 import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
+import { attachmentAudioVideoType, isAttachmentAudioVideo } from '../../src/shared/attachment-media-formats'
+import { assertAttachmentFolderEntry, sameAttachmentFile, type AttachmentFolderEntry } from './attachment-folder'
 
 const MIME: Record<string, string> = { txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }
 
@@ -21,7 +23,8 @@ export interface AttachmentStorePort {
   begin(scope: TaskOwnerScope, target: AttachmentImportTarget, now?: number): Promise<AttachmentImportSession>
   get(scope: TaskOwnerScope, sessionId: string): Promise<AttachmentImportSession | null>
   list(scope: TaskOwnerScope): Promise<AttachmentImportSession[]>
-  importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource'], displayName?: string): Promise<AttachmentView>
+  importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource'], displayName?: string, entry?: AttachmentFolderEntry): Promise<AttachmentView>
+  checkImportSpace?(scope: TaskOwnerScope, sessionId: string, bytes: number): Promise<void>
   importBytes(scope: TaskOwnerScope, sessionId: string, bytes: Uint8Array, displayName: string, mediaType: string, source?: AttachmentView['importSource']): Promise<AttachmentView>
   remove(scope: TaskOwnerScope, sessionId: string, attachmentId: string, expectedRevision?: number): Promise<AttachmentImportSession>
   cancel(scope: TaskOwnerScope, sessionId: string): Promise<boolean>
@@ -40,7 +43,7 @@ export interface AttachmentStorePort {
 
 function mimeFor(name: string): string {
   const extension = extname(name).slice(1).toLowerCase()
-  return extension === 'doc' ? LEGACY_WORD_MIME : MIME[extension] ?? 'application/octet-stream'
+  return extension === 'doc' ? LEGACY_WORD_MIME : MIME[extension] ?? attachmentAudioVideoType(`.${extension}`) ?? 'application/octet-stream'
 }
 function clone<T>(value: T): T { return structuredClone(value) }
 function verifiedMediaType(bytes: Uint8Array, declared: string): string {
@@ -81,12 +84,23 @@ export class AttachmentStore implements AttachmentStorePort {
     return sessions.filter((item): item is AttachmentImportSession => item !== null)
   }
 
-  async importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource'], displayName = basename(path)): Promise<AttachmentView> {
+  async checkImportSpace(scope: TaskOwnerScope, sessionId: string, bytes: number): Promise<void> {
+    const { bavail, bsize } = await statfs(dirname(this.paths.attachmentImportManifest(scope, sessionId)))
+    if (bavail * bsize < bytes) throw new Error('ATTACHMENT_DISK_FULL')
+  }
+
+  async importPath(scope: TaskOwnerScope, sessionId: string, path: string, source: AttachmentView['importSource'], displayName = basename(path), entry?: AttachmentFolderEntry): Promise<AttachmentView> {
     let handle: Awaited<ReturnType<typeof open>> | undefined
     try {
+      if (entry) await assertAttachmentFolderEntry(entry)
+      const original = entry ? undefined : await lstat(path)
+      if (original && !original.isFile()) throw new Error('ATTACHMENT_NOT_REGULAR_FILE')
       handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
       const info = await handle.stat()
       if (!info.isFile()) throw new Error('ATTACHMENT_NOT_REGULAR_FILE')
+      if ((original && !sameAttachmentFile(info, original)) || (entry && (!sameAttachmentFile(info, entry.identity) || info.nlink !== 1))) {
+        throw new Error(entry ? 'ATTACHMENT_FOLDER_CHANGED' : 'ATTACHMENT_SOURCE_CHANGED')
+      }
       if (info.size <= 0) throw new Error('ATTACHMENT_EMPTY')
       if (info.size > attachmentImportLimits.maxFileBytes) throw new Error('ATTACHMENT_TOO_LARGE')
       const chunks: Buffer[] = []
@@ -101,11 +115,13 @@ export class AttachmentStore implements AttachmentStorePort {
         if (result.bytesRead < buffer.length) break
       }
       const after = await handle.stat()
-      const sameIdentity = info.dev === after.dev && info.ino === after.ino && info.size === after.size && info.mtimeMs === after.mtimeMs && info.ctimeMs === after.ctimeMs
-      if (!sameIdentity || total > attachmentImportLimits.maxFileBytes) throw new Error('ATTACHMENT_SOURCE_CHANGED')
+      if (!sameAttachmentFile(info, after) || total > attachmentImportLimits.maxFileBytes) throw new Error('ATTACHMENT_SOURCE_CHANGED')
+      if (entry) await assertAttachmentFolderEntry(entry)
       if (total <= 0) throw new Error('ATTACHMENT_EMPTY')
-      return this.importBuffer(scope, sessionId, Buffer.concat(chunks, total), displayName, mimeFor(displayName), source)
+      return await this.importBuffer(scope, sessionId, Buffer.concat(chunks, total), displayName, mimeFor(displayName), source)
     } catch (error) {
+      if (['ENOSPC', 'EDQUOT'].includes((error as NodeJS.ErrnoException).code ?? '')) throw new Error('ATTACHMENT_DISK_FULL')
+      if (entry && (error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('ATTACHMENT_FOLDER_CHANGED')
       if ((error as NodeJS.ErrnoException).code === 'ELOOP') throw new Error('ATTACHMENT_NOT_REGULAR_FILE')
       throw error
     } finally { await handle?.close().catch(() => undefined) }
@@ -126,7 +142,8 @@ export class AttachmentStore implements AttachmentStorePort {
       const attachmentId = `att-${randomUUID()}`
       const hash = createHash('sha256').update(bytes).digest('hex')
       let extraction: AttachmentExtraction | undefined
-      if (this.extractor) {
+      if (isAttachmentAudioVideo(mediaType)) extraction = { status: 'not-required', text: '', warnings: [] }
+      else if (this.extractor) {
         try { extraction = await this.extractor(mediaType, bytes) } catch { extraction = { status: 'failed', text: '', warnings: ['提取失败'] } }
       }
       const image = mediaType.startsWith('image/') ? inspectMediaImage(bytes) : undefined

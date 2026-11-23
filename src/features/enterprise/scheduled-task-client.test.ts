@@ -26,6 +26,22 @@ test('refresh removes definitions missing from the persisted list', async () => 
   assert.deepEqual(client.getSnapshot().data?.definitions, [])
 })
 
+test('refresh accepts terminal failure issues on both scheduled occurrences and attempts', async () => {
+  const error = { code: 'FILE_MISSING', message: 'Expected file was missing', action: 'fail' } as const
+  const data: ScheduledSnapshot = { ...snapshot, definitions: [definition], occurrences: [{
+    id: 'occurrence', definitionId: definition.id, taskId: 'task', revision: 1, input: definition.input,
+    plan: { status: 'ready', objective: 'Report', instruction: 'Write report', expectedOutput: 'File',
+      deliverables: [{ id: 'report', name: 'Report', format: 'txt', path: 'report.txt', contentOutline: [], acceptanceCriteria: [] }] },
+    status: 'failed', scheduledAt: 2000, firstEligibleAt: 2000, startDeadline: 3000, startedAt: 2000, finishedAt: 2001,
+    nextRetryAt: null, stopReason: null, error,
+    attempts: [{ id: 'attempt', number: 1, startedAt: 2000, finishedAt: 2001, status: 'failed', error }],
+  }] }
+  const client = new ScheduledTaskClient(async () => ({ success: true, data }))
+  await client.refresh()
+  assert.equal(client.getSnapshot().error, null)
+  assert.deepEqual(client.getSnapshot().data, { ...data, creations: [] })
+})
+
 test('refresh retains deletion markers and cannot downgrade a known definition revision', async () => {
   let definitions = [definition]
   const client = new ScheduledTaskClient(async () => ({ success: true, data: { ...snapshot, definitions } }))

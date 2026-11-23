@@ -15,6 +15,7 @@ import { inspectMediaImage } from './media-image'
 import { AppError } from '../errors/app-error'
 import type { ErrorCode } from '../errors/error-codes'
 import { AuthApiError } from '../common/platform/platform-api'
+import type { ApiDiagnostic } from '../../src/shared/api-diagnostic'
 
 export interface SepMediaGatewayOptions {
   baseUrl: string
@@ -31,6 +32,7 @@ function appCode(gatewayCode: SepMediaGatewayErrorCode, statusCode: number): Err
   if (statusCode === 401 || ['AUTH_REQUIRED', 'UNAUTHORIZED', 'MEDIA_AUTH_FAILED'].includes(gatewayCode)) return 'AUTH_REQUIRED'
   if (statusCode === 403 || ['MEDIA_FORBIDDEN', 'FORBIDDEN', 'PERMISSION_DENIED', 'BUDGET_EXCEEDED'].includes(gatewayCode)) return 'PERMISSION_DENIED'
   if (['MEDIA_RATE_LIMITED', 'RATE_LIMITED'].includes(gatewayCode)) return 'RATE_LIMITED'
+  if (statusCode === 429) return 'RATE_LIMITED'
   if (gatewayCode === 'MEDIA_NOT_FOUND') return 'NOT_FOUND'
   if (gatewayCode === 'MEDIA_NETWORK_ERROR') return 'NETWORK_ERROR'
   if (['MEDIA_INVALID_BASE_URL', 'MEDIA_INVALID_REQUEST', 'INVALID_PARAMETER', 'INVALID_REFERENCE',
@@ -41,8 +43,8 @@ function appCode(gatewayCode: SepMediaGatewayErrorCode, statusCode: number): Err
 }
 
 export class SepMediaGatewayError extends AppError {
-  constructor(readonly gatewayCode: SepMediaGatewayErrorCode, readonly statusCode: number = 0) {
-    super(appCode(gatewayCode, statusCode), { message: `SEP mock media request failed (${gatewayCode}).` })
+  constructor(readonly gatewayCode: SepMediaGatewayErrorCode, readonly statusCode: number = 0, diagnostic?: ApiDiagnostic) {
+    super(appCode(gatewayCode, statusCode), { message: `SEP mock media request failed (${gatewayCode}).`, diagnostic })
     this.name = gatewayCode === 'MEDIA_ABORTED' ? 'AbortError' : 'SepMediaGatewayError'
   }
 }
@@ -302,16 +304,20 @@ export class SepMediaGateway implements MediaGatewayPort {
       throw new SepMediaGatewayError('MEDIA_REDIRECT_BLOCKED', response.status)
     }
     if (!response.ok) {
+      const hint = response.headers.get('Retry-After')
+      const rateDiagnostic: ApiDiagnostic | undefined = response.status === 429
+        ? { httpStatus: response.status, ...(hint ? { headers: { 'retry-after': hint.slice(0, 128) } } : {}) } : undefined
       let value: unknown
       try {
         value = await this.readJson(response, signal)
       } catch (error) {
-        if (error instanceof SepMediaGatewayError) throw new SepMediaGatewayError(error.gatewayCode, response.status)
-        throw new SepMediaGatewayError('MEDIA_INVALID_RESPONSE', response.status)
+        if (error instanceof SepMediaGatewayError) throw new SepMediaGatewayError(error.gatewayCode, response.status, rateDiagnostic)
+        throw new SepMediaGatewayError('MEDIA_INVALID_RESPONSE', response.status, rateDiagnostic)
       }
       const error = sepMediaGatewayHttpErrorSchema.safeParse(value)
       throw new SepMediaGatewayError(error.success ? error.data.error.code : response.status === 401 ? 'AUTH_REQUIRED'
-        : response.status === 403 ? 'PERMISSION_DENIED' : 'MEDIA_HTTP_ERROR', response.status)
+        : response.status === 403 ? 'PERMISSION_DENIED' : 'MEDIA_HTTP_ERROR', response.status,
+      rateDiagnostic && { ...rateDiagnostic, ...(error.success ? { code: error.data.error.code } : {}) })
     }
     return response
   }

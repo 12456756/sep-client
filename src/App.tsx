@@ -8,6 +8,7 @@ import { FeedbackProvider, useFeedback } from './components/feedback/FeedbackPro
 import { LOGIN_FEEDBACK } from './shared/login-feedback';
 import { useUpdate } from './features/update/use-update';
 import { useSkillImport } from './features/skill-import/use-skill-import';
+import { useWindowClosePrompt } from './features/enterprise/window-close';
 import { SkillImportPage } from './pages/SkillImportPage';
 import './styles/skill-import.css';
 
@@ -32,6 +33,7 @@ export default function App() {
 
 function AppContent() {
   const feedback = useFeedback();
+  useWindowClosePrompt();
   const update = useUpdate();
   const skillImport = useSkillImport();
   const [authState, setAuthState] = useState<AuthState | null>(null);

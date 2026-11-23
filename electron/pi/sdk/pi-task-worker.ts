@@ -43,6 +43,8 @@ export interface PiTaskWorkerContext {
   mediaTools?: PiAgentSessionConfig['mediaTools']
   videoTools?: PiAgentSessionConfig['videoTools']
   conversationAttachments?: PiAgentSessionConfig['conversationAttachments']
+  conversationSchedule?: PiAgentSessionConfig['conversationSchedule']
+  localMedia?: PiAgentSessionConfig['localMedia']
   employeeProfile?: PiAgentSessionConfig['employeeProfile']
   fixedSystemPrompt?: string
   arrangementNodeId?: string
@@ -69,7 +71,7 @@ export interface PiTaskWorkerOptions {
   onResponseSettled?: (response: { text: string; stopReason?: string }) => Promise<{ continueWith: string } | void>
   onModelRequest?: (kind: ModelRequestKind) => Promise<ModelRequestProgress>
   /** Host-owned media tracking can take over after a fully persisted successful tool batch. */
-  shouldYieldAfterToolTurn?: () => boolean
+  shouldYieldAfterToolTurn?: (results?: readonly { toolName?: string }[]) => boolean
   runtime?: PiAgentRuntime
   sessionAdapter?: SharedPiSession
   createTokenManager?: () => TokenManagerPort
@@ -169,6 +171,8 @@ export class PiTaskWorker {
         mediaTools: this.context.mediaTools,
         videoTools: this.context.videoTools,
         conversationAttachments: this.context.conversationAttachments,
+        conversationSchedule: this.context.conversationSchedule,
+        localMedia: this.context.localMedia,
         employeeProfile: this.context.employeeProfile,
         fixedSystemPrompt: this.context.fixedSystemPrompt,
         arrangementNodeId: this.context.arrangementNodeId,
@@ -259,8 +263,8 @@ export class PiTaskWorker {
       void this.emit(event.type, event.data)
       if (this.finalFailure) return
       if (event.type === 'turn_end' && !yielded) {
-        const data = event.data as { toolResults?: Array<{ isError?: boolean }> }
-        if (data.toolResults?.length && data.toolResults.every(result => !result.isError) && this.shouldYieldAfterToolTurn?.()) {
+        const data = event.data as { toolResults?: Array<{ isError?: boolean; toolName?: string }> }
+        if (data.toolResults?.length && data.toolResults.every(result => !result.isError) && this.shouldYieldAfterToolTurn?.(data.toolResults)) {
           yielded = true
           // Abort the SDK loop, not the task: completed tool results remain available for recovery.
           yieldStop = session.abort()

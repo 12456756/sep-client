@@ -18,6 +18,7 @@ export const INVOKE_CHANNELS = {
   RESULT_FILE_PREVIEW: 'result-file:preview',
   RESULT_FILE_RELEASE: 'result-file:release',
   RESULT_FILE_REVEAL: 'result-file:reveal',
+  RESULT_FILE_SAVE_STATUS: 'result-file:save-status',
   RESULT_FILE_ACTION: 'result-file:action',
   SCHEDULE_LIST: 'schedule:list',
   SCHEDULE_WORK_SOURCE: 'schedule:work-source',
@@ -38,6 +39,8 @@ export const INVOKE_CHANNELS = {
   SCHEDULE_RESUME_SCHEDULER: 'schedule:resume-scheduler',
   ATTACHMENT_BEGIN: 'attachment:begin',
   ATTACHMENT_SELECT: 'attachment:select',
+  ATTACHMENT_FOLDER_PREVIEW: 'attachment:folder-preview',
+  ATTACHMENT_FOLDER_IMPORT: 'attachment:folder-import',
   ATTACHMENT_LIST: 'attachment:list',
   ATTACHMENT_REMOVE: 'attachment:remove',
   ATTACHMENT_CANCEL: 'attachment:cancel',
@@ -167,9 +170,12 @@ export const INVOKE_CHANNELS = {
   ARRANGE_REFRESH_REPLACEMENT_ACCESS: 'arrange:refresh-replacement-access',
   UTIL_SELECT_DIRECTORY: 'util:select-directory',
   WORKSPACE_GET_DEFAULT_DIRECTORY: 'workspace:get-default-directory',
+  RESULT_ARCHIVE_SETTINGS: 'result-archive:settings',
+  LOCAL_MEDIA_SETTINGS: 'local-media:settings',
   WORKSPACE_SELECT_DEFAULT_DIRECTORY: 'workspace:select-default-directory',
   WORKSPACE_CLEAR_DEFAULT_DIRECTORY: 'workspace:clear-default-directory',
   WINDOW_SET_THEME: 'window:set-theme',
+  WINDOW_CLOSE: 'window:close-command',
 } as const
 
 /** renderer -> main，单向 `ipcRenderer.send` / `ipcMain.on`。 */
@@ -180,6 +186,7 @@ export const SEND_CHANNELS = {
 /** main -> renderer，`webContents.send` / `ipcRenderer.on`。 */
 export const EVENT_CHANNELS = {
   WINDOW_EXPANDED_CHANGED: 'window:expanded-changed',
+  WINDOW_CLOSE_REQUESTED: 'window:close-requested',
   SKILL_IMPORT_STATE_CHANGED: 'skill-import:state-changed',
   UPDATE_STATE_CHANGED: 'update:state-changed',
   NOTIFICATION_UPDATED: 'notifications:updated',
@@ -259,6 +266,8 @@ export const FEEDBACK_OPERATION_BY_CHANNEL: Partial<Record<InvokeChannel, import
   [INVOKE_CHANNELS.ARRANGE_REFRESH_REPLACEMENT_ACCESS]: 'requestStatus',
   [INVOKE_CHANNELS.ATTACHMENT_BEGIN]: 'attachment',
   [INVOKE_CHANNELS.ATTACHMENT_SELECT]: 'attachment',
+  [INVOKE_CHANNELS.ATTACHMENT_FOLDER_PREVIEW]: 'attachment',
+  [INVOKE_CHANNELS.ATTACHMENT_FOLDER_IMPORT]: 'attachment',
   [INVOKE_CHANNELS.ATTACHMENT_LIST]: 'attachment',
   [INVOKE_CHANNELS.ATTACHMENT_REMOVE]: 'attachment',
   [INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES]: 'attachment',
@@ -271,6 +280,7 @@ export const FEEDBACK_OPERATION_BY_CHANNEL: Partial<Record<InvokeChannel, import
   [INVOKE_CHANNELS.SPEECH_OPEN_SYSTEM_SETTINGS]: 'speech',
   [INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY]: 'directory',
   [INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY]: 'settings',
+  [INVOKE_CHANNELS.LOCAL_MEDIA_SETTINGS]: 'settings',
   [INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY]: 'settings',
   [INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY]: 'settings',
 }

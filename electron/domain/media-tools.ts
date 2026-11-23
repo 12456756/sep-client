@@ -33,6 +33,6 @@ export interface MediaRunPort {
     recoverJobIds?: readonly string[]
   }): Promise<MediaHostTools | undefined>
   waitForRun(taskId: string, runId: string, options?: { recoverOriginal?: boolean; allowIncomplete?: boolean; signal?: AbortSignal }): Promise<void>
-  stopTask(taskId: string): Promise<void>
+  stopTask(taskId: string, options?: { preserveDeferredDownloads?: boolean }): Promise<void>
   resume?(taskId: string, jobId: string): Promise<void>
 }

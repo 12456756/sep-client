@@ -58,6 +58,10 @@ export class RendererBridge implements RendererPort {
     this.send(EVENT_CHANNELS.UPDATE_STATE_CHANGED, state)
   }
 
+  windowCloseRequested(requestId: number): void {
+    this.send(EVENT_CHANNELS.WINDOW_CLOSE_REQUESTED, requestId)
+  }
+
   skillImportStateChanged(state: SkillImportStateView): void {
     this.send(EVENT_CHANNELS.SKILL_IMPORT_STATE_CHANGED, state)
   }

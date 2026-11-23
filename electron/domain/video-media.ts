@@ -4,7 +4,9 @@ import { videoOutputSchema, videoReceiptSchema, videoSpecFailureSchema, videoReq
 import type { VideoOutput, VideoReceipt } from '../../src/shared/video-media'
 import { isVideoSubmissionRejectionCode } from '../../src/shared/video-errors'
 import { mediaFailureSchema } from '../../src/shared/media-failure'
+import { resultSaveIntentSchema } from '../../src/shared/result-files'
 import { mediaDiagnosticErrors } from './arrangement-diagnostic'
+import { mediaRetryGateSchema } from './media-retry-gate'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec } from '../../src/shared/media-spec-contract'
 
 export const videoLocalIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
@@ -34,6 +36,7 @@ export const localVideoJobSchema = z.object({
   submission: z.enum(['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED']), receipt: videoReceiptSchema.nullable(),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']), saveStatus: videoSaveStatusSchema,
   lastQueriedAt: z.number().int().nonnegative().optional(),
+  queryRateLimit: mediaRetryGateSchema.optional(), downloadRateLimit: mediaRetryGateSchema.optional(),
   /** Elapsed time from job creation to first observed provider success; includes queue time. */
   providerWaitMs: z.number().int().nonnegative().optional(),
   /** Duration of the most recent complete save round across all outputs. */
@@ -74,6 +77,7 @@ export function receiptMatchesRequest(job: Pick<LocalVideoJob, 'request' | 'exec
 }
 
 export const localVideoAssetSchema = z.object({
+  saveIntent: resultSaveIntentSchema.optional(),
   version: z.literal(1), scope: videoScopeSchema, taskId: videoLocalIdSchema, jobId: videoLocalIdSchema,
   localAssetId: z.string().regex(/^vout_[a-f0-9]{64}$/), receiptId: videoLocalIdSchema, output: videoOutputSchema,
   relativePath: z.string().min(1).max(256), status: z.literal('SAVED'), createdAt: z.number().int().nonnegative(),

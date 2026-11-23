@@ -49,6 +49,8 @@ export interface QueuedRun {
 
   employee: EmployeeRuntimeConfig
   prompt: string
+  messageId?: string
+  messageReceivedAt?: number
   conversation: boolean
   resumeSessionFile?: string
 

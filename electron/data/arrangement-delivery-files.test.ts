@@ -1,13 +1,15 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile, readFile, symlink, open } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, realpath, symlink, open } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { constants, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zipSync, strToU8, unzipSync } from 'fflate'
 import { PDFDocument } from 'pdf-lib'
+import { createHash } from 'node:crypto'
 import { validateDeliveryFiles, revalidateDeliveryFiles, resolveDeliveryFiles, deliveryFileIssue, readDeliveryPreviewFile } from './arrangement-delivery-files'
+import { resolveArrangementMediaFile } from './arrangement-media-files'
 import type { ArrangementNode } from '../domain/arrangement-plan'
 import { applicationResourcesDirectory } from './application-resources'
 import * as officeManifest from '../../resources/office/manifest.json'
@@ -44,6 +46,54 @@ function officePackage(format: 'docx' | 'xlsx' | 'pptx'): Uint8Array {
 }
 
 describe('final delivery file validation', () => {
+  it('publishes and previews a snapshot in an existing differently cased Windows directory', { skip: process.platform !== 'win32' }, async t => {
+    const f = await fixture()
+    const taskDirectory = join(f.root, 'task')
+    const actualDirectory = join(taskDirectory, 'DELIVERY-SNAPSHOTS')
+    await mkdir(actualDirectory, { recursive: true })
+    const alternate = await realpath(join(taskDirectory, 'delivery-snapshots')).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+      return null
+    })
+    if (!alternate) return t.skip('Windows test directory is case-sensitive')
+    assert.equal(alternate, await realpath(actualDirectory))
+    await writeFile(f.file, 'Approved findings')
+    const accepted = await validateDeliveryFiles(f.root, f.node, f.submission, 'run', undefined, { taskDirectory })
+    assert.ok(accepted.ok, JSON.stringify(accepted))
+    const receipt = accepted.files[0]!
+    assert.deepEqual(await readdir(actualDirectory), [`${receipt.snapshot!.sha256}.txt`])
+    await writeFile(f.file, 'New findings')
+    const preview = await readDeliveryPreviewFile(f.root, receipt, taskDirectory)
+    assert.equal(preview.source, 'snapshot')
+    assert.equal(preview.bytes.toString(), 'Approved findings')
+  })
+
+  it('rejects publishing into a linked snapshot directory without writing through it', async () => {
+    const f = await fixture()
+    const taskDirectory = join(f.root, 'task'), external = join(f.root, 'external')
+    await Promise.all([mkdir(taskDirectory), mkdir(external), writeFile(f.file, 'Approved findings')])
+    await symlink(external, join(taskDirectory, 'delivery-snapshots'), process.platform === 'win32' ? 'junction' : 'dir')
+    const accepted = await validateDeliveryFiles(f.root, f.node, f.submission, 'run', undefined, { taskDirectory })
+    assert.equal(!accepted.ok && accepted.issues[0]?.code, 'UNSAFE_PATH')
+    assert.deepEqual(await readdir(external), [])
+  })
+
+  it('rejects a directory link consistently at acceptance, preview and locate', async () => {
+    const f = await fixture()
+    const real = join(f.root, 'real-files')
+    await rm(join(f.root, 'deliverables'), { recursive: true })
+    await mkdir(real)
+    await writeFile(join(real, 'report.txt'), 'report')
+    await symlink(real, join(f.root, 'deliverables'), process.platform === 'win32' ? 'junction' : 'dir')
+    const accepted = await validateDeliveryFiles(f.root, f.node, f.submission, 'run')
+    assert.equal(!accepted.ok && accepted.issues[0]?.code, 'UNSAFE_PATH')
+
+    const receipt = { ...f.submission.finalDeliverables[0]!, format: 'txt', size: 6,
+      sha256: createHash('sha256').update('report').digest('hex'), nodeRunId: 'run', validatedAt: 1 }
+    await assert.rejects(readDeliveryPreviewFile(f.root, receipt, join(f.root, 'task')), { reason: 'link' })
+    await assert.rejects(resolveArrangementMediaFile(f.root, receipt, undefined), { reason: 'link' })
+  })
+
   it('only accepts zero bytes for explicit empty text deliveries, including archived previews', async () => {
     const f = await fixture()
     const taskDirectory = join(f.root, 'task')

@@ -6,14 +6,21 @@ import type { SkillImportService } from '../service/skill-import-service'
 import { KnowledgeService } from '../service/knowledge-service'
 import { KnowledgeApi } from '../common/platform/knowledge-api'
 import { ResultFileService } from '../service/result-file-service'
-import { ResultFileStore } from '../data/result-file-store'
+import { describeConversationResult, ResultFileStore } from '../data/result-file-store'
+import { ResultArchiveStore } from '../data/result-archive-store'
+import { ResultArchiveService } from '../service/result-archive-service'
+import { LocalMediaSettingsStore } from '../data/local-media-settings-store'
+import { LocalMediaSettingsService } from '../service/local-media-settings-service'
+import { localMediaTarget } from '../domain/local-media-platform'
+import { finalDeliveryFileSchema } from '../domain/arrangement-delivery'
+import type { ResultFileRequest } from '../../src/shared/result-files'
 /**
  * 后端组合根。
  *
  * 所有存储、服务和运行时依赖都在这里绑定。除运行时的惰性加载外，业务模块不创建
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
-import { dirname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { app, safeStorage, shell, systemPreferences } from 'electron'
 import { ConnectorService } from '../service/connector-service'
 import type { ConnectorRegistryPort } from '../domain/connectors'
@@ -141,6 +148,8 @@ class BackendRuntime {
   private readonly attachmentExtractionRuntime: LazyAsync<AttachmentExtractionRuntime>
   readonly documentPreviews: DocumentPreviewService
   readonly resultFiles: ResultFileService
+  readonly resultArchive: ResultArchiveService
+  readonly localMediaSettings: LocalMediaSettingsService
   private readonly documentPreviewRuntime: LazyAsync<DocumentPreviewRuntime>
   readonly skills: SkillLibraryService
   readonly clientMonitor: ClientMonitorService
@@ -276,10 +285,14 @@ class BackendRuntime {
       { list: getEnabledModels },
     )
 
-    const mediaStore = new MediaStore(userDataDir)
+    const mediaStore = new MediaStore(userDataDir, (job, asset) => this.queueMediaArchive(job.owner, job.runId,
+      { taskId: job.taskId, assetId: asset.localAssetId }, asset.createdAt, job.createdAt, {
+        name: `图片${extname(asset.relativePath)}`, version: `${asset.localAssetId}:${asset.sha256}:${asset.relativePath}`,
+      }))
     this.media = new MediaService({
       scope: this,
       store: mediaStore,
+      onOutputSaved: (owner, taskId, assetId) => { void this.resultFiles.saveQueuedArchive(owner, { taskId, assetId }) },
       gateway: realMediaGateway,
       capabilities: mediaCapabilities,
       getTask: taskId => this.taskManager.getTask(taskId),
@@ -295,7 +308,10 @@ class BackendRuntime {
       },
     })
 
-    const videoStore = config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED ? new VideoStore(userDataDir) : undefined
+    const videoStore = config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED ? new VideoStore(userDataDir, (job, asset) =>
+      this.queueMediaArchive(job.scope, job.runId, { taskId: job.taskId, jobId: job.jobId, outputId: asset.output.outputId },
+        asset.createdAt, job.createdAt, { name: `视频${extname(asset.relativePath)}`,
+          version: `${asset.localAssetId}:${asset.output.sha256}:${asset.relativePath}` }, job.scope.subscriptionId)) : undefined
     this.arrangementDiagnostics = new ArrangementDiagnosticService({
       scope: this, clientVersion: app.getVersion(),
       authorizationRevision: () => this.authSession.getSessionRevision(),
@@ -307,6 +323,7 @@ class BackendRuntime {
       const store = videoStore
       const videoOptions: MockVideoHostOptions = {
         mock: !config.SEP_VIDEO_REAL_ENABLED, scope: this, store,
+        onOutputSaved: (owner, taskId, jobId, outputId) => { void this.resultFiles.saveQueuedArchive(owner, { taskId, jobId, outputId }) },
         arrangementMediaLinks: new ArrangementMediaLinkStore(userDataDir),
         getTask: taskId => this.taskManager.getTask(taskId),
         authorize: async (subscriptionId, signal) => {
@@ -355,6 +372,13 @@ class BackendRuntime {
         const tasks = await this.taskManager.getAllTasks()
         signal.throwIfAborted()
         await this.video.resumePending(tasks.map(task => task.id))
+      } },
+      { name: 'result-files', run: async signal => {
+        const owner = this.currentScope()
+        if (!owner) return
+        const tasks = await this.taskManager.getAllTasks()
+        signal.throwIfAborted()
+        await this.resultFiles.resumeArchives(owner, tasks.map(task => task.id), signal)
       } },
     ])
     const mediaAssets = new ArrangementMediaAssets(userDataDir, mediaStore, videoStore, this.attachments)
@@ -418,7 +442,7 @@ class BackendRuntime {
       start: async (taskId, entry, signal) => {
         const runtime = await this.getTaskRuntime()
         signal.throwIfAborted()
-        await runtime.continueConversation(taskId, entry.prompt, { runId: entry.runId, signal, mode: entry.mode, confirmed: entry.confirmed,
+        await runtime.continueConversation(taskId, entry.prompt, { runId: entry.runId, messageId: entry.id, messageReceivedAt: entry.createdAt, signal, mode: entry.mode, confirmed: entry.confirmed,
           knowledge: entry.knowledge, attachmentRefs: entry.attachmentRefs })
       },
       retry: async (taskId, signal) => {
@@ -443,8 +467,11 @@ class BackendRuntime {
       media: this.media, runSnapshots: mediaStore, conversationQueue: this.conversationQueue })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans, queue: this.conversationQueue })
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
+    this.resultArchive = new ResultArchiveService(new ResultArchiveStore(userDataDir), this, () => app.getPath('documents'), () => this.authSession.getSessionRevision())
+    this.localMediaSettings = new LocalMediaSettingsService(new LocalMediaSettingsStore(userDataDir), join(userDataDir, 'local-media', 'scratch'))
     this.resultFiles = new ResultFileService({
       scope: this,
+      archive: this.resultArchive,
       store: new ResultFileStore(userDataDir, previewFiles, taskId => this.tasks.get(taskId), mediaStore, videoStore,
         (...args) => this.attachments.resolveTaskFile(...args)),
       reveal: path => shell.showItemInFolder(path),
@@ -826,14 +853,56 @@ class BackendRuntime {
       log.warn('safeStorage encryption is not available on this platform')
     }
     const { TaskRuntime } = await import('../runtime/task-runtime')
+    const mediaTarget = localMediaTarget(process.platform, process.arch)
+    const localMedia = mediaTarget ? await import('../runtime/local-media-runtime').then(({ LocalMediaRuntime }) =>
+      new LocalMediaRuntime(app.isPackaged ? join(process.resourcesPath, 'local-media') : process.env.SEP_LOCAL_MEDIA_DEV_DIR ?? join(app.getAppPath(), 'resources', 'local-media', mediaTarget),
+        () => this.localMediaSettings.prepare())) : undefined
     const runtime = new TaskRuntime({
+      localMedia,
       connectorBinding: owner => this.connectors.binding(owner),
       onConversationSettled: (taskId, runId, owner) => this.conversationQueue.settled(taskId, runId, owner),
       createModelTrace: this.createModelTrace,
       taskManager: this.taskManager,
       getRefreshToken: () => this.authSession.getRefreshToken(),
       onAuthenticationRequired: () => this.invalidateAuthentication(),
-      onEvent: event => this.renderer.taskEvent(event),
+      onEvent: event => {
+        this.renderer.taskEvent(event)
+        if (event.type !== 'arrangement_node_completed') return
+        const owner = this.currentScope()
+        const data = event.data as { nodeId?: unknown; finalDeliverables?: unknown } | null
+        if (!owner || typeof data?.nodeId !== 'string' || !Array.isArray(data.finalDeliverables)) return
+        for (const candidate of data.finalDeliverables as unknown[]) {
+          const result = finalDeliveryFileSchema.safeParse(candidate)
+          if (result.success) void this.resultFiles.saveQueuedArchive(owner, { taskId: event.taskId, nodeId: data.nodeId, deliverableId: result.data.id })
+        }
+      },
+      beforeNodeCompletion: async (owner, taskId, runId, completion) => {
+        const data = completion.data as { completedAt?: unknown; finalDeliverables?: unknown } | null
+        const nodeId = completion.nodeId
+        if (!nodeId || !Array.isArray(data?.finalDeliverables)) return
+        try {
+          const assert = this.resultArchive.assertOwner(owner)
+          const [task, run] = await Promise.all([this.taskManager.getTask(taskId), this.taskRunStore.get(owner, taskId, runId)])
+          assert()
+          if (!task || !run || task.ownerId !== owner.memberId || task.ownerEnterpriseId !== owner.enterpriseId) return
+          const completedAt = typeof data.completedAt === 'string' ? Date.parse(data.completedAt) : NaN
+          const intents = new Map<string, import('../../src/shared/result-files').ResultSaveIntent>()
+          for (const candidate of data.finalDeliverables as unknown[]) {
+            const result = finalDeliveryFileSchema.safeParse(candidate)
+            if (!result.success) continue
+            const file = result.data
+            const intent = await this.resultFiles.queueArchive(owner, { taskId, nodeId, deliverableId: file.id }, task.title,
+              Number.isFinite(completedAt) ? completedAt : Date.now(), run.startedAt, async () => ({
+                name: basename(file.path.replaceAll('\\', '/')), version: `${file.nodeRunId}:${file.sha256}:${file.path}`,
+              }))
+            if (intent) intents.set(file.id, intent)
+          }
+          return intents
+        } catch { log.warn('could not register result save', { taskId }) }
+      },
+      beforeArtifact: (owner, taskId, title, workspace, file, index, startedAt, finishedAt) => this.resultFiles.queueArchive(owner,
+        { taskId, fileId: `${taskId}-file-${index}` }, title, finishedAt, startedAt, () => describeConversationResult(workspace, file, startedAt)),
+      onArtifact: (owner, taskId, index) => { void this.resultFiles.saveQueuedArchive(owner, { taskId, fileId: `${taskId}-file-${index}` }) },
       onApprovalRequest: request => this.renderer.approvalRequest(request),
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
       authorizeEmployee: (subscriptionId, modelId) => this.employees.authorize(subscriptionId, modelId),
@@ -859,10 +928,22 @@ class BackendRuntime {
       arrangementMedia: this.arrangementMedia,
       arrangementDiagnostics: this.arrangementDiagnostics,
       conversationMedia: this.conversationMedia,
+      submitConversationSchedule: (request, review) => this.scheduledCreations.submitConversation(request, review),
       attachmentInputs: this.attachments,
     })
     log.info('task runtime loaded')
     return runtime
+  }
+
+  private async queueMediaArchive(owner: TaskOwnerScope, runId: string | undefined, file: ResultFileRequest,
+    when: number, startedAt: number, source: { name: string; version: string }, videoSubscriptionId?: string) {
+    try {
+      const assert = this.resultArchive.assertOwner(owner)
+      const [task, run] = await Promise.all([this.tasks.get(file.taskId), runId ? this.taskRunStore.get(owner, file.taskId, runId) : null])
+      assert()
+      if (task.ownerId !== owner.memberId || task.ownerEnterpriseId !== owner.enterpriseId || task.workType.state !== 'resolved' || task.workType.kind !== 'conversation') return
+      return await this.resultFiles.queueArchive(owner, file, task.title, when, run?.startedAt ?? startedAt, async () => source, videoSubscriptionId)
+    } catch { log.warn('could not register media result save', { taskId: file.taskId }) }
   }
 }
 

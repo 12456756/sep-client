@@ -45,3 +45,14 @@ test('refuses a成果 directory symlink and never scans files outside the worksp
   await assert.rejects(store.scan(workspace, 'task-123'), /UNSAFE_PATH/)
   assert.equal(await readFile(join(outside, 'private.md'), 'utf8'), 'private')
 })
+
+test('scans the canonical spelling of an existing Windows task directory', { skip: process.platform !== 'win32' }, async t => {
+  const workspace = await mkdtemp(join(tmpdir(), 'sep-conversation-artifacts-case-'))
+  t.after(() => rm(workspace, { recursive: true, force: true }))
+  const actual = join(workspace, '成果', 'Task-123')
+  await mkdir(actual, { recursive: true })
+  await writeFile(join(actual, 'Report.md'), 'report')
+  const store = new ConversationArtifactStore()
+  assert.equal((await store.prepare(workspace, 'task-123')).status, 'ready')
+  assert.deepEqual(await store.scan(workspace, 'task-123'), ['成果/Task-123/Report.md'])
+})

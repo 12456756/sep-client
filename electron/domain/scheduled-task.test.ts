@@ -1,12 +1,24 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { occurrenceId, parseEmployeePlan, classifyScheduledError, latestScheduledOccurrence, nextWakeAt, nextScheduledAt, resolveScheduledDeliveryNodes } from './scheduled-task'
+import { occurrenceId, parseEmployeePlan, classifyScheduledError, latestScheduledOccurrence, nextWakeAt, nextScheduledAt, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes } from './scheduled-task'
 import type { ArrangementNode } from './arrangement-plan'
 import { scheduleInputSchema } from '../../src/shared/scheduled-tasks'
 
 test('a planned instant has one stable occurrence independent of definition revisions', () => {
   assert.equal(occurrenceId('task-a', 1000), occurrenceId('task-a', 1000))
   assert.notEqual(occurrenceId('task-a', 1000), occurrenceId('task-a', 1001))
+})
+
+test('Windows path preflight distinguishes explicit file access from literal text and relative destinations', () => {
+  const restricted = { preset: 'workspace-edit', approvalMode: 'confirm-each' } as const
+  for (const goal of [String.raw`每分钟在 C:\Users\demo\Desktop 下创建空白文件`, String.raw`保存到 \\server\share\team`,
+    'Save the report to D:/outside/team', '交付目录：D:/out']) assert.equal(requestsRestrictedWindowsSchedulePath(restricted, goal), true, goal)
+  for (const goal of [String.raw`在报告中引用 C:\example\file.txt`, '生成并保存到 deliverables/report.txt',
+    'Include the text https://example.test/reports', 'Include the label View C:/reports', '不要写入 D:/outside/team']) {
+    assert.equal(requestsRestrictedWindowsSchedulePath(restricted, goal), false, goal)
+  }
+  assert.equal(requestsRestrictedWindowsSchedulePath({ preset: 'full-local', approvalMode: 'confirm-each' }, '保存到 D:/out'), true)
+  assert.equal(requestsRestrictedWindowsSchedulePath({ preset: 'full-local', approvalMode: 'auto-approve' }, '保存到 D:/out'), false)
 })
 
 test('employee planner accepts a bounded file contract, never a replacement employee', () => {
@@ -24,6 +36,17 @@ test('only explicit transient pre-execution failures permit automatic retries', 
   assert.equal(classifyScheduledError({ statusCode: 403 }).action, 'blocked')
   assert.equal(classifyScheduledError({ code: 'AUTH_REQUIRED' }).action, 'auth')
   assert.equal(classifyScheduledError(new Error('unknown fault')).action, 'review')
+})
+
+test('directory, permission and disk space errors have distinct recovery guidance', () => {
+  for (const [code, message] of [['WORKSPACE_INVALID', /工作目录/], ['ENOENT', /移动或删除/],
+    ['EACCES', /读写权限/], ['EPERM', /读写权限/], ['ENOSPC', /磁盘空间不足/]] as const) {
+    const issue = classifyScheduledError(Object.assign(new Error('private filesystem location'), { code }))
+    assert.equal(issue.code, code)
+    assert.equal(issue.action, 'blocked')
+    assert.match(issue.message, message)
+    assert.doesNotMatch(issue.message, /private/)
+  }
 })
 
 test('scheduled delivery binds timestamps in the configured timezone without changing the original plan', () => {

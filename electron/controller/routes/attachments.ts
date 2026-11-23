@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { dialog } from 'electron'
 import { z } from 'zod'
-import { attachmentImportLimits, attachmentImportTargetSchema, attachmentPreviewRequestSchema } from '../../../src/shared/attachment-contracts'
+import { attachmentImportLimits, attachmentImportTargetSchema, attachmentPreviewRequestSchema, pastedAttachmentFolderPath } from '../../../src/shared/attachment-contracts'
 import { AppError } from '../../errors/app-error'
 import { INVOKE_CHANNELS } from '../channels'
 import { route } from '../router'
@@ -39,6 +39,16 @@ export const attachmentRoutes = [
   route(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, operationInput.extend({ paths: z.array(z.string().min(1).max(4096)).min(1).max(attachmentImportLimits.maxImportFiles) }).strict(), async (ctx, input) => {
     await ctx.attachments.importFiles(input.sessionId, input.operationId, input.paths, 'paste-file')
     return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
+  }, trusted),
+  route(INVOKE_CHANNELS.ATTACHMENT_FOLDER_PREVIEW, sessionInput.extend({ path: z.string().max(4096).refine(value => pastedAttachmentFolderPath(value) === value) }).strict(), async (ctx, input) => {
+    if (process.platform !== 'win32') throw new AppError('INVALID_STATE')
+    return { success: true, data: await ctx.attachments.previewFolder(input.sessionId, input.path) }
+  }, trusted),
+  route(INVOKE_CHANNELS.ATTACHMENT_FOLDER_IMPORT, sessionInput.extend({ previewId: id,
+    candidateIds: z.array(id).min(1).max(attachmentImportLimits.maxImportFiles).refine(ids => new Set(ids).size === ids.length),
+  }).strict(), async (ctx, input) => {
+    if (process.platform !== 'win32') throw new AppError('INVALID_STATE')
+    return { success: true, data: await ctx.attachments.importFolderSelection(input.sessionId, input.previewId, input.candidateIds) }
   }, trusted),
   route(INVOKE_CHANNELS.ATTACHMENT_IMPORT_IMAGE, operationInput.extend({
     name: z.string().min(1).max(255), type: z.enum(['image/png', 'image/jpeg', 'image/webp']),

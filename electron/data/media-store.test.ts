@@ -99,6 +99,19 @@ async function assertPublicationPending(reads: Promise<unknown>): Promise<void> 
 }
 
 describe('MediaStore output reference derivation', () => {
+  it('recovers copy intent only from task-owned image output manifests', async () => {
+    const { root } = await fixture()
+    const intent = { startedAt: 1, when: 2, title: 'Image', name: 'image.png', version: 'output-v1' }
+    const store = new MediaStore(root, async () => intent)
+    await store.saveJob(owner, job())
+    const asset = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    await store.deriveReferenceFromOutput(owner, 'task-a', asset.localAssetId, signal())
+    const reopened = new MediaStore(root)
+    assert.deepEqual(await reopened.saveIntents(owner, 'task-a'), [{ assetId: asset.localAssetId, intent }])
+    assert.deepEqual(await reopened.saveIntents(other, 'task-a', asset.localAssetId), [])
+    assert.deepEqual(await reopened.readAsset(owner, 'task-a', asset.localAssetId), png)
+  })
+
   it('derives a reusable task-local reference without changing the source output', async () => {
     const { store } = await fixture()
     await store.saveJob(owner, job())

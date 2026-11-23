@@ -5,7 +5,7 @@ import { AuthenticationRequiredError } from '../common/platform/authentication-r
 import { AuthApiError } from '../common/platform/platform-api'
 import { AppError } from './app-error'
 import { transportKind } from './operation-feedback'
-import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
+import { ArrangementMediaRecoveryError, ImageDownloadDeferredError } from '../domain/arrangement-media-runtime'
 
 function failure(code: RuntimeFailureCode): RuntimeFailure { return { code, message: RUNTIME_FAILURE_MESSAGES[code] } }
 
@@ -34,6 +34,7 @@ const unrecoverableSessionMessages = new Set([
 
 export function runtimeFeedback(error: unknown): RuntimeFailure {
   if (error instanceof Error) {
+    if (error instanceof ImageDownloadDeferredError) return failure('IMAGE_DOWNLOAD_DEFERRED')
     if (error instanceof ArrangementMediaRecoveryError) {
       const codes: Record<ArrangementMediaRecoveryError['phase'], RuntimeFailureCode> = {
         submission: 'MEDIA_SUBMISSION_UNKNOWN', 'image-missing-target': 'IMAGE_MISSING_TARGET',
@@ -62,6 +63,7 @@ export function runtimeFeedback(error: unknown): RuntimeFailure {
     if (status === 408 || status === 504) return failure('MODEL_TIMEOUT')
     if (status === 401) return failure('AUTH_REQUIRED')
     if (status === 403) return failure('REQUEST_DENIED')
+    if (status === 413) return failure('MODEL_REQUEST_TOO_LARGE')
     if (status === 429) return failure('RATE_LIMITED')
     if (typeof status === 'number' && status >= 500 && status <= 599) return failure('SERVICE_UNAVAILABLE')
     if (error instanceof AuthApiError && status === 0) return failure('NETWORK_ERROR')

@@ -171,7 +171,7 @@ test('release workflow allows 120 seconds per public artifact verification', () 
 test('release workflow builds macOS architectures in parallel without rebuilding the other architecture', () => {
   const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
   const job = workflow.jobs['build-mac']
-  assert.equal(job['runs-on'], 'macos-15-intel')
+  assert.equal(job['runs-on'], "${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}")
   assert.deepEqual(job.strategy.matrix.arch, ['arm64', 'x64'])
   assert.equal(job.strategy['max-parallel'], 2)
   assert.equal(job.strategy['fail-fast'], false)
@@ -181,6 +181,12 @@ test('release workflow builds macOS architectures in parallel without rebuilding
   assert.match(pkg.scripts['package:ci:stable:mac'], /--mac$/)
   const command = job.steps.find(step => step.run?.startsWith('npm run package:ci:stable:mac'))
   assert.equal(command.run, 'npm run package:ci:stable:mac -- dmg zip --${{ matrix.arch }}')
+  const ffmpeg = job.steps.find(step => step.name === 'Build pinned FFmpeg for macOS')
+  const verifyFFmpeg = job.steps.find(step => step.name === 'Exercise the signed FFmpeg binaries from the macOS app')
+  assert.ok(ffmpeg && verifyFFmpeg)
+  assert.ok(job.steps.indexOf(ffmpeg) < job.steps.indexOf(command) && job.steps.indexOf(verifyFFmpeg) > job.steps.indexOf(command))
+  assert.match(verifyFFmpeg.run, /codesign --verify --strict/)
+  assert.match(verifyFFmpeg.run, /local-media-runtime\.test\.ts/)
   for (const arch of job.strategy.matrix.arch) {
     const options = normalizeOptions({ mac: ['dmg', 'zip'], [arch]: true })
     const [[platform, targets]] = options.targets

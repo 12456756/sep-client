@@ -13,6 +13,7 @@ import { WriteChain } from '../data/write-chain'
 import { recoverArrangementSession } from '../data/arrangement-session-recovery'
 import { createScheduledEmptyText, resolveDeliveryFiles, validateDeliveryFiles } from '../data/arrangement-delivery-files'
 import { DeliveryExecutionError, deliveryPlanIssues, parseRecordedDeliverySubmission, type DeliveryIssue, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
+import { scheduledPathDenied, ScheduledPathDeniedError, scheduledWorkspaceErrorMessage } from '../domain/scheduled-task'
 import { ArrangementDeliveryValidation, buildArrangementDeliveryCorrection, resolveArrangementNodeFailure } from './arrangement-delivery-validation'
 import type { TaskExecutionEvent, ArrangementEmployeeReplacement } from '../../src/shared/types'
 import type { ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
@@ -76,6 +77,7 @@ export interface ArrangementExecutionOptions {
   onAuthenticationRequired: () => void
   onApprovalRequest: PiTaskWorkerOptions['onApprovalRequest']
   onEvent: (event: TaskExecutionEvent) => Promise<void>
+  beforeNodeCompletion?: (scope: TaskOwnerScope, taskId: string, runId: string, completion: ArrangementNodeEvent) => Promise<ReadonlyMap<string, import('../../src/shared/result-files').ResultSaveIntent> | undefined>
   authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   findReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
   replacePlanEmployee?: (taskId: string, nodeId: string, subscriptionId: string) => Promise<void>
@@ -227,6 +229,7 @@ export class ArrangementExecutor {
   private readonly requestProgressWrites = new WriteChain()
   private readonly stateWrites = new WriteChain()
   private abortRequested = false
+  private preserveDeferredDownloadsOnAbort = false
   private stopRequested = false
   private liveRetryHandler: ((nodeId: string, inputReply?: ArrangementInputReply) => Promise<boolean>) | null = null
   private validationCancellation = new AbortController()
@@ -234,12 +237,13 @@ export class ArrangementExecutor {
 
   constructor(private readonly options: ArrangementExecutionOptions) {}
 
-  async abort(): Promise<void> {
+  async abort(options: { preserveDeferredDownloads?: boolean } = {}): Promise<void> {
+    if (!this.abortRequested || !options.preserveDeferredDownloads) this.preserveDeferredDownloadsOnAbort = !!options.preserveDeferredDownloads
     this.abortRequested = true
     this.validationCancellation.abort()
     await Promise.all([
       ...[...this.activeWorkers.values()].map(worker => worker.abort().catch(() => undefined)),
-      this.taskId ? this.options.media?.stopTask(this.taskId) : undefined,
+      this.taskId ? this.options.media?.stopTask(this.taskId, { preserveDeferredDownloads: this.preserveDeferredDownloadsOnAbort }) : undefined,
       this.taskId ? this.options.video?.stopTask(this.taskId) : undefined,
     ])
   }
@@ -435,7 +439,17 @@ export class ArrangementExecutor {
             await this.emitStateEvent(plan, taskId, arrangementRunId, current, result.repair.nodeId)
             return
           }
-          if (result.ok) current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
+          if (result.ok) {
+            const intents = this.options.scope && await this.options.beforeNodeCompletion?.(this.options.scope, taskId, arrangementRunId, result.completion)
+            current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
+            if (intents?.size) current = { ...current, nodes: current.nodes.map(node => {
+              if (node.nodeId !== result.nodeId || !node.delivery) return node
+              return { ...node, delivery: { ...node.delivery, finalFiles: node.delivery.finalFiles.map(file => {
+                const saveIntent = intents.get(file.id)
+                return saveIntent ? { ...file, saveIntent } : file
+              }) } }
+            }) }
+          }
           else if (result.employeeReplacement) {
             current = markArrangementNodeWaitingForEmployee(current, plan.nodes, result.nodeId, result.employeeReplacement)
           } else {
@@ -521,6 +535,7 @@ export class ArrangementExecutor {
     let accepted = !structured
     let mediaSession: ArrangementMediaSession | undefined
     let terminalMediaFailure: unknown
+    let scheduledPathWasDenied = false
     let diagnosticPhase: DiagnosticPhase = 'node-setup'
     const mediaEvidence = this.options.arrangementDiagnostics ? trackMediaToolFailureEvidence() : undefined
     const expectsVideo = node.mediaRequirements?.some(item => item.kind === 'video') === true ||
@@ -620,9 +635,11 @@ export class ArrangementExecutor {
           await createScheduledEmptyText(workspaceDir, plan.scheduledOrigin!.occurrenceId, file.path, checkControl)
         } catch (error) {
           checkControl()
-          const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
-          const issue: DeliveryIssue = { code: code === 'EEXIST' ? 'FILE_ALREADY_EXISTS' : 'LOCAL_FILE_CREATION_FAILED', path: file.path, deliverableId: file.id,
-            message: code === 'EEXIST' ? '同名文件已存在，未覆盖。' : '无法创建空白文本，请检查成果目录、权限和磁盘状态。' }
+          const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : ''
+          const workspaceMessage = scheduledWorkspaceErrorMessage(code)
+          const issue: DeliveryIssue = { code: code === 'EEXIST' ? 'FILE_ALREADY_EXISTS' : workspaceMessage ? code : 'LOCAL_FILE_CREATION_FAILED',
+            path: file.path, deliverableId: file.id, message: code === 'EEXIST' ? '同名文件已存在，未覆盖。'
+              : workspaceMessage ?? '无法创建空白文本，请检查成果目录、权限和磁盘状态。' }
           await saveDelivery({ ...delivery, issues: [issue], firstIssue: issue, correctionStopped: true })
           throw new DeliveryExecutionError(issue.message)
         }
@@ -751,7 +768,7 @@ export class ArrangementExecutor {
         } catch (error) { observeMissingSpec(mediaInputKey(name, raw), error); throw error }
       } } : bound.video
       if (this.abortRequested) {
-        await Promise.all([media?.stopTask(taskId), video?.stopTask(taskId)])
+        await Promise.all([media?.stopTask(taskId, { preserveDeferredDownloads: this.preserveDeferredDownloadsOnAbort }), video?.stopTask(taskId)])
         throw new Error('Arrangement execution was interrupted.')
       }
       checkControl()
@@ -823,6 +840,7 @@ export class ArrangementExecutor {
         },
         ...(structured || node.mediaRequirements?.length ? { onResponseSettled: async (response: { text: string; stopReason?: string }): Promise<{ continueWith: string } | void> => {
           checkControl()
+          if (scheduledPathWasDenied) throw new ScheduledPathDeniedError()
           if (node.mediaRequirements?.length && (!response.stopReason || response.stopReason === 'stop')) {
             let clarification: ReturnType<typeof arrangementClarificationSchema.safeParse> | undefined
             try { clarification = arrangementClarificationSchema.safeParse(JSON.parse(response.text)) } catch { /* Delivery parsing handles other responses. */ }
@@ -840,6 +858,12 @@ export class ArrangementExecutor {
           return { continueWith: result.continueWith }
         } } : {}),
         onEvent: async event => {
+          if (plan.scheduledOrigin && !scheduledPathWasDenied && event.type === 'tool_call_blocked' &&
+            (event.data as { reason?: unknown } | null)?.reason === 'path-not-allowed') {
+            scheduledPathWasDenied = true
+            // The SDK is waiting for this policy event; do not await shutdown here.
+            abortWorker()
+          }
           if (event.type === 'turn_start') output = ''
           if (event.type === 'turn_end') {
             const data = event.data as { message?: { role?: string; stopReason?: string; content?: Array<{ type?: string; text?: string }> } } | null
@@ -891,6 +915,7 @@ export class ArrangementExecutor {
       } catch (error) {
         runError = error
       }
+      if (scheduledPathWasDenied) throw new ScheduledPathDeniedError()
       if (terminalMediaFailure !== undefined) { diagnosticPhase = 'media-wait'; throw terminalMediaFailure }
       if (inputRequired) throw new ArrangementInputRequiredError(inputRequired)
       if (runError !== undefined) throw runError
@@ -925,7 +950,15 @@ export class ArrangementExecutor {
       }
       logger.child('arrangement-executor').warn('node execution failed', { taskId, arrangementRunId, nodeId: node.id, nodeRunId,
         interrupted, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
-      const { message, terminal } = resolveArrangementNodeFailure(error, interrupted, terminalMediaFailure !== undefined)
+      const pathDenied = !interrupted && error instanceof ScheduledPathDeniedError
+      if (pathDenied) {
+        output = ''
+        delivery = { ...delivery, issues: [scheduledPathDenied], firstIssue: scheduledPathDenied,
+          correctionStopped: true, finalFiles: [], summary: undefined, pendingSubmission: undefined }
+        await saveDelivery(delivery)
+      }
+      const { message, terminal } = pathDenied ? { message: scheduledPathDenied.message, terminal: true }
+        : resolveArrangementNodeFailure(error, interrupted, terminalMediaFailure !== undefined)
       let diagnosticAvailable = false
       if (!interrupted && this.options.scope && this.options.arrangementDiagnostics) {
         try {

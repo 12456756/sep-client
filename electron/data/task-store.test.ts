@@ -46,7 +46,7 @@ afterEach(async () => {
 })
 
 describe('TaskStore', () => {
-  it('deduplicates historical file paths by workspace location while preserving distinct files', async () => {
+  it('preserves historical file positions, including duplicate paths and invalid slots', async () => {
     const userData = await makeUserDataDir()
     const store = new TaskStore(userData)
     await store.initialize()
@@ -54,10 +54,10 @@ describe('TaskStore', () => {
     const original = task(scope, 'artifacts')
     original.workDir = join(userData, 'workspace')
     const absolute = join(original.workDir, 'out', 'report.md')
-    original.files = [absolute, 'out/report.md', './out/../out/report.md', 'other/report.md']
+    original.files = [absolute, 'out/report.md', './out/../out/report.md', null as unknown as string, 'other/report.md']
     await store.save(scope, [original])
     const [loaded] = await store.load(scope)
-    assert.deepEqual(loaded?.files, [absolute, 'other/report.md'])
+    assert.deepEqual(loaded?.files, [absolute, 'out/report.md', './out/../out/report.md', '', 'other/report.md'])
   })
 
   it('persists start failure health and queue time across reloads', async () => {

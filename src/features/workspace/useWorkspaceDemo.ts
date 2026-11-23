@@ -234,12 +234,12 @@ function mapClientTask(task: ClientTask, employeeName = '硅基员工', type?: T
       : [],
     goal: taskPlan?.goal ?? task.prompt,
     logs: task.logs.map((entry) => entry.message),
-    artifacts: task.files.map((file, index) => ({
+    artifacts: task.files.flatMap((file, index) => file ? [{
       id: `${task.id}-file-${index}`,
       name: file.split(/[\\/]/).pop() || file,
       kind: 'document' as const,
       summary: file,
-    })),
+    }] : []),
     activity: task.status === 'running' ? '正在执行' : undefined,
     planSteps: taskPlan?.steps,
   };

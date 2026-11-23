@@ -97,16 +97,27 @@ test('conversation previews reject foreign owners, non-conversations, forged ide
   await assert.rejects(f.store.readConversation(f.owner, { ...f.task, files: [join(linked, 'private.md')] }, 'task-file-0'))
 })
 
-test('output locations accept absolute paths through a workspace alias and still reject nested symlinks', async t => {
+test('preview and output location accept absolute paths through a workspace alias and its real path', async t => {
   const f = await conversationFixture(t)
   const alias = join(f.root, 'workspace-alias')
   await symlink(f.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir')
-  const task = { ...f.task, workDir: alias, files: [join(alias, 'report.MD')] }
-  assert.equal(await f.store.getConversationPath(f.owner, task, 'task-file-0'), await realpath(f.path))
-  assert.equal(await f.store.getConversationPath(f.owner, { ...task, files: [await realpath(f.path)] }, 'task-file-0'), await realpath(f.path))
-  const linked = join(f.workspace, 'linked.md')
-  await symlink(f.path, linked)
-  await assert.rejects(f.store.getConversationPath(f.owner, { ...task, files: [join(alias, 'linked.md')] }, 'task-file-0'), /UNSAFE_PATH/)
+  const canonical = await realpath(f.path)
+  for (const file of [join(alias, 'report.MD'), canonical, 'report.MD']) {
+    const task = { ...f.task, workDir: alias, files: [file] }
+    assert.equal(await f.store.getConversationPath(f.owner, task, 'task-file-0'), canonical)
+    assert.equal((await f.store.readConversation(f.owner, task, 'task-file-0'))?.name, 'report.MD')
+  }
+})
+
+test('preview and output location both reject a directory link even when its target stays inside the workspace', async t => {
+  const f = await conversationFixture(t)
+  const internal = join(f.workspace, 'internal'), linked = join(f.workspace, 'linked')
+  await mkdir(internal)
+  await writeFile(join(internal, 'report.md'), '# in workspace')
+  await symlink(internal, linked, process.platform === 'win32' ? 'junction' : 'dir')
+  const task = { ...f.task, files: ['linked/report.md'] }
+  await assert.rejects(f.store.getConversationPath(f.owner, task, 'task-file-0'), { reason: 'link' })
+  await assert.rejects(f.store.readConversation(f.owner, task, 'task-file-0'), { reason: 'link' })
 })
 
 test('conversation previews reject missing, empty and oversized files without creating snapshots', async t => {

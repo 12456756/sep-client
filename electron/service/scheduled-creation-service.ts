@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput } from '../../src/shared/scheduled-creation'
+import { scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput, type ConversationScheduleReceipt } from '../../src/shared/scheduled-creation'
 import type { ScheduleInput } from '../../src/shared/scheduled-tasks'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { TaskOwnerScope } from '../data/scope-path'
-import { occurrenceId } from '../domain/scheduled-task'
+import { occurrenceId, requestsRestrictedWindowsSchedulePath, scheduledPathDenied, scheduledWorkspaceErrorMessage } from '../domain/scheduled-task'
 import { scheduleCandidateInput, ScheduleCandidateError } from '../domain/scheduled-creation'
 import { cronPreview } from '../../src/shared/cron-schedule'
 import { AppError } from '../errors/app-error'
@@ -12,6 +12,12 @@ import { withTimeout } from '../common/with-timeout'
 import { logger } from '../common/logger'
 import type { ScheduledTaskService } from './scheduled-task-service'
 import type { AttachmentService } from './attachment-service'
+
+interface ConversationCreationReview {
+  signal: AbortSignal
+  approve(input: ScheduleInput): Promise<boolean>
+  receivedAt: number
+}
 
 const log = logger.child('scheduled-creation')
 const employeeSchema = z.object({ subscriptionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), name: z.string().max(300),
@@ -46,10 +52,38 @@ export class ScheduledCreationService {
     if (generation !== this.generation || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
   }
   private key(scope: TaskOwnerScope, id: string): string { return JSON.stringify([scope.enterpriseId, scope.memberId, id]) }
+  private async validateWorkspace(workDir: string, label: string): Promise<void> {
+    try { await withTimeout(this.options.validateWorkspace(workDir), 15000, label) }
+    catch (error) {
+      const errno = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+      const message = scheduledWorkspaceErrorMessage(errno)
+      if (!message) throw error
+      throw new AppError('WORKSPACE_INVALID', { message, cause: error })
+    }
+  }
   submit(raw: ScheduledCreationRequest): Promise<ScheduledCreation> {
+    return this.start(raw)
+  }
+  async submitConversation(raw: ScheduledCreationRequest, review: ConversationCreationReview): Promise<ConversationScheduleReceipt> {
+    const scope = this.scope(), generation = this.generation
+    const record = await this.start(raw, review)
+    this.assertScope(scope, generation)
+    if (record.stage === 'completed') {
+      const definition = (await this.options.repository.read(scope)).definitions.find(item => item.id === record.definitionId)
+      this.assertScope(scope, generation)
+      if (definition?.enabled && definition.nextRunAt !== null) return { status: 'created', id: definition.id, title: definition.input.name,
+        timezone: definition.input.timezone, nextRunAt: definition.nextRunAt }
+      return { status: 'blocked', message: '这条消息已创建过定时任务；请前往「定时任务」查看当前状态。' }
+    }
+    if (record.stage === 'needs_input') return { status: 'needs_input', message: record.interpretation?.questions.map(item => item.question).join('\n').slice(0, 3800) || '请补充工作内容和明确的开始时间。' }
+    if (record.stage === 'blocked') return { status: 'blocked', message: record.interpretation?.reasons.map(item => item.message).join('\n').slice(0, 3800) || '当前请求不能创建定时任务。' }
+    if (record.stage === 'cancelled') return { status: 'cancelled', message: '未获确认，定时任务未启用。' }
+    return { status: 'failed', message: record.error ?? '定时任务未启用，请查看后重试。' }
+  }
+  private start(raw: ScheduledCreationRequest, review?: ConversationCreationReview): Promise<ScheduledCreation> {
     const request = scheduledCreationRequestSchema.parse(raw), scope = this.scope(), generation = this.generation
     const { requestId, expectedRevision: _revision, ...input } = request
-    const submissionKey = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+    const submissionKey = createHash('sha256').update(JSON.stringify(review ? ['conversation', input] : input)).digest('hex')
     const key = this.key(scope, requestId), running = this.operations.get(key)
     if (running) {
       if (running.key !== submissionKey) return Promise.reject(new AppError('CONFLICT'))
@@ -57,18 +91,19 @@ export class ScheduledCreationService {
     }
     if (this.operations.size >= 2) return Promise.reject(new AppError('CONFLICT', { message: '正在准备其他定时任务，请稍后重试。' }))
     const controller = new AbortController()
-    const promise = this.run(scope, generation, request, submissionKey, controller).finally(() => {
+    const promise = this.run(scope, generation, request, submissionKey, controller, review).finally(() => {
       if (this.operations.get(key)?.controller === controller) this.operations.delete(key)
     })
     this.operations.set(key, { key: submissionKey, controller, promise })
     return promise
   }
-  private async run(scope: TaskOwnerScope, generation: number, request: ScheduledCreationRequest, submissionKey: string, controller: AbortController): Promise<ScheduledCreation> {
+  private async run(scope: TaskOwnerScope, generation: number, request: ScheduledCreationRequest, submissionKey: string, controller: AbortController, review?: ConversationCreationReview): Promise<ScheduledCreation> {
     const { requestId, expectedRevision, ...input } = request
-    const guard = () => { this.assertScope(scope, generation); controller.signal.throwIfAborted() }
+    const signal = review ? AbortSignal.any([controller.signal, review.signal]) : controller.signal
+    const guard = () => { this.assertScope(scope, generation); signal.throwIfAborted() }
     const prior = input.referenceFiles ? (await this.options.repository.read(scope)).creations?.find(item => item.id === requestId) : undefined
     guard()
-    const message = { role: 'user' as const, content: input.message, receivedAt: this.now() }
+    const message = { role: 'user' as const, content: input.message, receivedAt: review?.receivedAt ?? this.now() }
     if (input.referenceFiles && prior?.submissionKey !== submissionKey && !this.options.attachments) throw new AppError('SERVICE_UNAVAILABLE')
     const referenceMaterials = input.referenceFiles && prior?.submissionKey !== submissionKey
       ? await this.options.attachments!.referenceMaterials(scope, input.referenceFiles) : undefined
@@ -78,6 +113,7 @@ export class ScheduledCreationService {
       const records = data.creations ??= []
       const existing = records.find(item => item.id === requestId)
       if (existing) {
+        if (!!existing.fromConversation !== !!review) throw new AppError('INVALID_STATE')
         if (existing.submissionKey === submissionKey) return existing
         if (existing.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
         if (['completed', 'cancelled'].includes(existing.stage)) throw new AppError('INVALID_STATE', { message: '本次创建已结束，请从任务详情修改配置，或新建任务。' })
@@ -89,6 +125,7 @@ export class ScheduledCreationService {
       }
       if (expectedRevision !== undefined) throw new AppError('DRAFT_REVISION_CONFLICT')
       const created: ScheduledCreation = { id: requestId, revision: 1, request: input, submissionKey,
+        ...(review ? { fromConversation: true } : {}),
         referenceNow: this.now(), messages: [messageWithReferences], interpretation: null, parsedSubmissionKey: null, definitionSubmissionKey: null,
         stage: 'parsing', definitionId: null, definitionInput: null, error: null, createdAt: this.now(), updatedAt: this.now() }
       records.push(created)
@@ -115,7 +152,7 @@ export class ScheduledCreationService {
       if (!planningEmployee) throw new AppError('MODEL_NOT_ALLOWED')
       await withTimeout(this.options.authorize(planningEmployee.subscriptionId, input.modelId), 30000, 'scheduled-creation-authorization')
       guard()
-      await withTimeout(this.options.validateWorkspace(input.workDir), 15000, 'scheduled-creation-workspace')
+      await this.validateWorkspace(input.workDir, 'scheduled-creation-workspace')
       guard()
       if (record.parsedSubmissionKey !== submissionKey || !record.interpretation) {
         await change(item => { item.stage = 'parsing'; item.error = null })
@@ -123,8 +160,9 @@ export class ScheduledCreationService {
         let result: unknown
         try {
           result = await withTimeout(this.options.interpret({ subscriptionId: planningEmployee.subscriptionId, modelId: input.modelId,
+            ...(review ? { fromConversation: true } : {}),
             referenceNow: record.referenceNow, timezone: input.timezone, employeeCatalog: catalog,
-            currentDraft: record.interpretation, messages: record.messages }, controller.signal), 45000, 'scheduled-creation-interpretation')
+            currentDraft: record.interpretation, messages: record.messages }, signal), 45000, 'scheduled-creation-interpretation')
         } finally { clearTimeout(timeout) }
         guard()
         const parsed = scheduleInterpretationSchema.parse(result)
@@ -132,6 +170,15 @@ export class ScheduledCreationService {
         if (parsed.status !== 'ready') return record
       }
       const candidate = record.interpretation!
+      if (candidate.status === 'ready' && requestsRestrictedWindowsSchedulePath(input.permissions,
+        input.message, candidate.task.goal ?? '', ...candidate.task.deliverables)) {
+        await change(item => {
+          item.stage = 'blocked'
+          item.interpretation = { ...candidate, status: 'blocked', questions: [],
+            reasons: [{ code: 'UNSUPPORTED_SETTING', message: scheduledPathDenied.message }] }
+        })
+        return record
+      }
       const execution = candidate.task.execution
       const selected = execution.mode === 'employee' ? catalog.find(item => item.subscriptionId === execution.subscriptionId) : planningEmployee
       if (!selected) throw new AppError('EMPLOYEE_UNAVAILABLE')
@@ -159,6 +206,14 @@ export class ScheduledCreationService {
         configured = { ...configured, scheduledAt: cronPreview(configured.recurrence.expression, configured.timezone, this.now(), 1)[0]! }
       }
       const definitionId = occurrenceId(`definition:${requestId}`, 0)
+      if (review) {
+        const approved = await review.approve(configured)
+        guard()
+        if (!approved) {
+          await change(item => { item.stage = 'cancelled' })
+          return record
+        }
+      }
       const previousInput = record.definitionInput
       await change(item => { item.definitionId = definitionId; item.stage = 'planning'; item.error = null })
       if (!definition) definition = await this.options.schedules.create(requestId, configured, { id: record.id, revision: record.revision, guard })
@@ -173,7 +228,7 @@ export class ScheduledCreationService {
       guard()
       if (!linked || linked.stage === 'cancelled') throw new AppError('INVALID_STATE')
       record = linked
-      try { definition = await this.options.schedules.plan(definition.id, definition.revision, controller.signal) }
+      try { definition = await this.options.schedules.plan(definition.id, definition.revision, signal) }
       catch (error) {
         if (!(error instanceof AppError) || error.code !== 'INVALID_ARGUMENT') throw error
         await change(item => {
@@ -189,7 +244,7 @@ export class ScheduledCreationService {
         await withTimeout(this.options.authorize(node.subscriptionId, node.modelId), 30000, 'scheduled-creation-final-authorization')
         guard()
       }
-      await withTimeout(this.options.validateWorkspace(input.workDir), 15000, 'scheduled-creation-final-workspace')
+      await this.validateWorkspace(input.workDir, 'scheduled-creation-final-workspace')
       guard()
       await change(item => { item.stage = 'enabling' })
       try { await this.options.schedules.confirmCreation(definition.id, definition.revision, record.id, record.revision, guard) }
@@ -216,7 +271,7 @@ export class ScheduledCreationService {
       const code = error instanceof AppError ? error.code : 'CREATION_FAILED'
       const message = code === 'MODEL_NOT_ALLOWED' ? '当前模型未获授权，或指定员工不能使用此模型，请调整模型后重试。'
         : code === 'EMPLOYEE_UNAVAILABLE' ? '指定员工不在当前可用员工中，请检查授权或补充员工信息。'
-          : code === 'WORKSPACE_INVALID' ? '工作目录不可访问，请重新选择目录后继续。'
+          : error instanceof AppError && error.code === 'WORKSPACE_INVALID' ? error.userMessage
             : code === 'AUTH_REQUIRED' ? '请重新登录后继续创建。'
               : '定时任务创建未完成，输入和已保存进度已保留，可继续重试。'
       record = await this.options.repository.update(scope, data => {

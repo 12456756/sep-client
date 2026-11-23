@@ -4,6 +4,7 @@ import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { ComputeUsageAnalysis } from '../../components/enterprise/ComputeUsageAnalysis'
 import { ComputePagination, ComputeUsageTab, ComputeWalletTab, computeUsageDetails } from '../../components/enterprise/ComputeUsageTables'
+import { AllowanceProgress } from '../../pages/enterprise/ComputeCenterPage'
 import type { ComputeCenterState } from './use-compute-center'
 
 function render(element: React.ReactElement): string {
@@ -23,6 +24,24 @@ function state(patch: Partial<ComputeCenterState> = {}): ComputeCenterState {
     usageQuery: { page: 1, pageSize: 20 }, walletQuery: { page: 1, pageSize: 20 }, refresh: noop,
     loadUsageRecords: noop, loadWalletTransactions: noop, loadBreakdown: noop, ...patch }
 }
+
+test('allowance progress uses the remaining percentage for its fill and accessible value', () => {
+  for (const [remaining, percent] of [['77.40', 77.4], ['100.00', 100], ['0.00', 0]] as const) {
+    const html = render(React.createElement(AllowanceProgress, { label: '充值余额', tone: 'recharge', limit: '100.00', used: undefined, remaining }))
+    assert.ok(html.includes(`剩余 ${percent.toFixed(1)}%`))
+    assert.ok(html.includes(`aria-valuenow="${percent}"`))
+    assert.ok(html.includes(`style="width:${percent}%"`))
+  }
+})
+
+test('unconfigured, unlimited, and missing allowance values do not show a numeric fill', () => {
+  for (const [limit, unlimited, status] of [[undefined, false, '未设置'], [null, true, '不限额'], ['100.00', false, '—']] as const) {
+    const html = render(React.createElement(AllowanceProgress, { label: '每月额度', tone: 'monthly', limit, used: undefined, remaining: undefined, unlimited }))
+    assert.ok(html.includes(`<strong>${status}</strong>`))
+    assert.ok(html.includes('style="width:0%"'))
+    assert.doesNotMatch(html, /aria-valuenow/)
+  }
+})
 
 test('pagination renders totals, page sizes and bounded navigation including empty pages', () => {
   const html = render(React.createElement(ComputePagination, { query: { page: 2, pageSize: 20 }, total: 41, totalPages: 3, loading: false, label: '消费明细', onChange: () => {} }))

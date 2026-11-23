@@ -4,8 +4,26 @@ import { AuthApiError } from '../common/platform/platform-api'
 import { appError } from './app-error'
 import { toEnvelope } from './error-mapper'
 import { operationFeedback } from './operation-feedback'
+import { ResultFilePathError, resultFileSystemError } from './result-file-path-error'
 import { planningFailure, planningContractFailure } from './planning-diagnostics'
 import { VideoRequestError } from './video-request-error'
+
+it('result file feedback distinguishes invalid paths, missing files and operating-system permissions', () => {
+  for (const operation of ['documentPreview', 'workOpenDirectory'] as const) {
+    for (const reason of ['outside', 'link', 'notFile', 'invalidPath', 'missing', 'workspaceUnavailable', 'access'] as const) {
+      const error = new ResultFilePathError(reason)
+      const result = toEnvelope(error, { feedbackOperation: operation })
+      assert.equal(result.code, error.code)
+      assert.equal(result.message, error.userMessage)
+    }
+  }
+  for (const code of ['EACCES', 'EPERM']) {
+    const error = resultFileSystemError(Object.assign(new Error('private path'), { code }))
+    assert.equal(error?.reason, 'access')
+    assert.doesNotMatch(error.userMessage, /private path/)
+  }
+  assert.equal(resultFileSystemError(Object.assign(new Error('private path'), { code: 'ENOENT' }))?.reason, 'missing')
+})
 
 it('keeps concrete media causes in Chinese through the operation envelope without exposing diagnostics', () => {
   for (const kind of ['image', 'video'] as const) {

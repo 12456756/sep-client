@@ -13,7 +13,9 @@
  * 少改一处就是一个安全缺口——漏在审批侧意味着未经批准就执行，漏在恢复侧意味着
  * 下次启动无法判定副作用是否已发生。所以只允许有一个定义点。
  */
-export const SIDE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['bash', 'write', 'edit'])
+import { CREATE_SCHEDULED_TASK_TOOL } from '../../src/shared/scheduled-creation'
+
+export const SIDE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['bash', 'write', 'edit', CREATE_SCHEDULED_TASK_TOOL])
 
 /** 保守的副作用分类。MCP 执行权限另由实际注册工具白名单决定。 */
 export function hasSideEffects(toolName: string): boolean {

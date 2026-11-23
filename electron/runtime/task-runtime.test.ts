@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus } from '../../src/shared/types'
 import { TaskRuntime } from './task-runtime'
+import { LocalMediaRuntime } from './local-media-runtime'
+import { localMediaExecutable } from '../domain/local-media-platform'
 import type { EmployeeRuntimeConfig } from './run-types'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
@@ -12,10 +14,13 @@ import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskService } from '../service/task-service'
 import { projectTaskMessages } from '../data/task-messages'
 import { effectivePermissionPolicy, type WorkPlan } from '../domain/arrangement-plan'
+import { LOCAL_MEDIA_TOOL } from '../domain/local-media-tools'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { SEP_TEST_SUBSCRIPTION } from './sep-platform-fixtures'
 import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
 import type { VideoHostTools, VideoRunPort } from '../domain/video-tools'
+import { ImageDownloadDeferredError } from '../domain/arrangement-media-runtime'
+import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 
 const temporaryDirectories: string[] = []
@@ -283,6 +288,38 @@ describe('TaskRuntime video lifecycle', () => {
     await runtime.stopAll()
   })
 })
+
+for (const kind of ['image cooldown', 'video wait expiry'] as const) {
+  it(`does not stop the whole media task on ${kind}`, async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-media', 'enterprise-media')
+    const task = await manager.createTask('media', 'deliver the original media', join(userData, 'workspace'), 'employee-media')
+    const employee: EmployeeRuntimeConfig = { subscriptionId: 'employee-media', modelId: 'model-media', gatewayUrl: 'http://gateway' }
+    const image = kind === 'image cooldown', stopped: string[] = []
+    let runId: string | undefined, finished: string | undefined
+    const runtime = new TaskRuntime({
+      taskManager: manager, getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {},
+      onApprovalRequest: () => {}, resolveEmployee: () => employee,
+      media: { async prepareRun(input) { runId = input.runId; return undefined }, async waitForRun() {
+        if (image) throw new ImageDownloadDeferredError(new Error('429'))
+      }, async stopTask() { stopped.push('image') } },
+      video: { async prepareRun() { return undefined }, async waitForRun() {
+        if (!image) throw new Error(RUNTIME_FAILURE_MESSAGES.MEDIA_WAIT_EXPIRED)
+      }, async stopTask() { stopped.push('video') }, async finishRun(_taskId, id) { finished = id } },
+      createWorker: () => ({ async run() {}, async abort() {}, async dispose() {} }),
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(async () => !!finished)
+      assert.ok(runId)
+      assert.equal(finished, runId)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.FAILED)
+      assert.deepEqual(stopped, image ? ['video'] : [])
+    } finally { await runtime.stopAll() }
+  })
+}
 
 describe('TaskRuntime resource boundaries', () => {
   it('runs tasks for the same employee concurrently in disjoint workspaces', async () => {
@@ -591,6 +628,68 @@ describe('conversation task lifecycle', () => {
       assert.ok(!context.toolPolicy?.allowedTools.includes('bash'))
     }
   })
+
+  for (const preset of ['full-local', 'workspace-edit', 'read-only'] as const) {
+    it(`registers local media for a saved general conversation only with unrestricted permissions (${preset})`, async () => {
+      const userData = await makeUserDataDir()
+      const manager = new TaskManager(userData)
+      await manager.initialize()
+      await manager.setCurrentUser('member-a', 'enterprise-a')
+      const task = await manager.createTask('general chat', 'compose a photo and a clip')
+      // Executable presence is enough to reach approval; these placeholders must never run.
+      await Promise.all((['ffmpeg', 'ffprobe'] as const).map(tool => writeFile(join(userData, localMediaExecutable(tool)), '', { mode: 0o755 })))
+      const ref = { attachmentId: 'clip', sha256: '0'.repeat(64) }
+      const attachment = { ...ref, displayName: 'clip.mp4', mediaType: 'video/mp4',
+        readPath: join(userData, 'clip.mp4'), byteLength: 42, extractionStatus: 'not-required' }
+      const photoRef = { attachmentId: 'photo', sha256: '1'.repeat(64) }
+      const photo = { ...attachment, ...photoRef, displayName: 'photo.jpg', mediaType: 'image/jpeg', readPath: join(userData, 'photo.jpg') }
+      const plan: WorkPlan = {
+        schemaVersion: 1, id: task.id, owner: { memberId: 'member-a', enterpriseId: 'enterprise-a' },
+        sourceDraftId: 'draft', sourceDraftRevision: 1, planHash: 'hash', createdAt: Date.now(),
+        mode: 'conversation', title: task.title, goal: task.prompt, confirmedInputs: [],
+        conversation: { kind: 'general', modelId: 'model-a', participants: [], activeSubscriptionId: null },
+        nodes: [], workspace: { mode: 'shared', path: null },
+        permissions: effectivePermissionPolicy({ preset, approvalMode: 'auto-approve' }),
+        inputSnapshot: { snapshotId: 'snapshot', inputDigest: 'digest', attachments: [ref, photoRef] },
+      }
+      const requests: ToolAuthorizationRequest[] = []
+      const contexts: PiTaskWorkerOptions['context'][] = []
+      const employee = { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' }
+      const runtime = new TaskRuntime({
+        taskManager: manager, workPlanStore: { get: async () => plan, save: async () => {} },
+        localMedia: new LocalMediaRuntime(userData, async () => assert.fail('a denied operation must not create scratch files')),
+        attachmentInputs: {
+          describeTaskInputs: async () => [attachment, photo], resolvePlannerMaterials: async () => [],
+          resolveTaskInputs: async () => ({ attachments: [attachment, photo], images: [], digest: 'digest' }),
+        },
+        getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {},
+        resolveEmployee: id => id === employee.subscriptionId ? employee : null,
+        authorizeModel: async modelId => modelId === employee.modelId ? employee : null,
+        onApprovalRequest: request => { requests.push(request); runtime.respondToApproval({ requestId: request.requestId, approved: false }) },
+        createWorker: ({ context }) => ({
+          async run() {
+            contexts.push(context)
+            if (!context.localMedia) return
+            assert.deepEqual(await context.localMedia.execute({ operation: 'list' }), { files: [
+              { attachmentId: 'clip', displayName: 'clip.mp4', kind: 'video' },
+              { attachmentId: 'photo', displayName: 'photo.jpg', kind: 'image' },
+            ] })
+            assert.equal(requests.length, 0)
+            await assert.rejects(context.localMedia.execute({ operation: 'trim', attachmentId: 'clip', start: 0, end: 1 }), /未授权/)
+          },
+          async abort() {}, async dispose() {},
+        }),
+      })
+      await runtime.executeTask(task.id)
+      await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.COMPLETED)
+      assert.equal(contexts.length, 1)
+      assert.equal(contexts[0].toolPolicy?.preset, preset)
+      assert.equal(!!contexts[0].localMedia, preset === 'full-local')
+      assert.deepEqual(requests.map(request => [request.taskId, request.runId, request.toolName]),
+        preset === 'full-local' ? [[task.id, contexts[0].runId, LOCAL_MEDIA_TOOL]] : [])
+    })
+  }
 
   it('selectively pushes renderer events while persisting the complete run timeline', async () => {
     const userData = await makeUserDataDir()

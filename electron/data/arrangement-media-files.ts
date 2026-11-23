@@ -7,6 +7,7 @@ import { MAX_VIDEO_BYTES } from './video-files'
 import { arrangementMediaMimeByFormat, isSafeDeliveryPath, type ArrangementDeliverable } from '../domain/arrangement-plan'
 import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
 import { publishDeliverySnapshot } from './delivery-snapshot-recovery'
+import { resolveWorkspaceResult } from './workspace-result-path'
 
 export interface ArrangementMediaSource {
   kind: 'image' | 'video'
@@ -239,7 +240,10 @@ export async function materializeArrangementMedia(
 export async function resolveArrangementMediaFile(workspace: string, file: FinalDeliveryFile, taskDirectory: string | undefined, signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted(); if (!isSafeDeliveryPath(file.path)) fail('UNSAFE_PATH')
   const source = { sha256: file.sha256, size: file.size }
-  if (!Number.isSafeInteger(source.size) || source.size <= 0 || !/^[a-f0-9]{64}$/i.test(source.sha256)) fail('MEDIA_INTEGRITY_MISMATCH')
+  const validSize = file.contentPolicy === 'empty'
+    ? source.size === 0 && !file.snapshot && !file.sourceArtifact && file.format.toLowerCase() === 'txt'
+    : Number.isSafeInteger(source.size) && source.size > 0
+  if (!validSize || !/^[a-f0-9]{64}$/i.test(source.sha256)) fail('MEDIA_INTEGRITY_MISMATCH')
   if (file.snapshot) {
     if (!taskDirectory) fail('SNAPSHOT_UNAVAILABLE')
     if (!/^[A-Za-z0-9][A-Za-z0-9_+-]{0,31}$/.test(file.format)) fail('INVALID_FORMAT')
@@ -251,8 +255,8 @@ export async function resolveArrangementMediaFile(workspace: string, file: Final
     try { await lstat(path); fail('SNAPSHOT_CHANGED') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     fail('SNAPSHOT_UNAVAILABLE')
   }
-  const root = await realpath(workspace); const path = resolve(root, ...file.path.split(/[\\/]/))
-  await assertSafeExistingPath(root, path, false); if (!(await existingMatches(path, source, signal))) fail('MEDIA_INTEGRITY_MISMATCH')
+  const { path } = await resolveWorkspaceResult(workspace, file.path.split(/[\\/]/).join(sep))
+  if (!(await existingMatches(path, source, signal))) fail('MEDIA_INTEGRITY_MISMATCH')
   return path
 }
 

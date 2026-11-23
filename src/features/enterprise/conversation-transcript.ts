@@ -1,4 +1,6 @@
 import type { TaskExecutionEvent } from '../../shared/types'
+import { RUNTIME_FAILURE_MESSAGES } from '../../shared/runtime-feedback'
+import { LOCAL_MEDIA_TOOL, localMediaProgressSchema } from '../../shared/local-media-progress'
 import { mergeTranscriptEvents, selectTranscriptEvent, type TranscriptEntry } from './arrangement-transcript'
 import { processActivityLabel } from './work-process'
 import type { WorkItem, WorkMessage } from './types'
@@ -8,9 +10,11 @@ export interface ConversationProcessEntry extends TranscriptEntry {
 }
 
 export interface ConversationRunTranscript {
+  scheduleReceipt?: ConversationScheduleReceipt
   runId: string
   entries: ConversationProcessEntry[]
   diagnosticAvailable?: true
+  failureMessage?: string
 }
 
 export type ConversationReplyItem =
@@ -66,8 +70,14 @@ export function buildConversationTranscript(source: readonly TaskExecutionEvent[
     }
     if (type === 'text_delta') { lastThinking.delete(runId); continue }
     const run: ConversationRunTranscript = runs.get(runId) ?? { runId, entries: [] }
+    if (type === CONVERSATION_SCHEDULE_EVENT) {
+      const receipt = conversationScheduleReceiptSchema.safeParse(event.data)
+      if (receipt.success) { run.scheduleReceipt = receipt.data; runs.set(runId, run) }
+      continue
+    }
     if (type === 'run_failed') {
-      run.diagnosticAvailable = true
+      if (data.diagnosticAvailable === true) run.diagnosticAvailable = true
+      if (data.error === RUNTIME_FAILURE_MESSAGES.MODEL_REQUEST_TOO_LARGE) run.failureMessage = data.error
       runs.set(runId, run)
       continue
     }
@@ -87,6 +97,13 @@ export function buildConversationTranscript(source: readonly TaskExecutionEvent[
         snapshots.add(turn)
       }
       lastThinking.delete(runId)
+    } else if (type === 'tool_execution_update') {
+      const entry = tools.get(`${runId}:tool:${data.toolId}`)
+      const { data: progress } = localMediaProgressSchema.safeParse(data.progress)
+      if (entry?.state === 'running' && progress) {
+        entry.text = { probe: '探测素材', render: '渲染视频', verify: '校验成品', save: '保存成品' }[progress.phase] +
+          (progress.phase === 'render' && progress.percent !== undefined ? ` ${progress.percent}%` : '')
+      }
     } else if (type === 'tool_execution_start' || type === 'tool_execution_end') {
       lastThinking.delete(runId)
       if (typeof data.toolId !== 'string') continue
@@ -100,7 +117,10 @@ export function buildConversationTranscript(source: readonly TaskExecutionEvent[
         tools.set(id, entry)
         append(entry)
       }
-      if (type === 'tool_execution_end') entry.state = data.success === false ? 'failed' : 'completed'
+      if (type === 'tool_execution_end') {
+        entry.state = data.success === false ? 'failed' : 'completed'
+        if (entry.toolName === LOCAL_MEDIA_TOOL) entry.text = '本地音视频处理'
+      }
     } else if (type === 'approval_requested') {
       lastThinking.delete(runId)
       if (typeof data.requestId !== 'string') continue
@@ -121,3 +141,4 @@ export function buildConversationTranscript(source: readonly TaskExecutionEvent[
   }
   return [...runs.values()]
 }
+import { CONVERSATION_SCHEDULE_EVENT, conversationScheduleReceiptSchema, type ConversationScheduleReceipt } from '../../shared/scheduled-creation'

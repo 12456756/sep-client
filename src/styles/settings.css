@@ -93,6 +93,8 @@
 .ent-settings-layout .ent-default-workspace-actions { flex: 0 1 auto; }
 .ent-settings-layout .ent-default-workspace-actions .ent-btn { max-width: 260px; }
 .ent-settings-layout .ent-default-workspace-path { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+.ent-settings-layout .ent-result-archive-settings { border-top: 1px solid var(--ent-line-soft); }
+.ent-settings-layout .ent-result-archive-actions { flex-wrap: wrap; }
 .ent-settings-layout .ent-profile-preview { min-width: 0; flex: 1; }
 .ent-settings-layout .ent-profile-preview strong, .ent-settings-layout .ent-profile-preview span, .ent-settings-layout .ent-profile-logo-row strong { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
 .ent-settings-layout .ent-profile-preview > div:first-child { flex-shrink: 0; }

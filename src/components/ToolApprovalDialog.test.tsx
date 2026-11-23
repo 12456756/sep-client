@@ -6,6 +6,7 @@ import { compileFunction } from 'node:vm'
 import ts from 'typescript'
 import { FeedbackController } from '../shared/feedback-controller'
 import { toolApprovalTimeoutMs } from '../shared/tool-approval'
+import { CREATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-creation'
 import type { ToolApprovalDialog } from './ToolApprovalDialog'
 
 type Props = Parameters<typeof ToolApprovalDialog>[0]
@@ -38,6 +39,34 @@ function mount(toolName: string, input: unknown, expiresAt: number | null = Date
   let cleanup = effect()
   return { feedback, decisions, replay() { cleanup?.(); cleanup = effect() }, cleanup() { cleanup?.(); feedback.clear() } }
 }
+
+test('scheduled tasks require explicit confirmation showing the task and first execution time', async () => {
+  const ui = mount(CREATE_SCHEDULED_TASK_TOOL, { title: '日报', goal: '汇总昨天的销售数据', timezone: 'Asia/Shanghai',
+    firstRunAt: Date.parse('2026-11-24T00:00:00Z'), recurrence: '0 8 * * *' })
+  try {
+    const dialog = ui.feedback.getSnapshot()
+    assert.ok(dialog)
+    assert.match(dialog.message, /日报.*预计首次执行.*08:00/s)
+    assert.match(dialog.message, /重复规则：每天 08:00/)
+    assert.match(dialog.message, /汇总昨天的销售数据/)
+    assert.deepEqual(ui.decisions, [])
+    await ui.feedback.accept(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(ui.decisions, [true])
+  } finally { ui.cleanup() }
+})
+
+test('the schedule approval describes an all-wildcard cron as every minute', () => {
+  const ui = mount(CREATE_SCHEDULED_TASK_TOOL, { title: '简报', goal: '生成简报', timezone: 'Asia/Shanghai',
+    firstRunAt: Date.parse('2026-11-23T05:27:00Z'), recurrence: '* * * * *' })
+  try {
+    const dialog = ui.feedback.getSnapshot()
+    assert.ok(dialog)
+    assert.match(dialog.message, /重复规则：每分钟/)
+    assert.doesNotMatch(dialog.message, /\* \* \* \* \*/)
+    assert.deepEqual(ui.decisions, [])
+  } finally { ui.cleanup() }
+})
 
 test('quoted image and video generation proceeds once without a confirmation dialog', () => {
   for (const [toolName, input] of [
@@ -124,6 +153,27 @@ test('reference uploads, local commands and other tools retain explicit approval
       assert.deepEqual(ui.decisions, [true])
     } finally { ui.cleanup() }
   }
+})
+
+test('local composition asks before saving and shows the resolved plan in order', async () => {
+  const ui = mount('local_media_process', { operation: 'compose', files: ['第一张.jpg', '原视频.mp4', '第二张.png'], plan: {
+    aspect: '9:16', resolution: 1080, durationSeconds: 7.5, fadeIn: 0, fadeOut: 0.5, transitions: [0.5, 0],
+    music: { name: '音乐.wav', volume: 0.2 }, clips: [
+      { name: '第一张.jpg', durationSeconds: 2, crops: true, motion: 'zoom-in' },
+      { name: '原视频.mp4', durationSeconds: 3, crops: false, start: 5, end: 8, volume: 0.5 },
+      { name: '第二张.png', durationSeconds: 3, crops: false },
+    ],
+  } })
+  try {
+    const dialog = ui.feedback.getSnapshot()!
+    assert.match(dialog.message, /MP4.*9:16.*1080p.*7\.5 秒.*原素材不会被覆盖/)
+    assert.match(dialog.message, /第一张\.jpg.*推近.*裁切.*交叉淡化 0\.5 秒\n.*原视频\.mp4.*5–8 秒.*原声 50%）\n.*第二张\.png/)
+    assert.match(dialog.message, /配乐：音乐\.wav（音量 20%）/)
+    assert.deepEqual(ui.decisions, [])
+    ui.feedback.dismiss(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(ui.decisions, [false])
+  } finally { ui.cleanup() }
 })
 
 test('missing deadlines retain three minutes for browser handoff and one minute for ordinary approvals', () => {

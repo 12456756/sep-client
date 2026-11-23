@@ -547,9 +547,11 @@ describe('TaskRuntime arrangement controls', () => {
     let aRuns = 0
     let bRuns = 0
     let sessionFile = ''
+    const saveIntent = { startedAt: 1, when: 2, title: 'Delivery', name: 'node-a.txt', version: 'report-v1' }
     const makeRuntime = () => new TaskRuntime({
       taskManager: manager, taskRunStore: runs, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
       arrangementMedia: new ArrangementMediaService(bridgeOptions),
+      beforeNodeCompletion: async (_owner, _taskId, _runId, completion) => completion.nodeId === 'node-a' ? new Map([['report-a', saveIntent]]) : undefined,
       getRefreshToken: () => 'token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
       resolveEmployee: () => employee, authorizeEmployee: async (subscriptionId, modelId) => ({ ...employee, subscriptionId, modelId: modelId ?? employee.modelId }),
       media: { async prepareRun(input) { return { names: ['media_generate_image', 'media_get_job'], async execute(name) {
@@ -606,6 +608,7 @@ describe('TaskRuntime arrangement controls', () => {
         return status === TaskStatus.PAUSED || status === TaskStatus.FAILED || status === TaskStatus.COMPLETED
       })
       assert.equal((await manager.getTask(task.id))!.status, TaskStatus.PAUSED, JSON.stringify(checkpoints.value))
+      assert.deepEqual(checkpoints.value!.state.nodes[0]!.delivery?.finalFiles[0]?.saveIntent, saveIntent)
       const waiting = checkpoints.value!.state.nodes[1]!
       assert.equal(waiting.status, 'interrupted')
       assert.equal(waiting.error, null)
