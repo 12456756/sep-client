@@ -69,6 +69,8 @@ import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnaps
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { encodingToolDefinitions } from './pi-text-tools'
 import { CURRENT_TIME_TOOL_NAME, currentTimeToolDefinition } from './pi-current-time'
+import { conversationScheduleToolDefinition } from './pi-conversation-schedule'
+import { CREATE_SCHEDULED_TASK_TOOL } from '../../../src/shared/scheduled-creation'
 import { CONVERSATION_ATTACHMENT_TOOL, conversationAttachmentTool } from './pi-conversation-attachment'
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
@@ -446,13 +448,14 @@ export function sessionToolOptions(
   registeredMediaNames: readonly MediaToolName[] = [],
   registeredVideoNames: readonly VideoToolName[] = [],
   attachmentsEnabled = false,
+  conversationScheduleEnabled = false,
 ): { tools?: string[]; noTools?: 'all' } {
   if (disableTools) return { noTools: 'all' }
   const allowedTools = toolPolicy && isUnrestrictedToolPolicy(toolPolicy)
     ? [...BUILTIN_TOOL_NAMES]
     : toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
   return { tools: [...new Set([
-    ...allowedTools.filter(name => (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
+    ...allowedTools.filter(name => name !== CREATE_SCHEDULED_TASK_TOOL && (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
       (!name.startsWith('media_') || registeredMediaNames.includes(name as MediaToolName)) &&
       (!name.startsWith('video_') || registeredVideoNames.includes(name as VideoToolName))),
     ...(!toolPolicy || allowedTools.length > 0 ? [CURRENT_TIME_TOOL_NAME] : []),
@@ -460,6 +463,7 @@ export function sessionToolOptions(
     ...registeredMediaNames,
     ...registeredVideoNames,
     ...(attachmentsEnabled ? [CONVERSATION_ATTACHMENT_TOOL] : []),
+    ...(conversationScheduleEnabled ? [CREATE_SCHEDULED_TASK_TOOL] : []),
   ])] }
 }
 
@@ -720,6 +724,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
     }
     if (selected.includes(CURRENT_TIME_TOOL_NAME)) pi.registerTool(currentTimeToolDefinition())
     if (conversationAttachmentsEnabled(config) && config.conversationAttachments) pi.registerTool(conversationAttachmentTool(config.conversationAttachments))
+    if (!config.disableTools && config.conversationSchedule) pi.registerTool(conversationScheduleToolDefinition(config.conversationSchedule))
   }
   const mediaNames = registeredMediaNames(config)
   const videoNames = registeredVideoNames(config)
@@ -780,6 +785,10 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (toolName === CREATE_SCHEDULED_TASK_TOOL) {
+        return !config.disableTools && config.conversationSchedule && pi.getActiveTools().includes(toolName)
+          ? { block: false } : { block: true, reason: 'Scheduled creation is not available in this run.' }
+      }
       if (toolName === CONVERSATION_ATTACHMENT_TOOL) {
         return conversationAttachmentsEnabled(config) && pi.getActiveTools().includes(toolName)
           ? { block: false } : { block: true, reason: 'Conversation attachments are not enabled for this run.' }
@@ -1300,7 +1309,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         resourceLoader,
         sessionManager,
         // Advertise only the task policy's tools so the model cannot select denied tools.
-        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config), conversationAttachmentsEnabled(config)),
+        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config), conversationAttachmentsEnabled(config), !!config.conversationSchedule),
         // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
         settingsManager,
       })

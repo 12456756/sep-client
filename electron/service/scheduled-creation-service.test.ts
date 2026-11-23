@@ -84,6 +84,115 @@ test('homepage creation plans and enables without confirmation, then repeated re
   } finally { h.stop() }
 })
 
+test('a conversation schedule is not saved or enabled before approval, and a replay returns the same receipt', async () => {
+  const h = harness()
+  let approvals = 0
+  const receivedAt = Date.parse('2026-10-21T07:30:00Z')
+  h.setInterpret(async input => {
+    assert.equal(input.fromConversation, true)
+    assert.equal(input.messages[0].receivedAt, receivedAt)
+    return interpretation
+  })
+  const review = { signal: new AbortController().signal, receivedAt, approve: async (input: import('../../src/shared/scheduled-tasks').ScheduleInput) => {
+    approvals++
+    assert.equal(input.scheduledAt, Date.parse('2026-10-21T09:00:00Z'))
+    assert.equal(h.data.definitions.length, 0)
+    assert.equal(h.plans, 0)
+    return true
+  } }
+  try {
+    const receipt = await h.creation.submitConversation(request, review)
+    assert.equal(receipt.status, 'created')
+    assert.equal(h.data.definitions[0].enabled, true)
+    assert.equal(h.launches, 0)
+    const reopened = h.make()
+    try { assert.deepEqual(await reopened.submitConversation(request, review), receipt) } finally { reopened.stop() }
+    assert.equal(approvals, 1)
+    assert.equal(h.data.definitions.length, 1)
+  } finally { h.stop() }
+})
+
+test('a conversation schedule cannot substitute a workspace delivery for an explicitly requested Windows destination', async () => {
+  const h = harness()
+  try {
+    const result = await h.creation.submitConversation({ ...request, message: String.raw`每天九点在 C:\Users\demo\Desktop 创建报告` }, {
+      signal: new AbortController().signal, receivedAt: Date.parse('2026-10-21T08:00:00Z'),
+      approve: async () => assert.fail('an unsupported destination cannot be offered for confirmation'),
+    })
+    assert.equal(result.status, 'blocked')
+    assert.match(result.status === 'blocked' ? result.message : '', /不允许访问指定路径/)
+    assert.equal(h.data.definitions.length, 0)
+    assert.equal(h.plans, 0)
+  } finally { h.stop() }
+})
+
+test('a conversation schedule can deliver to a relative path and include a Windows path as literal text', async () => {
+  const h = harness()
+  try {
+    const result = await h.creation.submitConversation({ ...request, message: String.raw`每天九点生成报告，保存到 deliverables/report.md，内容引用 C:\example\file.txt` }, {
+      signal: new AbortController().signal, receivedAt: Date.parse('2026-10-21T08:00:00Z'), approve: async () => true,
+    })
+    assert.equal(result.status, 'created')
+    assert.equal(h.data.definitions.length, 1)
+  } finally { h.stop() }
+})
+
+test('confirming an every-minute conversation schedule after the preview remains valid', async () => {
+  const h = harness()
+  const receivedAt = Date.parse('2026-11-23T05:26:47Z')
+  const previewAt = Date.parse('2026-11-23T05:27:00Z')
+  const savedAt = Date.parse('2026-11-23T05:28:00Z')
+  const nextRunAt = Date.parse('2026-11-23T05:29:00Z')
+  h.advance(receivedAt)
+  h.setInterpret(async () => ({ ...interpretation, task: { ...interpretation.task,
+    schedule: { ...interpretation.task.schedule, timezone: 'Asia/Shanghai', expression: '* * * * *', description: '每分钟' } } }))
+  h.setPlanner(async () => {
+    assert.equal(h.data.definitions[0].enabled, false)
+    assert.equal(h.data.definitions[0].input.scheduledAt, savedAt)
+    assert.deepEqual(h.data.creations?.[0].definitionInput, h.data.definitions[0].input)
+    h.advance(savedAt + 12000)
+    return plan
+  })
+  let approvals = 0
+  const review = { receivedAt, signal: new AbortController().signal, approve: async (input: import('../../src/shared/scheduled-tasks').ScheduleInput) => {
+    approvals++
+    assert.equal(input.scheduledAt, previewAt)
+    assert.equal(h.data.definitions.length, 0)
+    h.advance(previewAt + 22000)
+    return true
+  } }
+  try {
+    const submission = { ...request, message: '每分钟生成简报', timezone: 'Asia/Shanghai' }
+    const receipt = await h.creation.submitConversation(submission, review)
+    assert.equal(receipt.status, 'created')
+    assert.equal(h.data.definitions[0].enabled, true)
+    assert.equal(h.data.definitions[0].nextRunAt, nextRunAt)
+    assert.equal(receipt.status === 'created' && receipt.nextRunAt, nextRunAt)
+    assert.equal(h.launches, 0)
+    assert.deepEqual(await h.creation.submitConversation(submission, review), receipt)
+    assert.equal(approvals, 1)
+    assert.equal(h.data.definitions.length, 1)
+  } finally { h.stop() }
+})
+
+test('denied, stale, and unclear conversation requests cannot enable a schedule', async () => {
+  for (const scenario of ['denied', 'aborted', 'clarify'] as const) {
+    const h = harness()
+    const controller = new AbortController()
+    if (scenario === 'clarify') h.setInterpret(async () => ({ ...interpretation, status: 'needs_input', questions: [{ field: 'schedule', question: 'When should it start?' }] }))
+    try {
+      const receipt = await h.creation.submitConversation(request, { signal: controller.signal, receivedAt: Date.now(), approve: async () => {
+        assert.notEqual(scenario, 'clarify')
+        if (scenario === 'aborted') controller.abort()
+        return scenario === 'aborted'
+      } })
+      assert.equal(receipt.status, scenario === 'denied' ? 'cancelled' : scenario === 'clarify' ? 'needs_input' : 'failed')
+      assert.equal(h.data.definitions.length, 0)
+      await assert.rejects(h.creation.submit({ ...request, expectedRevision: h.data.creations?.[0].revision }), { code: 'INVALID_STATE' })
+    } finally { h.stop() }
+  }
+})
+
 test('clarification continues the same persisted creation and automatic mode reuses arrangement planning', async () => {
   const h = harness()
   try {

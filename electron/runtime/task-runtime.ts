@@ -111,6 +111,7 @@ export interface TaskRuntimeOptions {
   arrangementMedia?: ArrangementMediaPort
   arrangementDiagnostics?: import('../service/arrangement-diagnostic-service').WorkFailureCapture
   conversationMedia?: ConversationMediaPort
+  submitConversationSchedule?: ConversationExecutorOptions['submitConversationSchedule']
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   findEmployeeReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
@@ -263,6 +264,7 @@ export class TaskRuntime {
       media: this.media,
       video: options.conversationVideo ?? this.video,
       conversationMedia: options.conversationMedia,
+      submitConversationSchedule: options.submitConversationSchedule,
       workDiagnostics: this.arrangementDiagnostics,
       createModelTrace: this.createModelTrace,
       knowledgeSearch: this.knowledgeSearch,
@@ -482,7 +484,7 @@ export class TaskRuntime {
   async continueConversation(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; runId?: string; signal?: AbortSignal } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number } = {},
   ): Promise<void> {
     this.startLifecycleAudit()
     const knowledge = recovery.knowledge ?? await this.latestKnowledgeSelection(taskId)

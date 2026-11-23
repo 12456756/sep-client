@@ -107,8 +107,17 @@ export class ScheduledTaskService {
         this.linkCreation(data, existing, creation)
         return existing
       }
-      if (input.scheduledAt <= this.now()) throw new AppError('INVALID_ARGUMENT', { message: '请选择未来的执行时间。' })
-      const created: ScheduledDefinition = { id, revision: 1, input, plan: null, planInputKey: null, enabled: false, deleted: false, nextRunAt: null, pausedAt: null, createdAt: this.now(), updatedAt: this.now() }
+      const now = this.now()
+      let initialInput = input
+      if (input.scheduledAt <= now) {
+        const draft = creation && data.creations?.find(item => item.id === creation.id)
+        if (!draft?.fromConversation || input.recurrence?.frequency !== 'cron') throw new AppError('INVALID_ARGUMENT', { message: '请选择未来的执行时间。' })
+        // The confirmation covers the recurring rule, not a guarantee that its previewed occurrence will still be future.
+        const scheduledAt = nextScheduledAt(now, input.recurrence, input.timezone)
+        if (scheduledAt === null || scheduledAt <= now) throw new AppError('INVALID_STATE')
+        initialInput = { ...input, scheduledAt }
+      }
+      const created: ScheduledDefinition = { id, revision: 1, input: initialInput, plan: null, planInputKey: null, enabled: false, deleted: false, nextRunAt: null, pausedAt: null, createdAt: now, updatedAt: now }
       data.definitions.push(created)
       this.linkCreation(data, created, creation)
       return created

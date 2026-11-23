@@ -8,6 +8,7 @@ export interface ConversationProcessEntry extends TranscriptEntry {
 }
 
 export interface ConversationRunTranscript {
+  scheduleReceipt?: ConversationScheduleReceipt
   runId: string
   entries: ConversationProcessEntry[]
   diagnosticAvailable?: true
@@ -66,6 +67,11 @@ export function buildConversationTranscript(source: readonly TaskExecutionEvent[
     }
     if (type === 'text_delta') { lastThinking.delete(runId); continue }
     const run: ConversationRunTranscript = runs.get(runId) ?? { runId, entries: [] }
+    if (type === CONVERSATION_SCHEDULE_EVENT) {
+      const receipt = conversationScheduleReceiptSchema.safeParse(event.data)
+      if (receipt.success) { run.scheduleReceipt = receipt.data; runs.set(runId, run) }
+      continue
+    }
     if (type === 'run_failed') {
       run.diagnosticAvailable = true
       runs.set(runId, run)
@@ -121,3 +127,4 @@ export function buildConversationTranscript(source: readonly TaskExecutionEvent[
   }
   return [...runs.values()]
 }
+import { CONVERSATION_SCHEDULE_EVENT, conversationScheduleReceiptSchema, type ConversationScheduleReceipt } from '../../shared/scheduled-creation'

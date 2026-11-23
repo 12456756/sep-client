@@ -227,7 +227,8 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
         }}>
           <div className="ent-talk">
             <FileAttachmentTarget.Provider value={addFile}>
-              <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} mediaState={mediaState} />
+              <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} mediaState={mediaState}
+                onOpenSchedule={id => workspace.navigate({ name: 'scheduled', taskId: id, view: 'configuration' })} />
             </FileAttachmentTarget.Provider>
           </div>
         </div>

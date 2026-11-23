@@ -48,6 +48,9 @@ import { withTimeout } from '../common/with-timeout'
 import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
+import { bindConversationSchedule, type SubmitConversationSchedule } from './conversation-schedule'
+import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL } from '../../src/shared/scheduled-creation'
+import { redactValue } from '../common/redact'
 
 const log = logger.child('conversation-executor')
 
@@ -90,6 +93,7 @@ export interface ConversationExecutorOptions {
   onArtifact?: (owner: { memberId: string; enterpriseId: string }, taskId: string, index: number) => void
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
+  submitConversationSchedule?: SubmitConversationSchedule
 }
 
 export class ConversationExecutor {
@@ -107,7 +111,7 @@ export class ConversationExecutor {
   async continue(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number } = {},
   ): Promise<void> {
     await this.continueAs(taskId, prompt, undefined, recovery)
   }
@@ -285,6 +289,26 @@ export class ConversationExecutor {
       queued.signal?.throwIfAborted()
       diagnosticPhase = 'conversation-setup'
       const describeSkillRead = runSkillDisplay(general ? undefined : employee.runtimeSnapshot)
+      let scheduleReceiptReady = false
+      const submitSchedule = this.options.submitConversationSchedule
+      const conversationSchedule = submitSchedule && scope && task.workDir && queued.conversation && !task.scheduledOrigin &&
+        (!queued.arrangement || queued.arrangement.mode === 'conversation') && toolPolicy?.preset !== 'read-only'
+        ? bindConversationSchedule({
+          submit: submitSchedule, taskId, messageId: queued.messageId ? `message:${queued.messageId}` : 'initial', userMessage: queued.prompt,
+          receivedAt: queued.messageReceivedAt ?? (queued.messageId ? startedAt : task.createdAt), modelId: employee.modelId, workDir: task.workDir, signal: mediaSignal,
+          isCurrent: () => {
+            const current = this.options.taskManager.getCurrentUserScope()
+            return !!active && this.options.workers.isCurrent(active) && scope.enterpriseId === current?.enterpriseId && scope.memberId === current.memberId
+          },
+          approve: input => this.options.approvals.request({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: CREATE_SCHEDULED_TASK_TOOL,
+            input: redactValue({ title: input.name, goal: input.goal, timezone: input.timezone, firstRunAt: input.scheduledAt,
+              recurrence: input.recurrence?.frequency === 'cron' ? input.recurrence.expression : null }) }),
+          receipt: async receipt => {
+            await this.options.events.enqueue({ taskId, runId, subscriptionId: queued.subscriptionId, sequence: 0,
+              type: CONVERSATION_SCHEDULE_EVENT, occurredAt: Date.now(), data: receipt })
+            scheduleReceiptReady = receipt.status !== 'pending'
+          },
+        }) : undefined
       worker = this.options.createWorker({
         context: {
           taskId,
@@ -306,6 +330,7 @@ export class ConversationExecutor {
           videoTools: mediaEvidence ? mediaEvidence.wrap(videoTools) : videoTools,
           modelTrace: modelEvidence?.record,
           conversationAttachments: attachmentContext?.reader,
+          conversationSchedule,
           toolPolicy,
           employeeProfile: general ? undefined : employee.employeeProfile,
           inputImages: attachmentImages,
@@ -313,6 +338,7 @@ export class ConversationExecutor {
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
         onApprovalRequest: request => this.options.approvals.request(request),
+        shouldYieldAfterToolTurn: toolResults => scheduleReceiptReady && !!toolResults?.every(result => result.toolName === CREATE_SCHEDULED_TASK_TOOL),
         onResponseSettled: async () => { await waitForMedia() },
         onEvent: event => this.options.events.enqueue(describeSkillRead(event)),
         onSessionCreated: async session => {
@@ -522,7 +548,7 @@ export class ConversationExecutor {
     taskId: string,
     prompt: string,
     employeeOverride: string | undefined,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal },
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number },
   ): Promise<void> {
     recovery.signal?.throwIfAborted()
     const scope = this.options.taskManager.getCurrentUserScope()
@@ -597,6 +623,8 @@ export class ConversationExecutor {
       subscriptionId: employee.subscriptionId,
       employee,
       prompt: prompt.trim(),
+      messageId: recovery.messageId ?? runId,
+      messageReceivedAt: recovery.messageReceivedAt,
       conversation: true,
       signal: recovery.signal,
       arrangement: arrangement ?? undefined,

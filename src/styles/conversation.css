@@ -193,6 +193,11 @@
 .ent-conversation-process { margin: 0; color: var(--ent-ink-2); font-size: 12px; }
 .ent-conversation-reply { width: 100%; }
 .ent-conversation-reply-status { display: flex; align-items: center; gap: 7px; min-height: 28px; color: var(--ent-ink-3); font-size: 12px; }
+.ent-conversation-schedule-receipt { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 8px 0; }
+.ent-conversation-schedule-copy { display: flex; align-items: flex-start; min-width: 0; gap: 8px; color: var(--ent-ink-2); }
+.ent-conversation-schedule-copy svg { flex: none; margin-top: 2px; }
+.ent-conversation-schedule-copy span { min-width: 0; overflow-wrap: anywhere; white-space: pre-line; }
+.ent-conversation-schedule-copy small { display: block; color: var(--ent-ink-3); }
 .ent-conversation-process > summary { display: flex; align-items: center; gap: 7px; min-height: 36px; padding: 6px 0; cursor: pointer; list-style: none; }
 .ent-conversation-process > summary::-webkit-details-marker { display: none; }
 .ent-conversation-process > summary > svg { flex-shrink: 0; }

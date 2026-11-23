@@ -3,9 +3,21 @@ import * as assert from 'node:assert/strict'
 import { buildConversationReplies, buildConversationTranscript } from './conversation-transcript'
 import type { WorkItem, WorkMessage } from './types'
 import type { TaskExecutionEvent } from '../../shared/types'
+import { CONVERSATION_SCHEDULE_EVENT } from '../../shared/scheduled-creation'
 
 const event = (sequence: number, type: string, data: unknown, runId = 'run-a'): TaskExecutionEvent => ({
   taskId: 'task', runId, subscriptionId: 'employee', sequence, type, data, occurredAt: sequence,
+})
+
+test('the durable receipt replaces pending in the same run and ignores unvalidated data', () => {
+  const created = { status: 'created', id: 'definition', title: '日报', nextRunAt: 100, timezone: 'Asia/Shanghai' }
+  const runs = buildConversationTranscript([
+    event(1, CONVERSATION_SCHEDULE_EVENT, { status: 'pending' }),
+    event(2, CONVERSATION_SCHEDULE_EVENT, created),
+    event(3, CONVERSATION_SCHEDULE_EVENT, { ...created, timezone: 'bad' }),
+    event(4, CONVERSATION_SCHEDULE_EVENT, { status: 'pending' }, 'run-b'),
+  ])
+  assert.deepEqual(runs.map(run => run.scheduleReceipt), [created, { status: 'pending' }])
 })
 
 test('groups streamed thinking and tool usage by run in execution order without duplicating history', () => {

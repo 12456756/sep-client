@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { z } from 'zod'
 import { useFeedback } from './feedback/FeedbackProvider'
 import { isBrowserHandoffRequest, isMediaResubmissionRequest, toolApprovalTimeoutMs } from '../shared/tool-approval'
+import { conversationScheduleApprovalSchema, CREATE_SCHEDULED_TASK_TOOL, formatScheduleReceiptTime } from '../shared/scheduled-creation'
 
 interface ToolApprovalRequest {
   requestId?: string
@@ -28,6 +29,18 @@ const messages: Readonly<Record<string, string>> = {
   media_cancel_job: '允许请求平台取消图片任务？取消结果以平台返回为准，不代表退款。',
   video_generate: '允许员工按已确认的要求生成视频？',
   video_from_image: '允许员工上传所选参考图或生成视频？',
+}
+
+function scheduleRecurrenceLabel(expression: string): string {
+  const [minute, hour, day, month, weekday] = expression.trim().split(/\s+/)
+  if (day === '*' && month === '*' && weekday === '*') {
+    if (minute === '*' && hour === '*') return '每分钟'
+    if (minute !== undefined && /^(?:[0-5]?\d)$/.test(minute)) {
+      if (hour === '*') return `每小时第 ${Number(minute)} 分钟`
+      if (hour !== undefined && /^(?:[01]?\d|2[0-3])$/.test(hour)) return `每天 ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
+    }
+  }
+  return `自定义（Cron：${expression}）`
 }
 
 /** The main process owns the deadline; queueing never restarts its approval budget. */
@@ -70,6 +83,13 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       return
     }
     let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
+    const scheduling = request.toolName === CREATE_SCHEDULED_TASK_TOOL
+    if (scheduling) {
+      const schedule = conversationScheduleApprovalSchema.safeParse(request.input)
+      if (!schedule.success) { settle(false); return }
+      const { title, goal, firstRunAt, timezone, recurrence } = schedule.data
+      message = `创建并启用「${title}」？${recurrence ? '预计首次执行' : '计划执行时间'}：${formatScheduleReceiptTime(firstRunAt, timezone)}。${recurrence ? ` 重复规则：${scheduleRecurrenceLabel(recurrence)}。` : ' 仅执行一次。'}\n\n${goal}`
+    }
     const officeCommand = input.success && request.toolName === 'mcp__officecli__officecli' ? input.data.command : null
     if (Array.isArray(officeCommand) && officeCommand[0] === 'import-doc') message = '允许用本机 Microsoft Word 打开这个旧版 Word 文件并创建编辑副本？仅在信任文件来源时允许。原文件不会被覆盖。'
     if (Array.isArray(officeCommand) && officeCommand[0] === 'export-doc') message = '允许用本机 Microsoft Word 生成一个新的 Word 97–2003 文件？原文件不会被覆盖。'
@@ -88,7 +108,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     void feedback.ask({
       key: `approval:${request.requestId ?? request.timestamp ?? deadline}`,
       message: isVideo && quote.success ? `${message} 本次报价 ¥${quote.data.quote.amount}。` : message,
-      actionLabel: browserHandoff ? '已完成，继续' : resubmission ? '仍然生成' : isVideo && quote.success ? '同意并生成' : '允许',
+      actionLabel: scheduling ? '创建并启用' : browserHandoff ? '已完成，继续' : resubmission ? '仍然生成' : isVideo && quote.success ? '同意并生成' : '允许',
       signal: approval.signal,
     }).then(settle)
     return () => {

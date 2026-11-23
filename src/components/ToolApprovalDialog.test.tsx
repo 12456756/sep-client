@@ -6,6 +6,7 @@ import { compileFunction } from 'node:vm'
 import ts from 'typescript'
 import { FeedbackController } from '../shared/feedback-controller'
 import { toolApprovalTimeoutMs } from '../shared/tool-approval'
+import { CREATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-creation'
 import type { ToolApprovalDialog } from './ToolApprovalDialog'
 
 type Props = Parameters<typeof ToolApprovalDialog>[0]
@@ -38,6 +39,34 @@ function mount(toolName: string, input: unknown, expiresAt: number | null = Date
   let cleanup = effect()
   return { feedback, decisions, replay() { cleanup?.(); cleanup = effect() }, cleanup() { cleanup?.(); feedback.clear() } }
 }
+
+test('scheduled tasks require explicit confirmation showing the task and first execution time', async () => {
+  const ui = mount(CREATE_SCHEDULED_TASK_TOOL, { title: '日报', goal: '汇总昨天的销售数据', timezone: 'Asia/Shanghai',
+    firstRunAt: Date.parse('2026-11-24T00:00:00Z'), recurrence: '0 8 * * *' })
+  try {
+    const dialog = ui.feedback.getSnapshot()
+    assert.ok(dialog)
+    assert.match(dialog.message, /日报.*预计首次执行.*08:00/s)
+    assert.match(dialog.message, /重复规则：每天 08:00/)
+    assert.match(dialog.message, /汇总昨天的销售数据/)
+    assert.deepEqual(ui.decisions, [])
+    await ui.feedback.accept(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(ui.decisions, [true])
+  } finally { ui.cleanup() }
+})
+
+test('the schedule approval describes an all-wildcard cron as every minute', () => {
+  const ui = mount(CREATE_SCHEDULED_TASK_TOOL, { title: '简报', goal: '生成简报', timezone: 'Asia/Shanghai',
+    firstRunAt: Date.parse('2026-11-23T05:27:00Z'), recurrence: '* * * * *' })
+  try {
+    const dialog = ui.feedback.getSnapshot()
+    assert.ok(dialog)
+    assert.match(dialog.message, /重复规则：每分钟/)
+    assert.doesNotMatch(dialog.message, /\* \* \* \* \*/)
+    assert.deepEqual(ui.decisions, [])
+  } finally { ui.cleanup() }
+})
 
 test('quoted image and video generation proceeds once without a confirmation dialog', () => {
   for (const [toolName, input] of [

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, LoaderCircle, Maximize, Paperclip, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { ArrowRight, CalendarClock, Copy, LoaderCircle, Maximize, Paperclip, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { SiliconEmployee, WorkItem, WorkMessage } from '../../features/enterprise/types'
 import { useArrangementTranscript } from '../../features/enterprise/use-arrangement-transcript'
 import { buildConversationReplies, buildConversationTranscript, type ConversationRunTranscript } from '../../features/enterprise/conversation-transcript'
@@ -15,6 +15,7 @@ import { DocumentPreviewButton } from '../workspace/DocumentPreviewButton'
 import { SaveWordCopyButton } from '../workspace/SaveWordCopyButton'
 import { useFileMenuCommands } from '../workspace/file-menu-actions'
 import '../workspace/result-file-card.css'
+import { formatScheduleReceiptTime, type ConversationScheduleReceipt } from '../../shared/scheduled-creation'
 
 interface Props {
   work: WorkItem
@@ -22,21 +23,22 @@ interface Props {
   scopeKey: string
   preparing: boolean
   mediaState: { results: ConversationResult[]; error: string | null; retry: () => void }
+  onOpenSchedule?: (id: string) => void
 }
 
-export const ConversationMessages = React.memo(function ConversationMessages({ work, employees, scopeKey, preparing, mediaState }: Props) {
-  return <ConversationMessagesContent key={`${scopeKey}:${work.id}`} work={work} employees={employees} scopeKey={scopeKey} preparing={preparing} mediaState={mediaState} />
+export const ConversationMessages = React.memo(function ConversationMessages(props: Props) {
+  return <ConversationMessagesContent key={`${props.scopeKey}:${props.work.id}`} {...props} />
 })
 
-function ConversationMessagesContent({ work, employees, scopeKey, preparing, mediaState: media }: Props) {
+function ConversationMessagesContent({ work, employees, scopeKey, preparing, mediaState: media, onOpenSchedule }: Props) {
   const transcript = useArrangementTranscript(work.id, scopeKey)
   const runs = useMemo(() => buildConversationTranscript(transcript.events), [transcript.events])
-  return <><ConversationMessagesView work={work} employees={employees} preparing={preparing} runs={runs} media={media.results}
+  return <><ConversationMessagesView work={work} employees={employees} preparing={preparing} runs={runs} media={media.results} onOpenSchedule={onOpenSchedule}
     loading={transcript.loading} error={transcript.error} onReload={transcript.reload} onExportDiagnostic={window.electronAPI?.exportWorkDiagnostic} />
     {media.error ? <div className="ent-conversation-results-error" role="alert"><span>{media.error}</span><button type="button" className="ent-btn sm ghost" onClick={media.retry}><RotateCcw size={14} />重新读取</button></div> : null}</>
 }
 
-export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, onExportDiagnostic, media = [] }: Omit<Props, 'scopeKey' | 'mediaState'> & {
+export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, onExportDiagnostic, onOpenSchedule, media = [] }: Omit<Props, 'scopeKey' | 'mediaState'> & {
   media?: ConversationResult[]
   runs: readonly ConversationRunTranscript[]
   loading: boolean
@@ -75,7 +77,8 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
     return <div className="ent-say ent-conversation-reply" key={item.id} data-conversation-reply={item.id} data-run-id={item.runId}>
       <span className="ent-say-who"><EmployeeFace employee={employees.find(employee => employee.id === employeeId)} name={employeeName} size="sm" round />{employeeName}</span>
       {item.runId && (entries.length > 0 || loading || processError) ? <ConversationProcessView entries={entries} active={item.active} loading={loading} error={processError} onReload={onReload} /> : null}
-      {!hasContent && !replyResults?.length && (!entries.length || !item.active) ? <div className="ent-conversation-reply-status" role="status">
+      {run?.scheduleReceipt ? <ScheduleReceipt receipt={run.scheduleReceipt} active={item.active} onOpen={onOpenSchedule} /> : null}
+      {!run?.scheduleReceipt && !hasContent && !replyResults?.length && (!entries.length || !item.active) ? <div className="ent-conversation-reply-status" role="status">
         {item.active ? <LoaderCircle size={14} className="ent-spin" aria-hidden /> : null}
         {item.active ? '正在进行…' : run?.diagnosticAvailable ? '本轮执行失败' : '本轮未返回回复'}
       </div> : null}
@@ -88,6 +91,18 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
   })}<ConversationResultCards taskId={work.id} results={results.get('unassigned')} />
     {menu}
   </>
+}
+
+function ScheduleReceipt({ receipt, active, onOpen }: { receipt: ConversationScheduleReceipt; active: boolean; onOpen?: (id: string) => void }) {
+  const pending = receipt.status === 'pending' && active
+  return <div className="ent-conversation-schedule-receipt">
+    <div className="ent-conversation-schedule-copy" role="status">
+      {pending ? <LoaderCircle size={16} className="ent-spin" aria-hidden /> : <CalendarClock size={16} aria-hidden />}
+      <span>{receipt.status === 'created' ? <><strong>已启用「{receipt.title}」</strong><small>下次执行：{formatScheduleReceiptTime(receipt.nextRunAt, receipt.timezone)}</small></>
+        : receipt.status === 'pending' ? pending ? '正在准备定时任务…' : '创建结果未确认，请前往「定时任务」查看。' : receipt.message}</span>
+    </div>
+    {receipt.status === 'created' && onOpen ? <button type="button" className="ent-btn sm ghost" onClick={() => onOpen(receipt.id)}>查看任务<ArrowRight size={14} aria-hidden /></button> : null}
+  </div>
 }
 
 function ConversationResultCards({ taskId, results }: { taskId: string; results?: ConversationResult[] }) {

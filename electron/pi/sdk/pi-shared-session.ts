@@ -12,6 +12,7 @@ export class SharedPiSession {
   private vision: boolean | null = null
   private modelId: string | undefined
   private connectorRevision: string | undefined
+  private scheduleBinding?: { submit: NonNullable<PiAgentSessionConfig['conversationSchedule']> }
   private unsubscribeSession: (() => void) | null = null
   private listener: ((event: PiAgentEvent) => void) | null = null
   private disposed = false
@@ -32,10 +33,13 @@ export class SharedPiSession {
     return this.enqueue(async () => {
       if (this.disposed) throw new Error('Shared Pi session adapter has been disposed.')
       this.browserOwner.resume()
-      if (this.session && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision) return this.session
+      if (this.session && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision && !!this.scheduleBinding === !!config.conversationSchedule) {
+        if (this.scheduleBinding && config.conversationSchedule) this.scheduleBinding.submit = config.conversationSchedule
+        return this.session
+      }
       if (this.session) await this.disposeCurrent()
       const session = await this.runtime.createSession({
-        ...config,
+        ...this.bindConversationSchedule(config),
         browserOwner: this.browserOwner,
         resumeSessionFile: this.sessionFile ?? config.resumeSessionFile,
       })
@@ -55,7 +59,7 @@ export class SharedPiSession {
       this.browserOwner.resume()
       const resumeSessionFile = this.sessionFile ?? config.resumeSessionFile
       await this.disposeCurrent()
-      const session = await this.runtime.createSession({ ...config, browserOwner: this.browserOwner, resumeSessionFile: resumeSessionFile ?? undefined })
+      const session = await this.runtime.createSession({ ...this.bindConversationSchedule(config), browserOwner: this.browserOwner, resumeSessionFile: resumeSessionFile ?? undefined })
       this.session = session
       this.modelId = config.modelId
       this.vision = config.vision ?? null
@@ -98,9 +102,20 @@ export class SharedPiSession {
     this.unsubscribeSession = session.subscribe(event => this.listener?.(event))
   }
 
+  private bindConversationSchedule(config: PiAgentSessionConfig): PiAgentSessionConfig {
+    if (!config.conversationSchedule) return config
+    const binding = { submit: config.conversationSchedule }
+    this.scheduleBinding = binding
+    return { ...config, conversationSchedule: async signal => {
+      if (this.scheduleBinding !== binding) throw new Error('Scheduled creation is not available in this turn.')
+      return binding.submit(signal)
+    } }
+  }
+
   private async disposeCurrent(): Promise<void> {
     const session = this.session
     this.session = null
+    this.scheduleBinding = undefined
     this.unsubscribeSession?.()
     this.unsubscribeSession = null
     if (!session) return

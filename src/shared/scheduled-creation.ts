@@ -71,8 +71,27 @@ export const scheduledCreationRequestSchema = z.object({
 }).strict()
 export type ScheduledCreationRequest = z.infer<typeof scheduledCreationRequestSchema>
 
+export const CREATE_SCHEDULED_TASK_TOOL = 'create_scheduled_task'
+export const CONVERSATION_SCHEDULE_EVENT = 'conversation_schedule_creation'
+export const conversationScheduleToolInput = z.object({}).strict()
+export const conversationScheduleApprovalSchema = z.object({
+  title: z.string().min(1).max(160), goal: textSchema, timezone: timezoneSchema,
+  firstRunAt: timestampSchema, recurrence: z.string().max(200).nullable(),
+}).strict()
+export const conversationScheduleReceiptSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('pending') }).strict(),
+  z.object({ status: z.literal('created'), id: z.string().min(1).max(128), title: z.string().min(1).max(160),
+    nextRunAt: timestampSchema, timezone: timezoneSchema }).strict(),
+  z.object({ status: z.enum(['needs_input', 'blocked', 'failed', 'cancelled']), message: z.string().min(1).max(4000) }).strict(),
+])
+export type ConversationScheduleReceipt = z.infer<typeof conversationScheduleReceiptSchema>
+export function formatScheduleReceiptTime(timestamp: number, timezone: string): string {
+  return `${new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23' }).format(timestamp)} (${timezone})`
+}
+
 export const scheduledCreationSchema = z.object({
   id: z.string().uuid(), revision: z.number().int().positive(),
+  fromConversation: z.literal(true).optional(),
   stage: z.enum(['parsing', 'needs_input', 'blocked', 'planning', 'enabling', 'completed', 'failed', 'cancelled']),
   request: z.object(creationRequestFields).strict(), submissionKey: submissionKeySchema,
   parsedSubmissionKey: submissionKeySchema.nullable(), definitionSubmissionKey: submissionKeySchema.nullable(),
@@ -84,6 +103,7 @@ export const scheduledCreationSchema = z.object({
 export type ScheduledCreation = z.infer<typeof scheduledCreationSchema>
 
 export interface ScheduledCreationInterpreterInput {
+  fromConversation?: true
   subscriptionId: string
   modelId: string
   referenceNow: number

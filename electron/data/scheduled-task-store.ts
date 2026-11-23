@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { access, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { z } from 'zod'
-import { scheduleInputSchema, type ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
+import { scheduledIssueSchema as issue, scheduleInputSchema, type ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
 import { scheduledCreationSchema } from '../../src/shared/scheduled-creation'
 import { scheduledPlanSchema } from '../domain/scheduled-task'
 import { AppError } from '../errors/app-error'
@@ -22,7 +22,6 @@ function workspaceError(error: unknown): unknown {
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const time = z.number().int().nonnegative()
-const issue = z.object({ code: z.string(), message: z.string(), action: z.enum(['retry', 'auth', 'blocked', 'review', 'fail']), retryAfterMs: z.number().positive().optional() }).strict()
 const definition = z.object({
   id, revision: z.number().int().positive(), input: scheduleInputSchema, plan: scheduledPlanSchema.nullable(),
   planInputKey: z.string().nullable(), enabled: z.boolean(), deleted: z.boolean(), nextRunAt: time.nullable(), pausedAt: time.nullable().optional(), createdAt: time, updatedAt: time,

@@ -7,7 +7,7 @@ import type { ScheduledTaskStore } from '../data/scheduled-task-store'
 import type { TaskRunStore } from '../data/task-run-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { effectivePermissionPolicy, type WorkPlan } from '../domain/arrangement-plan'
-import { buildEmptyTextPlan, resolveScheduledDeliveryNodes } from '../domain/scheduled-task'
+import { buildEmptyTextPlan, classifyScheduledError, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes, scheduledPathDenied, ScheduledPathDeniedError } from '../domain/scheduled-task'
 import { AppError } from '../errors/app-error'
 import { BeforeScheduledAdmissionError, type ScheduledRunnerPort } from './scheduled-dispatcher'
 import { logger } from '../common/logger'
@@ -46,6 +46,9 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
     const general = run.input.mode === 'general'
     const arrangement = run.plan.kind === 'arrangement' ? run.plan as ArrangementWorkPlan : null
     if (arrangement && (local || general)) throw new AppError('INVALID_STATE')
+    if (!local && !arrangement?.source && requestsRestrictedWindowsSchedulePath(run.input.permissions, run.input.goal)) {
+      throw new ScheduledPathDeniedError()
+    }
     const employeePlan = run.input.mode === 'empty-text' ? buildEmptyTextPlan(run.input) : arrangement ? null : run.plan as EmployeeWorkPlan
     const template = arrangement?.source ? await this.options.source?.load(scope, arrangement.source) : null
     guard()
@@ -171,8 +174,12 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
     }
     if (task.status === 'failed') {
       const blocked = checkpoint?.state.nodes[0]?.delivery?.issues.find(issue => issue.code === 'INPUT_REQUIRED')
-      const first = checkpoint?.planHash === `${run.id}:${run.revision}` && checkpoint.state.status === 'failed'
-        ? checkpoint.state.nodes.find(node => node.status === 'failed' && node.delivery?.correctionStopped)?.delivery?.firstIssue : undefined
+      const failedNodes = checkpoint?.planHash === `${run.id}:${run.revision}` && checkpoint.state.status === 'failed'
+        ? checkpoint.state.nodes.filter(node => node.status === 'failed' && node.delivery?.correctionStopped) : []
+      if (failedNodes.some(node => node.delivery?.firstIssue?.code === scheduledPathDenied.code)) {
+        return { state: 'failed', error: classifyScheduledError(new ScheduledPathDeniedError()) }
+      }
+      const first = failedNodes[0]?.delivery?.firstIssue
       if (first && !blocked) {
         const issue: ScheduledIssue = { code: first.code, message: `交付验收未通过。首次失败：${first.message}`, action: 'fail' }
         return { state: 'failed', error: issue }

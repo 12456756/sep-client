@@ -20,6 +20,7 @@ import { DocumentPreviewButton } from '../../components/workspace/DocumentPrevie
 import { SaveWordCopyButton } from '../../components/workspace/SaveWordCopyButton'
 import { FeedbackProvider } from '../../components/feedback/FeedbackProvider'
 import * as fileMenuActions from '../../components/workspace/file-menu-actions'
+import * as scheduledCreation from '../../shared/scheduled-creation'
 
 const filename = fileURLToPath(new URL('../../components/enterprise/ConversationMessages.tsx', import.meta.url))
 const dependencies: Record<string, unknown> = {
@@ -38,6 +39,7 @@ const dependencies: Record<string, unknown> = {
   '../workspace/SaveWordCopyButton': { SaveWordCopyButton },
   '../workspace/file-menu-actions': fileMenuActions,
   '../workspace/result-file-card.css': {},
+  '../../shared/scheduled-creation': scheduledCreation,
 }
 const componentModule = { exports: {} }
 compileFunction(ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: {
@@ -47,6 +49,22 @@ compileFunction(ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOpt
   return dependencies[id]
 }, componentModule.exports, componentModule)
 const { ConversationMessagesView } = componentModule.exports as typeof import('../../components/enterprise/ConversationMessages')
+
+test('renders a persisted schedule receipt in the correct reply without requiring assistant text', () => {
+  const work = { id: 'task', currentEmployeeName: '员工', messages: [
+    { id: 'request', role: 'user', content: '每天八点生成简报', runId: 'run-a', createdAt: 1 },
+    { id: 'next', role: 'user', content: '其他问题', runId: 'run-b', createdAt: 2 },
+  ] } as WorkItem
+  const html = renderWithFeedback(React.createElement(ConversationMessagesView, {
+    work, employees: [], preparing: false, loading: false, error: null, onReload() {}, onOpenSchedule() {},
+    runs: [{ runId: 'run-a', entries: [], scheduleReceipt: { status: 'created', id: 'def', title: '销售简报',
+      nextRunAt: Date.parse('2026-11-24T00:00:00Z'), timezone: 'Asia/Shanghai' } }],
+  }))
+  assert.ok(html.indexOf('每天八点生成简报') < html.indexOf('已启用「销售简报」'))
+  assert.ok(html.indexOf('已启用「销售简报」') < html.indexOf('其他问题'))
+  assert.match(html, /下次执行：[^<]*08:00/)
+  assert.match(html, /查看任务/)
+})
 
 test('conversation process and every thinking block start folded, with tool names and states visible after expansion', () => {
   const events: TaskExecutionEvent[] = [

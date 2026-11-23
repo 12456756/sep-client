@@ -90,7 +90,10 @@ export interface ArrangementWorkPlan {
 export type ScheduledWorkPlan = EmployeeWorkPlan | ArrangementWorkPlan
 export type EmployeePlanResult = EmployeeWorkPlan | { status: 'blocked'; reasons: string[] }
 export type ScheduledRunStatus = 'pending' | 'preparing' | 'launching' | 'running' | 'waiting_approval' | 'waiting_retry' | 'waiting_auth' | 'blocked' | 'review' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'missed'
-export interface ScheduledIssue { code: string; message: string; action: 'retry' | 'auth' | 'blocked' | 'review' | 'fail'; retryAfterMs?: number }
+export const scheduledIssueSchema = z.object({ code: z.string(), message: z.string(),
+  action: z.enum(['retry', 'auth', 'blocked', 'review', 'fail']), retryAfterMs: z.number().positive().optional(),
+}).strict()
+export type ScheduledIssue = z.infer<typeof scheduledIssueSchema>
 export interface ScheduledDefinition {
   id: string; revision: number; input: ScheduleInput; plan: ScheduledWorkPlan | null
   planInputKey: string | null; enabled: boolean; deleted: boolean; nextRunAt: number | null; pausedAt?: number | null

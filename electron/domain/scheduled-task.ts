@@ -36,6 +36,38 @@ export const scheduledPlanResultSchema = z.union([scheduledPlanSchema, z.object(
 
 class ScheduledDeliveryContractError extends Error {}
 
+export const scheduledPathDenied = {
+  code: 'SCHEDULED_PATH_NOT_ALLOWED',
+  message: '当前定时任务权限不允许访问指定路径，本次不会改用其他位置交付。请使用独立工作区内的相对路径。',
+} as const
+
+export class ScheduledPathDeniedError extends Error {
+  constructor() { super(scheduledPathDenied.message) }
+}
+
+/** Catch explicit I/O requests before planning or admission; the tool policy remains authoritative. */
+export function requestsRestrictedWindowsSchedulePath(permissions: ScheduleInput['permissions'], ...texts: string[]): boolean {
+  if (permissions.preset === 'full-local' && permissions.approvalMode === 'auto-approve') return false
+  return texts.some(requestsWindowsSchedulePathAccess)
+}
+
+function requestsWindowsSchedulePathAccess(text: string): boolean {
+  const pathStart = /(?:^|[^\w/\\%])([a-z]:[\\/](?![\\/])|\\\\[^\\/\s]+[\\/][^\\/\s]+)/gi
+  for (const clause of text.split(/[\n，。；！？;,!?]/u)) {
+    for (const match of clause.matchAll(pathStart)) {
+      const start = match.index + match[0].length - match[1].length
+      const before = clause.slice(0, start).replace(/[\s`"'“‘]+$/u, '')
+      const after = clause.slice(start + match[1].length)
+      if (/^(?:请\s*)?(?:不要|无需|不必|禁止|do not\b|don't\b|never\b)/iu.test(before.trim())) continue
+      if (/(?:读取|读入|扫描|访问|打开|列出|写入|保存|存放|输出|导出|复制|移动|删除|交付)(?:到|至|进|于|自|目录[:：]?|文件[:：]?)?\s*$/u.test(before) ||
+          /\b(?:read(?:\s+from)?|scan|access|open|list|delete|(?:save|write|copy|move|export|deliver)\s+(?:(?:the\s+)?(?:file|report|results?)\s+)?(?:to|in|under))\s*$/i.test(before)) return true
+      if (/(?:在|从|往|把|将)\s*$/u.test(before) && /(?:读取|读入|扫描|访问|打开|列出|写入|保存|存放|输出|导出|创建|生成|复制|移动|删除|交付)/u.test(after)) return true
+      if (/(?:目标|输出|保存|交付)目录\s*[:：为是]?\s*$/u.test(before)) return true
+    }
+  }
+  return false
+}
+
 export const scheduledDeliveryPlanningRules = '定时交付物默认使用固定相对路径。只有明确要求按 yyyyMMdd-HHmm 命名时，path 的文件名主体才填 yyyyMMdd-HHmm，并设置 scheduledFilenameTime：以原计划时间命名填 scheduled（未指定时默认），明确以实际启动时间命名填 started。只有用户明确要求空白 .txt 文件时才设置 contentPolicy="empty"，表示必须恰好为 0 字节；其他交付物省略该字段。无需员工自行计算交付文件名。'
 
 export function resolveScheduledDeliveryNodes(nodes: readonly ArrangementNode[], times: { scheduledAt: number; startedAt: number; timezone: string }, legacy: boolean): ArrangementNode[] {
@@ -200,6 +232,7 @@ export function scheduledWorkspaceErrorMessage(code: unknown): string | undefine
 
 export function classifyScheduledError(error: unknown): ScheduledIssue {
   if (error instanceof ScheduledDeliveryContractError) return { code: 'DELIVERY_CONTRACT_INVALID', message: error.message, action: 'fail' }
+  if (error instanceof ScheduledPathDeniedError) return { ...scheduledPathDenied, action: 'blocked' }
   const value = error && typeof error === 'object' ? error as Record<string, unknown> : {}
   const code = typeof value.code === 'string' ? value.code : ''
   const status = value.statusCode ?? value.status

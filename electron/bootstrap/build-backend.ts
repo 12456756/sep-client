@@ -438,7 +438,7 @@ class BackendRuntime {
       start: async (taskId, entry, signal) => {
         const runtime = await this.getTaskRuntime()
         signal.throwIfAborted()
-        await runtime.continueConversation(taskId, entry.prompt, { runId: entry.runId, signal, mode: entry.mode, confirmed: entry.confirmed,
+        await runtime.continueConversation(taskId, entry.prompt, { runId: entry.runId, messageId: entry.id, messageReceivedAt: entry.createdAt, signal, mode: entry.mode, confirmed: entry.confirmed,
           knowledge: entry.knowledge, attachmentRefs: entry.attachmentRefs })
       },
       retry: async (taskId, signal) => {
@@ -918,6 +918,7 @@ class BackendRuntime {
       arrangementMedia: this.arrangementMedia,
       arrangementDiagnostics: this.arrangementDiagnostics,
       conversationMedia: this.conversationMedia,
+      submitConversationSchedule: (request, review) => this.scheduledCreations.submitConversation(request, review),
       attachmentInputs: this.attachments,
     })
     log.info('task runtime loaded')

@@ -61,6 +61,10 @@ function snapshotThinking(data: Record<string, unknown>): string {
 
 /** Excludes prompts, tool arguments/results and session internals from UI state. */
 export function selectTranscriptEvent(event: TaskExecutionEvent): TaskExecutionEvent | null {
+  if (event.type === CONVERSATION_SCHEDULE_EVENT) {
+    const receipt = conversationScheduleReceiptSchema.safeParse(event.data)
+    return receipt.success ? { ...event, data: receipt.data } : null
+  }
   const data = record(event.data)
   if (event.type === 'run_failed') return data.diagnosticAvailable === true ? { ...event, data: { diagnosticAvailable: true } } : null
   const type = event.type === 'arrangement_node_progress' ? data.eventType : event.type
@@ -160,3 +164,4 @@ export function buildArrangementTranscript(steps: readonly WorkStep[], source: r
     return text ? [{ ...entry, text }] : []
   }) }))
 }
+import { CONVERSATION_SCHEDULE_EVENT, conversationScheduleReceiptSchema } from '../../shared/scheduled-creation'
