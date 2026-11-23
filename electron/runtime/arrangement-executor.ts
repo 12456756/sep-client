@@ -77,6 +77,7 @@ export interface ArrangementExecutionOptions {
   onAuthenticationRequired: () => void
   onApprovalRequest: PiTaskWorkerOptions['onApprovalRequest']
   onEvent: (event: TaskExecutionEvent) => Promise<void>
+  beforeNodeCompletion?: (scope: TaskOwnerScope, taskId: string, runId: string, completion: ArrangementNodeEvent) => Promise<ReadonlyMap<string, import('../../src/shared/result-files').ResultSaveIntent> | undefined>
   authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   findReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
   replacePlanEmployee?: (taskId: string, nodeId: string, subscriptionId: string) => Promise<void>
@@ -436,7 +437,17 @@ export class ArrangementExecutor {
             await this.emitStateEvent(plan, taskId, arrangementRunId, current, result.repair.nodeId)
             return
           }
-          if (result.ok) current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
+          if (result.ok) {
+            const intents = this.options.scope && await this.options.beforeNodeCompletion?.(this.options.scope, taskId, arrangementRunId, result.completion)
+            current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
+            if (intents?.size) current = { ...current, nodes: current.nodes.map(node => {
+              if (node.nodeId !== result.nodeId || !node.delivery) return node
+              return { ...node, delivery: { ...node.delivery, finalFiles: node.delivery.finalFiles.map(file => {
+                const saveIntent = intents.get(file.id)
+                return saveIntent ? { ...file, saveIntent } : file
+              }) } }
+            }) }
+          }
           else if (result.employeeReplacement) {
             current = markArrangementNodeWaitingForEmployee(current, plan.nodes, result.nodeId, result.employeeReplacement)
           } else {

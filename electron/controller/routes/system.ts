@@ -4,7 +4,7 @@
  * 原生目录弹框与主题同步由控制层持有窗口句柄；默认工作目录由任务服务准备。
  * 审批响应是执行层的控制信号。
  */
-import { dialog } from 'electron'
+import { dialog, shell } from 'electron'
 import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { appError } from '../../errors/app-error'
@@ -33,6 +33,21 @@ export const systemRoutes = [
     const window = ctx.window()
     if (!window || !ctx.windowClose) throw appError('INVALID_STATE')
     return { success: true, data: await ctx.windowClose.command(window, input) }
+  }, { ...trusted, errorShape: 'ipc' }),
+  route(INVOKE_CHANNELS.RESULT_ARCHIVE_SETTINGS, z.enum(['get', 'choose', 'use-default', 'open']), async (ctx, action) => {
+    const archive = ctx.backend.resultArchive
+    if (action === 'get') return { success: true, data: await archive.settings() }
+    if (action === 'open') {
+      await archive.open(path => shell.openPath(path))
+      return { success: true }
+    }
+    const data = action === 'use-default' ? await archive.configure() : await archive.configure(async state => {
+      const window = ctx.window()
+      if (!window) throw appError('INVALID_STATE')
+      const selected = await dialog.showOpenDialog(window, { title: '选择生成文件的保存位置', properties: ['openDirectory', 'createDirectory'], defaultPath: state.path })
+      return selected.canceled ? null : selected.filePaths[0] ?? null
+    })
+    return { success: true, data: data ?? undefined }
   }, { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY, NO_INPUT, async ctx => ({ success: true, path: await ctx.tasks.getDefaultWorkspaceDirectory() }), { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY, NO_INPUT, async ctx => {

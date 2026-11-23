@@ -39,6 +39,7 @@ export interface MockVideoHostGateway extends VideoGatewayPort {
   uploadReference(bytes: Uint8Array, signal: AbortSignal): Promise<z.infer<typeof videoReferenceSchema>>
 }
 interface VideoHostOptionsBase {
+  onOutputSaved?: import('./video-service').VideoServiceOptions['onOutputSaved']
   scope: ScopeSource
   store: VideoStorePort
   /** Persisted node associations are the authority for cross-employee saved outputs. */
@@ -238,7 +239,7 @@ export class MockVideoHostService {
       }, false),
     }
     const service = new VideoService({ scope, executionMode: this.options.mock ? 'mock' : 'real', store: this.options.store, gateway, now: this.now,
-      retryFloorMs: this.options.tracker?.floorMs })
+      retryFloorMs: this.options.tracker?.floorMs, onOutputSaved: this.options.onOutputSaved })
     const trackingOwner = Symbol('video-tracker')
     const trackedKeys = new Set<string>()
     const context: Context = {

@@ -8,7 +8,7 @@ import * as React from 'react';
 import * as jsxRuntime from 'react/jsx-runtime';
 import { renderToStaticMarkup } from 'react-dom/server';
 import * as ts from 'typescript';
-import { FeedbackProvider } from '../../components/feedback/FeedbackProvider';
+import { FeedbackProvider, useFeedback } from '../../components/feedback/FeedbackProvider';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import * as atoms from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
@@ -40,6 +40,7 @@ const cardModule = { exports: {} };
 const cardDependencies: Record<string, unknown> = { react: React, 'react/jsx-runtime': jsxRuntime, 'lucide-react': icons,
   '../../features/enterprise/use-result-file-preview': { useResultFilePreview }, './DocumentPreviewButton': { DocumentPreviewButton },
   './SaveWordCopyButton': { SaveWordCopyButton }, '../ContentCopyMenu': contentCopy,
+  '../feedback/FeedbackProvider': { useFeedback },
   './file-menu-actions': fileMenuActions,
   '../../shared/result-files': { resultFileReleaseSchema }, './result-file-card.css': {} };
 compileFunction(cardSource, ['require', 'exports', 'module'], { filename: cardFilename })((id: string) => { assert.ok(Object.hasOwn(cardDependencies, id), `unexpected card import: ${id}`); return cardDependencies[id] }, cardModule.exports, cardModule);

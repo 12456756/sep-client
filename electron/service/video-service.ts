@@ -19,6 +19,7 @@ import { mediaCooldownError, mediaRateLimit } from '../errors/media-rate-limit'
 
 type VideoInput = z.infer<typeof videoRequestSchema>
 export interface VideoServiceOptions {
+  onOutputSaved?: (scope: VideoScope, taskId: string, jobId: string, outputId: string, when: number, startedAt: number) => void
   /** One immutable authenticated scope and one gateway bound to that subscription. */
   scope: VideoScope
   executionMode?: 'mock' | 'real'
@@ -48,6 +49,7 @@ export class VideoService {
   private readonly mode: 'mock' | 'real'
   private readonly retryFloorMs: number
   private readonly shutdown = new AbortController()
+  private readonly onOutputSaved: VideoServiceOptions['onOutputSaved']
 
   constructor(options: VideoServiceOptions) {
     this.scope = videoScopeSchema.parse(options.scope)
@@ -56,6 +58,7 @@ export class VideoService {
     this.now = options.now ?? Date.now
     this.mode = options.executionMode ?? 'mock'
     this.retryFloorMs = options.retryFloorMs ?? 1_000
+    this.onOutputSaved = options.onOutputSaved
   }
   private signal(parent?: AbortSignal): AbortSignal {
     return parent ? AbortSignal.any([parent, this.shutdown.signal]) : this.shutdown.signal
@@ -201,7 +204,8 @@ export class VideoService {
           const content = await abortableVideo(gateway.content(receipt.receiptId, output.outputId, signal), signal)
           yield* content
         })()
-        await this.store.saveOutput(this.scope, job.taskId, job.jobId, output, source, signal)
+        const saved = await this.store.saveOutput(this.scope, job.taskId, job.jobId, output, source, signal)
+        this.onOutputSaved?.(this.scope, job.taskId, job.jobId, output.outputId, saved.createdAt, job.createdAt)
       } catch (error) {
         failed = true
         failure = mediaJobFailure(error, 'video-save')

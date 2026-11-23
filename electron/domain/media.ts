@@ -77,6 +77,7 @@ export interface MediaGatewayPort {
 }
 
 export interface LocalMediaAsset extends MediaAssetView {
+  saveIntent?: import('../../src/shared/result-files').ResultSaveIntent
   version: 1
   owner: TaskOwnerScope
   relativePath: string

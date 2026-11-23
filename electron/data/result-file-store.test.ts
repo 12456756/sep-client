@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, mkdir, symlink, realpath, rm, readFile } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { ResultFileStore } from './result-file-store'
+import { describeConversationResult, ResultFileStore } from './result-file-store'
 import type { DocumentPreviewStore } from './document-preview-store'
 import type { TaskReadView } from '../../src/shared/types'
 import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
@@ -75,6 +75,7 @@ test('conversation file actions accept canonical paths under a configured worksp
   f.task.workDir = alias
   assert.equal(await f.store.revealPath(scope, request), f.path)
   assert.equal((await f.store.actionFile(scope, request)).path, f.path)
+  assert.equal((await describeConversationResult(alias, f.path, 0))?.name, 'final.mp4')
 })
 
 test('conversation output location accepts different capitalization for the same Windows file', { skip: process.platform !== 'win32' }, async () => {

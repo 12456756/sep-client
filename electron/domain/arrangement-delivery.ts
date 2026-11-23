@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { resultSaveIntentSchema } from '../../src/shared/result-files'
 import { arrangementMediaArtifactIdSchema, arrangementMediaMimeByFormat, arrangementNodeWorkContractSchema, type ArrangementNode } from './arrangement-plan'
 
 export const deliveryIssueSchema = z.object({
@@ -11,6 +12,7 @@ export const deliveryIssueSchema = z.object({
 export type DeliveryIssue = z.infer<typeof deliveryIssueSchema>
 
 export const finalDeliveryFileSchema = z.object({
+  saveIntent: resultSaveIntentSchema.optional(),
   id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   path: z.string().min(1).max(1_024),
   format: z.string().min(1).max(32),

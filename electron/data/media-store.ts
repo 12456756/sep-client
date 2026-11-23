@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { employeeRuntimeSnapshotSchema } from '../common/platform/employee-runtime-contract'
 import { imageMimeSchema, mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId, mediaOutputErrorsSchema, mediaOutputSchema, mediaParametersSchema, mediaProfileSchema, mediaQuoteSchema, mediaRecoverySchema } from '../common/platform/media-contract'
 import { imageRequestedSpecSchema, mediaParameterSourcesSchema } from '../../src/shared/media-spec-contract'
+import { resultSaveIntentSchema, type ResultSaveIntent } from '../../src/shared/result-files'
 import type { ImageReplacementDecision, LocalMediaAsset, LocalMediaJob, MediaOutput, MediaRunSnapshot, MediaStorePort } from '../domain/media'
 import { writeJsonAtomic } from './atomic-file'
 import { inspectMediaImage, MAX_MEDIA_BYTES, MAX_MEDIA_DIMENSION, MAX_MEDIA_PIXELS } from './media-image'
@@ -59,6 +60,7 @@ const jobSchema = z.object({
   }
 })
 const assetSchema = z.object({
+  saveIntent: resultSaveIntentSchema.optional(),
   version: z.literal(1), owner: ownerSchema, localAssetId: mediaId, taskId: mediaId, jobId: mediaId.nullable(),
   outputId: opaqueId.nullable(), source: z.enum(['reference', 'output']), mime: imageMimeSchema,
   size: z.number().int().positive().max(MAX_MEDIA_BYTES), width: z.number().int().positive().max(MAX_MEDIA_DIMENSION),
@@ -117,7 +119,7 @@ export class MediaStore implements MediaStorePort {
   private readonly paths: ScopePath
   private readonly root: string
 
-  constructor(userDataDir: string) {
+  constructor(userDataDir: string, private readonly beforeOutputCommit?: (job: LocalMediaJob, asset: LocalMediaAsset) => Promise<ResultSaveIntent | undefined>) {
     this.root = resolve(userDataDir)
     this.paths = new ScopePath(this.root)
   }
@@ -383,11 +385,7 @@ export class MediaStore implements MediaStorePort {
   }
 
   async listAssets(scope: TaskOwnerScope, taskId: string, options: { recoverableOutputs?: boolean } = {}): Promise<LocalMediaAsset[]> {
-    const ids = new Set<string>()
-    for (const name of await this.names(join(this.paths.mediaRoot(scope, taskId), 'assets'))) {
-      const id = this.manifestId(name.endsWith('.commit') ? name.slice(0, -7) : name)
-      if (id) ids.add(id)
-    }
+    const ids = await this.assetIds(scope, taskId)
     const assets: LocalMediaAsset[] = []
     for (const id of ids) {
       let asset: LocalMediaAsset | null
@@ -402,6 +400,24 @@ export class MediaStore implements MediaStorePort {
       if (asset) assets.push(asset)
     }
     return assets.sort((a, b) => a.createdAt - b.createdAt || a.localAssetId.localeCompare(b.localAssetId))
+  }
+
+  private async assetIds(scope: TaskOwnerScope, taskId: string) {
+    const ids = new Set<string>()
+    for (const name of await this.names(join(this.paths.mediaRoot(scope, taskId), 'assets'))) {
+      const id = this.manifestId(name.endsWith('.commit') ? name.slice(0, -7) : name)
+      if (id) ids.add(id)
+    }
+    return ids
+  }
+
+  async saveIntents(scope: TaskOwnerScope, taskId: string, assetId?: string) {
+    const records = []
+    for (const id of assetId ? [assetId] : await this.assetIds(scope, taskId)) {
+      const asset = await this.assetRecord(scope, taskId, id)
+      if (asset?.source === 'output' && asset.saveIntent) records.push({ assetId: id, intent: asset.saveIntent })
+    }
+    return records
   }
 
   async readAsset(scope: TaskOwnerScope, taskId: string, id: string): Promise<Uint8Array> {
@@ -519,8 +535,11 @@ export class MediaStore implements MediaStorePort {
         const image = inspectMediaImage(bytes)
         asset = { ...image, version: 1, owner: { ...scope }, taskId, localAssetId: id, jobId, outputId: output.outputId,
           source: 'output', status: 'SAVED', sha256: hash, relativePath: `files/${id}.${extensions[image.mime]}`, createdAt: existing?.createdAt ?? Date.now() }
+        if (existing?.saveIntent) asset.saveIntent = existing.saveIntent
         this.validateOutput(output, asset)
         if (existing && !isDeepStrictEqual(existing, asset)) throw new MediaPersistenceError('Recovered output differs from its original commit.')
+        const intent = !existing ? await this.beforeOutputCommit?.(job, asset) : undefined
+        if (intent) asset.saveIntent = intent
         signal.throwIfAborted()
         const manifest = this.file(scope, taskId, 'assets', id)
         await this.publishing(dirname(manifest), async () => {

@@ -4,6 +4,7 @@ import { videoOutputSchema, videoReceiptSchema, videoSpecFailureSchema, videoReq
 import type { VideoOutput, VideoReceipt } from '../../src/shared/video-media'
 import { isVideoSubmissionRejectionCode } from '../../src/shared/video-errors'
 import { mediaFailureSchema } from '../../src/shared/media-failure'
+import { resultSaveIntentSchema } from '../../src/shared/result-files'
 import { mediaDiagnosticErrors } from './arrangement-diagnostic'
 import { mediaRetryGateSchema } from './media-retry-gate'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec } from '../../src/shared/media-spec-contract'
@@ -76,6 +77,7 @@ export function receiptMatchesRequest(job: Pick<LocalVideoJob, 'request' | 'exec
 }
 
 export const localVideoAssetSchema = z.object({
+  saveIntent: resultSaveIntentSchema.optional(),
   version: z.literal(1), scope: videoScopeSchema, taskId: videoLocalIdSchema, jobId: videoLocalIdSchema,
   localAssetId: z.string().regex(/^vout_[a-f0-9]{64}$/), receiptId: videoLocalIdSchema, output: videoOutputSchema,
   relativePath: z.string().min(1).max(256), status: z.literal('SAVED'), createdAt: z.number().int().nonnegative(),

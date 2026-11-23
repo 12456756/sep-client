@@ -60,6 +60,7 @@ export interface CreateTaskRunInput {
   runtimeKey: string
   workspaceDir: string
   prompt: string
+  startedAt?: number
   arrangementNodeId?: string
   resumedFromRunId?: string
   executionKind?: 'conversation' | 'arrangement'
@@ -118,7 +119,7 @@ export class TaskRunStore implements TaskRunStorePort {
       agentDir: paths.agentDir,
       sessionId: null,
       sessionFile: null,
-      startedAt: Date.now(),
+      startedAt: input.startedAt ?? Date.now(),
       endedAt: null,
       outcome: 'running',
       error: null,

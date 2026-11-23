@@ -41,6 +41,7 @@ type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'
 interface TaskBinding { subscriptionId?: string | null }
 export type MediaEmployeeRuntime = Pick<EmployeeRuntimeConfig, 'subscriptionId' | 'media' | 'runtimeSnapshot' | 'systemPrompt'>
 export interface MediaServiceOptions {
+  onOutputSaved?: (scope: TaskOwnerScope, taskId: string, assetId: string, when: number, startedAt: number) => void
   scope: ScopeSource
   store: MediaStorePort
   gateway?: MediaGatewayPort
@@ -741,7 +742,8 @@ export class MediaService {
       try {
         await this.network(scope, parent, async signal => {
           const stream = await this.gateway().content(job.subscriptionId, job.receiptId!, output.outputId, signal)
-          await this.options.store.saveOutput(scope, job.taskId, job.jobId, output, stream, signal, { repairCorrupt: repair })
+          const asset = await this.options.store.saveOutput(scope, job.taskId, job.jobId, output, stream, signal, { repairCorrupt: repair })
+          this.options.onOutputSaved?.(scope, job.taskId, asset.localAssetId, asset.createdAt, job.createdAt)
         })
         downloaded++
       } catch (error) {

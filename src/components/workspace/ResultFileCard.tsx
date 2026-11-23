@@ -2,8 +2,9 @@ import { Copy, FileText, FolderOpen, LoaderCircle, RefreshCw, X } from 'lucide-r
 import { useEffect, useRef, useState } from 'react'
 import type { WorkDeliverable } from '../../features/enterprise/types'
 import { useResultFilePreview, type ResultFilePreviewSource } from '../../features/enterprise/use-result-file-preview'
-import { resultFileReleaseSchema, type ResultFileRequest } from '../../shared/result-files'
+import { resultFileReleaseSchema, type ResultArchiveStatus, type ResultFileRequest } from '../../shared/result-files'
 import { imageCopyHandlers, useContentCopy, useImagePreviewCopy, type ContentMenuCommand, type CopyMenuHandler } from '../ContentCopyMenu'
+import { useFeedback } from '../feedback/FeedbackProvider'
 import { DocumentPreviewButton } from './DocumentPreviewButton'
 import { SaveWordCopyButton } from './SaveWordCopyButton'
 import { useFileMenuCommands } from './file-menu-actions'
@@ -88,20 +89,76 @@ export function ResultFileCard({ taskId, file, visible = true, conversation = fa
   const detectedKind = mediaKind(file)
   const kind = conversation && !mediaRequest && detectedKind === 'video' ? null : detectedKind
   const commands = useFileMenuCommands(request, file.name)
+  const feedback = useFeedback()
   const { showMenu, menu } = useContentCopy()
   const fileMenu = imageCopyHandlers(showMenu, readResultImage, commands)
   const [opening, setOpening] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [retryError, setRetryError] = useState<string | null>(null)
+  const [saveStatus, setSaveStatus] = useState<ResultArchiveStatus>({ state: 'none' })
+  const [statusRefresh, setStatusRefresh] = useState(0)
+  const requestKey = request ? JSON.stringify(request) : ''
   const mounted = useRef(true)
+  const alternatePrompt = useRef<AbortController | null>(null)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  useEffect(() => () => {
+    alternatePrompt.current?.abort()
+    alternatePrompt.current = null
+  }, [visible, requestKey, file.previewVersion])
+  useEffect(() => {
+    setSaveStatus({ state: 'none' })
+    if (!visible || !requestKey) return
+    const input = JSON.parse(requestKey) as ResultFileRequest
+    let active = true, timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = async () => {
+      try {
+        const result = await window.electronAPI.getResultFileSaveStatus(input)
+        if (!active) return
+        if (result.success && result.data) {
+          setSaveStatus(result.data)
+          if (result.data.state === 'saved') setRetryError(null)
+          if (result.data.state === 'pending') timer = setTimeout(() => void refresh(), 1000)
+        }
+      } catch { /* Folder reveal can still surface an unavailable copy. */ }
+    }
+    void refresh()
+    return () => { active = false; clearTimeout(timer) }
+  }, [visible, requestKey, file.previewVersion, statusRefresh])
+  useEffect(() => { setRetryError(null) }, [requestKey, file.previewVersion])
   const reveal = async () => {
     if (!request) return
     setOpening(true); setError(null)
     try {
       const result = await window.electronAPI.revealResultFile(request)
-      if (mounted.current && !result.success) setError(result.error?.message || '暂时无法打开所在文件夹，请重试。')
+      if (mounted.current) {
+        if (!result.success) setError(result.error?.message || '暂时无法打开所在文件夹，请重试。')
+        setStatusRefresh(value => value + 1)
+      }
     } catch { if (mounted.current) setError('暂时无法打开所在文件夹，请重试。') }
     finally { if (mounted.current) setOpening(false) }
+  }
+  const retryArchive = async (confirmation?: string) => {
+    if (!request) return
+    setOpening(true); setError(null); setRetryError(null)
+    try {
+      const result = await window.electronAPI.runResultFileAction(confirmation
+        ? { action: 'retry-archive-elsewhere', file: request, confirmation }
+        : { action: 'retry-archive', file: request })
+      if (mounted.current) {
+        if (!result.success) setRetryError(result.error?.message || '副本未保存，请重试。')
+      }
+    } catch { if (mounted.current) setRetryError('副本未保存，请重试。') }
+    finally { if (mounted.current) { setOpening(false); setStatusRefresh(value => value + 1) } }
+  }
+  const confirmAlternate = async (confirmation: string) => {
+    if (opening || alternatePrompt.current || !visible) return
+    const controller = new AbortController(), revision = feedback.getRevision()
+    alternatePrompt.current = controller
+    try {
+      const confirmed = await feedback.ask({ key: `result-save-elsewhere:${confirmation}`, signal: controller.signal,
+        message: '原保存位置可能已经有一份副本。仍要保存到设置中当前选定的文件夹吗？', actionLabel: '仍保存到新位置' })
+      if (confirmed && !controller.signal.aborted && feedback.getRevision() === revision) await retryArchive(confirmation)
+    } finally { if (alternatePrompt.current === controller) alternatePrompt.current = null }
   }
   return <article className={`result-file-card${kind ? ' result-file-card-media' : ''}`} aria-label={`产物 ${file.name}`} tabIndex={request ? 0 : undefined} {...(request ? fileMenu : undefined)}>
     {kind && visible && request ? <InlineMedia key={`${file.id}:${file.previewVersion ?? ''}`} request={request} name={file.name} version={file.previewVersion} showMenu={showMenu} commands={commands} /> : null}
@@ -117,6 +174,15 @@ export function ResultFileCard({ taskId, file, visible = true, conversation = fa
       </div>
     </div>
     {error ? <p className="result-file-error" role="alert">{error}</p> : null}
+    {saveStatus.state === 'pending' ? <div className="result-file-save-status" role="status">正在保存到指定文件夹…</div> : null}
+    {saveStatus.state === 'failed' || saveStatus.state === 'missing' ? <div className="result-file-error result-file-save-status" role="status">
+      <span>{retryError ?? (saveStatus.state === 'missing' ? '保存的副本已找不到。' : saveStatus.message)}</span>
+      <button type="button" className="ent-btn sm" disabled={opening} onClick={() => void retryArchive()}><RefreshCw size={14} aria-hidden />重试保存</button>
+      {visible && saveStatus.state === 'failed' && saveStatus.alternateConfirmation &&
+        <button type="button" className="ent-btn sm" disabled={opening} onClick={() => void confirmAlternate(saveStatus.alternateConfirmation!)}>
+          <FolderOpen size={14} aria-hidden />仍保存到新位置
+        </button>}
+    </div> : null}
     {visible ? menu : null}
   </article>
 }

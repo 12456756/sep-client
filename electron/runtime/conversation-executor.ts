@@ -84,6 +84,9 @@ export interface ConversationExecutorOptions {
   workDiagnostics?: WorkFailureCapture
   createModelTrace?: ModelTraceFactory
   conversationArtifacts?: ConversationArtifactStorePort
+  beforeArtifact?: (owner: { memberId: string; enterpriseId: string }, taskId: string, title: string, workspace: string,
+    file: string, index: number, startedAt: number, finishedAt: number) => Promise<import('../../src/shared/result-files').ResultSaveIntent | undefined>
+  onArtifact?: (owner: { memberId: string; enterpriseId: string }, taskId: string, index: number) => void
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
 }
@@ -149,6 +152,7 @@ export class ConversationExecutor {
     const mediaEvidence = modelEvidence ? trackMediaToolFailureEvidence() : undefined
     let artifactDirectory: ConversationArtifactDirectory | undefined
     let artifactsScanned = false
+    const startedAt = Date.now()
     const knowledgeCancellation = new AbortController()
     const mediaSignal = queued.signal ? AbortSignal.any([knowledgeCancellation.signal, queued.signal]) : knowledgeCancellation.signal
     const persistRun = async (attachmentMetadata?: AttachmentView[]) => {
@@ -157,7 +161,7 @@ export class ConversationExecutor {
       await this.options.taskRunStore.create(scope, {
         taskId, runId, subscriptionId: queued.subscriptionId, modelId: employee.modelId,
         runtimeKey: `${queued.subscriptionId}:${employee.modelId}`, workspaceDir: task.workDir ?? this.options.workspaceRoot(),
-        prompt: queued.prompt, executionKind: 'conversation',
+        prompt: queued.prompt, executionKind: 'conversation', startedAt,
         ...(queued.knowledge ? { knowledge: queued.knowledge } : {}),
         ...(attachmentMetadata ? { attachmentMetadata } : {}),
       })
@@ -390,7 +394,7 @@ export class ConversationExecutor {
       await waitForMedia()
       diagnosticPhase = 'run-persistence'
       await this.options.events.drain(taskId)
-      await this.collectConversationArtifacts(taskId, runId, workspaceDir, artifactDirectory)
+      await this.collectConversationArtifacts(taskId, runId, workspaceDir, artifactDirectory, startedAt, scope)
       artifactsScanned = true
       if (!this.options.workers.isCurrent(active)) return
       await this.finalize(active, queued, scope, runCreated)
@@ -431,7 +435,7 @@ export class ConversationExecutor {
       })
       if (active) {
         if (!artifactsScanned) {
-          await this.collectConversationArtifacts(taskId, runId, task.workDir ?? this.options.workspaceRoot(), artifactDirectory)
+          await this.collectConversationArtifacts(taskId, runId, task.workDir ?? this.options.workspaceRoot(), artifactDirectory, startedAt, scope)
           artifactsScanned = true
         }
         await this.finalize(active, queued, scope, runCreated, error, diagnosticAvailable)
@@ -461,11 +465,22 @@ export class ConversationExecutor {
     runId: string,
     workspace: string,
     directory: ConversationArtifactDirectory | undefined,
+    startedAt: number,
+    scope: ReturnType<TaskManager['getCurrentUserScope']>,
   ): Promise<void> {
     if (!directory || directory.status === 'unsafe' || !this.options.conversationArtifacts) return
     try {
       const files = await this.options.conversationArtifacts.scan(workspace, taskId)
-      for (const file of files) await this.options.taskManager.addTaskFile(taskId, file)
+      const finishedAt = Date.now()
+      for (const file of files) {
+        let index: number | undefined
+        await this.options.taskManager.addTaskFile(taskId, file, scope ? async (task, path, position) => {
+          if (task.ownerId !== scope.memberId || task.ownerEnterpriseId !== scope.enterpriseId) return
+          index = position
+          return this.options.beforeArtifact?.(scope, taskId, task.title, workspace, path, position, startedAt, finishedAt)
+        } : undefined)
+        if (scope && index !== undefined) this.options.onArtifact?.(scope, taskId, index)
+      }
     } catch (error) {
       log.warn('conversation artifact scan failed', { taskId, runId,
         error: error instanceof Error ? error.message : String(error) })

@@ -58,6 +58,7 @@ function cloneTask(task: Task): Task {
   return { ...task,
     ...(task.scheduledOrigin ? { scheduledOrigin: { ...task.scheduledOrigin } } : {}),
     ...(task.scheduledAdmission ? { scheduledAdmission: { ...task.scheduledAdmission } } : {}),
+    ...(task.fileSaveIntents ? { fileSaveIntents: structuredClone(task.fileSaveIntents) } : {}),
     files: [...task.files], logs: task.logs.map(log => ({ ...log })) }
 }
 
@@ -591,13 +592,16 @@ export class TaskManager {
     this.notifyTaskUpdate(taskId)
   }
 
-  async addTaskFile(taskId: string, filePath: string): Promise<void> {
+  async addTaskFile(taskId: string, filePath: string, beforeSave?: (task: Readonly<Task>, path: string, index: number) => Promise<import('../../src/shared/result-files').ResultSaveIntent | undefined>): Promise<void> {
     let changed = false
     await this.commit(async nextTasks => {
       const nextTask = nextTasks.get(taskId)
       // C9：去重判断必须与写入同处一个闭包，否则并发两次同名文件都会被追加。
       if (!nextTask) return
       const index = await findTaskFileIndex(nextTask.workDir, nextTask.files, filePath)
+      const path = index < 0 ? filePath : nextTask.files[index]!
+      const intent = await beforeSave?.(nextTask, path, index < 0 ? nextTask.files.length : index)
+      if (intent) nextTask.fileSaveIntents = { ...nextTask.fileSaveIntents, [path]: intent }
       if (index >= 0) return
       nextTask.files.push(filePath)
       nextTask.logs.push({ timestamp: Date.now(), message: `生成文件: ${filePath}`, level: 'info' })

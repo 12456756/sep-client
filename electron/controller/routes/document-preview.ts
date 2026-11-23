@@ -17,7 +17,7 @@ export const documentPreviewRoutes = [
     const window = ctx.window()
     if (!window) throw new AppError('INVALID_STATE')
     const saved = await ctx.documentPreviews.saveCopy(input, async (name, format) => {
-      const selected = await dialog.showSaveDialog(window, { title: '另存 Word 文件', defaultPath: name,
+      const selected = await dialog.showSaveDialog(window, { title: '另存 Word 文件', defaultPath: await ctx.resultFiles?.saveDialogPath(input, name) ?? name,
         filters: [{ name: 'Word', extensions: [format] }] })
       return selected.canceled ? null : selected.filePath ?? null
     })

@@ -3,7 +3,7 @@ import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, No
 import type { AutoPlanningInput, PlanningRecordChange, PlanningRecordSnapshot, PlanningRecordSummary } from './auto-planning'
 import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
 import type { DocumentPreview, DocumentPreviewRequest } from './document-preview'
-import type { ResultFileAction, ResultFileRequest, ResultFilePreview } from './result-files'
+import type { ResultArchiveSettings, ResultArchiveStatus, ResultFileAction, ResultFileRequest, ResultFilePreview } from './result-files'
 import type { WindowCloseBehavior, WindowCloseCommand } from './window-close'
 import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from './speech-contracts'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
@@ -451,7 +451,8 @@ export interface ElectronAPI {
   saveWordCopy: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { cancelled?: boolean }>
   previewResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult & { data?: ResultFilePreview }>
   releaseResultFilePreview: (input: { url: string }) => Promise<IpcCommandResult>
-  revealResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult>
+  revealResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult & { archiveFailed?: boolean }>
+  getResultFileSaveStatus: (input: ResultFileRequest) => Promise<IpcCommandResult & { data?: ResultArchiveStatus }>
   runResultFileAction: (input: ResultFileAction) => Promise<IpcCommandResult & { cancelled?: boolean; data?: AttachmentImportSession }>
   openWorkDeliverable: (input: DocumentPreviewRequest) => Promise<IpcCommandResult>
   confirmArrangementNodes: (input: { taskId: string; nodeIds: string[] }) => Promise<IpcCommandResult>
@@ -480,6 +481,7 @@ export interface ElectronAPI {
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: (currentPath?: string) => Promise<SelectDirectoryResult>
   getDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
+  resultArchiveSettings: (action: 'get' | 'choose' | 'use-default' | 'open') => Promise<IpcCommandResult & { data?: ResultArchiveSettings }>
   selectDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
   clearDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
   onPiEvent: (callback: (event: TaskExecutionEvent) => void) => () => void

@@ -7,6 +7,7 @@
 import { mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { TaskStatus, type ClientTask, type ClientTaskLog } from '../../src/shared/types'
+import { resultSaveIntentSchema } from '../../src/shared/result-files'
 import { describeError } from '../common/redact'
 import { logger } from '../common/logger'
 import { pathExists, readJsonWithBackup, writeJsonAtomic } from './atomic-file'
@@ -84,6 +85,12 @@ function parseTask(value: unknown): ClientTask | null {
     error: item.error,
     // Array positions are persistent file IDs, including those already referenced by the archive ledger.
     files: item.files.map(file => typeof file === 'string' ? file : ''),
+    ...(item.fileSaveIntents && typeof item.fileSaveIntents === 'object' ? {
+      fileSaveIntents: Object.fromEntries(Object.entries(item.fileSaveIntents).flatMap(([path, value]) => {
+        const intent = resultSaveIntentSchema.safeParse(value)
+        return intent.success ? [[path, intent.data] as const] : []
+      })),
+    } : {}),
     logs,
     progress: typeof item.progress === 'number' && Number.isFinite(item.progress)
       ? Math.max(0, Math.min(100, item.progress))

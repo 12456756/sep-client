@@ -8,6 +8,7 @@ import type { LoginFeedbackReason } from './login-feedback'
 import type { ArrangementBlockingIssue } from './arrangement-feedback'
 import type { MediaSpecFailureContext } from './media-spec-contract'
 import type { ApiDiagnostic } from './api-diagnostic'
+import type { ResultSaveIntent } from './result-files'
 
 // ──────────────────────────── Auth ─────────────────────────────
 
@@ -114,6 +115,7 @@ export interface ClientTask {
   completedAt: number | null
   error: string | null
   files: string[]
+  fileSaveIntents?: Record<string, ResultSaveIntent>
   logs: ClientTaskLog[]
   progress?: number
   ownerId: string

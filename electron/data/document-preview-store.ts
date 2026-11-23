@@ -39,6 +39,16 @@ export class DocumentPreviewStore {
     return { status: node.status, file, workspace: plan.workspace.path ?? '' }
   }
 
+  async deliverySaveIntents(scope: TaskOwnerScope, taskId: string) {
+    const [plan, checkpoint] = await Promise.all([this.plans.get(scope, taskId), this.checkpoints.get(scope, taskId)])
+    if (!plan || plan.mode === 'conversation' || !checkpoint || checkpoint.planHash !== plan.planHash) return []
+    return checkpoint.state.nodes.flatMap(node => node.status !== 'completed' ? [] : (node.delivery?.finalFiles ?? []).flatMap(file => {
+      const planned = plan.nodes.find(item => item.id === node.nodeId)?.deliverables?.find(item => item.id === file.id)
+      return file.saveIntent && planned?.path === file.path && planned.format === file.format
+        ? [{ nodeId: node.nodeId, deliverableId: file.id, intent: file.saveIntent }] : []
+    }))
+  }
+
   async getDeliveryPath(scope: TaskOwnerScope, taskId: string, nodeId: string, deliverableId: string) {
     const delivery = await this.getDelivery(scope, taskId, nodeId, deliverableId)
     if (!delivery || delivery.status !== 'completed') return null

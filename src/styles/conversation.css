@@ -18,6 +18,7 @@
 .ent-conversation-results .result-file-error, .ent-conversation-results-error { color: var(--ent-danger); font-size: var(--ent-fs-note); }
 .ent-say .result-file-error { margin: 0; padding: 0 12px 12px; border-radius: 0; background: transparent; color: var(--ent-danger); }
 .ent-conversation-results-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.result-file-save-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 12px 12px; font-size: var(--ent-fs-note); }
 .ent-message-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); }
 .ent-message-copy .ent-btn { min-height: 26px; padding: 3px 8px; font-size: var(--ent-fs-note); }
 .ent-chat-details, .ent-chat-files { margin-top: 14px; }

@@ -36,7 +36,8 @@ export const mediaRoutes = [
     const window = ctx.window()
     if (!window) throw appError('INTERNAL_ERROR')
     const extension = preview.mime === 'image/jpeg' ? 'jpg' : preview.mime === 'image/webp' ? 'webp' : 'png'
-    const selected = await dialog.showSaveDialog(window, { title: '导出图片', defaultPath: `${input.assetId}.${extension}`, filters: [{ name: '图片', extensions: [extension] }] })
+    const name = `图片.${extension}`
+    const selected = await dialog.showSaveDialog(window, { title: '导出图片', defaultPath: await ctx.resultFiles?.saveDialogPath(input, name) ?? name, filters: [{ name: '图片', extensions: [extension] }] })
     if (selected.canceled || !selected.filePath) return { success: true, cancelled: true }
     await selection.export(input.assetId, selected.filePath)
     return { success: true, cancelled: false }

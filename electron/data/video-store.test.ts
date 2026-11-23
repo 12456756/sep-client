@@ -47,6 +47,19 @@ async function fixture(receipted = true): Promise<{ store: VideoStore; root: str
 }
 
 describe('VideoStore disk durability and scope safety', () => {
+  it('recovers copy intent from the original video employee scope after reopening', async () => {
+    const f = await fixture()
+    const intent = { startedAt: 1, when: 2, title: 'Video', name: 'video.mp4', version: 'output-v1' }
+    const store = new VideoStore(f.root, async () => intent)
+    const asset = await store.saveOutput(scope, 'task-a', 'job-a', output(), stream(), signal())
+    const reopened = new VideoStore(f.root)
+    const owner = { enterpriseId: scope.enterpriseId, memberId: scope.memberId }
+    const record = { jobId: asset.jobId, outputId: asset.output.outputId }
+    assert.deepEqual(await reopened.saveIntents(owner, 'task-a', record), [{ ...record, subscriptionId: scope.subscriptionId, intent }])
+    assert.deepEqual(await reopened.saveIntents({ ...owner, memberId: 'other' }, 'task-a'), [])
+    assert.deepEqual(await reopened.readAsset(scope, 'task-a', record.jobId, record.outputId), MOCK_VIDEO_BYTES)
+  })
+
   it('rebuilds jobs, original receipts and validated MP4 assets from disk', async () => {
     const f = await fixture()
     const asset = await f.store.saveOutput(scope, 'task-a', 'job-a', output(), stream(), signal())

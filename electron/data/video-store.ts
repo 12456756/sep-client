@@ -3,9 +3,10 @@ import { join } from 'node:path'
 import { rm } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { videoOutputSchema, videoOutputExtension, type VideoOutput } from '../../src/shared/video-media'
+import type { ResultSaveIntent } from '../../src/shared/result-files'
 import { assertVideoJobUpdate, localVideoAssetSchema, localVideoJobSchema, videoLocalIdSchema, videoScopeSchema,
   type LocalVideoAsset, type LocalVideoJob, type VideoAssetState, type VideoScope, type VideoStorePort } from '../domain/video-media'
-import { encodeTaskScopeSegment, ScopePath } from './scope-path'
+import { encodeTaskScopeSegment, ScopePath, type TaskOwnerScope } from './scope-path'
 import { VideoFiles, VideoIntegrityError, VideoPersistenceError, videoFileMissing, videoSha256, MAX_VIDEO_BYTES } from './video-files'
 import { WriteChain } from './write-chain'
 
@@ -15,7 +16,7 @@ const writes = new WriteChain()
 export class VideoStore implements VideoStorePort {
   private readonly files: VideoFiles
   private readonly paths: ScopePath
-  constructor(userDataDir: string) {
+  constructor(userDataDir: string, private readonly beforeOutputCommit?: (job: LocalVideoJob, asset: LocalVideoAsset) => Promise<ResultSaveIntent | undefined>) {
     this.files = new VideoFiles(userDataDir)
     this.paths = new ScopePath(this.files.root)
   }
@@ -200,6 +201,32 @@ export class VideoStore implements VideoStorePort {
       return assets
     })
   }
+
+  async saveIntents(owner: TaskOwnerScope, taskId: string, request?: { jobId: string; outputId: string }) {
+    const records = []
+    for (const directory of await this.files.names(join(this.paths.ownerRoot(owner), 'video', 'v1'))) {
+      const subscriptionId = Buffer.from(directory, 'base64url').toString('utf8')
+      const scope = videoScopeSchema.safeParse({ ...owner, subscriptionId })
+      if (!scope.success || Buffer.from(subscriptionId, 'utf8').toString('base64url') !== directory) continue
+      const matching = await this.locked(scope.data, async () => {
+        if (request) {
+          const asset = await this.record(scope.data, taskId, request.jobId, request.outputId)
+          return asset?.saveIntent ? [asset] : []
+        }
+        const assets: LocalVideoAsset[] = []
+        for (const id of this.manifestIds(await this.files.names(join(this.task(scope.data, taskId), 'assets')), true)) {
+          const file = this.file(scope.data, taskId, 'assets', id)
+          const value = await this.files.json(file, localVideoAssetSchema) ?? await this.files.json(`${file}.commit`, localVideoAssetSchema)
+          if (!value?.saveIntent || value.localAssetId !== id) continue
+          const asset = await this.record(scope.data, taskId, value.jobId, value.output.outputId)
+          if (asset?.saveIntent) assets.push(asset)
+        }
+        return assets
+      })
+      for (const asset of matching) if (asset.saveIntent) records.push({ jobId: asset.jobId, outputId: asset.output.outputId, subscriptionId, intent: asset.saveIntent })
+    }
+    return records
+  }
   async readAsset(scope: VideoScope, taskId: string, jobId: string, outputId: string): Promise<Uint8Array> {
     return this.locked(scope, async () => {
       const asset = await this.asset(scope, taskId, jobId, outputId)
@@ -239,6 +266,8 @@ export class VideoStore implements VideoStorePort {
       try {
         await this.files.stream(part, stream, output, signal)
         await this.files.verify(part, output)
+        const intent = !existing ? await this.beforeOutputCommit?.(job, asset) : undefined
+        if (intent) asset.saveIntent = intent
         signal.throwIfAborted()
         await this.files.writeJson(`${manifest}.commit`, asset)
         signal.throwIfAborted()

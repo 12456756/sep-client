@@ -52,7 +52,8 @@ export const videoRoutes = [
     const window = ctx.window()
     if (!window) throw appError('INTERNAL_ERROR')
     const extension = videoOutputExtension(preview.mimeType)
-    const selected = await dialog.showSaveDialog(window, { title: '导出视频', defaultPath: `${input.outputId}.${extension}`, filters: [{ name: '视频', extensions: [extension] }] })
+    const name = `视频.${extension}`
+    const selected = await dialog.showSaveDialog(window, { title: '导出视频', defaultPath: await ctx.resultFiles?.saveDialogPath(input, name) ?? name, filters: [{ name: '视频', extensions: [extension] }] })
     if (selected.canceled || !selected.filePath) return { success: true, cancelled: true }
     await selection.export(input.jobId, input.outputId, selected.filePath)
     return { success: true, cancelled: false }

@@ -547,9 +547,15 @@ describe('C9 — check-then-commit 会歪曲错误码，并留下竞态窗口', 
     const task = await manager.createTask('t', 'prompt', alias)
     await manager.addTaskFile(task.id, 'other/Report.md')
     await manager.addTaskFile(task.id, 'Report.md')
-    const register = (path: string) => manager.addTaskFile(task.id, path)
+    const indices: number[] = []
+    const register = (path: string) => manager.addTaskFile(task.id, path, async (_task, stored, index) => {
+      assert.equal(stored, 'Report.md')
+      indices.push(index)
+      return undefined
+    })
     const alternate = process.platform === 'win32' ? 'REPORT.MD' : 'Report.md'
     await Promise.all([register(join(await realpath(work), alternate)), register(join(alias, alternate))])
+    assert.deepEqual(indices, [1, 1])
     assert.deepEqual((await manager.getTask(task.id))?.files, ['other/Report.md', 'Report.md'])
   })
 })

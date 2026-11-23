@@ -15,7 +15,7 @@ import { ConversationArtifactStore } from '../data/conversation-artifact-store'
 import type { ConversationArtifactStorePort } from '../domain/conversation-artifacts'
 import type { TaskManager } from './task-manager'
 import { WorkspaceLockManager } from './workspace-lock-manager'
-import { ConversationExecutor } from './conversation-executor'
+import { ConversationExecutor, type ConversationExecutorOptions } from './conversation-executor'
 import { RunQueue } from './run-queue'
 import { EventPipeline } from './run-events'
 import { createRunCompletion, WorkerRegistry } from './run-workers'
@@ -34,7 +34,7 @@ import { runtimeFeedback, runtimeFailureEvent, sanitizeRuntimeErrorEvent } from 
 import { runtimeFailureNoticeSchema } from '../../src/shared/runtime-feedback'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
-import { ArrangementExecutor } from './arrangement-executor'
+import { ArrangementExecutor, type ArrangementExecutionOptions } from './arrangement-executor'
 import { WriteChain } from '../data/write-chain'
 import type { ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
 import { createArrangementExecutionState, confirmArrangementNode, interruptArrangement, resumeArrangement, retryArrangementNode, retryArrangementEmployeeReplacement, markArrangementNodeWaitingForEmployee, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
@@ -81,6 +81,9 @@ function filePathFromInput(input: unknown): string | null {
 }
 
 export interface TaskRuntimeOptions {
+  beforeArtifact?: ConversationExecutorOptions['beforeArtifact']
+  onArtifact?: ConversationExecutorOptions['onArtifact']
+  beforeNodeCompletion?: ArrangementExecutionOptions['beforeNodeCompletion']
   connectorBinding?: (owner: import('../data/scope-path').TaskOwnerScope) => Promise<import('../domain/connectors').ConnectorBinding | undefined>
   onConversationSettled?: (taskId: string, runId: string, owner: { memberId: string; enterpriseId: string }) => Promise<void>
   createModelTrace?: ModelTraceFactory
@@ -119,6 +122,7 @@ export class TaskRuntime {
   private readonly getRefreshToken: () => string
   private readonly onAuthenticationRequired: () => void
   private readonly onEvent: (event: TaskExecutionEvent) => void
+  private readonly beforeNodeCompletion?: TaskRuntimeOptions['beforeNodeCompletion']
   private readonly resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   private readonly authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   private readonly authorizeScheduledEmployee: (subscriptionId: string, modelId: string) => Promise<EmployeeRuntimeConfig>
@@ -166,6 +170,7 @@ export class TaskRuntime {
     this.getRefreshToken = options.getRefreshToken
     this.onAuthenticationRequired = options.onAuthenticationRequired
     this.onEvent = options.onEvent
+    this.beforeNodeCompletion = options.beforeNodeCompletion
     this.resolveEmployee = options.resolveEmployee
     this.authorizeModel = options.authorizeModel
     this.authorizeScheduledModel = options.authorizeScheduledModel ?? (async () => { throw new AppError('MODEL_NOT_ALLOWED') })
@@ -233,6 +238,8 @@ export class TaskRuntime {
       taskManager: this.taskManager,
       taskRunStore: this.taskRunStore,
       conversationArtifacts: options.conversationArtifactStore ?? new ConversationArtifactStore(),
+      beforeArtifact: options.beforeArtifact,
+      onArtifact: options.onArtifact,
       workPlanStore: this.workPlanStore,
       createWorker: this.createWorker,
       getRefreshToken: this.getRefreshToken,
@@ -1008,6 +1015,7 @@ export class TaskRuntime {
         onAuthenticationRequired: this.onAuthenticationRequired,
         onApprovalRequest: request => this.approvals.request(request),
         onEvent: event => this.enqueueEvent(event),
+        beforeNodeCompletion: this.beforeNodeCompletion,
         authorizeEmployee: (subscriptionId, modelId) => plan.scheduledOrigin?.execution === 'general'
           ? this.authorizeScheduledModel(modelId ?? '', subscriptionId)
           : plan.scheduledOrigin
