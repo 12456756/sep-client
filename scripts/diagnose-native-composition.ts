@@ -6,7 +6,9 @@ import { compositionFilters, resolveComposition } from '../electron/runtime/loca
 
 const executable = join(resolve(process.argv[2]), 'ffmpeg')
 const directory = mkdtempSync(join(tmpdir(), 'sep-native-composition-'))
-const run = (args: string[]) => execFileSync(executable, ['-v', 'error', '-nostdin', ...args], { maxBuffer: 20 * 1024 * 1024 })
+const cpu = process.argv[3] === 'scalar' ? ['-cpuflags', '0'] : []
+const run = (args: string[]) => execFileSync(executable, ['-v', 'error', '-nostdin', ...cpu, ...args], { maxBuffer: 20 * 1024 * 1024 })
+console.log(JSON.stringify({ cpu }))
 try {
   const photo = join(directory, 'photo.png')
   const video = join(directory, 'video.mp4')
