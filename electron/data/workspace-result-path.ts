@@ -1,10 +1,44 @@
 import { lstat, realpath } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { isSafeDeliveryPath } from '../domain/arrangement-plan'
 import { ResultFilePathError, resultFileSystemError } from '../errors/result-file-path-error'
 
 function inside(relativePath: string): boolean {
   return !!relativePath && relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath)
+}
+
+function samePathSpelling(requested: string, actual: string): boolean {
+  return process.platform === 'win32' ? relative(requested, actual) === '' : requested === actual
+}
+
+/** Resolve an existing child of a canonical directory without accepting a link or a different parent. */
+export async function resolveUnlinkedChild(parent: string, name: string, kind: 'file' | 'directory') {
+  const requested = join(parent, name)
+  const stat = await lstat(requested)
+  if (stat.isSymbolicLink()) throw new ResultFilePathError('link')
+  if (kind === 'directory' ? !stat.isDirectory() : !stat.isFile()) throw new ResultFilePathError('notFile')
+  const path = await realpath(requested)
+  if (dirname(path) !== parent || !samePathSpelling(requested, path)) {
+    throw new ResultFilePathError('outside')
+  }
+  return { path, stat }
+}
+
+/** Managed paths, unlike configured workspace roots, must not traverse aliases at any level. */
+export async function resolveUnlinkedDirectory(input: string): Promise<string> {
+  if (!isAbsolute(input)) throw new ResultFilePathError('invalidPath')
+  const absolute = resolve(input)
+  const { root } = parse(absolute)
+  let current = root
+  for (const name of absolute.slice(root.length).split(sep).filter(Boolean)) {
+    current = join(current, name)
+    const stat = await lstat(current)
+    if (stat.isSymbolicLink()) throw new ResultFilePathError('link')
+    if (!stat.isDirectory()) throw new ResultFilePathError('notFile')
+  }
+  const path = await realpath(absolute)
+  if (!samePathSpelling(absolute, path)) throw new ResultFilePathError('outside')
+  return path
 }
 
 /** Trust the configured workspace root, but reject links within its result paths. */

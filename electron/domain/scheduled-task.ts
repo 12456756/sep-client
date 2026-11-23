@@ -185,6 +185,19 @@ export function dueScheduleWindow(first: number, now: number, rule: RecurrenceRu
 export function nextWakeAt(now: number, times: readonly number[]): number | null {
   return times.length ? Math.max(now, Math.min(now + 60000, ...times)) : null
 }
+export function scheduledWorkspaceErrorMessage(code: unknown): string | undefined {
+  switch (code) {
+    case 'ENOTDIR':
+    case 'ELOOP':
+    case 'WORKSPACE_INVALID': return '工作目录不可用或包含不允许的链接，请检查目录设置。'
+    case 'ENOENT': return '找不到工作目录，请检查目录是否已移动或删除。'
+    case 'EACCES':
+    case 'EPERM': return '工作目录没有所需的读写权限，请检查权限或选择其他目录。'
+    case 'ENOSPC': return '工作目录所在磁盘空间不足，请释放空间后重试。'
+    default: return undefined
+  }
+}
+
 export function classifyScheduledError(error: unknown): ScheduledIssue {
   if (error instanceof ScheduledDeliveryContractError) return { code: 'DELIVERY_CONTRACT_INVALID', message: error.message, action: 'fail' }
   const value = error && typeof error === 'object' ? error as Record<string, unknown> : {}
@@ -205,7 +218,9 @@ export function classifyScheduledError(error: unknown): ScheduledIssue {
   if (code === 'AUTH_REQUIRED' || status === 401) {
     return { code: 'AUTH_REQUIRED', message: '登录状态已失效，定时任务正在等待重新登录。登录后请手动检查并恢复本次执行。', action: 'auth' }
   }
-  if (status === 403 || ['MODEL_NOT_ALLOWED', 'EMPLOYEE_UNAVAILABLE', 'PERMISSION_DENIED', 'WORKSPACE_INVALID', 'ENOSPC', 'EACCES', 'EPERM', 'ENOENT'].includes(code)) {
+  const workspaceMessage = scheduledWorkspaceErrorMessage(code)
+  if (workspaceMessage) return { code, message: workspaceMessage, action: 'blocked' }
+  if (status === 403 || code === 'PERMISSION_DENIED') {
     return { code: code || 'PERMISSION_DENIED', message: '员工、模型、技能授权或工作目录不可用，请检查配置。', action: 'blocked' }
   }
   return { code: code || 'EXECUTION_UNCERTAIN', message: '无法确认执行状态，请查看工作详情并核查，未自动重新执行。', action: 'review' }

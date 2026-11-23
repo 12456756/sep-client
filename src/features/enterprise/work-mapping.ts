@@ -250,13 +250,13 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
   const deliverables = kind === 'flow' && (effectiveExecution?.nodes.some(node => node.finalFiles.length)
     || plan?.nodes.some(node => node.deliverables?.length))
     ? finalDeliverables(plan, effectiveExecution, task.workDir ?? plan?.workspace.path ?? null)
-    : task.files.map((file, index) => ({
+    : task.files.flatMap((file, index) => file ? [{
       id: `${task.id}-file-${index}`,
       name: file.split(/[\\/]/).pop() || file,
       path: file,
       note: '由员工在工作过程中产出',
       format: /\.([^.\\/]+)$/.exec(file)?.[1].toLowerCase() ?? '',
-    }));
+    }] : []);
   return {
     id: task.id,
     ...(task.scheduledOrigin ? { scheduledOrigin: task.scheduledOrigin } : {}),
@@ -327,6 +327,7 @@ function buildTimeline(task: ClientTask, kind: 'conversation' | 'flow', employee
     });
   });
   task.files.forEach((file, index) => {
+    if (!file) return;
     entries.push({
       id: `${task.id}-deliver-${index}`,
       at: task.completedAt ?? task.startedAt ?? task.createdAt,

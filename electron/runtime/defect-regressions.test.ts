@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus } from '../../src/shared/types'
@@ -531,6 +531,26 @@ describe('C9 — check-then-commit 会歪曲错误码，并留下竞态窗口', 
     const stored = await manager.getTask(task.id)
     assert.deepEqual(stored?.files, ['out/report.md'], '并发调用把同一个文件追加了多次')
     assert.equal(stored?.logs.filter(log => log.message.includes('out/report.md')).length, 1)
+  })
+
+  it('reuses the stored index for verified alternate paths without merging distinct files', async () => {
+    const userData = await makeUserDataDir()
+    const work = join(userData, 'work')
+    const alias = join(userData, 'alias')
+    await mkdir(join(work, 'other'), { recursive: true })
+    await symlink(work, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    await writeFile(join(work, 'Report.md'), 'same')
+    await writeFile(join(work, 'other', 'Report.md'), 'different')
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('t', 'prompt', alias)
+    await manager.addTaskFile(task.id, 'other/Report.md')
+    await manager.addTaskFile(task.id, 'Report.md')
+    const register = (path: string) => manager.addTaskFile(task.id, path)
+    const alternate = process.platform === 'win32' ? 'REPORT.MD' : 'Report.md'
+    await Promise.all([register(join(await realpath(work), alternate)), register(join(alias, alternate))])
+    assert.deepEqual((await manager.getTask(task.id))?.files, ['other/Report.md', 'Report.md'])
   })
 })
 

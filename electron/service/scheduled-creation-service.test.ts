@@ -212,6 +212,18 @@ test('stale clarification revisions cannot overwrite newer persisted answers', a
   } finally { h.stop() }
 })
 
+test('reports workspace permission failures without exposing system paths', async () => {
+  const h = harness()
+  try {
+    h.setValidate(async () => { throw Object.assign(new Error('private folder'), { code: 'EACCES' }) })
+    const result = await h.creation.submit(request)
+    assert.equal(result.stage, 'failed')
+    assert.match(result.error ?? '', /读写权限/)
+    assert.doesNotMatch(result.error ?? '', /private folder/)
+    assert.equal(h.data.definitions.length, 0)
+  } finally { h.stop() }
+})
+
 test('a due occurrence still uses the existing scheduled execution and repeated scans launch only once', async () => {
   const h = harness()
   try {

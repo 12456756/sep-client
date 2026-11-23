@@ -4,7 +4,7 @@ import { scheduledCreationRequestSchema, scheduleInterpretationSchema, type Sche
 import type { ScheduleInput } from '../../src/shared/scheduled-tasks'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { TaskOwnerScope } from '../data/scope-path'
-import { occurrenceId } from '../domain/scheduled-task'
+import { occurrenceId, scheduledWorkspaceErrorMessage } from '../domain/scheduled-task'
 import { scheduleCandidateInput, ScheduleCandidateError } from '../domain/scheduled-creation'
 import { cronPreview } from '../../src/shared/cron-schedule'
 import { AppError } from '../errors/app-error'
@@ -46,6 +46,15 @@ export class ScheduledCreationService {
     if (generation !== this.generation || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
   }
   private key(scope: TaskOwnerScope, id: string): string { return JSON.stringify([scope.enterpriseId, scope.memberId, id]) }
+  private async validateWorkspace(workDir: string, label: string): Promise<void> {
+    try { await withTimeout(this.options.validateWorkspace(workDir), 15000, label) }
+    catch (error) {
+      const errno = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+      const message = scheduledWorkspaceErrorMessage(errno)
+      if (!message) throw error
+      throw new AppError('WORKSPACE_INVALID', { message, cause: error })
+    }
+  }
   submit(raw: ScheduledCreationRequest): Promise<ScheduledCreation> {
     const request = scheduledCreationRequestSchema.parse(raw), scope = this.scope(), generation = this.generation
     const { requestId, expectedRevision: _revision, ...input } = request
@@ -115,7 +124,7 @@ export class ScheduledCreationService {
       if (!planningEmployee) throw new AppError('MODEL_NOT_ALLOWED')
       await withTimeout(this.options.authorize(planningEmployee.subscriptionId, input.modelId), 30000, 'scheduled-creation-authorization')
       guard()
-      await withTimeout(this.options.validateWorkspace(input.workDir), 15000, 'scheduled-creation-workspace')
+      await this.validateWorkspace(input.workDir, 'scheduled-creation-workspace')
       guard()
       if (record.parsedSubmissionKey !== submissionKey || !record.interpretation) {
         await change(item => { item.stage = 'parsing'; item.error = null })
@@ -189,7 +198,7 @@ export class ScheduledCreationService {
         await withTimeout(this.options.authorize(node.subscriptionId, node.modelId), 30000, 'scheduled-creation-final-authorization')
         guard()
       }
-      await withTimeout(this.options.validateWorkspace(input.workDir), 15000, 'scheduled-creation-final-workspace')
+      await this.validateWorkspace(input.workDir, 'scheduled-creation-final-workspace')
       guard()
       await change(item => { item.stage = 'enabling' })
       try { await this.options.schedules.confirmCreation(definition.id, definition.revision, record.id, record.revision, guard) }
@@ -216,7 +225,7 @@ export class ScheduledCreationService {
       const code = error instanceof AppError ? error.code : 'CREATION_FAILED'
       const message = code === 'MODEL_NOT_ALLOWED' ? '当前模型未获授权，或指定员工不能使用此模型，请调整模型后重试。'
         : code === 'EMPLOYEE_UNAVAILABLE' ? '指定员工不在当前可用员工中，请检查授权或补充员工信息。'
-          : code === 'WORKSPACE_INVALID' ? '工作目录不可访问，请重新选择目录后继续。'
+          : error instanceof AppError && error.code === 'WORKSPACE_INVALID' ? error.userMessage
             : code === 'AUTH_REQUIRED' ? '请重新登录后继续创建。'
               : '定时任务创建未完成，输入和已保存进度已保留，可继续重试。'
       record = await this.options.repository.update(scope, data => {

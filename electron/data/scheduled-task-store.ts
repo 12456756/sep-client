@@ -1,15 +1,24 @@
-import { mkdir, readFile, readdir } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { access, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { z } from 'zod'
 import { scheduleInputSchema, type ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
 import { scheduledCreationSchema } from '../../src/shared/scheduled-creation'
 import { scheduledPlanSchema } from '../domain/scheduled-task'
 import { AppError } from '../errors/app-error'
+import { ResultFilePathError } from '../errors/result-file-path-error'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 import { writeJsonAtomic } from './atomic-file'
 import { WriteChain } from './write-chain'
 import type { WorkPlan } from '../domain/arrangement-plan'
 import { sourceFingerprint, validateScheduledSource } from '../domain/scheduled-work-source'
+import { resolveUnlinkedChild } from './workspace-result-path'
+
+function workspaceError(error: unknown): unknown {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+  return error instanceof ResultFilePathError || code === 'ENOTDIR' || code === 'ELOOP'
+    ? new AppError('WORKSPACE_INVALID', { cause: error }) : error
+}
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const time = z.number().int().nonnegative()
@@ -91,18 +100,23 @@ export class ScheduledTaskStore implements ScheduledRepository {
   }
   async prepareWorkspace(root: string, executionId: string): Promise<string> {
     const actualRoot = await this.validateWorkspace(root)
-    const { realpath } = await import('node:fs/promises')
-    const directory = join(actualRoot, `scheduled-${id.parse(executionId)}`)
-    await mkdir(directory, { recursive: true })
-    if (await realpath(directory) !== directory) throw new AppError('WORKSPACE_INVALID')
-    return directory
+    const name = `scheduled-${id.parse(executionId)}`
+    try {
+      await mkdir(join(actualRoot, name)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'EEXIST') throw error
+      })
+      const directory = (await resolveUnlinkedChild(actualRoot, name, 'directory')).path
+      await access(directory, constants.R_OK | constants.W_OK)
+      return directory
+    } catch (error) { throw workspaceError(error) }
   }
   async validateWorkspace(root: string): Promise<string> {
     if (!isAbsolute(root)) throw new AppError('WORKSPACE_INVALID')
-    const { access, realpath, stat } = await import('node:fs/promises')
-    const { constants } = await import('node:fs')
-    if (!(await stat(root)).isDirectory()) throw new AppError('WORKSPACE_INVALID')
-    await access(root, constants.R_OK | constants.W_OK)
-    return realpath(root)
+    try {
+      const directory = await realpath(root)
+      if (!(await stat(directory)).isDirectory()) throw new AppError('WORKSPACE_INVALID')
+      await access(directory, constants.R_OK | constants.W_OK)
+      return directory
+    } catch (error) { throw workspaceError(error) }
   }
 }

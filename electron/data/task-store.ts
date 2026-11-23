@@ -12,7 +12,6 @@ import { logger } from '../common/logger'
 import { pathExists, readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 import { WriteChain } from './write-chain'
-import { uniqueTaskFiles } from './task-file-path'
 
 const log = logger.child('task-store')
 
@@ -83,7 +82,8 @@ function parseTask(value: unknown): ClientTask | null {
     startedAt: item.startedAt,
     completedAt: item.completedAt,
     error: item.error,
-    files: uniqueTaskFiles(item.workDir, item.files.filter((file): file is string => typeof file === 'string')),
+    // Array positions are persistent file IDs, including those already referenced by the archive ledger.
+    files: item.files.map(file => typeof file === 'string' ? file : ''),
     logs,
     progress: typeof item.progress === 'number' && Number.isFinite(item.progress)
       ? Math.max(0, Math.min(100, item.progress))

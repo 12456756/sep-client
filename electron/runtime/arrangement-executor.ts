@@ -13,6 +13,7 @@ import { WriteChain } from '../data/write-chain'
 import { recoverArrangementSession } from '../data/arrangement-session-recovery'
 import { createScheduledEmptyText, resolveDeliveryFiles, validateDeliveryFiles } from '../data/arrangement-delivery-files'
 import { DeliveryExecutionError, deliveryPlanIssues, parseRecordedDeliverySubmission, type DeliveryIssue, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
+import { scheduledWorkspaceErrorMessage } from '../domain/scheduled-task'
 import { ArrangementDeliveryValidation, buildArrangementDeliveryCorrection, resolveArrangementNodeFailure } from './arrangement-delivery-validation'
 import type { TaskExecutionEvent, ArrangementEmployeeReplacement } from '../../src/shared/types'
 import type { ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
@@ -620,9 +621,11 @@ export class ArrangementExecutor {
           await createScheduledEmptyText(workspaceDir, plan.scheduledOrigin!.occurrenceId, file.path, checkControl)
         } catch (error) {
           checkControl()
-          const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
-          const issue: DeliveryIssue = { code: code === 'EEXIST' ? 'FILE_ALREADY_EXISTS' : 'LOCAL_FILE_CREATION_FAILED', path: file.path, deliverableId: file.id,
-            message: code === 'EEXIST' ? '同名文件已存在，未覆盖。' : '无法创建空白文本，请检查成果目录、权限和磁盘状态。' }
+          const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : ''
+          const workspaceMessage = scheduledWorkspaceErrorMessage(code)
+          const issue: DeliveryIssue = { code: code === 'EEXIST' ? 'FILE_ALREADY_EXISTS' : workspaceMessage ? code : 'LOCAL_FILE_CREATION_FAILED',
+            path: file.path, deliverableId: file.id, message: code === 'EEXIST' ? '同名文件已存在，未覆盖。'
+              : workspaceMessage ?? '无法创建空白文本，请检查成果目录、权限和磁盘状态。' }
           await saveDelivery({ ...delivery, issues: [issue], firstIssue: issue, correctionStopped: true })
           throw new DeliveryExecutionError(issue.message)
         }

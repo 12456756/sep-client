@@ -1,6 +1,8 @@
-import { lstat, mkdir, readdir, realpath } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { mkdir, readdir, realpath } from 'node:fs/promises'
+import { join, relative, resolve, sep } from 'node:path'
 import type { ConversationArtifactDirectory, ConversationArtifactStorePort } from '../domain/conversation-artifacts'
+import { ResultFilePathError } from '../errors/result-file-path-error'
+import { resolveUnlinkedChild } from './workspace-result-path'
 
 const MAX_DEPTH = 8
 const MAX_FILES = 1000
@@ -25,26 +27,24 @@ export class ConversationArtifactStore implements ConversationArtifactStorePort 
     const artifactRoot = await ensureDirectory(root, ['成果', taskId], false)
     const files: string[] = []
 
-    const visit = async (directory: string, segments: string[], depth: number): Promise<void> => {
+    const visit = async (directory: string, depth: number): Promise<void> => {
       if (depth > MAX_DEPTH || files.length >= MAX_FILES) return
       const entries = await readdir(directory, { withFileTypes: true })
       entries.sort((left, right) => left.name.localeCompare(right.name))
       for (const entry of entries) {
         if (files.length >= MAX_FILES || temporaryName.test(entry.name)) continue
-        const path = join(directory, entry.name)
-        const info = await lstat(path)
-        if (info.isSymbolicLink()) continue
-        const actual = await realpath(path)
-        assertContained(root, actual)
-        if (info.isDirectory()) {
-          await visit(actual, [...segments, entry.name], depth + 1)
-        } else if (info.isFile()) {
-          files.push([...segments, entry.name].join('/'))
-        }
+        if (!entry.isDirectory() && !entry.isFile()) continue
+        const resolved = await resolveUnlinkedChild(directory, entry.name, entry.isDirectory() ? 'directory' : 'file').catch(error => {
+          if (isMissing(error) || error instanceof ResultFilePathError) return null
+          throw error
+        })
+        if (!resolved) continue
+        if (entry.isDirectory()) await visit(resolved.path, depth + 1)
+        else files.push(relative(root, resolved.path).split(sep).join('/'))
       }
     }
 
-    await visit(artifactRoot, ['成果', taskId], 0)
+    await visit(artifactRoot, 0)
     return files.sort((left, right) => left.localeCompare(right))
   }
 }
@@ -52,27 +52,22 @@ export class ConversationArtifactStore implements ConversationArtifactStorePort 
 async function ensureDirectory(root: string, segments: string[], create: boolean): Promise<string> {
   let current = root
   for (const segment of segments) {
-    current = join(current, segment)
     try {
-      await lstat(current)
+      current = (await resolveUnlinkedChild(current, segment, 'directory')).path
     } catch (error) {
+      if (error instanceof ResultFilePathError) throw new Error('UNSAFE_PATH', { cause: error })
       if (!create || !isMissing(error)) throw error
-      try { await mkdir(current) } catch (mkdirError) {
+      try { await mkdir(join(current, segment)) } catch (mkdirError) {
         if (!isAlreadyExists(mkdirError)) throw mkdirError
       }
+      try { current = (await resolveUnlinkedChild(current, segment, 'directory')).path }
+      catch (recheck) {
+        if (recheck instanceof ResultFilePathError) throw new Error('UNSAFE_PATH', { cause: recheck })
+        throw recheck
+      }
     }
-    const info = await lstat(current)
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('UNSAFE_PATH')
-    const actual = await realpath(current)
-    if (actual !== current) throw new Error('UNSAFE_PATH')
-    assertContained(root, actual)
   }
   return current
-}
-
-function assertContained(root: string, path: string): void {
-  const rel = relative(root, path)
-  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('UNSAFE_PATH')
 }
 
 function isSafeTaskId(value: string): boolean {

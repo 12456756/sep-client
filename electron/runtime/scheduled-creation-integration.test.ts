@@ -1,9 +1,11 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
+import { promises as fs } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { ScheduleInterpretation, ScheduledCreationRequest } from '../../src/shared/scheduled-creation'
 import type { ArrangementWorkPlan, EmployeeWorkPlan } from '../../src/shared/scheduled-tasks'
 import { localDateTime } from '../../src/shared/zoned-time'
@@ -172,6 +174,42 @@ for (const mode of ['general', 'empty-text'] as const) {
       assert.equal(failed.status, 'failed')
       assert.equal(failed.error?.code, 'FILE_ALREADY_EXISTS')
       assert.equal(await readFile(target, 'utf8'), 'keep existing data')
+
+      const open = fs.open
+      const failures = [
+        ['ENOENT', 'ENOENT', '找不到工作目录'],
+        ['ENOTDIR', 'ENOTDIR', '工作目录不可用'],
+        ['EACCES', 'EACCES', '没有所需的读写权限'],
+        ['EPERM', 'EPERM', '没有所需的读写权限'],
+        ['ENOSPC', 'ENOSPC', '磁盘空间不足'],
+        ['EIO', 'LOCAL_FILE_CREATION_FAILED', '无法创建空白文本'],
+      ] as const
+      for (const [errno, code, message] of failures) {
+        now += 86400000
+        const workspace = await restarted.storage.prepareWorkspace(root, occurrenceId(definition.id, now))
+        const openFailure = t.mock.method(fs, 'open', async (...args: Parameters<typeof open>) => {
+          const [path, flags] = args
+          if (typeof path === 'string' && dirname(path) === workspace && path.endsWith('.txt') && flags === 'wx') {
+            throw Object.assign(new Error(`Failed to write ${path}`), { code: errno, path })
+          }
+          return open(...args)
+        })
+        syncBuiltinESMExports()
+        try {
+          await restarted.schedules.scan()
+          const attempt = (await restarted.schedules.list()).occurrences.find(item => item.scheduledAt === now)!
+          await waitForTerminalWork(restarted, attempt.taskId)
+          await restarted.schedules.scan()
+          const persisted = (await restarted.checkpoints.get(scope, attempt.taskId))?.state.nodes[0]?.delivery?.firstIssue
+          assert.equal(persisted?.code, code)
+          assert.ok(persisted.message.includes(message))
+          assert.ok(!JSON.stringify(persisted).includes('Failed to write'))
+          assert.ok(!JSON.stringify(persisted).includes(JSON.stringify(workspace).slice(1, -1)))
+          const outcome = (await restarted.schedules.list()).occurrences.find(item => item.id === attempt.id)!
+          assert.equal(outcome.status, 'failed')
+          assert.equal(outcome.error?.code, code)
+        } finally { openFailure.mock.restore(); syncBuiltinESMExports() }
+      }
       assert.equal(authorizeCalls, 0)
     }
   })

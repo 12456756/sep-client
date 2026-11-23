@@ -26,6 +26,17 @@ test('only explicit transient pre-execution failures permit automatic retries', 
   assert.equal(classifyScheduledError(new Error('unknown fault')).action, 'review')
 })
 
+test('directory, permission and disk space errors have distinct recovery guidance', () => {
+  for (const [code, message] of [['WORKSPACE_INVALID', /工作目录/], ['ENOENT', /移动或删除/],
+    ['EACCES', /读写权限/], ['EPERM', /读写权限/], ['ENOSPC', /磁盘空间不足/]] as const) {
+    const issue = classifyScheduledError(Object.assign(new Error('private filesystem location'), { code }))
+    assert.equal(issue.code, code)
+    assert.equal(issue.action, 'blocked')
+    assert.match(issue.message, message)
+    assert.doesNotMatch(issue.message, /private/)
+  }
+})
+
 test('scheduled delivery binds timestamps in the configured timezone without changing the original plan', () => {
   const node: ArrangementNode = { id: 'node', subscriptionId: 'sub', modelId: 'model', title: 'Files', instruction: 'Create files', expectedOutput: 'Files', dependsOn: [], skillIds: [], requiresUserConfirmation: false,
     deliverables: [{ id: 'file', name: 'File', format: 'txt', path: 'out/yyyyMMdd-HHmm.txt', contentOutline: ['Text'], acceptanceCriteria: ['Saved'], scheduledFilenameTime: 'scheduled' }] }
