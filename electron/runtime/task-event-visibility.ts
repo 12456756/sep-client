@@ -19,6 +19,7 @@ const IMPORTANT_EVENT_TYPES = new Set([
   CONVERSATION_SCHEDULE_EVENT,
   'context_usage',
   'tool_execution_start',
+  'tool_execution_update',
   'tool_execution_end',
   'approval_requested',
   'approval_resolved',

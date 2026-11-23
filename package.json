@@ -57,7 +57,7 @@
     "release:upload": "node scripts/upload-download-update.mjs",
     "test:releases": "node --test scripts/release-flow.test.mjs scripts/record-release-build.test.mjs scripts/release-version.test.mjs scripts/release-notes.test.mjs",
     "verify:release-signatures": "node scripts/verify-release-signatures.mjs",
-    "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/office-assets.test.mjs scripts/bash-runtime-packaging.test.mjs scripts/dingtalk-assets.test.mjs scripts/feishu-assets.test.mjs scripts/wecom-assets.test.mjs scripts/connector-assets.test.mjs scripts/dev-assets-cache.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
+    "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/office-assets.test.mjs scripts/local-media-assets.test.mjs scripts/bash-runtime-packaging.test.mjs scripts/dingtalk-assets.test.mjs scripts/feishu-assets.test.mjs scripts/wecom-assets.test.mjs scripts/connector-assets.test.mjs scripts/dev-assets-cache.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
     "verify:packaged-runtime": "node scripts/verify-packaged-runtime.mjs",
     "release:builder:stable": "node scripts/generate-builder-config.mjs stable",
     "release:builder:signed:stable": "node scripts/generate-builder-config.mjs stable --signed",
@@ -166,7 +166,8 @@
       "category": "public.app-category.business",
       "icon": "build/desktop-icon.icns",
       "signIgnore": [
-        "/Contents/Resources/office/officecli-mac-(arm64|x64)$"
+        "/Contents/Resources/office/officecli-mac-(arm64|x64)$",
+        "/Contents/Resources/local-media/ffmpeg-[0-9.]+\\.tar\\.xz$"
       ],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "用于将您主动录制的语音在本机转换为输入文字。"

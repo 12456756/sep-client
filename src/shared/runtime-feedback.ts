@@ -16,6 +16,7 @@ export const RUNTIME_FAILURE_MESSAGES = {
   MODEL_INSUFFICIENT_FUNDS: '模型服务可用余额不足，请联系平台管理员补充余额。',
   MODEL_PROVIDER_AUTH_FAILED: '模型服务的上游认证未通过，请联系平台管理员检查配置。',
   MODEL_INVALID_COMPLETION: '模型服务未返回可用的回复，请重试；持续失败请联系平台管理员。',
+  MODEL_REQUEST_TOO_LARGE: '本次发送给模型的内容超过接收上限。请缩短输入或减少图片附件；如果对话较长，请新建对话后再试。',
   SERVICE_UNAVAILABLE: '模型服务暂时不可用，请稍后重试；持续失败请联系平台管理员。',
   EMPLOYEE_UNAVAILABLE: '所选员工当前不可用，请重新选择员工',
   MODEL_NOT_ALLOWED: '当前员工没有所选模型的使用权限，请更换员工或模型；如需授权，请联系平台管理员。',

@@ -67,6 +67,7 @@ export interface PiAgentSessionConfig {
   videoTools?: import('../../domain/video-tools').VideoHostTools
   conversationAttachments?: import('../../domain/attachment-input').ConversationAttachmentReader
   conversationSchedule?: import('./pi-conversation-schedule').ConversationScheduleTool
+  localMedia?: import('../../domain/local-media-tools').LocalMediaTool
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
   /** Host-owned instructions retained outside compacted conversation history. */
   fixedSystemPrompt?: string

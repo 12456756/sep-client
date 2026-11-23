@@ -69,9 +69,12 @@ import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnaps
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { encodingToolDefinitions } from './pi-text-tools'
 import { CURRENT_TIME_TOOL_NAME, currentTimeToolDefinition } from './pi-current-time'
+import { CONVERSATION_ATTACHMENT_TOOL, conversationAttachmentTool, omitDuplicateAttachmentImages } from './pi-conversation-attachment'
+import { LOCAL_MEDIA_TOOL } from '../../domain/local-media-tools'
+import { localMediaTool } from './pi-local-media'
+import { localMediaProgressSchema } from '../../../src/shared/local-media-progress'
 import { conversationScheduleToolDefinition } from './pi-conversation-schedule'
 import { CREATE_SCHEDULED_TASK_TOOL } from '../../../src/shared/scheduled-creation'
-import { CONVERSATION_ATTACHMENT_TOOL, conversationAttachmentTool } from './pi-conversation-attachment'
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
@@ -448,6 +451,7 @@ export function sessionToolOptions(
   registeredMediaNames: readonly MediaToolName[] = [],
   registeredVideoNames: readonly VideoToolName[] = [],
   attachmentsEnabled = false,
+  localMediaEnabled = false,
   conversationScheduleEnabled = false,
 ): { tools?: string[]; noTools?: 'all' } {
   if (disableTools) return { noTools: 'all' }
@@ -455,7 +459,7 @@ export function sessionToolOptions(
     ? [...BUILTIN_TOOL_NAMES]
     : toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
   return { tools: [...new Set([
-    ...allowedTools.filter(name => name !== CREATE_SCHEDULED_TASK_TOOL && (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
+    ...allowedTools.filter(name => name !== LOCAL_MEDIA_TOOL && name !== CREATE_SCHEDULED_TASK_TOOL && (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
       (!name.startsWith('media_') || registeredMediaNames.includes(name as MediaToolName)) &&
       (!name.startsWith('video_') || registeredVideoNames.includes(name as VideoToolName))),
     ...(!toolPolicy || allowedTools.length > 0 ? [CURRENT_TIME_TOOL_NAME] : []),
@@ -463,6 +467,7 @@ export function sessionToolOptions(
     ...registeredMediaNames,
     ...registeredVideoNames,
     ...(attachmentsEnabled ? [CONVERSATION_ATTACHMENT_TOOL] : []),
+    ...(localMediaEnabled ? [LOCAL_MEDIA_TOOL] : []),
     ...(conversationScheduleEnabled ? [CREATE_SCHEDULED_TASK_TOOL] : []),
   ])] }
 }
@@ -658,6 +663,12 @@ export function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
           input: redactValue(raw.args),
         },
       }
+    case 'tool_execution_update': {
+      if (raw.toolName !== LOCAL_MEDIA_TOOL || typeof raw.toolCallId !== 'string') return null
+      const result = raw.partialResult as { details?: { localMediaProgress?: unknown } } | undefined
+      const progress = localMediaProgressSchema.safeParse(result?.details?.localMediaProgress)
+      return progress.success ? { type: event.type, data: { toolId: raw.toolCallId, toolName: LOCAL_MEDIA_TOOL, progress: progress.data } } : null
+    }
     case 'tool_execution_end':
       return {
         type: event.type,
@@ -724,6 +735,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
     }
     if (selected.includes(CURRENT_TIME_TOOL_NAME)) pi.registerTool(currentTimeToolDefinition())
     if (conversationAttachmentsEnabled(config) && config.conversationAttachments) pi.registerTool(conversationAttachmentTool(config.conversationAttachments))
+    if (!config.disableTools && config.localMedia) pi.registerTool(localMediaTool(config.localMedia))
     if (!config.disableTools && config.conversationSchedule) pi.registerTool(conversationScheduleToolDefinition(config.conversationSchedule))
   }
   const mediaNames = registeredMediaNames(config)
@@ -788,6 +800,10 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
       if (toolName === CREATE_SCHEDULED_TASK_TOOL) {
         return !config.disableTools && config.conversationSchedule && pi.getActiveTools().includes(toolName)
           ? { block: false } : { block: true, reason: 'Scheduled creation is not available in this run.' }
+      }
+      if (toolName === LOCAL_MEDIA_TOOL) {
+        return !config.disableTools && config.localMedia && pi.getActiveTools().includes(toolName)
+          ? { block: false } : { block: true, reason: 'Local media processing is not enabled for this run.' }
       }
       if (toolName === CONVERSATION_ATTACHMENT_TOOL) {
         return conversationAttachmentsEnabled(config) && pi.getActiveTools().includes(toolName)
@@ -1098,6 +1114,8 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
           ? config.transformSystemPrompt(context.systemPrompt) : context.systemPrompt
         const requestContext = {
           ...context,
+          // The SDK serializes tool-result images as user messages, losing their source.
+          messages: omitDuplicateAttachmentImages(context.messages),
           systemPrompt: config.modelRequestAwareness !== false && snapshot && snapshot.kind !== 'compaction'
             ? [systemPrompt, buildModelRequestAwareness(snapshot.progress, snapshot.kind)].filter(Boolean).join('\n\n')
             : systemPrompt,
@@ -1309,7 +1327,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         resourceLoader,
         sessionManager,
         // Advertise only the task policy's tools so the model cannot select denied tools.
-        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config), conversationAttachmentsEnabled(config), !!config.conversationSchedule),
+        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config), conversationAttachmentsEnabled(config), !!config.localMedia, !!config.conversationSchedule),
         // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
         settingsManager,
       })

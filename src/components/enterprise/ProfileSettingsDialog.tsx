@@ -9,6 +9,7 @@ import { DefaultModelSettings } from './DefaultModelSettings'
 import { WindowCloseSettings } from './WindowCloseSettings'
 import { DefaultWorkspaceSettings } from './DefaultWorkspaceSettings'
 import { ResultArchiveSettings } from './ResultArchiveSettings'
+import { LocalMediaTempSettings } from './LocalMediaTempSettings'
 import { MultimediaSettings } from './MultimediaSettings'
 import { getSettingsPages, type SettingsPageId, type SettingsSectionId } from '../../features/enterprise/settings-catalog'
 import '../../styles/settings.css'
@@ -85,7 +86,7 @@ export function ProfileSettingsDialog({
   const sections: Record<SettingsSectionId, ReactNode> = {
     models: <DefaultModelSettings models={models} />,
     window: <WindowCloseSettings />,
-    workspace: <><DefaultWorkspaceSettings /><ResultArchiveSettings /></>,
+    workspace: <><DefaultWorkspaceSettings /><ResultArchiveSettings /><LocalMediaTempSettings /></>,
     multimedia: <MultimediaSettings />,
     profile: <>
       <div className="ent-settings-profile-row">

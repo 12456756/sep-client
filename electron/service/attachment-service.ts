@@ -1,14 +1,15 @@
-import type { AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentRef, AttachmentView } from '../../src/shared/attachment-contracts'
+import type { AttachmentFolderPreview, AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentRef, AttachmentView } from '../../src/shared/attachment-contracts'
 import type { InputSnapshotRef as SharedInputSnapshotRef } from '../../src/shared/attachment-contracts'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { AttachmentStore } from '../data/attachment-store'
 import type { AttachmentStorePort } from '../data/attachment-store'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { extname } from 'node:path'
 import type { AttachmentExtractor } from '../domain/attachment-extraction'
 import type { ResolvedAttachmentInput } from '../domain/attachment-input'
 import { AppError } from '../errors/app-error'
 import { attachmentImportLimits, referenceAttachmentSelectionSchema, referenceTextLimit, type ReferenceAttachmentSelection, type ReferenceMaterials } from '../../src/shared/attachment-contracts'
+import { assertAttachmentFolderEntry, scanAttachmentFolder, type AttachmentFolderEntry } from '../data/attachment-folder'
 
 
 export interface AttachmentImportResult {
@@ -30,6 +31,8 @@ export type InputSnapshotRef = SharedInputSnapshotRef
 
 /** Scope-aware attachment use cases. The service delegates all filesystem paths to data. */
 export class AttachmentService {
+  private readonly folderPreviews = new Map<string, { id: string; scope: TaskOwnerScope; expiresAt: number; entries: AttachmentFolderEntry[] }>()
+
   constructor(private readonly store: AttachmentStorePort, private readonly scopeProvider?: () => TaskOwnerScope | null) {}
 
   static fromUserData(userDataDir: string, scopeProvider?: () => TaskOwnerScope | null, extractor?: AttachmentExtractor): AttachmentService { return new AttachmentService(new AttachmentStore(userDataDir, undefined, extractor), scopeProvider) }
@@ -48,7 +51,65 @@ export class AttachmentService {
   }
   importImageForSession(sessionId: string, operationId: string, bytes: Uint8Array, displayName: string, mediaType: string): Promise<AttachmentImportResult> { return this.importImage(this.currentScope(), sessionId, operationId, bytes, displayName, mediaType) }
   removeFromSession(sessionId: string, attachmentId: string, expectedRevision?: number): Promise<AttachmentImportSession> { return this.remove(this.currentScope(), sessionId, attachmentId, expectedRevision) }
-  cancelSession(sessionId: string): Promise<boolean> { return this.cancel(this.currentScope(), sessionId) }
+  cancelSession(sessionId: string): Promise<boolean> {
+    const scope = this.currentScope()
+    const preview = this.folderPreviews.get(sessionId)
+    if (preview && this.sameOwner(preview.scope, scope)) this.folderPreviews.delete(sessionId)
+    return this.cancel(scope, sessionId)
+  }
+
+  private sameOwner(a: TaskOwnerScope, b: TaskOwnerScope): boolean {
+    return a.memberId === b.memberId && a.enterpriseId === b.enterpriseId
+  }
+
+  private async openFolderSession(scope: TaskOwnerScope, sessionId: string): Promise<AttachmentImportSession> {
+    const session = await this.get(scope, sessionId)
+    if (!this.sameOwner(scope, this.currentScope())) throw new AppError('AUTH_REQUIRED')
+    if (!session || session.target.kind !== 'compose' || session.status !== 'open' || session.expiresAt <= Date.now()) throw new Error('ATTACHMENT_SESSION_EXPIRED')
+    return session
+  }
+
+  async previewFolder(sessionId: string, path: string): Promise<AttachmentFolderPreview> {
+    const scope = this.currentScope()
+    await this.openFolderSession(scope, sessionId)
+    const { folderName, entries, truncated } = await scanAttachmentFolder(path)
+    await this.openFolderSession(scope, sessionId)
+    const previewId = randomUUID()
+    const now = Date.now()
+    for (const [key, value] of this.folderPreviews) if (value.expiresAt <= now) this.folderPreviews.delete(key)
+    this.folderPreviews.delete(sessionId)
+    if (this.folderPreviews.size >= 32) {
+      const oldest = this.folderPreviews.keys().next().value
+      if (oldest) this.folderPreviews.delete(oldest)
+    }
+    this.folderPreviews.set(sessionId, { id: previewId, scope, expiresAt: now + 5 * 60_000, entries })
+    return { previewId, folderName, candidates: entries.map(entry => entry.candidate), truncated }
+  }
+
+  async importFolderSelection(sessionId: string, previewId: string, candidateIds: readonly string[]): Promise<AttachmentImportSession> {
+    const scope = this.currentScope()
+    const session = await this.openFolderSession(scope, sessionId)
+    const preview = this.folderPreviews.get(sessionId)
+    if (!preview || preview.id !== previewId || preview.expiresAt <= Date.now() || !this.sameOwner(scope, preview.scope)) throw new Error('ATTACHMENT_FOLDER_PREVIEW_EXPIRED')
+    const selected = new Set(candidateIds)
+    const entries = preview.entries.filter(entry => selected.has(entry.candidate.id))
+    if (entries.length !== selected.size || !entries.length || entries.length > attachmentImportLimits.maxImportFiles) throw new Error('ATTACHMENT_FOLDER_PREVIEW_EXPIRED')
+    for (const { candidate } of entries) {
+      if (candidate.unavailable === 'empty') throw new Error('ATTACHMENT_EMPTY')
+      if (candidate.unavailable === 'too-large') throw new Error('ATTACHMENT_TOO_LARGE')
+    }
+    const bytes = entries.reduce((total, entry) => total + entry.candidate.byteLength, 0)
+    if (session.attachments.length + entries.length > attachmentImportLimits.maxFiles ||
+      session.attachments.reduce((total, item) => total + item.byteLength, bytes) > attachmentImportLimits.maxTotalBytes) throw new Error('ATTACHMENT_TOTAL_TOO_LARGE')
+    this.folderPreviews.delete(sessionId)
+    await this.store.checkImportSpace?.(scope, sessionId, bytes)
+    for (const entry of entries) await assertAttachmentFolderEntry(entry)
+    for (const entry of entries) {
+      await this.openFolderSession(scope, sessionId)
+      await this.store.importPath(scope, sessionId, entry.path, 'paste-file', entry.candidate.name, entry)
+    }
+    return this.openFolderSession(scope, sessionId)
+  }
 
   async referenceMaterials(scope: TaskOwnerScope, raw: ReferenceAttachmentSelection): Promise<ReferenceMaterials> {
     const selection = referenceAttachmentSelectionSchema.parse(raw)

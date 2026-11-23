@@ -34,6 +34,21 @@ export const systemRoutes = [
     if (!window || !ctx.windowClose) throw appError('INVALID_STATE')
     return { success: true, data: await ctx.windowClose.command(window, input) }
   }, { ...trusted, errorShape: 'ipc' }),
+  route(INVOKE_CHANNELS.LOCAL_MEDIA_SETTINGS, z.enum(['get', 'choose', 'use-default']), async (ctx, action) => {
+    const { localMediaSettings: settings } = ctx.backend
+    if (action === 'get') return { success: true, data: await settings.settings() }
+    const owner = ctx.backend.currentScope()
+    if (!owner) throw appError('AUTH_REQUIRED')
+    const assertActive = ctx.backend.resultArchive.assertOwner(owner)
+    if (action === 'use-default') return { success: true, data: await settings.configure(null, assertActive) }
+    const window = ctx.window()
+    if (!window || !settings.supported) throw appError('INVALID_STATE')
+    const { path } = await settings.settings()
+    const selected = await dialog.showOpenDialog(window, { title: '选择音视频临时文件位置', properties: ['openDirectory', 'createDirectory'], defaultPath: path })
+    if (selected.canceled || !selected.filePaths[0]) return { success: true }
+    assertActive()
+    return { success: true, data: await settings.configure(selected.filePaths[0], assertActive) }
+  }, { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.RESULT_ARCHIVE_SETTINGS, z.enum(['get', 'choose', 'use-default', 'open']), async (ctx, action) => {
     const archive = ctx.backend.resultArchive
     if (action === 'get') return { success: true, data: await archive.settings() }

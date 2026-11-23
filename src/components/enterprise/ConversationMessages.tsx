@@ -16,6 +16,7 @@ import { SaveWordCopyButton } from '../workspace/SaveWordCopyButton'
 import { useFileMenuCommands } from '../workspace/file-menu-actions'
 import '../workspace/result-file-card.css'
 import { formatScheduleReceiptTime, type ConversationScheduleReceipt } from '../../shared/scheduled-creation'
+import { RUNTIME_FAILURE_MESSAGES } from '../../shared/runtime-feedback'
 
 interface Props {
   work: WorkItem
@@ -74,13 +75,16 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
     const hasContent = item.messages.some(message => message.content.trim())
     const replyResults = results.get(item.id)
     const processError = item.id === lastReply?.id ? error : null
+    const latestFailure = work.status === 'failed' && work.lastRunId && item.runId === work.lastRunId &&
+      work.stopReason === RUNTIME_FAILURE_MESSAGES.MODEL_REQUEST_TOO_LARGE ? work.stopReason : undefined
+    const failureMessage = !item.active ? run?.failureMessage ?? latestFailure : undefined
     return <div className="ent-say ent-conversation-reply" key={item.id} data-conversation-reply={item.id} data-run-id={item.runId}>
       <span className="ent-say-who"><EmployeeFace employee={employees.find(employee => employee.id === employeeId)} name={employeeName} size="sm" round />{employeeName}</span>
       {item.runId && (entries.length > 0 || loading || processError) ? <ConversationProcessView entries={entries} active={item.active} loading={loading} error={processError} onReload={onReload} /> : null}
       {run?.scheduleReceipt ? <ScheduleReceipt receipt={run.scheduleReceipt} active={item.active} onOpen={onOpenSchedule} /> : null}
-      {!run?.scheduleReceipt && !hasContent && !replyResults?.length && (!entries.length || !item.active) ? <div className="ent-conversation-reply-status" role="status">
+      {failureMessage || (!run?.scheduleReceipt && !hasContent && !replyResults?.length && (!entries.length || !item.active)) ? <div className="ent-conversation-reply-status" role="status">
         {item.active ? <LoaderCircle size={14} className="ent-spin" aria-hidden /> : null}
-        {item.active ? '正在进行…' : run?.diagnosticAvailable ? '本轮执行失败' : '本轮未返回回复'}
+        {failureMessage ?? (item.active ? '正在进行…' : run?.diagnosticAvailable ? '本轮执行失败' : '本轮未返回回复')}
       </div> : null}
       {item.messages.filter(message => message.content.trim()).map(message => <MessageContent key={message.id} content={message.content} />)}
       <ConversationResultCards taskId={work.id} results={replyResults} />

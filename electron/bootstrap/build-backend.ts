@@ -9,6 +9,9 @@ import { ResultFileService } from '../service/result-file-service'
 import { describeConversationResult, ResultFileStore } from '../data/result-file-store'
 import { ResultArchiveStore } from '../data/result-archive-store'
 import { ResultArchiveService } from '../service/result-archive-service'
+import { LocalMediaSettingsStore } from '../data/local-media-settings-store'
+import { LocalMediaSettingsService } from '../service/local-media-settings-service'
+import { localMediaTarget } from '../domain/local-media-platform'
 import { finalDeliveryFileSchema } from '../domain/arrangement-delivery'
 import type { ResultFileRequest } from '../../src/shared/result-files'
 /**
@@ -146,6 +149,7 @@ class BackendRuntime {
   readonly documentPreviews: DocumentPreviewService
   readonly resultFiles: ResultFileService
   readonly resultArchive: ResultArchiveService
+  readonly localMediaSettings: LocalMediaSettingsService
   private readonly documentPreviewRuntime: LazyAsync<DocumentPreviewRuntime>
   readonly skills: SkillLibraryService
   readonly clientMonitor: ClientMonitorService
@@ -464,6 +468,7 @@ class BackendRuntime {
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans, queue: this.conversationQueue })
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
     this.resultArchive = new ResultArchiveService(new ResultArchiveStore(userDataDir), this, () => app.getPath('documents'), () => this.authSession.getSessionRevision())
+    this.localMediaSettings = new LocalMediaSettingsService(new LocalMediaSettingsStore(userDataDir), join(userDataDir, 'local-media', 'scratch'))
     this.resultFiles = new ResultFileService({
       scope: this,
       archive: this.resultArchive,
@@ -848,7 +853,12 @@ class BackendRuntime {
       log.warn('safeStorage encryption is not available on this platform')
     }
     const { TaskRuntime } = await import('../runtime/task-runtime')
+    const mediaTarget = localMediaTarget(process.platform, process.arch)
+    const localMedia = mediaTarget ? await import('../runtime/local-media-runtime').then(({ LocalMediaRuntime }) =>
+      new LocalMediaRuntime(app.isPackaged ? join(process.resourcesPath, 'local-media') : process.env.SEP_LOCAL_MEDIA_DEV_DIR ?? join(app.getAppPath(), 'resources', 'local-media', mediaTarget),
+        () => this.localMediaSettings.prepare())) : undefined
     const runtime = new TaskRuntime({
+      localMedia,
       connectorBinding: owner => this.connectors.binding(owner),
       onConversationSettled: (taskId, runId, owner) => this.conversationQueue.settled(taskId, runId, owner),
       createModelTrace: this.createModelTrace,

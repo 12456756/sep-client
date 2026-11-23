@@ -5,6 +5,22 @@ const sha256 = z.string().regex(/^[a-f0-9]{64}$/)
 
 export const attachmentImportLimits = Object.freeze({ maxFiles: 128, maxImportFiles: 10, maxFileBytes: 20 * 1024 * 1024, maxTotalBytes: 100 * 1024 * 1024 })
 
+export interface AttachmentFolderPreview {
+  previewId: string
+  folderName: string
+  candidates: Array<{ id: string; name: string; byteLength: number; kind: 'image' | 'video' | 'audio'; unavailable?: 'empty' | 'too-large' }>
+  truncated: boolean
+}
+
+/** A single local Windows folder candidate, never a device path, share, URL or sentence. */
+export function pastedAttachmentFolderPath(text: string): string | undefined {
+  const raw = text.trim().replace(/^"([^"\r\n]+)"$/, '$1')
+  if (raw.length > 4096 || !/^[A-Za-z]:[\\/]/.test(raw) || /[<>:"|?*]/.test(raw.slice(2)) || Array.from(raw).some(char => char.charCodeAt(0) < 32)) return undefined
+  const segments = raw.slice(3).replace(/[\\/]+$/, '').split(/[\\/]/)
+  if (segments.some(part => !part || /[. ]$/.test(part) || /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(part))) return undefined
+  return raw
+}
+
 export const attachmentRefSchema = z.object({ attachmentId: safeId, sha256 }).strict()
 export type AttachmentRef = z.infer<typeof attachmentRefSchema>
 export const referenceFileLimit = 6

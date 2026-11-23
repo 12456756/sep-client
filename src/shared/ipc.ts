@@ -4,6 +4,7 @@ import type { AutoPlanningInput, PlanningRecordChange, PlanningRecordSnapshot, P
 import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
 import type { DocumentPreview, DocumentPreviewRequest } from './document-preview'
 import type { ResultArchiveSettings, ResultArchiveStatus, ResultFileAction, ResultFileRequest, ResultFilePreview } from './result-files'
+import type { LocalMediaSettings, LocalMediaSettingsAction } from './local-media-settings'
 import type { WindowCloseBehavior, WindowCloseCommand } from './window-close'
 import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from './speech-contracts'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
@@ -11,7 +12,7 @@ import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type { ModelCatalogEntry } from './model-catalog-contracts'
 import type { MultimediaSettings } from './multimedia-settings'
-import type { AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentPreviewRequest, AttachmentView } from './attachment-contracts'
+import type { AttachmentFolderPreview, AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentPreviewRequest, AttachmentView } from './attachment-contracts'
 import type {
   ComputeAllowance,
   PersonalWallet,
@@ -395,11 +396,13 @@ export interface ElectronAPI {
   deleteLocalSkillCopy: (input: { capabilityId: string; idempotencyKey: string }) => Promise<IpcCommandResult & { data?: SkillLibraryItem }>
   beginAttachmentImport: (input: { target: AttachmentImportTarget; idempotencyKey?: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession }>
   selectAttachments: (input: { sessionId: string; operationId?: string; single?: boolean }) => Promise<IpcCommandResult & { cancelled?: boolean; data?: AttachmentImportSession | AttachmentView[] }>
+  previewAttachmentFolder: (input: { sessionId: string; composerId: string; pasteId: string }) => Promise<IpcCommandResult & { data?: AttachmentFolderPreview }>
+  importAttachmentFolder: (input: { sessionId: string; previewId: string; candidateIds: string[] }) => Promise<IpcCommandResult & { data?: AttachmentImportSession }>
   listAttachments: (input: { sessionId: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession | AttachmentView[] }>
   removeAttachment: (input: { sessionId: string; attachmentId: string; expectedRevision?: number }) => Promise<IpcCommandResult>
   cancelAttachmentImport: (input: { sessionId: string }) => Promise<IpcCommandResult>
   previewAttachment: (input: AttachmentPreviewRequest) => Promise<IpcCommandResult & { data?: AttachmentPreview }>
-  bindAttachmentPaste: (input: { composerId: string; sessionId: string; target: AttachmentImportTarget; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean }) => () => void
+  bindAttachmentPaste: (input: { composerId: string; sessionId: string; target: AttachmentImportTarget; isEnabled?: () => boolean; onFolderPaste?: (pasteId: string | null) => void; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean }) => () => void
   onAttachmentPaste: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
   login: (credentials: LoginRequest) => Promise<LoginResult>
   listRememberedAccounts: () => Promise<RememberedAccountsResult>
@@ -482,6 +485,7 @@ export interface ElectronAPI {
   selectDirectory: (currentPath?: string) => Promise<SelectDirectoryResult>
   getDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
   resultArchiveSettings: (action: 'get' | 'choose' | 'use-default' | 'open') => Promise<IpcCommandResult & { data?: ResultArchiveSettings }>
+  localMediaSettings: (action: LocalMediaSettingsAction) => Promise<IpcCommandResult & { data?: LocalMediaSettings }>
   selectDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
   clearDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
   onPiEvent: (callback: (event: TaskExecutionEvent) => void) => () => void

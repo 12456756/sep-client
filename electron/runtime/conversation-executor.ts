@@ -8,6 +8,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { TaskStatus, type TaskExecutionEvent } from '../../src/shared/types'
 import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 import { runtimeFeedback, runtimeFailureEvent } from '../errors/runtime-feedback'
@@ -20,7 +21,7 @@ import type { SharedPiSession } from '../pi/sdk/pi-shared-session'
 import { createDefaultSharedPiSession, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { ConversationRecoveryError } from './conversation-recovery-error'
 import { withApprovedSkillReadPaths } from './run-skill-policy'
-import { evaluateToolCall } from '../../pi-extension/guard'
+import { evaluateToolCall, isUnrestrictedToolPolicy } from '../../pi-extension/guard'
 import { prepareConversationAttachments } from './conversation-attachments'
 import { runSkillDisplay } from '../common/run-skill-display'
 import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
@@ -51,6 +52,8 @@ import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt
 import { bindConversationSchedule, type SubmitConversationSchedule } from './conversation-schedule'
 import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL } from '../../src/shared/scheduled-creation'
 import { redactValue } from '../common/redact'
+import { LOCAL_MEDIA_TOOL } from '../domain/local-media-tools'
+import type { LocalMediaRuntime } from './local-media-runtime'
 
 const log = logger.child('conversation-executor')
 
@@ -88,6 +91,7 @@ export interface ConversationExecutorOptions {
   workDiagnostics?: WorkFailureCapture
   createModelTrace?: ModelTraceFactory
   conversationArtifacts?: ConversationArtifactStorePort
+  localMedia?: LocalMediaRuntime
   beforeArtifact?: (owner: { memberId: string; enterpriseId: string }, taskId: string, title: string, workspace: string,
     file: string, index: number, startedAt: number, finishedAt: number) => Promise<import('../../src/shared/result-files').ResultSaveIntent | undefined>
   onArtifact?: (owner: { memberId: string; enterpriseId: string }, taskId: string, index: number) => void
@@ -262,6 +266,19 @@ export class ConversationExecutor {
             error: error instanceof Error ? error.message : String(error) })
         }
       }
+      const directory = artifactDirectory
+      const allowLocalMedia = !toolPolicy || (queued.arrangement?.mode === 'conversation' && !task.scheduledOrigin && isUnrestrictedToolPolicy(toolPolicy))
+      const localMedia = scope && queued.conversation && allowLocalMedia && directory?.status === 'ready'
+        ? this.options.localMedia?.bind({
+          attachments: [...resolvedAttachments, ...historicalAttachments],
+          resolveAttachment: async ({ attachmentId, sha256 }) => (await this.options.attachmentInputs?.resolveTaskInputs(scope, taskId, [{ attachmentId, sha256 }]))?.attachments[0],
+          assertActive: assertAttachmentScope,
+          runSignal: mediaSignal,
+          artifactPath: join(workspaceDir, directory.relativePath),
+          artifactRelativePath: directory.relativePath,
+          checkArtifact: async () => (await this.options.conversationArtifacts?.prepare(workspaceDir, taskId))?.status === 'ready',
+          authorize: input => this.options.approvals.request({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: LOCAL_MEDIA_TOOL, input: redactValue(input) }),
+        }) : undefined
       diagnosticPhase = 'media-setup'
       const rawMediaTools = await this.options.media?.prepareRun({
         taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy, allowImageReplacement: true,
@@ -331,6 +348,7 @@ export class ConversationExecutor {
           modelTrace: modelEvidence?.record,
           conversationAttachments: attachmentContext?.reader,
           conversationSchedule,
+          localMedia,
           toolPolicy,
           employeeProfile: general ? undefined : employee.employeeProfile,
           inputImages: attachmentImages,

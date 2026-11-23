@@ -24,6 +24,62 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close() })
 
+test('Windows folder material dialog imports only checked files and fits narrow light and dark views', async () => {
+  for (const width of [420, 920]) {
+    const page = await browser.newPage({ viewport: { width, height: 580 } })
+    page.setDefaultTimeout(7000)
+    try {
+      await page.addInitScript(() => {
+        const fixture = window.materialFixture = { imports: [], previews: 0 }
+        const session = { sessionId: 'material-session', status: 'open', attachments: [] }
+        const video = { attachmentId: 'video-attachment', displayName: '商品.mp4', byteLength: 4096,
+          mediaType: 'video/mp4', extractionStatus: 'not-required', sha256: 'a'.repeat(64), importSource: 'paste-file', warnings: [] }
+        window.electronAPI = {
+          platform: 'win32', beginAttachmentImport: async () => ({ success: true, data: session }),
+          bindAttachmentPaste: input => { fixture.paste = input.onFolderPaste; return () => {} },
+          previewAttachmentFolder: async () => { fixture.previews++; return { success: true, data: { previewId: 'preview-one', folderName: '商品素材', truncated: false, candidates: [
+            { id: 'video', name: video.displayName, kind: 'video', byteLength: 4096 },
+            { id: 'image', name: '正面图.png', kind: 'image', byteLength: 2048 },
+            { id: 'large', name: '较大的素材.mp4', kind: 'video', byteLength: 25000000, unavailable: 'too-large' },
+          ] } } },
+          importAttachmentFolder: async input => { fixture.imports.push(input); return { success: true, data: { ...session, attachments: [video] } } },
+          cancelAttachmentImport: async () => ({ success: true }),
+        }
+      })
+      await page.route(/\/main\.tsx(?:\?.*)?$/, route => route.fulfill({ contentType: 'text/javascript', body: `${entry}
+        import '/index.css';
+        import '/styles/enterprise.css';
+        import '/styles/conversation.css';
+        import { AttachmentComposer } from '/components/enterprise/attachments/AttachmentComposer.tsx';
+        import { FeedbackProvider } from '/components/feedback/FeedbackProvider.tsx';
+        ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider, null,
+          React.createElement('div', { className: '${width === 420 ? 'ent-shell dark' : 'ent-shell'}' },
+            React.createElement(AttachmentComposer, { allowFolderPaste: true, target: { kind: 'compose', composerId: 'material-composer' }, onConnectorChange() {} }))));
+      ` }))
+      await page.goto(base)
+      await page.waitForFunction(() => typeof window.materialFixture.paste === 'function')
+      await page.evaluate(() => window.materialFixture.paste('trusted-paste'))
+      assert.equal(await page.evaluate(() => window.materialFixture.previews), 0)
+      const view = page.getByRole('button', { name: '查看素材' })
+      const dialog = page.getByRole('dialog', { name: '选择素材' })
+      await view.click()
+      await dialog.waitFor()
+      assert.ok(await dialog.getByRole('checkbox', { name: /较大的素材/ }).isDisabled())
+      assert.ok(await dialog.getByRole('button', { name: '添加所选素材' }).isDisabled())
+      const bounds = await dialog.boundingBox()
+      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width && bounds.y >= 0 && bounds.y + bounds.height <= 580)
+      await dialog.getByRole('button', { name: '取消' }).click()
+      await dialog.waitFor({ state: 'hidden' })
+      assert.deepEqual(await page.evaluate(() => window.materialFixture.imports), [])
+      await view.click()
+      await dialog.getByRole('checkbox', { name: /商品.mp4/ }).check()
+      await dialog.getByRole('button', { name: '添加所选素材' }).click()
+      await page.getByText(/视频素材/).waitFor()
+      assert.deepEqual(await page.evaluate(() => window.materialFixture.imports), [{ sessionId: 'material-session', previewId: 'preview-one', candidateIds: ['video'] }])
+    } finally { await page.close() }
+  }
+})
+
 test('production home composer binds file mentions without sending, and preserves draft ownership', async () => {
   const page = await browser.newPage({ viewport: { width: 736, height: 680 } })
   page.setDefaultTimeout(7_000)

@@ -71,6 +71,35 @@ test('ordinary composers still cancel their open import session on unmount', asy
   assert.deepEqual(cancelled, ['ordinary'])
 })
 
+test('pasted folders wait for preview and explicit selection without changing attachments on cancel', async () => {
+  const session = { sessionId: 'folder-session', status: 'open', attachments: [] } as unknown as NonNullable<RetainedAttachmentState['session']>
+  const preview = { previewId: 'preview-a', folderName: '素材', candidates: [{ id: 'clip', name: 'clip.mp4', byteLength: 100, kind: 'video' }], truncated: false }
+  const added = { attachmentId: 'video-attachment' }
+  const calls: unknown[] = []
+  let paste: ((id: string | null) => void) | undefined
+  const hook = mountHook({ platform: 'win32', bindAttachmentPaste: (input: { onFolderPaste?: typeof paste }) => { paste = input.onFolderPaste; return () => {} },
+    previewAttachmentFolder: async (input: unknown) => { calls.push(input); return { success: true, data: preview } },
+    importAttachmentFolder: async (input: unknown) => { calls.push(input); return { success: true, data: { ...session, attachments: [added] } } },
+  }, { target: { kind: 'compose', composerId: 'folder-composer' }, retainedState: { session, attachments: [] }, allowFolderPaste: true })
+  hook.render()
+  assert.ok(paste)
+  paste('paste-a')
+  assert.equal(hook.render().folderPaste, true)
+  assert.deepEqual(calls, [])
+  await hook.render().viewFolder()
+  assert.deepEqual(calls, [{ composerId: 'folder-composer', sessionId: 'folder-session', pasteId: 'paste-a' }])
+  assert.equal(hook.render().folderPreview, preview)
+  hook.render().closeFolder()
+  assert.equal(hook.render().folderPreview, null)
+  assert.deepEqual(hook.render().attachments, [])
+  await hook.render().viewFolder()
+  await hook.render().importFolder(['clip'])
+  assert.deepEqual(calls.at(-1), { sessionId: 'folder-session', previewId: 'preview-a', candidateIds: ['clip'] })
+  assert.deepEqual(hook.render().attachments, [added])
+  assert.equal(hook.render().folderPaste, false)
+  hook.unmount()
+})
+
 test('adding a result targets the active compose session and updates the draft attachment list', async () => {
   const session = { sessionId: 'draft-session', status: 'open', attachments: [] } as unknown as NonNullable<RetainedAttachmentState['session']>
   const retained: RetainedAttachmentState = { session, attachments: [] }

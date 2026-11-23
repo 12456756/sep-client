@@ -100,6 +100,7 @@ export interface TaskRuntimeOptions {
   createWorker?: (options: PiTaskWorkerOptions) => TaskWorkerPort
   taskRunStore?: TaskRunStorePort
   conversationArtifactStore?: ConversationArtifactStorePort
+  localMedia?: import('./local-media-runtime').LocalMediaRuntime
   userDataDir?: string
   getTaskWorkspaceRoot?: () => string
   workPlanStore?: WorkPlanStorePort
@@ -239,6 +240,7 @@ export class TaskRuntime {
       taskManager: this.taskManager,
       taskRunStore: this.taskRunStore,
       conversationArtifacts: options.conversationArtifactStore ?? new ConversationArtifactStore(),
+      localMedia: options.localMedia,
       beforeArtifact: options.beforeArtifact,
       onArtifact: options.onArtifact,
       workPlanStore: this.workPlanStore,

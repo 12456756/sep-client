@@ -13,6 +13,7 @@ test('settings catalog exposes only supported sections and authorized enterprise
 
 test('global search matches section keywords, category names and normalized multiple terms', () => {
   deepEqual(getSettingsPages(false, true, '  WORKSPACE  ').flatMap(page => page.sections.map(section => section.id)), ['workspace'])
+  deepEqual(getSettingsPages(false, true, '临时文件').flatMap(page => page.sections.map(section => section.id)), ['workspace'])
   deepEqual(getSettingsPages(false, true, '自动保存 保存位置').flatMap(page => page.sections.map(section => section.id)), ['workspace'])
   deepEqual(getSettingsPages(false, true, '账号 邮箱').flatMap(page => page.sections.map(section => section.id)), ['profile'])
   deepEqual(getSettingsPages(false, true, '常规').flatMap(page => page.sections.map(section => section.id)), ['window', 'models', 'workspace'])

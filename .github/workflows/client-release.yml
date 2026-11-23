@@ -105,7 +105,7 @@ jobs:
     name: Build macOS (${{ matrix.arch }})
     needs: [validate, preflight]
     if: always() && needs.validate.result == 'success' && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
-    runs-on: macos-15-intel
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -145,7 +145,29 @@ jobs:
           key: officecli-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('resources/office/manifest.json') }}
       - name: Prepare pinned target OfficeCLI asset
         run: npm run office:prepare -- darwin ${{ matrix.arch }}
+      - name: Build pinned FFmpeg for macOS
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          FFMPEG_BUILD_JOBS: 3
+        run: bash scripts/build-local-media-mac.sh "$TARGET_ARCH"
       - run: npm run package:ci:stable:mac -- dmg zip --${{ matrix.arch }}
+      - name: Exercise the signed FFmpeg binaries from the macOS app
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          shopt -s nullglob
+          product=$(node -p 'require("./package.json").build.productName')
+          paths=(dist/local/stable/mac*/"$product.app"/Contents/Resources/local-media)
+          test "${#paths[@]}" = 1
+          export SEP_LOCAL_MEDIA_DEV_DIR="$PWD/${paths[0]}"
+          native="$TARGET_ARCH"
+          if [ "$native" = x64 ]; then native=x86_64; fi
+          for tool in ffmpeg ffprobe; do
+            test "$(lipo -archs "$SEP_LOCAL_MEDIA_DEV_DIR/$tool")" = "$native"
+            codesign --verify --strict "$SEP_LOCAL_MEDIA_DEV_DIR/$tool"
+          done
+          npx --no-install tsx --test electron/runtime/local-media-runtime.test.ts electron/service/local-media-settings-service.test.ts
       - uses: actions/upload-artifact@v4
         with:
           name: sep-client-mac-${{ matrix.arch }}
@@ -200,6 +222,27 @@ jobs:
           key: officecli-v1-${{ runner.os }}-${{ hashFiles('resources/office/manifest.json') }}
       - name: Prepare pinned OfficeCLI assets
         run: npm run office:prepare
+      - name: Prepare UCRT build tools
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          install: make diffutils curl nasm mingw-w64-ucrt-x86_64-gcc
+      - name: Ensure Windows Media Foundation is available
+        shell: powershell
+        run: |
+          $feature = Get-WindowsFeature Server-Media-Foundation
+          if (-not $feature.Installed) {
+            $installed = Install-WindowsFeature Server-Media-Foundation
+            if (-not $installed.Success -or $installed.RestartNeeded -eq 'Yes') { throw 'Media Foundation is not available for FFmpeg verification' }
+          }
+      - name: Build pinned FFmpeg for Windows
+        shell: msys2 {0}
+        run: bash scripts/build-local-media-win.sh
+      - name: Exercise the Windows FFmpeg binaries before packaging
+        env:
+          SEP_LOCAL_MEDIA_DEV_DIR: ${{ github.workspace }}/resources/local-media/win-x64
+        run: npx --no-install tsx --test electron/runtime/local-media-runtime.test.ts
       - name: Check bundled Bash corresponding sources
         run: node scripts/bash-runtime-packaging.mjs --check-sources
       - run: npm run package:ci:stable:win

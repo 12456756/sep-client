@@ -63,6 +63,7 @@ export function runtimeFeedback(error: unknown): RuntimeFailure {
     if (status === 408 || status === 504) return failure('MODEL_TIMEOUT')
     if (status === 401) return failure('AUTH_REQUIRED')
     if (status === 403) return failure('REQUEST_DENIED')
+    if (status === 413) return failure('MODEL_REQUEST_TOO_LARGE')
     if (status === 429) return failure('RATE_LIMITED')
     if (typeof status === 'number' && status >= 500 && status <= 599) return failure('SERVICE_UNAVAILABLE')
     if (error instanceof AuthApiError && status === 0) return failure('NETWORK_ERROR')

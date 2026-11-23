@@ -23,6 +23,21 @@ class FakeSession implements PiAgentSession {
 }
 
 describe('SharedPiSession', () => {
+  it('uses the current turn media binding without reopening the same conversation', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession(`session-${configs.length}`) } })
+    const config: PiAgentSessionConfig = { runId: 'first', modelId: 'model-a', gatewayUrl: 'g', workspaceDir: 'w', agentDir: 'a', sessionDir: 's', getAccessToken: async () => 'token', authorizeTool: async () => false }
+    try {
+      const first = await adapter.open({ ...config, localMedia: { execute: async () => 'first' } })
+      assert.equal(await configs[0].localMedia?.execute({}), 'first')
+      assert.equal(await adapter.open({ ...config, runId: 'second', localMedia: { execute: async () => 'second' } }), first)
+      assert.equal(await configs[0].localMedia?.execute({}), 'second')
+      assert.notEqual(await adapter.open({ ...config, runId: 'third' }), first)
+      assert.equal(configs[1].localMedia, undefined)
+      await adapter.open({ ...config, runId: 'fourth', localMedia: { execute: async () => 'new binding' } })
+      await assert.rejects(configs[0].localMedia!.execute({}), /本轮无法使用/)
+    } finally { await adapter.dispose() }
+  })
   it('changes model while resuming the same conversation file', async () => {
     const configs: PiAgentSessionConfig[] = []
     const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession(`session-${configs.length}`) } })

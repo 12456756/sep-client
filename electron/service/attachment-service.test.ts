@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
@@ -11,6 +11,61 @@ import { AppError } from '../errors/app-error'
 const ownerA: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const ownerB: TaskOwnerScope = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
+
+test('an MP4 picked as a single file is video material and bypasses text extraction', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'csep-attachment-media-')))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, '素材.MP4')
+  await writeFile(path, 'sample bytes; container validation belongs to ffprobe')
+  const service = new AttachmentService(new AttachmentStore(root, undefined, async () => assert.fail('unexpected text extraction')), () => ownerA)
+  const session = await service.beginSession({ kind: 'compose', composerId: 'video-test' })
+  const { item } = (await service.importFiles(session.sessionId, 'picker-test', [path]))[0]
+  assert.equal(item.mediaType, 'video/mp4')
+  assert.equal(item.extractionStatus, 'not-required')
+  assert.deepEqual(item.warnings, [])
+})
+
+test('folder preview lists first-level media and only imports the confirmed scoped selection', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'csep-folder-media-')))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const source = join(root, '素材')
+  await mkdir(join(source, 'nested'), { recursive: true })
+  const clip = join(source, 'clip.mp4')
+  const large = join(source, 'large.mp4')
+  await Promise.all([
+    writeFile(clip, 'first clip'), writeFile(large, ''), writeFile(join(source, 'track.mp3'), 'audio'),
+    writeFile(join(source, 'product.png'), png), writeFile(join(source, 'empty.wav'), ''),
+    writeFile(join(source, 'notes.txt'), 'not media'), writeFile(join(source, 'nested', 'hidden.mp4'), 'not listed'),
+  ])
+  await truncate(large, 20 * 1024 * 1024 + 1)
+  await symlink(join(source, 'nested'), join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
+  let owner = ownerA
+  const service = new AttachmentService(new AttachmentStore(root), () => owner)
+  const session = await service.beginSession({ kind: 'compose', composerId: 'folder-a' })
+  const otherSession = await service.beginSession({ kind: 'compose', composerId: 'folder-b' })
+  await assert.rejects(service.previewFolder(session.sessionId, join(root, 'link')), /ATTACHMENT_FOLDER_UNAVAILABLE/)
+  const preview = await service.previewFolder(session.sessionId, source)
+  assert.equal(preview.folderName, '素材')
+  assert.deepEqual(preview.candidates.map(({ name, kind, unavailable }) => [name, kind, unavailable]), [
+    ['clip.mp4', 'video', undefined], ['empty.wav', 'audio', 'empty'], ['large.mp4', 'video', 'too-large'],
+    ['product.png', 'image', undefined], ['track.mp3', 'audio', undefined],
+  ])
+  assert.equal(JSON.stringify(preview).includes(root), false)
+  assert.deepEqual((await service.listSession(session.sessionId))?.attachments, [])
+  const videoId = preview.candidates[0].id
+  await assert.rejects(service.importFolderSelection(otherSession.sessionId, preview.previewId, [videoId]), /ATTACHMENT_FOLDER_PREVIEW_EXPIRED/)
+  owner = ownerB
+  await assert.rejects(service.importFolderSelection(session.sessionId, preview.previewId, [videoId]), /ATTACHMENT_SESSION_EXPIRED/)
+  owner = ownerA
+  await assert.rejects(service.importFolderSelection(session.sessionId, preview.previewId, [preview.candidates[2].id]), /ATTACHMENT_TOO_LARGE/)
+  const imported = await service.importFolderSelection(session.sessionId, preview.previewId, [videoId, preview.candidates[3].id])
+  assert.deepEqual(imported.attachments.map(item => [item.displayName, item.mediaType]), [['clip.mp4', 'video/mp4'], ['product.png', 'image/png']])
+  await assert.rejects(service.importFolderSelection(session.sessionId, preview.previewId, [videoId]), /ATTACHMENT_FOLDER_PREVIEW_EXPIRED/)
+  const updated = await service.previewFolder(session.sessionId, source)
+  await writeFile(clip, 'source changed after preview')
+  await assert.rejects(service.importFolderSelection(session.sessionId, updated.previewId, [updated.candidates[0].id]), /ATTACHMENT_FOLDER_CHANGED/)
+  assert.equal((await service.listSession(session.sessionId))?.attachments.length, 2)
+})
 
 test('resolves scoped reference excerpts from imported bytes and rejects stale digests and sessions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sep-reference-material-'))

@@ -12,6 +12,7 @@ export class SharedPiSession {
   private vision: boolean | null = null
   private modelId: string | undefined
   private connectorRevision: string | undefined
+  private localMediaBinding?: { host: NonNullable<PiAgentSessionConfig['localMedia']> }
   private scheduleBinding?: { submit: NonNullable<PiAgentSessionConfig['conversationSchedule']> }
   private unsubscribeSession: (() => void) | null = null
   private listener: ((event: PiAgentEvent) => void) | null = null
@@ -33,13 +34,14 @@ export class SharedPiSession {
     return this.enqueue(async () => {
       if (this.disposed) throw new Error('Shared Pi session adapter has been disposed.')
       this.browserOwner.resume()
-      if (this.session && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision && !!this.scheduleBinding === !!config.conversationSchedule) {
+      if (this.session && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision && !!this.localMediaBinding === !!config.localMedia && !!this.scheduleBinding === !!config.conversationSchedule) {
+        if (this.localMediaBinding && config.localMedia) this.localMediaBinding.host = config.localMedia
         if (this.scheduleBinding && config.conversationSchedule) this.scheduleBinding.submit = config.conversationSchedule
         return this.session
       }
       if (this.session) await this.disposeCurrent()
       const session = await this.runtime.createSession({
-        ...this.bindConversationSchedule(config),
+        ...this.bindLocalMedia(this.bindConversationSchedule(config)),
         browserOwner: this.browserOwner,
         resumeSessionFile: this.sessionFile ?? config.resumeSessionFile,
       })
@@ -59,7 +61,7 @@ export class SharedPiSession {
       this.browserOwner.resume()
       const resumeSessionFile = this.sessionFile ?? config.resumeSessionFile
       await this.disposeCurrent()
-      const session = await this.runtime.createSession({ ...this.bindConversationSchedule(config), browserOwner: this.browserOwner, resumeSessionFile: resumeSessionFile ?? undefined })
+      const session = await this.runtime.createSession({ ...this.bindLocalMedia(this.bindConversationSchedule(config)), browserOwner: this.browserOwner, resumeSessionFile: resumeSessionFile ?? undefined })
       this.session = session
       this.modelId = config.modelId
       this.vision = config.vision ?? null
@@ -112,9 +114,20 @@ export class SharedPiSession {
     } }
   }
 
+  private bindLocalMedia(config: PiAgentSessionConfig): PiAgentSessionConfig {
+    if (!config.localMedia) return config
+    const binding = { host: config.localMedia }
+    this.localMediaBinding = binding
+    return { ...config, localMedia: { execute: async (input, signal) => {
+      if (this.localMediaBinding !== binding) throw new Error('本轮无法使用本地音视频处理。')
+      return binding.host.execute(input, signal)
+    } } }
+  }
+
   private async disposeCurrent(): Promise<void> {
     const session = this.session
     this.session = null
+    this.localMediaBinding = undefined
     this.scheduleBinding = undefined
     this.unsubscribeSession?.()
     this.unsubscribeSession = null

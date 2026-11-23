@@ -21,6 +21,8 @@ import { SaveWordCopyButton } from '../../components/workspace/SaveWordCopyButto
 import { FeedbackProvider } from '../../components/feedback/FeedbackProvider'
 import * as fileMenuActions from '../../components/workspace/file-menu-actions'
 import * as scheduledCreation from '../../shared/scheduled-creation'
+import * as runtimeFeedback from '../../shared/runtime-feedback'
+import { selectTranscriptEvent } from './arrangement-transcript'
 
 const filename = fileURLToPath(new URL('../../components/enterprise/ConversationMessages.tsx', import.meta.url))
 const dependencies: Record<string, unknown> = {
@@ -40,6 +42,7 @@ const dependencies: Record<string, unknown> = {
   '../workspace/file-menu-actions': fileMenuActions,
   '../workspace/result-file-card.css': {},
   '../../shared/scheduled-creation': scheduledCreation,
+  '../../shared/runtime-feedback': runtimeFeedback,
 }
 const componentModule = { exports: {} }
 compileFunction(ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: {
@@ -150,6 +153,52 @@ test('offers diagnostic export only on the failed reply with saved evidence', ()
   assert.ok(html.indexOf('data-run-id="failed"') < html.indexOf('导出本次诊断'))
   assert.ok(html.indexOf('导出本次诊断') < html.indexOf('data-run-id="retry"'))
   assert.doesNotMatch(html, /PRIVATE_/)
+})
+
+test('explains an oversized model request on its own reply, even without a saved diagnostic', () => {
+  const message = runtimeFeedback.RUNTIME_FAILURE_MESSAGES.MODEL_REQUEST_TOO_LARGE
+  const messages: WorkMessage[] = ['with-diagnostic', 'without-diagnostic', 'other'].map((runId, index) => ({
+    id: `user-${runId}`, role: 'user', content: 'Question', createdAt: index + 1, runId,
+  }))
+  const projected = messages.flatMap(({ runId }, index) => {
+    const event = selectTranscriptEvent({ taskId: 'task', runId: runId!, subscriptionId: 'employee', sequence: 1, occurredAt: index + 1,
+      type: 'run_failed', data: { error: runId === 'other' ? `${message} PRIVATE_ERROR` : message,
+        diagnosticAvailable: runId !== 'without-diagnostic', details: 'PRIVATE_DETAIL' } })
+    return event ? [event] : []
+  })
+  assert.doesNotMatch(JSON.stringify(projected), /PRIVATE_/)
+  const runs = buildConversationTranscript(projected)
+  assert.deepEqual(runs, [
+    { runId: 'with-diagnostic', entries: [], diagnosticAvailable: true, failureMessage: message },
+    { runId: 'without-diagnostic', entries: [], failureMessage: message },
+    { runId: 'other', entries: [], diagnosticAvailable: true },
+  ])
+  const html = renderWithFeedback(React.createElement(ConversationMessagesView, {
+    work: { id: 'task', currentEmployeeName: '员工', messages } as WorkItem,
+    employees: [], preparing: false, runs, loading: false, error: null, onReload() {},
+    onExportDiagnostic: async () => ({ success: true }),
+  }))
+  const withoutDiagnostic = html.slice(html.indexOf('data-run-id="without-diagnostic"'), html.indexOf('data-run-id="other"'))
+  assert.ok(withoutDiagnostic.includes(message))
+  assert.doesNotMatch(withoutDiagnostic, /本轮未返回回复|导出本次诊断/)
+  assert.ok(html.indexOf(message) < html.indexOf('导出本次诊断'))
+  assert.match(html.slice(html.indexOf('data-run-id="other"')), /本轮执行失败/)
+  assert.doesNotMatch(html, /PRIVATE_/)
+})
+
+test('shows the latest oversized request failure before its timeline has been read', () => {
+  const message = runtimeFeedback.RUNTIME_FAILURE_MESSAGES.MODEL_REQUEST_TOO_LARGE
+  const messages: WorkMessage[] = ['previous', 'latest'].map((runId, index) => ({
+    id: runId, role: 'user', content: 'Question', createdAt: index + 1, runId,
+  }))
+  const html = renderWithFeedback(React.createElement(ConversationMessagesView, {
+    work: { id: 'task', currentEmployeeName: '员工', status: 'failed', lastRunId: 'latest', stopReason: message, messages } as WorkItem,
+    employees: [], preparing: false, runs: [], loading: false, error: null, onReload() {},
+  }))
+  const latest = html.indexOf('data-run-id="latest"')
+  assert.ok(latest >= 0)
+  assert.doesNotMatch(html.slice(0, latest), /超过接收上限/)
+  assert.ok(html.slice(latest).includes(message))
 })
 
 test('keeps image preview space and dimensions visible while preserving ordinary file attachments', () => {

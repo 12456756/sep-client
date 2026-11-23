@@ -1,4 +1,6 @@
 import type { TaskExecutionEvent } from '../../shared/types'
+import { RUNTIME_FAILURE_MESSAGES } from '../../shared/runtime-feedback'
+import { LOCAL_MEDIA_TOOL, localMediaProgressSchema } from '../../shared/local-media-progress'
 import type { WorkStep } from './types'
 import { processActivityLabel } from './work-process'
 
@@ -66,7 +68,20 @@ export function selectTranscriptEvent(event: TaskExecutionEvent): TaskExecutionE
     return receipt.success ? { ...event, data: receipt.data } : null
   }
   const data = record(event.data)
-  if (event.type === 'run_failed') return data.diagnosticAvailable === true ? { ...event, data: { diagnosticAvailable: true } } : null
+  if (event.type === 'tool_execution_update') {
+    const progress = localMediaProgressSchema.safeParse(data.progress)
+    return data.toolName === LOCAL_MEDIA_TOOL && typeof data.toolId === 'string' && progress.success
+      ? { ...event, data: { toolId: data.toolId, toolName: LOCAL_MEDIA_TOOL, progress: progress.data } } : null
+  }
+  if (event.type === 'run_failed') {
+    const diagnosticAvailable = data.diagnosticAvailable === true
+    const message = RUNTIME_FAILURE_MESSAGES.MODEL_REQUEST_TOO_LARGE
+    const knownError = data.error === message
+    return diagnosticAvailable || knownError ? { ...event, data: {
+      ...(diagnosticAvailable ? { diagnosticAvailable: true } : {}),
+      ...(knownError ? { error: message } : {}),
+    } } : null
+  }
   const type = event.type === 'arrangement_node_progress' ? data.eventType : event.type
   if (typeof type !== 'string' || (!PROGRESS_TYPES.has(type) && !['message_end', 'arrangement_node_started', 'arrangement_node_completed', 'arrangement_node_failed'].includes(type))) return null
   const safe: Record<string, unknown> = {}

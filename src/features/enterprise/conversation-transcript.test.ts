@@ -47,6 +47,21 @@ test('history can recover thinking from message snapshots and separate later con
   assert.equal(runs[1]!.entries[0]!.text, '下一轮思考')
 })
 
+test('shows only validated progress on the matching running local media operation', () => {
+  const tool = { toolId: 'encode', toolName: 'local_media_process' }
+  const events = [event(1, 'tool_execution_start', tool),
+    event(2, 'tool_execution_update', { ...tool, progress: { phase: 'render', percent: 40 }, output: 'private path' }),
+    event(3, 'tool_execution_update', { ...tool, progress: { phase: 'render', percent: 300 } }),
+    event(4, 'tool_execution_update', { ...tool, progress: { phase: 'save' } }, 'run-b')]
+  const [live] = buildConversationTranscript(events)
+  assert.equal(live.entries.length, 1)
+  assert.equal(live.entries[0].text, '渲染视频 40%')
+  assert.doesNotMatch(JSON.stringify(live), /private path/)
+  const [finished] = buildConversationTranscript([...events, event(5, 'tool_execution_end', { ...tool, success: true })])
+  assert.equal(finished.entries[0].text, '本地音视频处理')
+  assert.equal(finished.entries[0].state, 'completed')
+})
+
 test('a final snapshot does not repeat the same streamed thinking', () => {
   const runs = buildConversationTranscript([event(1, 'thinking_delta', { text: '思考' }),
     event(2, 'message_end', { thinking: '思考' })])
