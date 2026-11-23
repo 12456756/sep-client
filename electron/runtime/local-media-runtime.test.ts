@@ -38,7 +38,7 @@ test('local media picks the packaged architecture, executable names and native H
   assert.equal(localMediaExecutable('ffprobe', 'darwin'), 'ffprobe')
   assert.equal(localMediaExecutable('ffprobe', 'win32'), 'ffprobe.exe')
   assert.deepEqual(localMediaH264Args('4M', 'win32'), ['-pix_fmt', 'nv12', '-c:v', 'h264_mf', '-b:v', '4M'])
-  assert.deepEqual(localMediaH264Args('8M', 'darwin'), ['-pix_fmt', 'nv12', '-c:v', 'h264_videotoolbox', '-allow_sw', '1', '-bf', '0', '-b:v', '8M'])
+  assert.deepEqual(localMediaH264Args('8M', 'darwin'), ['-pix_fmt', 'yuv420p', '-c:v', 'h264_videotoolbox', '-allow_sw', '1', '-bf', '0', '-b:v', '8M'])
 })
 
 test('scratch and output volumes get independent space reservations, combined when they share a volume', () => {

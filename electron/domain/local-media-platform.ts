@@ -9,6 +9,6 @@ export function localMediaExecutable(tool: 'ffmpeg' | 'ffprobe', platform = proc
 }
 
 export function localMediaH264Args(bitrate: string, platform = process.platform): string[] {
-  return ['-pix_fmt', 'nv12', '-c:v', platform === 'darwin' ? 'h264_videotoolbox' : 'h264_mf',
+  return ['-pix_fmt', platform === 'darwin' ? 'yuv420p' : 'nv12', '-c:v', platform === 'darwin' ? 'h264_videotoolbox' : 'h264_mf',
     ...(platform === 'darwin' ? ['-allow_sw', '1', '-bf', '0'] : []), '-b:v', bitrate]
 }
