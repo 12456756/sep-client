@@ -27,7 +27,8 @@ async function verifyLocalMedia(directory, spec, target) {
   }
   const checksums = (await readFile(join(directory, 'SHA256SUMS'), 'utf8')).trim().split(/\r?\n/)
   for (const filename of binaries) {
-    if (!checksums.includes(`${await sha256(join(directory, filename))}  ${filename}`)) throw new Error(`FFmpeg checksum mismatch: ${filename}`)
+    const digest = await sha256(join(directory, filename))
+    if (![' ', '*'].some(mode => checksums.includes(`${digest} ${mode}${filename}`))) throw new Error(`FFmpeg checksum mismatch: ${filename}`)
   }
   if (await sha256(join(directory, source)) !== spec.sha256) throw new Error('FFmpeg corresponding source checksum mismatch')
   return filenames
@@ -42,7 +43,7 @@ async function localMediaSource(context) {
   const directory = join(resource, `${isMac ? 'mac' : 'win'}-${arch}`)
   const spec = JSON.parse(await readFile(join(resource, 'source.json'), 'utf8'))
   try { return { directory, spec, target, filenames: await verifyLocalMedia(directory, spec, target) } }
-  catch (cause) { throw new Error(`Prepare the pinned FFmpeg resources with scripts/${target.recipe}${isMac ? ` ${arch}` : ''} before packaging.`, { cause }) }
+  catch (cause) { throw new Error(`Prepare the pinned FFmpeg resources with scripts/${target.recipe}${isMac ? ` ${arch}` : ''} before packaging. ${cause.message}`, { cause }) }
 }
 
 export async function beforeLocalMediaPack(context) { await localMediaSource(context) }

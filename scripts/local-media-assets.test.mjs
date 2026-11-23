@@ -25,6 +25,8 @@ for (const [platform, arch, target] of [['win32', 1, 'win-x64'], ['darwin', 1, '
       SHA256SUMS: `${hash(target)}  ${ffmpeg}\n${hash('probe')}  ${ffprobe}\n` }
     for (const [file, contents] of Object.entries(files)) await writeFile(join(dir, file), contents)
     await beforeLocalMediaPack(context)
+    await writeFile(join(dir, 'SHA256SUMS'), `${hash(target)} *${ffmpeg}\r\n${hash('probe')} *${ffprobe}\r\n`)
+    await beforeLocalMediaPack(context)
     await afterLocalMediaPack(context)
     const resources = isMac ? join(context.appOutDir, '元机AI.app', 'Contents', 'Resources') : join(context.appOutDir, 'resources')
     const out = join(resources, 'local-media')
