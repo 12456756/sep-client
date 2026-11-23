@@ -61,3 +61,11 @@ test('Windows Media Foundation enables its D3D11 dependency with autodetection d
   assert.match(script, /--enable-mediafoundation/)
   assert.match(script, /--enable-d3d11va/)
 })
+
+test('native media builds retain PNG support when autodetection is disabled', async () => {
+  for (const platform of ['mac', 'win']) {
+    const script = await readFile(new URL(`./build-local-media-${platform}.sh`, import.meta.url), 'utf8')
+    assert.match(script, /--enable-zlib/)
+    assert.match(script, /-c:v png/)
+  }
+})

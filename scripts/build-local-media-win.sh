@@ -17,12 +17,14 @@ printf '%s  %s\n' "$sha256" "$source" | sha256sum --check --strict
 tar -xf "$source"
 cd "ffmpeg-$version"
 ./configure --prefix=/usr --disable-autodetect --disable-network --disable-doc \
-  --disable-ffplay --disable-debug --enable-mediafoundation --enable-d3d11va --extra-ldflags=-static
+  --disable-ffplay --disable-debug --enable-mediafoundation --enable-d3d11va --enable-zlib --extra-ldflags=-static
 make -j"${FFMPEG_BUILD_JOBS:-4}" ffmpeg.exe ffprobe.exe
 strip ffmpeg.exe ffprobe.exe
 ./ffmpeg.exe -hide_banner -v error -f lavfi -i 'testsrc2=s=320x180:r=24:d=1' \
   -pix_fmt nv12 -c:v h264_mf -an sample.mp4
 ./ffprobe.exe -hide_banner -v error -show_entries stream=codec_name -of csv=p=0 sample.mp4 | grep -Fx h264
+./ffmpeg.exe -hide_banner -v error -f lavfi -i 'color=red:s=32x32' -frames:v 1 -c:v png sample.png
+./ffmpeg.exe -hide_banner -v error -i sample.png -f null -
 cp ffmpeg.exe ffprobe.exe COPYING.LGPLv2.1 "../$source" "$root/scripts/build-local-media-win.sh" "$dest/"
 ./ffmpeg.exe -buildconf > "$dest/build-config.txt" 2>&1
 cd "$dest"

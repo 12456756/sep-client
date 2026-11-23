@@ -171,7 +171,7 @@ test('release workflow allows 120 seconds per public artifact verification', () 
 test('release workflow builds macOS architectures in parallel without rebuilding the other architecture', () => {
   const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
   const job = workflow.jobs['build-mac']
-  assert.equal(job['runs-on'], "${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}")
+  assert.equal(job['runs-on'], "${{ matrix.arch == 'arm64' && 'macos-26' || 'macos-15-intel' }}")
   assert.deepEqual(job.strategy.matrix.arch, ['arm64', 'x64'])
   assert.equal(job.strategy['max-parallel'], 2)
   assert.equal(job.strategy['fail-fast'], false)

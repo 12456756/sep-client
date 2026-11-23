@@ -105,7 +105,7 @@ jobs:
     name: Build macOS (${{ matrix.arch }})
     needs: [validate, preflight]
     if: always() && needs.validate.result == 'success' && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
-    runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-26' || 'macos-15-intel' }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -233,7 +233,7 @@ jobs:
         with:
           msystem: UCRT64
           path-type: inherit
-          install: make diffutils curl nasm mingw-w64-ucrt-x86_64-gcc
+          install: make diffutils curl nasm mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-zlib
       - name: Ensure Windows Media Foundation is available
         shell: powershell
         run: |

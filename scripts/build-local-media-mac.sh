@@ -28,7 +28,7 @@ cd "ffmpeg-$version"
 # Match Electron 33's minimum OS. Keep FFmpeg free of Homebrew dylibs.
 export MACOSX_DEPLOYMENT_TARGET=11.0
 ./configure --prefix=/usr --cc=/usr/bin/clang --disable-autodetect --disable-network --disable-doc \
-  --disable-ffplay --disable-debug --disable-x86asm --enable-videotoolbox
+  --disable-ffplay --disable-debug --disable-x86asm --enable-videotoolbox --enable-zlib
 make -j"${FFMPEG_BUILD_JOBS:-4}" ffmpeg ffprobe
 for tool in ffmpeg ffprobe; do
   test "$(lipo -archs "$tool")" = "$native"
@@ -36,6 +36,8 @@ done
 ./ffmpeg -hide_banner -v error -f lavfi -i 'testsrc2=s=320x180:r=24:d=1' \
   -pix_fmt nv12 -c:v h264_videotoolbox -allow_sw 1 -bf 0 -an sample.mp4
 ./ffprobe -hide_banner -v error -show_entries stream=codec_name -of csv=p=0 sample.mp4 | grep -Fx h264
+./ffmpeg -hide_banner -v error -f lavfi -i 'color=red:s=32x32' -frames:v 1 -c:v png sample.png
+./ffmpeg -hide_banner -v error -i sample.png -f null -
 mkdir -p "$dest"
 cp ffmpeg ffprobe COPYING.LGPLv2.1 "../$source" "$root/scripts/build-local-media-mac.sh" "$dest/"
 ./ffmpeg -buildconf > "$dest/build-config.txt" 2>&1
