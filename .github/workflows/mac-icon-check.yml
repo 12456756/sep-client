@@ -1,0 +1,30 @@
+name: Mac Icon Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '^26'
+      - name: Compile layered icon with Apple diagnostics
+        shell: bash
+        run: |
+          xcodebuild -version
+          output="$RUNNER_TEMP/sep-icon-check"
+          mkdir -p "$output"
+          xcrun actool build/mac-icon.icon --compile "$output" \
+            --output-format human-readable-text \
+            --output-partial-info-plist "$output/icon-info.plist" \
+            --app-icon mac-icon --include-all-app-icons \
+            --enable-on-demand-resources NO --platform macosx \
+            --minimum-deployment-target 11.0 --target-device mac
+          test -s "$output/Assets.car"
+          plutil -p "$output/icon-info.plist"
