@@ -20,6 +20,13 @@ try {
       const filters = compositionFilters(plan).replace('format=nv12[vout]', `format=${format}[vout]`)
       const base = ['-threads', '2', '-i', photo, '-threads', '2', '-i', video, '-filter_complex_threads', threads,
         '-filter_complex', filters, '-map', '[vout]', '-map', '[aout]']
+      const rawFilters = filters.replace('[aout]', ',anullsink') + ';[vout]scale=16:28,format=rgb24[vsmall]'
+      const raw = run(['-threads', '2', '-i', photo, '-threads', '2', '-i', video, '-filter_complex_threads', threads,
+        '-filter_complex', rawFilters, '-map', '[vsmall]', '-f', 'rawvideo', 'pipe:1'])
+      for (const frame of [0, 12, 45]) {
+        const offset = (frame * 16 * 28 + 14 * 16 + 8) * 3
+        console.log(JSON.stringify({ raw: true, threads, format, frame, rgb: [...raw.subarray(offset, offset + 3)] }))
+      }
       const file = join(directory, `${threads}-${format}.mp4`)
       run([...base, '-r', '30', '-pix_fmt', format, '-c:v', 'h264_videotoolbox', '-allow_sw', '1', '-bf', '0', '-b:v', '4M', '-c:a', 'aac', file])
       for (const time of ['0', '0.4', '1.5']) {
