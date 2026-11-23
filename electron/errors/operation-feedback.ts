@@ -5,6 +5,7 @@ import { AppError } from './app-error'
 import type { ErrorCode } from './error-codes'
 import { workFeedbackMessage } from './work-feedback'
 import { DOCUMENT_PREVIEW_FAILURES } from './document-preview-error'
+import { ResultFilePathError } from './result-file-path-error'
 import { transportKind } from '../common/transport-error'
 import { mediaJobFailure } from './media-job-error'
 import { mediaIssueMessage } from '../../src/shared/media-feedback'
@@ -187,6 +188,9 @@ export function operationFeedback(error: unknown, operation: FeedbackOperation, 
   if (retryMessage) return { ...(mapped ?? fallback), message: retryMessage }
   if (error instanceof AppError) {
     const base = { code: error.code, statusCode: mapped?.statusCode ?? 500 }
+    if (error instanceof ResultFilePathError && (operation === 'documentPreview' || operation === 'workOpenDirectory')) {
+      return { ...base, message: error.userMessage }
+    }
     const local = localMessages[operation]
     if (local && Object.hasOwn(local, error.userMessage)) return { ...base, message: local[error.userMessage] }
     if (Object.hasOwn(correctedMessages, error.userMessage)) return { ...base, message: correctedMessages[error.userMessage] }

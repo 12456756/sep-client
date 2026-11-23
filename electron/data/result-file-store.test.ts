@@ -50,8 +50,8 @@ test('rejects cross-owner, incomplete, changed and symlink delivery files', asyn
   await assert.rejects(f.store.open(scope, input)); await assert.rejects(f.store.revealPath(scope, input))
   f.pending(); await assert.rejects(f.store.open(scope, input))
   const linked = await fixture()
-  await symlink(linked.path, join(linked.workspace, 'alias.mp4'))
-  linked.file.path = 'alias.mp4'
+  await symlink(linked.workspace, join(linked.workspace, 'alias'), process.platform === 'win32' ? 'junction' : 'dir')
+  linked.file.path = 'alias/final.mp4'
   await assert.rejects(linked.store.open(scope, input))
 })
 
@@ -60,10 +60,53 @@ test('conversation identities cannot reveal paths outside the workspace or direc
   assert.equal(await f.store.revealPath(scope, conversation), f.path)
   const outside = join(f.root, 'private.mp4'); await writeFile(outside, 'secret')
   f.task.files[0] = outside
-  await assert.rejects(f.store.revealPath(scope, conversation))
+  await assert.rejects(f.store.revealPath(scope, conversation), { code: 'PERMISSION_DENIED', reason: 'outside' })
   f.task.files[0] = f.workspace
-  await assert.rejects(f.store.revealPath(scope, conversation))
+  await assert.rejects(f.store.revealPath(scope, conversation), { code: 'INVALID_ARGUMENT', reason: 'notFile' })
+  f.task.files[0] = 'unavailable.md'
+  await assert.rejects(f.store.revealPath(scope, conversation), { code: 'NOT_FOUND', reason: 'missing' })
   await assert.rejects(f.store.revealPath(scope, { taskId: 'task', fileId: 'task-file-99' }))
+})
+
+test('conversation file actions accept canonical paths under a configured workspace alias', async () => {
+  const f = await fixture(), request = { taskId: 'task', fileId: 'task-file-0' }
+  const alias = join(f.root, 'workspace-alias')
+  await symlink(f.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  f.task.workDir = alias
+  assert.equal(await f.store.revealPath(scope, request), f.path)
+  assert.equal((await f.store.actionFile(scope, request)).path, f.path)
+})
+
+test('conversation output location accepts different capitalization for the same Windows file', { skip: process.platform !== 'win32' }, async () => {
+  const f = await fixture(), request = { taskId: 'task', fileId: 'task-file-0' }
+  f.task.files[0] = join(f.workspace, 'FINAL.MP4')
+  assert.equal(await f.store.revealPath(scope, request), f.path)
+  assert.equal((await f.store.actionFile(scope, request)).name, 'final.mp4')
+})
+
+test('managed attachments accept ordinary paths but still reject a directory link', async t => {
+  const f = await fixture()
+  t.after(() => rm(f.root, { recursive: true, force: true }))
+  const request = { taskId: 'task', attachmentId: 'file', sha256: '0'.repeat(64) }
+  const filename = process.platform === 'win32' ? 'FINAL.MP4' : 'final.mp4'
+  let path = join(f.workspace, filename)
+  const store = new ResultFileStore(f.root, {} as DocumentPreviewStore, async () => f.task, undefined, undefined,
+    async () => ({ path, name: 'attachment.mp4', size: 0 }))
+  assert.equal(await store.revealPath(scope, request), f.path)
+  const alias = join(f.root, 'workspace-alias')
+  await symlink(f.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  path = join(alias, filename)
+  await assert.rejects(store.revealPath(scope, request), { reason: 'link' })
+})
+
+test('locates explicitly empty text deliveries and still rejects a changed original', async () => {
+  const f = await fixture()
+  const file = join(f.workspace, 'empty.txt')
+  await writeFile(file, '')
+  Object.assign(f.file, { path: 'empty.txt', format: 'txt', contentPolicy: 'empty', size: 0, sha256: createHash('sha256').digest('hex') })
+  assert.equal(await f.store.revealPath(scope, input), file)
+  await writeFile(file, 'changed')
+  await assert.rejects(f.store.revealPath(scope, input))
 })
 
 test('previews the accepted immutable snapshot while reveal always targets the original workspace file', async () => {
@@ -86,14 +129,17 @@ test('previews the accepted immutable snapshot while reveal always targets the o
   await file.close()
 })
 
-test('streams persisted conversation image and video outputs with owner and integrity checks', async () => {
+test('streams persisted conversation image and video outputs with owner and integrity checks', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'sep-result-history-')))
+  t.after(() => rm(root, { recursive: true, force: true }))
   const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
   const seeded = await seedConversationResults(root, scope, image, MOCK_VIDEO_BYTES)
   const task = { id: 'conversation-test', ownerId: scope.memberId, ownerEnterpriseId: scope.enterpriseId, subscriptionId: 'sub', workType: { state: 'resolved', kind: 'conversation' } } as unknown as TaskReadView
   const store = new ResultFileStore(root, {} as DocumentPreviewStore, async () => task, new MediaStore(root), new VideoStore(root))
   const imageInput = { taskId: 'conversation-test', assetId: seeded.images.assets[0].localAssetId }
-  const videoInput = { taskId: 'conversation-test', jobId: 'video-job', outputId: seeded.videos.jobs[0].outputs[0].outputId }
+  const videoOutput = seeded.videos.jobs.find(job => job.jobId === 'video-job')?.outputs[0]
+  assert.ok(videoOutput)
+  const videoInput = { taskId: 'conversation-test', jobId: 'video-job', outputId: videoOutput.outputId }
   const imageFile = await store.open(scope, imageInput)
   assert.equal(imageFile.mime, 'image/png')
   assert.equal((await new Response(imageFile.stream(0, imageFile.size - 1, new AbortController().signal, () => undefined)).arrayBuffer()).byteLength, image.length)

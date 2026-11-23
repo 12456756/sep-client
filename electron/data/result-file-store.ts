@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
-import { copyFile, mkdtemp, open, realpath, lstat, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, open, lstat, realpath, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, extname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ReadableStream } from 'node:stream/web'
 import type { ResultFileRequest } from '../../src/shared/result-files'
@@ -11,8 +11,10 @@ import { ScopePath, type TaskOwnerScope } from './scope-path'
 import { resolveArrangementMediaFile } from './arrangement-media-files'
 import { resolveDocumentSnapshot } from './arrangement-delivery-files'
 import { AppError } from '../errors/app-error'
+import { ResultFilePathError, resultFileSystemError } from '../errors/result-file-path-error'
 import type { MediaStorePort } from '../domain/media'
 import type { VideoStorePort } from '../domain/video-media'
+import { resolveWorkspaceResult } from './workspace-result-path'
 
 type VerifiedVideoStore = VideoStorePort & {
   verifiedAssetPath(scope: { enterpriseId: string; memberId: string; subscriptionId: string }, taskId: string, jobId: string, outputId: string): Promise<string>
@@ -35,6 +37,12 @@ export interface ResultFileStorePort {
 }
 
 export interface ResultActionFile { path: string; name: string; version: string; temporaryOpen?: boolean }
+
+async function managedResultPath(file: string): Promise<string> {
+  if (!isAbsolute(file)) throw new ResultFilePathError('invalidPath')
+  // Managed storage does not allow workspace aliases, even above the per-task directory.
+  return (await resolveWorkspaceResult(parse(file).root, file)).path
+}
 
 export async function saveResultCopy(file: ResultActionFile, destination: string): Promise<void> {
   if (!isAbsolute(destination)) throw new AppError('INVALID_ARGUMENT')
@@ -77,9 +85,7 @@ export class ResultFileStore implements ResultFileStorePort {
     if ('attachmentId' in input) {
       const attachment = await this.attachment?.(scope, input.taskId, input.attachmentId, input.sha256)
       if (!attachment) throw new AppError('NOT_FOUND')
-      const path = await realpath(attachment.path)
-      const info = await lstat(attachment.path)
-      if (resolve(attachment.path) !== path || info.isSymbolicLink() || !info.isFile()) throw new AppError('PERMISSION_DENIED')
+      const path = await managedResultPath(attachment.path)
       return { path, name: basename(attachment.name.replaceAll('\\', '/')).replace(/[<>:"|?*]/g, '_') || 'attachment',
         temporaryOpen: true, format: extname(attachment.name).slice(1).toLowerCase(), version: input.sha256,
         expected: { size: attachment.size, sha256: input.sha256 } }
@@ -89,13 +95,12 @@ export class ResultFileStore implements ResultFileStorePort {
       if (!asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
       await this.media?.readAsset(scope, input.taskId, input.assetId)
       const root = resolve(this.paths.mediaRoot(scope, input.taskId))
-      const path = resolve(root, asset.relativePath)
-      const rel = relative(root, path)
-      if (!rel || isAbsolute(rel) || rel.startsWith(`..${sep}`) || rel === '..') throw new AppError('PERMISSION_DENIED')
-      const canonical = await realpath(path)
-      if (canonical !== path) throw new AppError('PERMISSION_DENIED')
-      const stat = await lstat(path)
-      if (stat.isSymbolicLink() || !stat.isFile()) throw new AppError('PERMISSION_DENIED')
+      const requested = resolve(root, asset.relativePath)
+      const rel = relative(root, requested)
+      if (!rel) throw new ResultFilePathError('notFile')
+      if (isAbsolute(rel) || rel.startsWith(`..${sep}`) || rel === '..') throw new ResultFilePathError('outside')
+      const path = await managedResultPath(requested)
+      if (!path.startsWith((await realpath(root)) + sep)) throw new ResultFilePathError('outside')
       return { path, format: asset.mime.slice(asset.mime.indexOf('/') + 1), version: `${asset.localAssetId}:${asset.sha256}:${asset.relativePath}`, expected: { size: asset.size, sha256: asset.sha256 } }
     }
     if ('jobId' in input) {
@@ -109,16 +114,11 @@ export class ResultFileStore implements ResultFileStorePort {
       return { path, format: output.mimeType.slice(output.mimeType.indexOf('/') + 1), version: `${asset.localAssetId}:${output.sha256}:${asset.relativePath}`, expected: { size: output.byteLength, sha256: output.sha256.toLowerCase() } }
     }
     if ('fileId' in input) {
-      if (task.workType.state !== 'resolved' || task.workType.kind !== 'conversation' || !task.workDir) throw new AppError('NOT_FOUND')
+      if (task.workType.state !== 'resolved' || task.workType.kind !== 'conversation') throw new AppError('NOT_FOUND')
       const name = task.files.find((_file, index) => `${task.id}-file-${index}` === input.fileId)
       if (!name) throw new AppError('NOT_FOUND')
-      const configuredRoot = resolve(task.workDir)
-      const root = await realpath(configuredRoot)
-      const rel = relative(configuredRoot, resolve(configuredRoot, name))
-      const path = resolve(root, rel)
-      const stat = await lstat(path)
-      if (!rel || isAbsolute(rel) || rel.startsWith(`..${sep}`) || rel === '..' || resolve(path) !== await realpath(path) || stat.isSymbolicLink() || !stat.isFile()) throw new AppError('PERMISSION_DENIED')
-      return { path, name: basename(path), format: extname(name).slice(1).toLowerCase(), version: name }
+      const file = await resolveWorkspaceResult(task.workDir ?? '', name)
+      return { path: file.path, name: basename(file.path), format: extname(file.path).slice(1).toLowerCase(), version: name }
     }
     const delivery = await this.deliveries.getDelivery(scope, input.taskId, input.nodeId, input.deliverableId)
     if (!delivery || delivery.status !== 'completed') throw new AppError('NOT_FOUND')
@@ -132,19 +132,23 @@ export class ResultFileStore implements ResultFileStorePort {
 
   async revealPath(scope: TaskOwnerScope, input: ResultFileRequest): Promise<string> {
     try { return (await this.resolve(scope, input, true)).path }
-    catch (error) { if (error instanceof AppError) throw error; throw new AppError('NOT_FOUND', { message: '产出文件不存在、已被修改或无法访问，请确认文件仍保存在原位置。' }) }
+    catch (error) {
+      if (error instanceof AppError) throw error
+      throw resultFileSystemError(error) ?? new AppError('NOT_FOUND', { message: '产出文件不存在、已被修改或无法访问，请确认文件仍保存在原位置。', cause: error })
+    }
   }
 
   async actionFile(scope: TaskOwnerScope, input: ResultFileRequest): Promise<ResultActionFile> {
     try {
       const file = await this.resolve(scope, input, false)
       const info = await lstat(file.path)
-      if (!info.isFile() || info.isSymbolicLink()) throw new AppError('PERMISSION_DENIED')
+      if (info.isSymbolicLink()) throw new ResultFilePathError('link')
+      if (!info.isFile()) throw new ResultFilePathError('notFile')
       const version = JSON.stringify([file.version, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs])
       return { path: file.path, name: file.name ?? basename(file.path), version, temporaryOpen: file.temporaryOpen }
     } catch (error) {
       if (error instanceof AppError) throw error
-      throw new AppError('NOT_FOUND', { message: '文件不存在、已更改或无法访问，请检查原文件。' })
+      throw resultFileSystemError(error) ?? new AppError('NOT_FOUND', { message: '文件不存在、已更改或无法访问，请检查原文件。', cause: error })
     }
 }
 
@@ -200,7 +204,7 @@ export class ResultFileStore implements ResultFileStorePort {
     } catch (error) {
       await handle?.close().catch(() => undefined)
       if (error instanceof AppError) throw error
-      throw new AppError('NOT_FOUND', { message: '媒体文件无法读取，可能已被删除或修改，请检查原文件。' })
+      throw resultFileSystemError(error) ?? new AppError('NOT_FOUND', { message: '媒体文件无法读取，可能已被删除或修改，请检查原文件。', cause: error })
     }
   }
 }

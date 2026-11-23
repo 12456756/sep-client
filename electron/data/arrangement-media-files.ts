@@ -239,7 +239,10 @@ export async function materializeArrangementMedia(
 export async function resolveArrangementMediaFile(workspace: string, file: FinalDeliveryFile, taskDirectory: string | undefined, signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted(); if (!isSafeDeliveryPath(file.path)) fail('UNSAFE_PATH')
   const source = { sha256: file.sha256, size: file.size }
-  if (!Number.isSafeInteger(source.size) || source.size <= 0 || !/^[a-f0-9]{64}$/i.test(source.sha256)) fail('MEDIA_INTEGRITY_MISMATCH')
+  const validSize = file.contentPolicy === 'empty'
+    ? source.size === 0 && !file.snapshot && !file.sourceArtifact && file.format.toLowerCase() === 'txt'
+    : Number.isSafeInteger(source.size) && source.size > 0
+  if (!validSize || !/^[a-f0-9]{64}$/i.test(source.sha256)) fail('MEDIA_INTEGRITY_MISMATCH')
   if (file.snapshot) {
     if (!taskDirectory) fail('SNAPSHOT_UNAVAILABLE')
     if (!/^[A-Za-z0-9][A-Za-z0-9_+-]{0,31}$/.test(file.format)) fail('INVALID_FORMAT')
