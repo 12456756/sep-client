@@ -3,10 +3,12 @@ import { dirname, resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
+import { readBundledRelease } from './scripts/bundled-release';
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  define: { __SEP_CURRENT_RELEASE__: JSON.stringify(readBundledRelease(projectRoot)) },
   root: resolve(projectRoot, 'src'),
   plugins: [react(), tailwindcss()],
   resolve: {

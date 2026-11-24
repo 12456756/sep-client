@@ -1,6 +1,8 @@
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowDownToLine, CircleAlert, RefreshCw, RotateCw, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { ArrowDownToLine, CircleAlert, FileText, RefreshCw, RotateCw, X } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import Markdown from 'react-markdown'
+import { getCurrentRelease, type CurrentRelease } from '../../features/update/current-release'
 import type { UpdateModel } from '../../features/update/use-update'
 import type { UpdateState } from '../../shared/ipc'
 import { readUpdateTaskStatus } from './update-restart'
@@ -37,12 +39,27 @@ function retryLabel(state: UpdateState): string {
     : '重新检查'
 }
 
+export function CurrentReleaseNotes({ version, release }: { version: string; release: CurrentRelease | null }) {
+  return <section className="ent-update-notes ent-update-current-notes" aria-label="当前版本更新内容" tabIndex={0}>
+    <h3>{version} 更新内容</h3>
+    {release ? <Markdown skipHtml components={{
+      h1: ({ children }) => <h4>{children}</h4>,
+      h2: ({ children }) => <h4>{children}</h4>,
+      h3: ({ children }) => <h4>{children}</h4>,
+      a: ({ children }) => <span>{children}</span>,
+      img: ({ alt }) => <span>{alt}</span>,
+    }}>{release.notes}</Markdown> : <p>本版本未提供更新内容。</p>}
+  </section>
+}
+
 export function UpdateDetails({ update, onRestart, onClose }: {
   update: UpdateModel
   onRestart: () => void
   onClose: () => void
 }) {
   const { state, pending, error, release } = update
+  const [showCurrentNotes, setShowCurrentNotes] = useState(false)
+  const currentNotesId = useId()
   const busy = pending !== null
   const version = state && 'version' in state ? state.version : null
   const notes = state?.status === 'available' ? state.releaseNotes
@@ -89,7 +106,14 @@ export function UpdateDetails({ update, onRestart, onClose }: {
       pending === 'install' ? '正在准备重启…' : pending === 'cancel' ? '正在取消下载…'
         : pending === 'download' ? (externalDownload ? '正在打开下载页面…' : '正在下载更新…') : '正在检查更新…'
     }</p>}
+    {showCurrentNotes && state && <div id={currentNotesId}>
+      <CurrentReleaseNotes version={state.currentVersion} release={getCurrentRelease(state.currentVersion)} />
+    </div>}
     <footer className="ent-update-actions">
+      {state && <button type="button" className="ent-btn ent-update-notes-toggle" aria-expanded={showCurrentNotes}
+        aria-controls={currentNotesId} onClick={() => setShowCurrentNotes(value => !value)}>
+        <FileText size={14} aria-hidden />{showCurrentNotes ? '收起更新内容' : '查看更新内容'}
+      </button>}
       {state?.status === 'available' && <button type="button" className="ent-btn primary" disabled={busy} onClick={() => void update.download()}>
         <ArrowDownToLine size={14} aria-hidden />{externalDownload ? (downloadOpened ? '再次下载' : '下载新版') : '下载更新'}
       </button>}

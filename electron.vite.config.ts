@@ -2,6 +2,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
+import { readBundledRelease } from './scripts/bundled-release';
 
 export default defineConfig({
   main: {
@@ -30,6 +31,7 @@ export default defineConfig({
     },
   },
   renderer: {
+    define: { __SEP_CURRENT_RELEASE__: JSON.stringify(readBundledRelease(__dirname)) },
     plugins: [react(), tailwindcss()],
     root: resolve(__dirname, 'src'),
     resolve: {
