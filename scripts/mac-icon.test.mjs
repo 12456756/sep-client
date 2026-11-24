@@ -47,9 +47,20 @@ test('Mac icon source separates a white background from transparent brand artwor
   assert.equal(group.translucency.enabled, false)
   const svg = await readFile(join(source, 'Assets', group.layers[0]['image-name']), 'utf8')
   assert.match(svg, /width="1024" height="1024"/)
+  assert.match(svg, /viewBox="0 0 128 128"/)
   assert.doesNotMatch(svg, /<image|<filter|<rect[^>]+width="(?:128|1024)"/)
+})
+
+test('Mac icon arcs use closed fills instead of strokes that can be clipped', async () => {
+  const svg = await readFile(join(root, 'build', `${iconName}.icon`, 'Assets', 'mark.svg'), 'utf8')
   const original = await readFile(join(root, 'assets/logo-source/yuanji-A-icon.svg'), 'utf8')
-  assert.deepEqual(svg.match(/<(?:path|rect|circle)\b[^>]*\/>/g), original.match(/<(?:path|rect|circle)\b[^>]*\/>/g))
+  assert.doesNotMatch(svg, /\bstroke(?:-[\w-]+)?\s*=/)
+  const arcs = svg.match(/<path\b[^>]*\/>/g) ?? []
+  assert.equal(arcs.length, 2)
+  for (const arc of arcs) assert.match(arc, /\bd="M[^"]* Z"/)
+  assert.deepEqual(arcs.map(arc => arc.match(/\bfill="(#[0-9A-F]{6})"/)?.[1]),
+    Array.from(original.matchAll(/<path\b[^>]*\bstroke="(#[0-9A-F]{6})"/g), match => match[1]))
+  assert.deepEqual(svg.match(/<(?:rect|circle)\b[^>]*\/>/g), original.match(/<(?:rect|circle)\b[^>]*\/>/g))
 })
 
 test('other platforms do not invoke Apple tools or inspect a Mac bundle', async () => {

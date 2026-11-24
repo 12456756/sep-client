@@ -7,7 +7,9 @@ The macOS application has two icon representations:
   background is white; `Assets/mark.svg` contains only the transparent brand mark.
 
 The mark uses the geometry from `assets/logo-source/yuanji-A-icon.svg`, on a
-1024-pixel canvas. A regression test prevents these two versions from drifting.
+1024-pixel canvas. The Mac asset uses closed, filled arc outlines in place of
+the original SVG strokes to avoid clipping at the stroke centerline. A
+regression test checks the outlined form, arc colors, and unchanged center mark.
 Do not add a pre-rendered rounded tile or shadow to the foreground artwork.
 Keep the original source, the layered SVG, and the legacy icons consistent when
 changing the brand in the future.
