@@ -27,6 +27,7 @@ export interface ToolPolicy {
   workspaceDir: string
   fileAccess?: 'workspace' | 'local'
   unattended?: boolean
+  allowExternalSaveAs?: boolean
   applicationDataRoot?: string
   originalFiles?: ReadonlyMap<string, { path: string; identity: string }>
   /** Canonical paths fixed by the host from this run's approved skill snapshot. */

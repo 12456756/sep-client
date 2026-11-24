@@ -221,7 +221,7 @@ export class TaskRuntime {
           data: {
             requestId: request.requestId,
             toolName: request.toolName,
-            input: request.toolName === 'file_edit_once' || request.toolName === 'file_select_original' ? undefined : request.input,
+            input: ['file_edit_once', 'file_select_original', 'file_save_as'].includes(request.toolName) ? undefined : request.input,
           },
         })
         options.onApprovalRequest(request)

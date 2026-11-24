@@ -10,6 +10,7 @@ import * as windowLayout from '../common/window-layout'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from './channels'
 import type { SelectDirectoryResult } from '../../src/shared/ipc'
 import { windowCloseCommand } from '../../src/shared/window-close'
+import type { Listener } from './router'
 
 interface TestRoute {
   channel: string
@@ -19,13 +20,18 @@ interface TestRoute {
 }
 
 // Run the actual route with the native dialog replaced; Node cannot load Electron UI APIs.
-function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'selected')] }, platform = 'win32') {
+function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'selected')] }, platform = 'win32',
+  saveResult: { canceled: boolean; filePath?: string } = { canceled: true }) {
   const calls: Array<{ defaultPath?: string; properties: string[] }> = []
-  const exports: { systemRoutes?: TestRoute[] } = {}
+  const saveCalls: string[] = []
+  const exports: { systemRoutes?: TestRoute[]; systemListeners?: Listener[] } = {}
   const source = readFileSync(new URL('./routes/system.ts', import.meta.url), 'utf8')
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   const imports: Record<string, unknown> = {
-    electron: { dialog: { async showOpenDialog(_window: unknown, options: typeof calls[number]) { calls.push(options); return result } } },
+    electron: { dialog: {
+      async showOpenDialog(_window: unknown, options: typeof calls[number]) { calls.push(options); return result },
+      async showSaveDialog(_window: unknown, options: { defaultPath: string }) { saveCalls.push(options.defaultPath); return saveResult },
+    } },
     'node:path': { isAbsolute },
     zod: { z },
     '../../errors/app-error': { appError },
@@ -35,7 +41,7 @@ function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'se
     '../router': {
       NO_INPUT: z.undefined(),
       route: (channel: string, schema: z.ZodType, handle: TestRoute['handle'], options?: { trustedMainFrame?: boolean }) => ({ channel, schema, handle, ...options }),
-      listener: () => ({}),
+      listener: (channel: string, schema: z.ZodType, handle: Listener['handle'], options: { trustedMainFrame?: boolean }) => ({ channel, schema, handle, ...options }),
     },
   }
   runInNewContext(compiled, { exports, process: { platform }, require: (name: string) => {
@@ -55,8 +61,35 @@ function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'se
       async setDefaultWorkspaceDirectory(path: string | null) { saved.push(path) },
     },
   }
-  return { route, calls, paths, saved, defaultPath, ctx, routes: exports.systemRoutes ?? [] }
+  return { route, calls, paths, saved, defaultPath, ctx, routes: exports.systemRoutes ?? [], saveCalls, listeners: exports.systemListeners ?? [] }
 }
+
+it('Save As approves only the pending path confirmed by the native dialog, not a renderer-supplied path', async () => {
+  const path = join(process.cwd(), 'requested.txt')
+  const other = join(process.cwd(), 'different.txt')
+  for (const [requested, chosen, approved] of [
+    [path, { canceled: false, filePath: path }, true],
+    [path, { canceled: false, filePath: other }, false],
+    [path, { canceled: true }, false],
+    ['relative.txt', { canceled: false, filePath: path }, false],
+  ] as const) {
+    const { listeners, saveCalls, calls } = harness(undefined, undefined, chosen)
+    const listener = listeners.find(entry => entry.channel === SEND_CHANNELS.TOOL_APPROVAL_RESPONSE)!
+    assert.equal(listener.trustedMainFrame, true)
+    const responses: unknown[] = []
+    const runtime = {
+      pendingApproval: (id: string) => id === 'request' ? { toolName: 'file_save_as', input: { path: requested } } : undefined,
+      respondToApproval: (response: unknown) => { responses.push(response) },
+    }
+    const input = listener.schema.parse({ requestId: 'request', approved: true, path: other })
+    assert.deepEqual(input, { requestId: 'request', approved: true })
+    await listener.handle({ window: () => ({}), backend: { peekTaskRuntime: () => runtime } } as never, input as never)
+    assert.deepEqual(saveCalls, isAbsolute(requested) ? [requested] : [])
+    assert.deepEqual(calls, [])
+    assert.equal(responses.length, 1)
+    assert.equal((responses[0] as { approved: boolean }).approved, approved)
+  }
+})
 
 describe('native window theme IPC', () => {
   it('keeps native backgrounds transparent with theme-aware hover contrast across theme changes', async () => {

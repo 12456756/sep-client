@@ -49,26 +49,34 @@ export function managedFileTools(config: PiAgentSessionConfig) {
     signal?.throwIfAborted()
     return true
   }
-  const write = async (input: string, value: string, signal: AbortSignal | undefined, selected: boolean, expected?: Awaited<ReturnType<typeof read>>) => {
-    const path = safe(input, selected)
+  const create = async (path: string, bytes: Buffer, signal: AbortSignal | undefined, external = false) => {
+    signal?.throwIfAborted()
+    if (!external) await mkdir(dirname(path), { recursive: true })
+    if (safe(path, external) !== path || await realpath(dirname(path)) !== dirname(path)) throw new Error('Output path changed.')
+    signal?.throwIfAborted()
+    const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow)
+    try {
+      const info = await handle.stat({ bigint: true })
+      if (await realpath(path) !== path) throw new Error('Output path changed.')
+      await handle.writeFile(bytes)
+      created.set(path, info)
+    } finally { await handle.close() }
+  }
+  const textBytes = (value: string) => {
     const bytes = Buffer.from(value, 'utf8')
     if (bytes.length > maxBytes || value.includes('\0')) throw new Error('Text output exceeds the supported limit.')
+    return bytes
+  }
+  const write = async (input: string, value: string, signal: AbortSignal | undefined, selected: boolean, expected?: Awaited<ReturnType<typeof read>>) => {
+    const path = safe(input, selected)
+    const bytes = textBytes(value)
     let existing = expected
     if (!existing) {
       try { existing = await read(path) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       if (!existing && selected) throw new Error('Only existing files can be edited outside the workspace. Use Save As for new files.')
     }
     if (!existing) {
-      signal?.throwIfAborted()
-      await mkdir(dirname(path), { recursive: true })
-      if (safe(input) !== path || await realpath(dirname(path)) !== dirname(path)) throw new Error('Output path changed.')
-      const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow)
-      try {
-        const info = await handle.stat({ bigint: true })
-        if (await realpath(path) !== path) throw new Error('Output path changed.')
-        await handle.writeFile(bytes)
-        created.set(path, info)
-      } finally { await handle.close() }
+      await create(path, bytes, signal)
       return
     }
     if (existing.bytes.equals(bytes)) return
@@ -109,6 +117,22 @@ export function managedFileTools(config: PiAgentSessionConfig) {
       committing.delete(key)
     }
   }
+  const saveNewExternal = async (input: string, value: string, signal?: AbortSignal) => {
+    const external = policy.allowExternalSaveAs && externalEditCandidate(input, policy)
+    if (!external) return undefined
+    const path = safe(input, true)
+    try { await lstat(path); return undefined }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    if (!textExtensions.has(extname(path).toLowerCase())) throw new Error('Only supported UTF-8 text files can be saved outside the workspace.')
+    const bytes = textBytes(value)
+    if (await realpath(dirname(path)) !== dirname(path)) throw new Error('Output folder changed.')
+    signal?.throwIfAborted()
+    if (!await config.authorizeTool({ toolName: 'file_save_as', input: { path } })) {
+      throw new Error('Save As was not confirmed. No file was saved to the requested location.')
+    }
+    await create(path, bytes, signal, true)
+    return path
+  }
   const target = async (input: string, signal?: AbortSignal) => {
     if (!input.startsWith('@original/')) return { input, selected: await select(input, signal), existing: undefined }
     const binding = boundOriginal(input, policy)
@@ -124,6 +148,8 @@ export function managedFileTools(config: PiAgentSessionConfig) {
   return [defineTool({
     ...baseWrite,
     async execute(_id, input, signal) {
+      const savedAs = await saveNewExternal(input.path, input.content, signal)
+      if (savedAs) return { content: [{ type: 'text', text: `File saved: ${savedAs}` }], details: undefined }
       const file = await target(input.path, signal)
       await write(file.input, input.content, signal, file.selected, file.existing)
       return { content: [{ type: 'text', text: 'File saved.' }], details: undefined }

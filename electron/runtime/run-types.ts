@@ -12,6 +12,7 @@ export interface TaskToolPolicy {
   workspaceDir: string
   fileAccess?: 'workspace' | 'local'
   unattended?: boolean
+  allowExternalSaveAs?: boolean
   applicationDataRoot?: string
   originalFiles?: ReadonlyMap<string, import('../domain/attachment-input').BoundOriginalFile>
   readableDeliveryPaths?: readonly string[]

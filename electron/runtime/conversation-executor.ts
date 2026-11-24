@@ -205,6 +205,9 @@ export class ConversationExecutor {
       let toolPolicy = withApprovedSkillReadPaths(runtimeFileToolPolicy(queued.arrangement?.permissions, workspaceDir, {
         fullFileAccess: queued.fullFileAccess, unattended: !!task.scheduledOrigin, applicationDataRoot: this.options.taskRunStore?.userDataDir,
       }), employee)
+      if (toolPolicy && queued.conversation && !task.scheduledOrigin && toolPolicy.preset !== 'read-only') {
+        toolPolicy = { ...toolPolicy, allowExternalSaveAs: true }
+      }
       let attachmentImages: readonly { data: string; mimeType: string }[] | undefined
       let attachmentText = ''
       let attachmentMetadata: AttachmentView[] | undefined
@@ -396,6 +399,7 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
+      if (toolPolicy?.allowExternalSaveAs) workerPrompt += '\n\n【指定位置保存】用户明确要求将新建文本文件保存到指定路径时，使用 write 传入该路径，由客户端校验权限并在需要时发起系统另存为。以下默认成果目录规则仅在用户未指定保存路径时适用。取消或保存失败时如实说明，不自动改存其他目录。'
       if (artifactDirectory?.status === 'ready') {
         workerPrompt += `\n\n【本任务成果目录】请将本轮通过文件工具创建的普通文件放入工作目录下的“${artifactDirectory.relativePath}”目录。该路径已由客户端创建并验证，请直接使用；不要改用其他目录。用户引用本会话先前生成的普通文件时，使用已授权的文件工具在此目录查找并读取对应成果，不把成果当作用户上传的原件。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
       } else if (artifactDirectory?.status === 'retry-in-prompt') {

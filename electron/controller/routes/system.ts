@@ -23,7 +23,8 @@ const approvalResponse = z.object({
   approved: z.boolean(),
   reason: z.string().optional(),
 })
-const selectingOriginal = new Set<string>()
+const selectingFile = new Set<string>()
+const fileSelectionInput = z.object({ path: z.string().max(4096).refine(isAbsolute) })
 
 const windowTheme = z.enum(['light', 'dark'])
 const directorySelection = z.string().trim().max(32768).refine(path => !path || isAbsolute(path)).optional()
@@ -125,20 +126,26 @@ export const systemListeners = [
     // 运行时没加载过就没有待批的调用，直接丢掉；不能因为一条响应而触发加载。
     const runtime = ctx.backend.peekTaskRuntime()
     const request = runtime?.pendingApproval(input.requestId)
-    if (input.approved && request?.toolName === 'file_select_original') {
-      if (selectingOriginal.has(input.requestId)) return
-      const parsed = z.object({ path: z.string().max(4096).refine(isAbsolute) }).safeParse(request.input)
+    if (input.approved && (request?.toolName === 'file_select_original' || request?.toolName === 'file_save_as')) {
+      if (selectingFile.has(input.requestId)) return
+      const parsed = fileSelectionInput.safeParse(request.input)
       const window = ctx.window()
       let approved = false
       if (parsed.success && window) {
-        selectingOriginal.add(input.requestId)
+        selectingFile.add(input.requestId)
         try {
-          const selected = await dialog.showOpenDialog(window, { title: '选择要操作的原文件', defaultPath: parsed.data.path, properties: ['openFile'] })
-          approved = !selected.canceled && selected.filePaths.length === 1 && selected.filePaths[0] === parsed.data.path
+          const path = parsed.data.path
+          if (request.toolName === 'file_save_as') {
+            const selected = await dialog.showSaveDialog(window, { title: '另存为', defaultPath: path })
+            approved = !selected.canceled && selected.filePath === path
+          } else {
+            const selected = await dialog.showOpenDialog(window, { title: '选择要操作的原文件', defaultPath: path, properties: ['openFile'] })
+            approved = !selected.canceled && selected.filePaths.length === 1 && selected.filePaths[0] === path
+          }
         } catch {
           approved = false
         } finally {
-          selectingOriginal.delete(input.requestId)
+          selectingFile.delete(input.requestId)
           runtime?.respondToApproval({ ...input, approved })
         }
         return
