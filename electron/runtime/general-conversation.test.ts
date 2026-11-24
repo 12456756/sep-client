@@ -137,14 +137,14 @@ test('general chat preserves selected model, permissions and history across turn
     media: { async prepareRun(input) {
       assert.deepEqual(input.employee.media, media)
       assert.equal(input.employee.runtimeSnapshot, undefined)
-      assert.equal(input.toolPolicy?.preset, 'full-local')
+      assert.equal(input.toolPolicy?.preset, 'workspace-edit')
       preparations.push({ kind: 'image', subscriptionId: input.subscriptionId })
       return mediaTools
     }, async stopTask() {}, async waitForRun() { completedMedia.push('image') } },
     video: { async prepareRun(input) {
       assert.deepEqual(input.employee.video, videoFixture.runtime)
       assert.equal(input.employee.runtimeSnapshot, undefined)
-      assert.equal(input.toolPolicy?.preset, 'full-local')
+      assert.equal(input.toolPolicy?.preset, 'workspace-edit')
       preparations.push({ kind: 'video', subscriptionId: input.subscriptionId })
       return videoTools
     }, async stopTask() {}, async waitForRun() { completedMedia.push('video') } },
@@ -170,9 +170,6 @@ test('general chat preserves selected model, permissions and history across turn
         assert.match(prompt, /不能静默以脚本合成替代/)
         assert.match(prompt, /未指定的常规规格由模型.*本轮直接执行/)
         assert.match(prompt, /不要仅为确认.*追加一轮对话/)
-        assert.match(prompt, /用户在后续消息明确要求.*当前会话调用生成工具创建独立的新任务，无需新开会话/)
-        assert.match(prompt, /客户端会.*重复生成、重复计费的确认.*用户取消或未确认时不得继续尝试/)
-        assert.match(prompt, /同一轮提交异常后不得自行再次生成/)
         assert.equal(options.context.mediaTools, mediaTools)
         assert.equal(options.context.videoTools, videoTools)
         await options.context.mediaTools.execute('media_generate_image', {})
@@ -206,7 +203,7 @@ test('general chat preserves selected model, permissions and history across turn
       id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1, owner: scope, mode: 'conversation',
       title: 'general', goal: 'first', nodes: [], confirmedInputs: [],
       conversation: { kind: 'general', modelId: 'selected', participants: [{ subscriptionId, modelId: 'selected' }], activeSubscriptionId: subscriptionId },
-      workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'full-local', approvalMode: 'auto-approve' }),
+      workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'workspace-edit', approvalMode: 'confirm-each' }),
       planHash: 'general', createdAt: Date.now(),
     })
     runtime = createRuntime()
@@ -232,8 +229,8 @@ test('general chat preserves selected model, permissions and history across turn
       assert.equal(context.disableSkills, true)
       assert.equal(context.enableCommonTools, true)
       assert.deepEqual(context.additionalSkillPaths, [])
-      assert.equal(context.toolPolicy?.preset, 'full-local')
-      assert.equal(context.toolPolicy?.approvalMode, 'auto-approve')
+      assert.equal(context.toolPolicy?.preset, 'workspace-edit')
+      assert.equal(context.toolPolicy?.approvalMode, 'confirm-each')
       assert.equal(context.transformSystemPrompt?.('unknown dynamic text'), 'unknown dynamic text')
     }
     assert.equal(contexts[1].resumeSessionFile, join(contexts[0].sessionDir, 'session.jsonl'))

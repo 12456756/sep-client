@@ -886,6 +886,23 @@ describe('trusted media host tools with the real Pi SDK', () => {
     })
   }
 
+  it('sends media resubmission rules in the general assistant system prompt across turns', async () => {
+    const { bodies, executions, approvals } = await mediaSession({
+      useNativeSystemPrompt: true, disableSkills: true, systemPrompt: undefined, employeeProfile: undefined,
+    }, undefined, jobView, undefined, async session => { await session.prompt('What is the status of the original task?') })
+    assert.equal(bodies.length, 2)
+    for (const body of bodies) {
+      assert.ok(body.tools?.some(tool => tool.function.name === 'media_generate_image'))
+      const prompt = body.messages.filter(message => message.role === 'system').map(message => messageText(message.content)).join('\n')
+      assert.match(prompt, /明确要求重新生成[^。]*独立的新任务/)
+      assert.match(prompt, /提交状态未知时[^。]*只查询或恢复原任务/)
+      assert.match(prompt, /确认被拒绝或尚未取得时[^。]*不要继续/)
+      assert.match(prompt, /询问状态[^。]*不视为授权/)
+    }
+    assert.deepEqual(executions, [])
+    assert.equal(approvals, 0)
+  })
+
   it('injects a literal system prompt and registers strict TypeBox schemas without profile secrets', async () => {
     const { bodies, literalPrompt } = await mediaSession({})
     assert.ok(bodies[0].messages.some(message => message.role === 'system' &&
