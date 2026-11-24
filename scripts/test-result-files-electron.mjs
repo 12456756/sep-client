@@ -1,6 +1,6 @@
 /* global document, window, innerWidth */
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -281,7 +281,7 @@ try {
   assert.ok(isAbsolute(copiedVideo) && !isAbsolute(savedVideo) && !savedVideo.startsWith(`..${sep}`))
   assert.match(savedVideo.split(sep)[0], /^\d{4}-\d{2}-\d{2}$/)
   assert.equal(copiedVideo, conversationState.revealed.at(-1))
-  assert.deepEqual(await readFile(copiedVideo), await readFile(conversationState.videoPath))
+  assert.equal(copiedVideo, conversationState.videoPath, 'the clipboard must contain the path of the actual generated video')
   await resultCards.nth(0).getByRole('button', { name: /放大查看/ }).click()
   const conversationPreview = page.locator('.result-image-dialog[open]')
   await assertImageCopy(conversationPreview.locator('img'), async () => {

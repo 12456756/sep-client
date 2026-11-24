@@ -7,20 +7,19 @@ import { KnowledgeService } from '../service/knowledge-service'
 import { KnowledgeApi } from '../common/platform/knowledge-api'
 import { ResultFileService } from '../service/result-file-service'
 import { describeConversationResult, ResultFileStore } from '../data/result-file-store'
-import { ResultArchiveStore } from '../data/result-archive-store'
+import { ResultArchiveStore, type GeneratedMediaOutput } from '../data/result-archive-store'
 import { ResultArchiveService } from '../service/result-archive-service'
 import { LocalMediaSettingsStore } from '../data/local-media-settings-store'
 import { LocalMediaSettingsService } from '../service/local-media-settings-service'
 import { localMediaTarget } from '../domain/local-media-platform'
 import { finalDeliveryFileSchema } from '../domain/arrangement-delivery'
-import type { ResultFileRequest } from '../../src/shared/result-files'
 /**
  * 后端组合根。
  *
  * 所有存储、服务和运行时依赖都在这里绑定。除运行时的惰性加载外，业务模块不创建
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
-import { basename, dirname, extname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { app, safeStorage, shell, systemPreferences } from 'electron'
 import { ConnectorService } from '../service/connector-service'
 import type { ConnectorRegistryPort } from '../domain/connectors'
@@ -244,7 +243,8 @@ class BackendRuntime {
         onMessage,
       }),
     })
-    this.taskManager = new TaskManager(userDataDir, renderer)
+    const archiveStore = new ResultArchiveStore(userDataDir)
+    this.taskManager = new TaskManager(userDataDir, renderer, undefined, undefined, undefined, undefined, archiveStore)
     this.attachmentStore = new AttachmentStore(userDataDir, undefined, async (mediaType: string, bytes: Uint8Array) => (await this.attachmentExtractionRuntime.get()).extract(mediaType, bytes))
     this.attachments = new AttachmentService(this.attachmentStore, () => this.currentScope(), async (bytes, query, signal, validate) => {
       const runtime = await this.xlsxAnalysisRuntime.get()
@@ -293,10 +293,17 @@ class BackendRuntime {
       { list: getEnabledModels },
     )
 
-    const mediaStore = new MediaStore(userDataDir, (job, asset) => this.queueMediaArchive(job.owner, job.runId,
-      { taskId: job.taskId, assetId: asset.localAssetId }, asset.createdAt, job.createdAt, {
-        name: `图片${extname(asset.relativePath)}`, version: `${asset.localAssetId}:${asset.sha256}:${asset.relativePath}`,
-      }))
+    const generatedMedia: GeneratedMediaOutput = {
+      prepare: async (owner, file, name, when, startedAt, runId, subscriptionId) => {
+        const assert = this.resultArchive.assertOwner(owner)
+        const [task, run] = await Promise.all([this.tasks.get(file.taskId), runId ? this.taskRunStore.get(owner, file.taskId, runId) : null])
+        assert()
+        if (task.ownerId !== owner.memberId || task.ownerEnterpriseId !== owner.enterpriseId) throw new AppError('AUTH_REQUIRED')
+        return archiveStore.prepareGeneratedMedia(owner, file, { title: task.title, name, when, startedAt: run?.startedAt ?? startedAt, subscriptionId }, assert)
+      },
+      path: (owner, file, subscriptionId) => archiveStore.generatedMediaPath(owner, file, subscriptionId, this.resultArchive.assertOwner(owner)),
+    }
+    const mediaStore = new MediaStore(userDataDir, undefined, generatedMedia)
     this.media = new MediaService({
       scope: this,
       store: mediaStore,
@@ -316,10 +323,7 @@ class BackendRuntime {
       },
     })
 
-    const videoStore = config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED ? new VideoStore(userDataDir, (job, asset) =>
-      this.queueMediaArchive(job.scope, job.runId, { taskId: job.taskId, jobId: job.jobId, outputId: asset.output.outputId },
-        asset.createdAt, job.createdAt, { name: `视频${extname(asset.relativePath)}`,
-          version: `${asset.localAssetId}:${asset.output.sha256}:${asset.relativePath}` }, job.scope.subscriptionId)) : undefined
+    const videoStore = config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED ? new VideoStore(userDataDir, undefined, generatedMedia) : undefined
     this.arrangementDiagnostics = new ArrangementDiagnosticService({
       scope: this, clientVersion: app.getVersion(),
       authorizationRevision: () => this.authSession.getSessionRevision(),
@@ -475,8 +479,15 @@ class BackendRuntime {
       media: this.media, runSnapshots: mediaStore, conversationQueue: this.conversationQueue })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans, queue: this.conversationQueue })
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
-    this.resultArchive = new ResultArchiveService(new ResultArchiveStore(userDataDir), this, () => app.getPath('documents'), () => this.authSession.getSessionRevision())
-    this.localMediaSettings = new LocalMediaSettingsService(new LocalMediaSettingsStore(userDataDir), join(userDataDir, 'local-media', 'scratch'))
+    this.resultArchive = new ResultArchiveService(archiveStore, this, () => app.getPath('documents'), () => this.authSession.getSessionRevision())
+    this.localMediaSettings = new LocalMediaSettingsService(new LocalMediaSettingsStore(userDataDir), join(userDataDir, 'local-media', 'scratch'), undefined, async () => {
+      const owner = this.currentScope()
+      if (!owner) return
+      const assert = this.resultArchive.assertOwner(owner)
+      const setting = await archiveStore.settingAt(owner, Date.now())
+      assert()
+      return setting?.root
+    })
     this.resultFiles = new ResultFileService({
       scope: this,
       archive: this.resultArchive,
@@ -944,16 +955,6 @@ class BackendRuntime {
     return runtime
   }
 
-  private async queueMediaArchive(owner: TaskOwnerScope, runId: string | undefined, file: ResultFileRequest,
-    when: number, startedAt: number, source: { name: string; version: string }, videoSubscriptionId?: string) {
-    try {
-      const assert = this.resultArchive.assertOwner(owner)
-      const [task, run] = await Promise.all([this.tasks.get(file.taskId), runId ? this.taskRunStore.get(owner, file.taskId, runId) : null])
-      assert()
-      if (task.ownerId !== owner.memberId || task.ownerEnterpriseId !== owner.enterpriseId || task.workType.state !== 'resolved' || task.workType.kind !== 'conversation') return
-      return await this.resultFiles.queueArchive(owner, file, task.title, when, run?.startedAt ?? startedAt, async () => source, videoSubscriptionId)
-    } catch { log.warn('could not register media result save', { taskId: file.taskId }) }
-  }
 }
 
 export type Backend = BackendRuntime

@@ -7,7 +7,7 @@ import { WorkPlanStore } from '../../electron/data/work-plan-store'
 import { ArrangementCheckpointStore } from '../../electron/data/arrangement-checkpoint-store'
 import { DocumentPreviewStore } from '../../electron/data/document-preview-store'
 import { ResultFileStore } from '../../electron/data/result-file-store'
-import { ResultArchiveStore } from '../../electron/data/result-archive-store'
+import { ResultArchiveStore, type GeneratedMediaOutput } from '../../electron/data/result-archive-store'
 import { MediaStore } from '../../electron/data/media-store'
 import { VideoStore } from '../../electron/data/video-store'
 import { ResultFileService } from '../../electron/service/result-file-service'
@@ -36,7 +36,17 @@ void app.whenReady().then(async () => {
     { id: 'document', path: 'brief.md', format: 'md', bytes: Buffer.from('# Product brief\nAccepted final file.') },
   ]
   await Promise.all(files.map(file => writeFile(join(workspace, file.path), file.bytes)))
-  const conversation = await seedConversationResults(root, owner, files[0].bytes, files[1].bytes)
+  const scopeSource = { currentScope: () => scope }
+  const archive = new ResultArchiveService(new ResultArchiveStore(root), scopeSource, () => root, () => 0)
+  const generated = join(root, 'generated')
+  await mkdir(generated)
+  await archive.configure(async () => generated)
+  const generatedMedia: GeneratedMediaOutput = {
+    prepare: (account, file, name, when, _startedAt, _runId, subscriptionId) =>
+      archive.store.prepareGeneratedMedia(account, file, { title: 'Product media', name, when, startedAt: Date.now(), subscriptionId }, archive.assertOwner(account)),
+    path: (account, file, sub) => archive.store.generatedMediaPath(account, file, sub, archive.assertOwner(account)),
+  }
+  const conversation = await seedConversationResults(root, owner, files[0].bytes, files[1].bytes, generatedMedia)
   const plans = new WorkPlanStore(root)
   const checkpoints = new ArrangementCheckpointStore(root)
   const plan: WorkPlan = {
@@ -63,26 +73,13 @@ void app.whenReady().then(async () => {
     status: 'completed', createdAt: 1, startedAt: 1, completedAt: 2, error: null, logs: [], files: [],
     ownerId: owner.memberId, ownerEnterpriseId: owner.enterpriseId, subscriptionId: 'sub', activeRunId: null,
     workType: { state: 'resolved', kind: 'arrangement' } }
-  const scopeSource = { currentScope: () => scope }
-  const archive = new ResultArchiveService(new ResultArchiveStore(root), scopeSource, () => root, () => 0)
   const store = new ResultFileStore(root, new DocumentPreviewStore(root, plans, checkpoints), async taskId => taskId === 'conversation-test'
-    ? { ...task, id: taskId, workType: { state: 'resolved', kind: 'conversation' } } : task, new MediaStore(root), new VideoStore(root))
+    ? { ...task, id: taskId, workType: { state: 'resolved', kind: 'conversation' } } : task, new MediaStore(root), new VideoStore(root, undefined, generatedMedia))
   const service = new ResultFileService({
     scope: scopeSource, store, archive,
     reveal: path => { revealed.push(path) },
   })
   const revealed: string[] = []
-  const generated = join(root, 'generated')
-  await mkdir(generated)
-  await archive.configure(async () => generated)
-  const videoFile = { taskId: 'conversation-test', jobId: 'video-job', outputId: fixture.output.outputId }
-  const completedAt = Date.now()
-  await service.queueArchive(owner, videoFile, task.title, completedAt, completedAt, async () => {
-    const { name, version, archiveVersion } = await store.actionFile(owner, videoFile, 'sub')
-    return { name, version: archiveVersion ?? version }
-  }, 'sub')
-  await service.saveQueuedArchive(owner, videoFile)
-  if ((await service.archiveStatus(videoFile)).state !== 'saved') throw new Error('Test video copy was not saved')
   const requests: Array<{ method: string; range: string | null; status: number }> = []
   installResultFileProtocol({ handle: async request => {
     const response = await service.handle(request)

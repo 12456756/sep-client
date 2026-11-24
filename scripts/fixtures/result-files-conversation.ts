@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { MediaStore } from '../../electron/data/media-store'
 import { VideoStore } from '../../electron/data/video-store'
+import type { GeneratedMediaOutput } from '../../electron/data/result-archive-store'
 import { ScopePath } from '../../electron/data/scope-path'
 import { inspectMediaImage } from '../../electron/data/media-image'
 import type { LocalMediaJob } from '../../electron/domain/media'
@@ -12,10 +13,10 @@ import { MockVideoHostService } from '../../electron/service/mock-video-host-ser
 import { videoOutputSchema, videoReceiptSchema } from '../../src/shared/video-media'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 
-export async function seedConversationResults(root: string, owner: TaskOwnerScope, image: Uint8Array, video: Uint8Array) {
+export async function seedConversationResults(root: string, owner: TaskOwnerScope, image: Uint8Array, video: Uint8Array, generated?: GeneratedMediaOutput) {
   const taskId = 'conversation-test'
   const images = new MediaStore(root)
-  const videos = new VideoStore(root)
+  const videos = new VideoStore(root, undefined, generated)
   const dimensions = inspectMediaImage(image)
   const imageOutput = { outputId: 'image-output', mime: dimensions.mime, size: image.length,
     width: dimensions.width, height: dimensions.height, sha256: createHash('sha256').update(image).digest('hex'), expiresAt: null }
@@ -76,7 +77,7 @@ export async function seedConversationResults(root: string, owner: TaskOwnerScop
   const getTask = async (id: string) => [taskId, imageReplayTask, videoReplayTask].includes(id) ? { subscriptionId: 'sub' } : null
   const rejectOnline = () => { throw new Error('Result fixture must not execute media operations') }
   const media = new MediaService({ scope, getTask, store: new MediaStore(root), authorize: rejectOnline, requestApproval: rejectOnline })
-  const videoHost = new MockVideoHostService({ mock: true, scope, getTask, store: new VideoStore(root),
+  const videoHost = new MockVideoHostService({ mock: true, scope, getTask, store: videos,
     localRuntime: () => fixture.runtime, authorize: rejectOnline, requestApproval: rejectOnline, authorizationRevision: () => 0,
     readReference: rejectOnline, gateway: () => ({ quote: rejectOnline, submit: rejectOnline, getReceipt: rejectOnline,
       findReceipt: rejectOnline, content: rejectOnline, uploadReference: rejectOnline }),
@@ -87,6 +88,6 @@ export async function seedConversationResults(root: string, owner: TaskOwnerScop
     replayImages: await media.getTaskMedia(imageReplayTask),
     replayVideos: await videoHost.getTaskVideo(videoReplayTask),
     imagePath: join(new ScopePath(root).mediaRoot(owner, taskId), imageAsset.relativePath),
-    videoPath: await new VideoStore(root).verifiedAssetPath(videoScope, taskId, videoJob.jobId, videoOutput.outputId),
+    videoPath: await videos.verifiedAssetPath(videoScope, taskId, videoJob.jobId, videoOutput.outputId),
   }
 }

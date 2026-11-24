@@ -165,7 +165,7 @@ export class ResultFileService {
           entry = await archive.store.entry(scope, file.taskId, archiveIdentity(file))
         }
       }
-      if (entry?.request) await this.copyArchive(scope, file, entry, assert, undefined, signal)
+      if (entry?.request && !entry.direct) await this.copyArchive(scope, file, entry, assert, undefined, signal)
     }).catch(() => { /* The original result or copy ledger still holds the intent. */ }).finally(() => {
       if (this.saving.get(key) === next) this.saving.delete(key)
     })
@@ -210,6 +210,12 @@ export class ResultFileService {
     if (!archive || !identity) return { state: 'none' }
     const scope = requireScope(this.options.scope), assert = archive.assertOwner(scope)
     const entry = await archive.store.entry(scope, raw.taskId, identity)
+    if (entry?.direct) {
+      const saved = await archive.store.destination(entry)
+      assert()
+      // Missing media is retried through the job's original download, not by copying.
+      return { state: saved ? 'saved' : 'none' }
+    }
     const candidate = !entry?.stage && await this.unregisteredArchive(scope, raw, entry)
     if (candidate) {
       const configured = await archive.store.settingAt(scope, candidate.intent.startedAt).then(Boolean, () => true)
@@ -274,6 +280,7 @@ export class ResultFileService {
     if (!archive || !identity) throw new AppError('INVALID_ARGUMENT')
     const scope = requireScope(this.options.scope), assert = archive.assertOwner(scope)
     let entry = await archive.store.entry(scope, raw.taskId, identity)
+    if (entry?.direct) throw new AppError('INVALID_STATE', { message: '请在生成记录中重试保存此文件。' })
     if (confirmation) {
       const root = (await archive.store.settings(scope)).at(-1)?.root
       assert()

@@ -77,6 +77,7 @@ export function receiptMatchesRequest(job: Pick<LocalVideoJob, 'request' | 'exec
 }
 
 export const localVideoAssetSchema = z.object({
+  direct: z.literal(true).optional(),
   saveIntent: resultSaveIntentSchema.optional(),
   version: z.literal(1), scope: videoScopeSchema, taskId: videoLocalIdSchema, jobId: videoLocalIdSchema,
   localAssetId: z.string().regex(/^vout_[a-f0-9]{64}$/), receiptId: videoLocalIdSchema, output: videoOutputSchema,

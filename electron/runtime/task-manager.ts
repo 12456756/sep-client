@@ -27,6 +27,7 @@ import {
 } from '../domain/task-state-machine'
 import { describeError } from '../common/redact'
 import { logger } from '../common/logger'
+import { appError } from '../errors/app-error'
 import { silentTaskNotifier, type TaskNotifier } from './task-notifier'
 
 const log = logger.child('task-manager')
@@ -98,6 +99,7 @@ export class TaskManager {
     runStore: TaskRunStorePort = new TaskRunStore(userDataDir),
     private readonly checkpoints: ArrangementCheckpointStorePort = new ArrangementCheckpointStore(userDataDir),
     private readonly mediaArchive: Pick<MediaStore, 'isArchived'> = new MediaStore(userDataDir),
+    private readonly generatedWorkspace?: Pick<import('../data/result-archive-store').ResultArchiveStore, 'prepareDefaultWorkspace'>,
   ) {
     this.paths = new ScopePath(userDataDir)
     this.workspaceDirectories = new WorkspaceDirectoryStore(userDataDir)
@@ -349,6 +351,9 @@ export class TaskManager {
       return chosen
     }
     this.assertCurrentScope(scope, generation)
+    const generated = await this.generatedWorkspace?.prepareDefaultWorkspace(scope, undefined, () => this.assertCurrentScope(scope, generation))
+    this.assertCurrentScope(scope, generation)
+    if (generated) return generated
     const configured = await this.defaultWorkspaceSettings.read()
     if (configured) {
       await mkdir(configured, { recursive: true })
@@ -400,11 +405,17 @@ export class TaskManager {
         return cloneTask(existing)
       }
     } else if (this.tasks.has(id)) throw new TaskScopeError('Task already exists.')
-    const configured = workDir?.trim() ? null : await this.defaultWorkspaceSettings.read()
-    const names = workDir?.trim() || configured ? undefined : await this.workspaceDirectories.resolve(user, this.currentWorkspaceNames)
+    const explicit = workDir?.trim()
+    const assert = () => this.assertCurrentScope(user, generation)
+    const generated = explicit ? undefined : await this.generatedWorkspace?.prepareDefaultWorkspace(user, id, assert).catch(cause => {
+      assert()
+      throw appError('INVALID_STATE', { message: '生成文件保存位置不可用，请重新连接或在设置中选择其他文件夹。', cause })
+    })
+    const configured = explicit || generated ? null : await this.defaultWorkspaceSettings.read()
+    const names = explicit || generated || configured ? undefined : await this.workspaceDirectories.resolve(user, this.currentWorkspaceNames)
     this.assertCurrentScope(user, generation)
-    const resolvedWorkDir = workDir?.trim() || (configured ? join(configured, id) : this.paths.defaultWorkspaceDir(user, id, names))
-    await mkdir(resolvedWorkDir, { recursive: true })
+    const resolvedWorkDir = explicit || generated || (configured ? join(configured, id) : this.paths.defaultWorkspaceDir(user, id, names))
+    if (!generated) await mkdir(resolvedWorkDir, { recursive: true })
     const task: Task = {
       id, title, prompt, status: TaskStatus.PENDING, workDir: resolvedWorkDir,
       createdAt: Date.now(), startedAt: null, completedAt: null, error: null, files: [], logs: [],
@@ -425,7 +436,7 @@ export class TaskManager {
         nextTasks.set(task.id, task)
       }, generation)
     } catch (error) {
-      if (!workDir?.trim() && !this.tasks.has(id)) await rm(resolvedWorkDir, { recursive: true, force: true }).catch(() => undefined)
+      if (!explicit && !generated && !this.tasks.has(id)) await rm(resolvedWorkDir, { recursive: true, force: true }).catch(() => undefined)
       throw error
     }
     this.notifyTaskUpdate(task.id)

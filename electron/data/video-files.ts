@@ -185,9 +185,9 @@ export class VideoFiles {
     } finally { await handle.close() }
   }
 
-  async stream(part: string, source: AsyncIterable<Uint8Array>, expected: { byteLength: number; sha256: string }, signal: AbortSignal): Promise<void> {
+  async stream(part: string, source: AsyncIterable<Uint8Array>, expected: { byteLength: number; sha256: string }, signal: AbortSignal, createDirectory = true): Promise<void> {
     signal.throwIfAborted()
-    await this.directory(dirname(part))
+    if (createDirectory) await this.directory(dirname(part))
     await this.assertPath(part)
     const iterator = source[Symbol.asyncIterator]()
     const handle = await open(part, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { rm } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { videoOutputSchema, videoOutputExtension, type VideoOutput } from '../../src/shared/video-media'
@@ -16,7 +16,8 @@ const writes = new WriteChain()
 export class VideoStore implements VideoStorePort {
   private readonly files: VideoFiles
   private readonly paths: ScopePath
-  constructor(userDataDir: string, private readonly beforeOutputCommit?: (job: LocalVideoJob, asset: LocalVideoAsset) => Promise<ResultSaveIntent | undefined>) {
+  constructor(userDataDir: string, private readonly beforeOutputCommit?: (job: LocalVideoJob, asset: LocalVideoAsset) => Promise<ResultSaveIntent | undefined>,
+    private readonly generated?: import('./result-archive-store').GeneratedMediaOutput) {
     this.files = new VideoFiles(userDataDir)
     this.paths = new ScopePath(this.files.root)
   }
@@ -113,6 +114,12 @@ export class VideoStore implements VideoStorePort {
     if (asset.relativePath !== `files/${asset.localAssetId}.${videoOutputExtension(asset.output.mimeType)}`) throw new VideoPersistenceError('Video asset path differs from identity.')
     return this.file(scope, asset.taskId, 'files', asset.localAssetId, `.${videoOutputExtension(asset.output.mimeType)}`)
   }
+  private async assetLocation(scope: VideoScope, asset: VideoAssetState): Promise<{ path: string; files: VideoFiles }> {
+    if (!asset.direct) return { path: this.assetFile(scope, asset), files: this.files }
+    if (!this.generated) throw new VideoPersistenceError('Generated video location is unavailable.')
+    const path = await this.generated.path(scope, { taskId: asset.taskId, jobId: asset.jobId, outputId: asset.output.outputId }, scope.subscriptionId)
+    return { path, files: new VideoFiles(dirname(path)) }
+  }
   private async record(scope: VideoScope, taskId: string, jobId: string, outputId: string): Promise<LocalVideoAsset | null> {
     const id = this.assetId(jobId, outputId)
     const file = this.file(scope, taskId, 'assets', id)
@@ -133,7 +140,10 @@ export class VideoStore implements VideoStorePort {
   private async asset(scope: VideoScope, taskId: string, jobId: string, outputId: string): Promise<VideoAssetState | null> {
     const asset = await this.record(scope, taskId, jobId, outputId)
     if (!asset) return null
-    try { await this.files.verify(this.assetFile(scope, asset), asset.output) } catch (error) {
+    try {
+      const { path, files } = await this.assetLocation(scope, asset)
+      await files.verify(path, asset.output)
+    } catch (error) {
       if (videoFileMissing(error)) return { ...asset, status: 'MISSING' }
       throw error
     }
@@ -158,6 +168,7 @@ export class VideoStore implements VideoStorePort {
       if (!primary || !commit || !isDeepStrictEqual(primary, asset) || !isDeepStrictEqual(commit, asset)) {
         throw new VideoPersistenceError('Video repair requires intact matching manifest and commit evidence.')
       }
+      if (asset.direct) return (await this.asset(scope, taskId, jobId, outputId))!
       const file = this.assetFile(scope, asset)
       try {
         await this.files.verify(file, asset.output)
@@ -231,7 +242,8 @@ export class VideoStore implements VideoStorePort {
     return this.locked(scope, async () => {
       const asset = await this.asset(scope, taskId, jobId, outputId)
       if (asset?.status !== 'SAVED') throw new VideoPersistenceError('Video asset is missing.')
-      const bytes = await this.files.bytes(this.assetFile(scope, asset), MAX_VIDEO_BYTES)
+      const { path, files } = await this.assetLocation(scope, asset)
+      const bytes = await files.bytes(path, MAX_VIDEO_BYTES)
       if (bytes.length !== asset.output.byteLength || videoSha256(bytes) !== asset.output.sha256.toLowerCase()) throw new VideoPersistenceError('Video changed during reading.')
       return bytes
     })
@@ -242,7 +254,7 @@ export class VideoStore implements VideoStorePort {
     return this.locked(scope, async () => {
       const asset = await this.asset(scope, taskId, jobId, outputId)
       if (asset?.status !== 'SAVED' || asset.output.byteLength > MAX_VIDEO_BYTES) throw new VideoPersistenceError('Video asset is missing or oversized.')
-      return this.assetFile(scope, asset)
+      return (await this.assetLocation(scope, asset)).path
     })
   }
 
@@ -262,6 +274,22 @@ export class VideoStore implements VideoStorePort {
         relativePath: `files/${id}.${videoOutputExtension(output.mimeType)}`, status: 'SAVED', createdAt: Date.now(),
       }
       const manifest = this.file(scope, taskId, 'assets', id)
+      const publish = !existing || existing.direct ? await this.generated?.prepare(scope, { taskId, jobId, outputId: output.outputId },
+        `视频.${videoOutputExtension(output.mimeType)}`, asset.createdAt, job.createdAt, job.runId, scope.subscriptionId) : undefined
+      if (existing?.direct && !publish) throw new VideoPersistenceError('Generated video location is unavailable.')
+      if (publish) {
+        asset.direct = true
+        await publish(async part => {
+          const files = new VideoFiles(dirname(part))
+          await files.stream(part, stream, output, signal, false)
+          await files.verify(part, output)
+          signal.throwIfAborted()
+          await this.files.writeJson(`${manifest}.commit`, asset)
+        }, signal)
+        signal.throwIfAborted()
+        await this.files.writeJson(manifest, asset)
+        return structuredClone(asset)
+      }
       const part = `${file}.${randomUUID()}.part`
       try {
         await this.files.stream(part, stream, output, signal)

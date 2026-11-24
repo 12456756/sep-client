@@ -4,14 +4,22 @@ import type { LocalMediaSettings } from '../../src/shared/local-media-settings'
 import type { LocalMediaSettingsStore } from '../data/local-media-settings-store'
 import { localMediaTarget } from '../domain/local-media-platform'
 import { appError } from '../errors/app-error'
+import { resolveUnlinkedChild, resolveUnlinkedDirectory } from '../data/workspace-result-path'
 
 export class LocalMediaSettingsService {
   constructor(private readonly store: LocalMediaSettingsStore, private readonly defaultPath: string,
-    readonly supported = localMediaTarget(process.platform, process.arch) !== undefined) {}
+    readonly supported = localMediaTarget(process.platform, process.arch) !== undefined,
+    private readonly generatedRoot?: () => Promise<string | undefined>) {}
+
+  private async defaults() {
+    const root = this.supported ? await this.generatedRoot?.() : undefined
+    return { root, path: root ? join(root, '.csep-media-temp') : this.defaultPath }
+  }
 
   async settings(): Promise<LocalMediaSettings> {
     const custom = this.supported ? await this.store.read() : null
-    return { supported: this.supported, path: custom ?? this.defaultPath, defaultPath: this.defaultPath, custom: custom !== null }
+    const { path } = await this.defaults()
+    return { supported: this.supported, path: custom ?? path, defaultPath: path, custom: custom !== null }
   }
 
   async configure(path: string | null, assertActive: () => void): Promise<LocalMediaSettings> {
@@ -26,16 +34,22 @@ export class LocalMediaSettingsService {
       }
     }
     await this.store.write(path, assertActive)
-    return { supported: true, path: path ?? this.defaultPath, defaultPath: this.defaultPath, custom: path !== null }
+    return this.settings()
   }
 
   async prepare(): Promise<string> {
-    const setting = await this.settings()
-    if (!setting.supported) throw appError('INVALID_STATE')
+    if (!this.supported) throw appError('INVALID_STATE')
     try {
-      if (!setting.custom) await mkdir(setting.path, { recursive: true })
-      const actual = await localDirectory(await realpath(setting.path))
-      if (setting.custom && actual !== setting.path) throw new Error('The selected directory has moved.')
+      const custom = await this.store.read()
+      const selected = custom ? { path: custom, root: undefined } : await this.defaults()
+      if (selected.root) {
+        const parent = await resolveUnlinkedDirectory(selected.root)
+        await mkdir(selected.path).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error })
+        return localDirectory((await resolveUnlinkedChild(parent, '.csep-media-temp', 'directory')).path)
+      }
+      if (!custom) await mkdir(selected.path, { recursive: true })
+      const actual = await localDirectory(await realpath(selected.path))
+      if (custom && actual !== custom) throw new Error('The selected directory has moved.')
       return actual
     } catch (cause) {
       throw appError('INVALID_STATE', { message: '音视频临时目录不可用，请在设置中更改位置后重试。', cause })

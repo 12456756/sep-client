@@ -10,6 +10,15 @@ import { resolveUnlinkedChild, resolveUnlinkedDirectory } from './workspace-resu
 import { ResultFilePathError } from '../errors/result-file-path-error'
 import { resultFileRequestSchema, type ResultFileRequest } from '../../src/shared/result-files'
 
+export type GeneratedMediaRequest = Extract<ResultFileRequest, { assetId: string } | { jobId: string }>
+export interface GeneratedMediaOutput {
+  prepare(scope: TaskOwnerScope, file: GeneratedMediaRequest, name: string, when: number, startedAt: number,
+    runId?: string, subscriptionId?: string): Promise<((write: (part: string) => Promise<void>, signal: AbortSignal) => Promise<void>) | undefined>
+  path(scope: TaskOwnerScope, file: GeneratedMediaRequest, subscriptionId?: string): Promise<string>
+}
+
+const mediaKey = (file: GeneratedMediaRequest) => 'assetId' in file ? `image:${file.assetId}` : JSON.stringify(['video', file.jobId, file.outputId])
+
 const absolute = z.string().refine(isAbsolute)
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
 const illegal = /[<>:"/\\|?*\p{Cc}]/u
@@ -24,6 +33,7 @@ const entrySchema = z.object({ root: absolute, day, folder: segment, target: seg
   state: z.enum(['pending', 'failed', 'saved']).optional(),
   failure: failureSchema.optional(),
   targetIdentity: z.string().optional(),
+  direct: z.literal(true).optional(),
   stage: z.object({ part: z.string().regex(/^\.csep-save-[a-f0-9-]{36}\.part$/), candidate: segment.nullable(),
     identity: z.string().optional() }).strict().optional(),
 }).strict()
@@ -203,6 +213,15 @@ export class ResultArchiveStore {
     try { await this.checkDirectory(path, false); return true } catch { return false }
   }
 
+  async prepareDefaultWorkspace(scope: TaskOwnerScope, taskId: string | undefined, assert: () => void): Promise<string | undefined> {
+    const setting = await this.settingAt(scope, Date.now())
+    assert()
+    if (!setting) return
+    const root = await this.checkDirectory(setting.root)
+    const workspaces = await this.ensureDirectory(root, '任务工作区', assert)
+    return taskId ? this.ensureDirectory(workspaces, taskId, assert) : workspaces
+  }
+
   private async checkDirectory(path: string, writable = true): Promise<string> {
     const directory = await resolveUnlinkedDirectory(path)
     if (writable) await access(directory, constants.W_OK)
@@ -257,16 +276,63 @@ export class ResultArchiveStore {
   }
 
   async recoverable(scope: TaskOwnerScope, taskId: string): Promise<ResultArchiveEntry[]> {
-    return Object.values(await this.readLedger(this.ledgerPath(scope, taskId))).filter(entry => entry.request && (!entry.target || entry.stage))
+    return Object.values(await this.readLedger(this.ledgerPath(scope, taskId))).filter(entry => !entry.direct && entry.request && (!entry.target || entry.stage))
+  }
+
+  async prepareGeneratedMedia(scope: TaskOwnerScope, file: GeneratedMediaRequest, input: {
+    title: string; name: string; when: number; startedAt: number; subscriptionId?: string
+  }, assert: () => void): ReturnType<GeneratedMediaOutput['prepare']> {
+    const key = mediaKey(file)
+    let entry = await this.entry(scope, file.taskId, key)
+    if (!entry) {
+      const setting = await this.settingAt(scope, input.startedAt)
+      assert()
+      if (!setting) return
+      await this.enqueue(scope, file.taskId, key, { ...input, root: setting.root, request: file, version: key, direct: true }, assert)
+      entry = await this.entry(scope, file.taskId, key)
+      if (!entry) throw new ResultArchiveFailure('location')
+    }
+    assert()
+    if (!entry.direct) return
+    if (entry.subscriptionId !== input.subscriptionId) throw new ResultArchiveFailure('source')
+    const recorded = entry
+    return async (write, signal) => {
+      const check = () => { assert(); signal.throwIfAborted() }
+      // A changed preference can redirect an incomplete download, but never a
+      // publication whose final file cannot yet be confirmed on a disconnected disk.
+      const current = recorded.state === 'failed' && !recorded.target && !recorded.stage?.candidate
+        ? await this.settingAt(scope, Date.now()) : undefined
+      try { await this.copy(scope, file.taskId, key, { entry: recorded, write, retryRoot: current?.root }, check) }
+      catch (error) {
+        await this.fail(scope, file.taskId, key, recorded.version, check, error instanceof ResultArchiveFailure ? error.reason : undefined).catch(() => undefined)
+        throw error
+      }
+    }
+  }
+
+  async generatedMediaPath(scope: TaskOwnerScope, file: GeneratedMediaRequest, subscriptionId: string | undefined, assert: () => void): Promise<string> {
+    const key = mediaKey(file)
+    let entry = await this.entry(scope, file.taskId, key)
+    if (entry?.direct && entry.subscriptionId === subscriptionId) {
+      if (entry.stage?.candidate && (await this.destination(entry) || await this.interruptedTarget(entry).catch(() => null))) {
+        await this.copy(scope, file.taskId, key, { entry }, assert)
+        entry = await this.entry(scope, file.taskId, key)
+      }
+      const path = entry && await this.destination(entry)
+      assert()
+      if (path) return path
+    }
+    assert()
+    throw Object.assign(new Error('Generated media file unavailable.'), { code: 'ENOENT' })
   }
 
   async enqueue(scope: TaskOwnerScope, taskId: string, identity: string, input: {
-    root: string; when: number; title: string; request: ResultFileRequest; subscriptionId?: string; name: string; version: string
+    root: string; when: number; title: string; request: ResultFileRequest; subscriptionId?: string; name: string; version: string; direct?: true
   }, assert: () => void, recovery?: { previousVersion: string | undefined }): Promise<void> {
     const file = this.ledgerPath(scope, taskId), key = digest(identity)
     await this.copies.run(`${file}:${key}`, () => this.writes.run(file, async () => {
       const entries = await this.readLedger(file), previous = entries[key]
-      if (previous?.version === input.version && (previous.request || previous.target)) return
+      if (previous?.direct || (previous?.version === input.version && (previous.request || previous.target))) return
       if (recovery && (previous?.version !== recovery.previousVersion || previous?.stage)) return
       const date = localArchiveDay(input.when)
       const existing = Object.values(entries).find(item => item.day === date && !relative(item.root, input.root) &&
@@ -275,7 +341,7 @@ export class ResultArchiveStore {
       const folder = existing?.folder ?? folderLabel ?? '任务'
       assert()
       await writeJsonAtomic(file, { ...entries, [key]: { root: input.root, day: date, folder, name: archiveFileName(input.name),
-        folderLabel, folderIdentity: existing?.folderIdentity,
+        folderLabel, folderIdentity: existing?.folderIdentity, direct: input.direct,
         target: null, version: input.version, when: input.when, request: input.request, subscriptionId: input.subscriptionId, state: 'pending' } }, { durable: true })
     }))
   }
@@ -302,6 +368,7 @@ export class ResultArchiveStore {
         throw error
       })
       const found = directory && await fileIdentity(join(directory, stage.candidate))
+      if (entry.direct && directory && await folderIdentity(directory) !== entry.folderIdentity) return null
       if (!found) await this.checkDirectory(root, false)
       return found === stage.identity ? stage.candidate : null
     } catch (cause) {
@@ -311,6 +378,7 @@ export class ResultArchiveStore {
 
   async copy(scope: TaskOwnerScope, taskId: string, identity: string, input: {
     entry: ResultArchiveEntry; source?: { path: string; sourceStamp?: string }; retryRoot?: string; confirmation?: string
+    write?: (part: string) => Promise<void>
   }, assert: () => void): Promise<void> {
     const file = this.ledgerPath(scope, taskId), key = digest(identity)
     await this.copies.run(`${file}:${key}`, async () => {
@@ -358,8 +426,9 @@ export class ResultArchiveStore {
         await save({ ...entry, stage: undefined })
         return
       }
-      if (!input.source) throw new ResultArchiveFailure('source')
-      if (entry.target && !input.retryRoot) return
+      if (!input.source && !input.write) throw new ResultArchiveFailure('source')
+      if (entry.target && !input.retryRoot && !input.write) return
+      if (entry.direct !== true && input.write) throw new ResultArchiveFailure('source')
       const root = input.retryRoot ?? entry.root
       // Keep the original evidence until a confirmed replacement directory is usable.
       const alternateRoot = leaveOldStage ? await destinationIO(this.checkDirectory(root), true) : undefined
@@ -367,7 +436,7 @@ export class ResultArchiveStore {
       const part = `.csep-save-${randomUUID()}.part`
       const directory = await this.writes.run(file, async () => {
         const entries = await this.readLedger(file)
-        const peers = Object.values(entries).filter(peer => peer.day === entry.day && !relative(peer.root, root))
+        const peers = Object.values(entries).filter(peer => peer.day === entry.day && !relative(peer.root, root) && (!entry.direct || peer.folderIdentity))
         const parent = await this.ensureDirectory(alternateRoot ?? await destinationIO(this.checkDirectory(root), true), entry.day, assert)
         const { directory, ...folder } = await this.selectFolder(parent, entry.folderLabel ?? archiveFolderLabel('', entry.name), peers, assert)
         await destinationIO(access(directory, constants.W_OK), true)
@@ -384,7 +453,14 @@ export class ResultArchiveStore {
       }
       await checkFolder()
       const partPath = join(directory, part)
-      await copyExclusive(input.source.path, input.source.sourceStamp, partPath, assert)
+      if (input.write) {
+        try { await destinationIO(input.write(partPath)) }
+        catch (error) {
+          await checkFolder().then(() => unlink(partPath)).catch(() => undefined)
+          throw error
+        }
+      }
+      else await copyExclusive(input.source!.path, input.source!.sourceStamp, partPath, assert)
       const stagedIdentity = await fileIdentity(partPath)
       if (!stagedIdentity) throw new ResultArchiveFailure('unsupported')
       const name = entry.name, ext = extname(name), stem = ext ? name.slice(0, -ext.length) : name
@@ -405,7 +481,8 @@ export class ResultArchiveStore {
           throw error
         }
         await save({ ...entry, target, targetIdentity: stagedIdentity, state: 'saved' })
-        await unlink(partPath)
+        await checkFolder()
+        if (await fileIdentity(partPath) === stagedIdentity) await unlink(partPath)
         await save({ ...entry, stage: undefined })
         return
       }
@@ -417,6 +494,7 @@ export class ResultArchiveStore {
     if (!entry.target) return null
     try {
       const directory = await this.checkDirectory(join(entry.root, entry.day, entry.folder), false)
+      if (entry.direct && (!entry.folderIdentity || await folderIdentity(directory) !== entry.folderIdentity)) return null
       const { path } = await resolveUnlinkedChild(directory, entry.target, 'file')
       const identity = savedTargetIdentity(entry)
       return identity !== undefined && await fileIdentity(path) !== identity ? null : path

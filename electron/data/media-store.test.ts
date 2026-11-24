@@ -10,6 +10,7 @@ import type { LocalMediaJob, MediaOutput, MediaRunSnapshot } from '../domain/med
 import { MediaStore } from './media-store'
 import { ScopePath } from './scope-path'
 import { MAX_MEDIA_BYTES } from './media-image'
+import { ResultArchiveStore, localArchiveDay, type GeneratedMediaOutput } from './result-archive-store'
 
 const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const other = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
@@ -64,6 +65,44 @@ async function* stream(bytes: Uint8Array = png): AsyncIterable<Uint8Array> {
 }
 
 function signal(): AbortSignal { return new AbortController().signal }
+
+it('streams generated images to the configured disk and keeps their original location after restart', async () => {
+  const f = await fixture()
+  const destination = join(f.directory, 'generated')
+  const replaced = join(f.directory, 'next')
+  await Promise.all([mkdir(destination), mkdir(replaced)])
+  const archive = new ResultArchiveStore(f.root), check = () => undefined
+  await archive.configure(owner, destination, false, check)
+  const now = Date.now()
+  const media = (store: ResultArchiveStore): GeneratedMediaOutput => ({
+    prepare: (scope, file, name, when, startedAt) => store.prepareGeneratedMedia(scope, file, { title: '图片任务', name, when, startedAt }, check),
+    path: (scope, file, sub) => store.generatedMediaPath(scope, file, sub, check),
+  })
+  const store = new MediaStore(f.root, undefined, media(archive))
+  await store.saveJob(owner, job({ createdAt: now, updatedAt: now }))
+  const internal = join(f.paths.mediaRoot(owner, 'task-a'), 'files')
+  const folder = join(destination, localArchiveDay(now), '图片任务')
+  const interrupted = (async function* () { yield png.subarray(0, 5); throw new Error('download interrupted') })()
+  await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), interrupted, signal()), /download interrupted/)
+  assert.deepEqual(await readdir(folder), [])
+  await assert.rejects(readdir(internal), { code: 'ENOENT' })
+  const bytes = (async function* () {
+    assert.ok((await readdir(folder)).some(name => name.endsWith('.part')))
+    await assert.rejects(readdir(internal), { code: 'ENOENT' })
+    yield png
+  })()
+  const asset = await store.saveOutput(owner, 'task-a', 'job-a', output(), bytes, signal())
+  assert.equal(asset.direct, true)
+  await assert.rejects(readdir(internal), { code: 'ENOENT' })
+  await archive.configure(owner, replaced, false, check)
+  const reopened = new MediaStore(f.root, undefined, media(new ResultArchiveStore(f.root)))
+  const path = await reopened.verifiedAssetPath(owner, 'task-a', asset.localAssetId)
+  assert.equal(dirname(path), folder)
+  assert.deepEqual(await readFile(path), png)
+  assert.deepEqual(await readdir(folder), ['图片.png'])
+  assert.deepEqual(await readdir(replaced), [])
+  await assert.rejects(reopened.verifiedAssetPath(other, 'task-a', asset.localAssetId))
+})
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void

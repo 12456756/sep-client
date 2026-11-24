@@ -23,7 +23,7 @@ test('renders the default workspace setting with task isolation guidance', () =>
     assert.match(media, /音视频临时文件位置/)
     assert.match(media, /选择文件夹/)
     const generatedFiles = renderToStaticMarkup(React.createElement(ResultArchiveSettings))
-    assert.match(generatedFiles, /aria-label="自动保存生成的文件"/)
+    assert.match(generatedFiles, /aria-label="生成文件保存位置"/)
     assert.match(generatedFiles, /选择文件夹/)
   } finally {
     if (previousReact === undefined) Reflect.deleteProperty(globalThis, 'React')

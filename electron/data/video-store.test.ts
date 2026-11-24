@@ -2,15 +2,16 @@ import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { promises as fs, type PathLike } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
-import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { MOCK_VIDEO_BYTES, MOCK_VIDEO_SHA256 } from './mock-video-media-gateway'
 import { VideoStore } from './video-store'
 import { VideoFiles, videoSha256 } from './video-files'
 import { ScopePath, encodeTaskScopeSegment } from './scope-path'
 import type { LocalVideoJob, VideoScope } from '../domain/video-media'
 import type { VideoOutput } from '../../src/shared/video-media'
+import { ResultArchiveStore, localArchiveDay, type GeneratedMediaOutput } from './result-archive-store'
 
 const scope: VideoScope = { enterpriseId: 'enterprise-a', memberId: 'member-a', subscriptionId: 'subscription-a' }
 const directories: string[] = []
@@ -47,6 +48,39 @@ async function fixture(receipted = true): Promise<{ store: VideoStore; root: str
 }
 
 describe('VideoStore disk durability and scope safety', () => {
+  it('does not save video bytes to AppData when the configured disk is unavailable and retries in a new location', async () => {
+    const f = await fixture()
+    const destination = join(f.directory, 'generated'), offline = join(f.directory, 'offline'), next = join(f.directory, 'next')
+    await Promise.all([mkdir(destination), mkdir(next)])
+    const archive = new ResultArchiveStore(f.root), check = () => undefined
+    const owner = { enterpriseId: scope.enterpriseId, memberId: scope.memberId }
+    await archive.configure(owner, destination, false, check)
+    const started = Date.now(), day = localArchiveDay(started)
+    const media: GeneratedMediaOutput = {
+      prepare: (account, file, name, _when, _startedAt, _runId, subscriptionId) =>
+        archive.prepareGeneratedMedia(account, file, { title: '视频任务', name, when: started, startedAt: started, subscriptionId }, check),
+      path: (account, file, sub) => archive.generatedMediaPath(account, file, sub, check),
+    }
+    const store = new VideoStore(f.root, undefined, media)
+    await rename(destination, offline)
+    let downloaded = false
+    const bytes = () => (async function* () { downloaded = true; yield MOCK_VIDEO_BYTES })()
+    await assert.rejects(store.saveOutput(scope, 'task-a', 'job-a', output(), bytes(), signal()), { reason: 'location' })
+    assert.equal(downloaded, false)
+    const internal = join(f.task, 'files')
+    await assert.rejects(readdir(internal), { code: 'ENOENT' })
+    await archive.configure(owner, next, false, check)
+    const asset = await store.saveOutput(scope, 'task-a', 'job-a', output(), bytes(), signal())
+    assert.equal(asset.direct, true)
+    const reopened = new VideoStore(f.root, undefined, media)
+    const path = await reopened.verifiedAssetPath(scope, 'task-a', 'job-a', 'output-a')
+    assert.equal(dirname(path), join(next, day, '视频任务'))
+    assert.deepEqual(await readdir(dirname(path)), ['视频.mp4'])
+    assert.deepEqual(await readFile(path), MOCK_VIDEO_BYTES)
+    await assert.rejects(readdir(internal), { code: 'ENOENT' })
+    assert.deepEqual(await readdir(offline), [])
+  })
+
   it('recovers copy intent from the original video employee scope after reopening', async () => {
     const f = await fixture()
     const intent = { startedAt: 1, when: 2, title: 'Video', name: 'video.mp4', version: 'output-v1' }

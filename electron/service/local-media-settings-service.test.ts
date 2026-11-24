@@ -25,3 +25,20 @@ test('the selected scratch location persists and never falls back if removed', a
     assert.equal(await reopened.prepare(), defaultPath)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+test('default scratch uses the generated file location unless scratch is explicitly configured', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'csep-settings-test-')))
+  try {
+    const selected = join(root, 'generated'), internal = join(root, 'internal'), custom = join(root, 'custom')
+    await mkdir(selected)
+    const service = new LocalMediaSettingsService(new LocalMediaSettingsStore(root), internal, true, async () => selected)
+    assert.equal((await service.settings()).path, join(selected, '.csep-media-temp'))
+    assert.equal(await service.prepare(), join(selected, '.csep-media-temp'))
+    await rmdir(join(selected, '.csep-media-temp'))
+    await rmdir(selected)
+    await assert.rejects(service.prepare(), /目录不可用/)
+    await mkdir(custom)
+    await service.configure(custom, () => undefined)
+    assert.equal(await service.prepare(), custom)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

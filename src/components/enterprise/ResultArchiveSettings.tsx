@@ -34,10 +34,10 @@ export function ResultArchiveSettings() {
 
   const day = new Date().toLocaleDateString('sv-SE')
   const delimiter = state?.path.includes('\\') ? '\\' : '/'
-  const example = ['任务名称-ab12cd34ef56', '报告.docx'].join(delimiter)
-  return <section className="ent-default-workspace-settings ent-result-archive-settings" aria-label="自动保存生成的文件" aria-busy={busy}>
+  const example = ['任务名称', '报告.docx'].join(delimiter)
+  return <section className="ent-default-workspace-settings ent-result-archive-settings" aria-label="生成文件保存位置" aria-busy={busy}>
     <div className="ent-default-workspace-heading">
-      <div><strong>自动保存生成的文件</strong><span>{state?.mode === 'off' ? '未开启' : state?.mode === 'system' ? '已开启 · 默认位置' : state ? '已开启 · 自定义位置' : busy ? '正在读取' : '暂不可用'}</span></div>
+      <div><strong>生成文件保存位置</strong><span>{state?.mode === 'off' ? '尚未指定' : state?.mode === 'system' ? '默认位置' : state ? '自定义位置' : busy ? '正在读取' : '暂不可用'}</span></div>
       <div className="ent-default-workspace-actions ent-result-archive-actions">
         <button type="button" className="ent-btn" disabled={busy} onClick={() => void change('choose')}><FolderPlus size={15} aria-hidden />选择文件夹</button>
         {state?.mode !== 'system' && state ? <button type="button" className="ent-btn" disabled={busy} title={state.defaultPath} onClick={() => void change('use-default')}><RotateCcw size={15} aria-hidden />{state.mode === 'off' ? '使用默认位置' : '恢复默认位置'}</button> : null}
@@ -45,8 +45,8 @@ export function ResultArchiveSettings() {
         {!state && error ? <button type="button" className="ent-btn" disabled={busy} onClick={() => void change('get')}><RotateCcw size={15} aria-hidden />重试</button> : null}
       </div>
     </div>
-    {state ? <><small className="ent-default-workspace-path" title={state.path}>{state.mode === 'off' ? '默认保存位置：' : '保存位置：'}{state.path}</small>
-      <small className="ent-default-workspace-path">保存示例：{[state.path.replace(/[\\/]$/, ''), day, example].join(delimiter)}</small></> : null}
+    {state ? <><small className="ent-default-workspace-path" title={state.path}>{state.mode === 'off' ? '可选默认位置：' : '保存位置：'}{state.path}</small>
+      {state.mode !== 'off' ? <small className="ent-default-workspace-path">保存示例：{[state.path.replace(/[\\/]$/, ''), day, example].join(delimiter)}</small> : null}</> : null}
     {state?.mode === 'custom' ? <small className="ent-default-workspace-path">默认保存位置：{state.defaultPath}</small> : null}
     {error || (state && state.mode !== 'off' && !state.available) ? <p className="ent-profile-error" role="alert">{error ?? '保存位置不可用，请重新连接或选择其他文件夹。'}</p> : null}
   </section>

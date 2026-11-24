@@ -91,7 +91,7 @@ export async function createResultOpenCopy(file: ResultActionFile): Promise<{ pa
 export class ResultFileStore implements ResultFileStorePort {
   private readonly paths: ScopePath
   constructor(root: string, private readonly deliveries: DocumentPreviewStore, private readonly getTask: (taskId: string) => Promise<TaskReadView>,
-    private readonly media?: MediaStorePort & Partial<Pick<import('./media-store').MediaStore, 'saveIntents'>>,
+    private readonly media?: MediaStorePort & Partial<Pick<import('./media-store').MediaStore, 'saveIntents' | 'verifiedAssetPath'>>,
     private readonly videos?: VideoStorePort & Partial<Pick<import('./video-store').VideoStore, 'saveIntents'>>,
     private readonly attachment?: (scope: TaskOwnerScope, taskId: string, attachmentId: string, sha256: string) => Promise<{ path: string; name: string; size: number }>) {
     this.paths = new ScopePath(root)
@@ -116,6 +116,11 @@ export class ResultFileStore implements ResultFileStorePort {
     if ('assetId' in input) {
       const asset = await this.media?.getAsset(scope, input.taskId, input.assetId)
       if (!asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
+      if (asset.direct) {
+        if (!this.media?.verifiedAssetPath) throw new AppError('NOT_FOUND')
+        const path = await managedResultPath(await this.media.verifiedAssetPath(scope, input.taskId, input.assetId))
+        return { path, name: `图片${extname(path)}`, format: asset.mime.slice(asset.mime.indexOf('/') + 1), version: `${asset.localAssetId}:${asset.sha256}:${asset.relativePath}`, expected: { size: asset.size, sha256: asset.sha256 } }
+      }
       await this.media?.readAsset(scope, input.taskId, input.assetId)
       const root = resolve(this.paths.mediaRoot(scope, input.taskId))
       const requested = resolve(root, asset.relativePath)

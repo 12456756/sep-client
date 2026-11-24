@@ -61,6 +61,7 @@ const jobSchema = z.object({
   }
 })
 const assetSchema = z.object({
+  direct: z.literal(true).optional(),
   saveIntent: resultSaveIntentSchema.optional(),
   version: z.literal(1), owner: ownerSchema, localAssetId: mediaId, taskId: mediaId, jobId: mediaId.nullable(),
   outputId: opaqueId.nullable(), source: z.enum(['reference', 'output']), mime: imageMimeSchema,
@@ -120,7 +121,8 @@ export class MediaStore implements MediaStorePort {
   private readonly paths: ScopePath
   private readonly root: string
 
-  constructor(userDataDir: string, private readonly beforeOutputCommit?: (job: LocalMediaJob, asset: LocalMediaAsset) => Promise<ResultSaveIntent | undefined>) {
+  constructor(userDataDir: string, private readonly beforeOutputCommit?: (job: LocalMediaJob, asset: LocalMediaAsset) => Promise<ResultSaveIntent | undefined>,
+    private readonly generated?: import('./result-archive-store').GeneratedMediaOutput) {
     this.root = resolve(userDataDir)
     this.paths = new ScopePath(this.root)
   }
@@ -364,8 +366,22 @@ export class MediaStore implements MediaStorePort {
     return asset
   }
 
-  private async verifiedBytes(scope: TaskOwnerScope, asset: LocalMediaAsset): Promise<Buffer> {
-    const bytes = await this.bytes(this.assetFile(scope, asset))
+  private async outputPath(scope: TaskOwnerScope, asset: LocalMediaAsset): Promise<string> {
+    if (!asset.direct) return this.assetFile(scope, asset)
+    if (!this.generated || asset.source !== 'output') throw new MediaPersistenceError('Invalid generated image location.')
+    return this.generated.path(scope, { taskId: asset.taskId, assetId: asset.localAssetId })
+  }
+
+  async verifiedAssetPath(scope: TaskOwnerScope, taskId: string, id: string): Promise<string> {
+    const asset = await this.assetRecord(scope, taskId, id)
+    if (!asset) throw new MediaPersistenceError('Media asset does not exist.')
+    const path = await this.outputPath(scope, asset)
+    await this.verifiedBytes(scope, asset, path)
+    return path
+  }
+
+  private async verifiedBytes(scope: TaskOwnerScope, asset: LocalMediaAsset, path?: string): Promise<Buffer> {
+    const bytes = await this.bytes(path ?? await this.outputPath(scope, asset), !!asset.direct)
     let image: ReturnType<typeof inspectMediaImage>
     try { image = inspectMediaImage(bytes) }
     catch { throw new MediaContentError('Media asset content is not a valid image.') }
@@ -522,6 +538,31 @@ export class MediaStore implements MediaStorePort {
           }
         }
       }
+      const createdAt = existing?.createdAt ?? Date.now()
+      const manifest = this.file(scope, taskId, 'assets', id)
+      const publish = !existing || existing.direct ? await this.generated?.prepare(scope, { taskId, assetId: id },
+        `图片.${extensions[output.mime]}`, createdAt, job.createdAt, job.runId) : undefined
+      if (existing?.direct && !publish) throw new MediaPersistenceError('Generated image location is unavailable.')
+      if (publish) {
+        let committed = existing
+        await this.publishing(dirname(manifest), async () => {
+          await publish(async part => {
+            const hash = await this.streamPart(part, stream, signal, true)
+            const bytes = await this.bytes(part, true)
+            if (sha256(bytes) !== hash) throw new MediaPersistenceError('Media output changed during saving.')
+            const image = inspectMediaImage(bytes)
+            const asset: LocalMediaAsset = { ...image, version: 1, owner: { ...scope }, taskId, localAssetId: id, jobId, outputId: output.outputId,
+              source: 'output', status: 'SAVED', sha256: hash, relativePath: `files/${id}.${extensions[image.mime]}`, createdAt, direct: true }
+            this.validateOutput(output, asset)
+            if (existing && !isDeepStrictEqual(existing, asset)) throw new MediaPersistenceError('Recovered output differs from its original commit.')
+            await this.write(`${manifest}.commit`, asset, () => signal.throwIfAborted())
+            committed = asset
+          }, signal)
+          if (!committed) throw new MediaPersistenceError('Generated image is missing its commit record.')
+          await this.write(manifest, committed, () => signal.throwIfAborted())
+        })
+        return committed!
+      }
       const file = this.file(scope, taskId, 'files', id, `.${extensions[output.mime]}`)
       // Even loss of both metadata files must not overwrite an orphaned final image.
       if (!existing) {
@@ -542,7 +583,6 @@ export class MediaStore implements MediaStorePort {
         const intent = !existing ? await this.beforeOutputCommit?.(job, asset) : undefined
         if (intent) asset.saveIntent = intent
         signal.throwIfAborted()
-        const manifest = this.file(scope, taskId, 'assets', id)
         await this.publishing(dirname(manifest), async () => {
           await this.write(`${manifest}.commit`, asset)
           signal.throwIfAborted()
@@ -562,10 +602,10 @@ export class MediaStore implements MediaStorePort {
       (output.height !== null && output.height !== asset.height)) throw new MediaPersistenceError('Media output hash, type, size or dimensions do not match the receipt.')
   }
 
-  private async streamPart(part: string, stream: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<string> {
-    await this.assertPath(part)
-    await mkdir(dirname(part), { recursive: true, mode: 0o700 })
-    await this.assertPath(part)
+  private async streamPart(part: string, stream: AsyncIterable<Uint8Array>, signal: AbortSignal, external = false): Promise<string> {
+    await this.assertPath(part, external)
+    if (!external) await mkdir(dirname(part), { recursive: true, mode: 0o700 })
+    await this.assertPath(part, external)
     const handle = await open(part, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
     const hash = createHash('sha256')
     let size = 0

@@ -1,6 +1,6 @@
 import { after, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskManager } from '../runtime/task-manager'
@@ -11,6 +11,7 @@ import { MediaStore } from '../data/media-store'
 import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
 import { ConversationService, type ConversationServiceDependencies } from './conversation-service'
 import { AppError } from '../errors/app-error'
+import { ResultArchiveStore } from '../data/result-archive-store'
 
 const owner: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const workspaceNames = { enterpriseName: 'Acme Studio', memberName: 'Alice' }
@@ -107,6 +108,26 @@ describe('directory selection starting path', () => {
     const chosen = join(userDataDir, 'chosen')
     const task = await manager.createTask('arrangement', 'goal', chosen)
     assert.equal(task.workDir, chosen)
+  })
+
+  it('uses the generated file disk for new workspaces and never falls back if disconnected', async () => {
+    const { userDataDir } = await harness()
+    const selected = join(await realpath(userDataDir), 'external-results'), renamed = join(userDataDir, 'offline')
+    await mkdir(selected)
+    const archive = new ResultArchiveStore(userDataDir)
+    await archive.configure(owner, selected, false, () => undefined)
+    const manager = new TaskManager(userDataDir, null, undefined, undefined, undefined, undefined, archive)
+    await manager.setCurrentUser(owner.memberId, owner.enterpriseId, workspaceNames)
+    const first = await manager.createTask('new task', 'goal')
+    assert.equal(first.workDir, join(selected, '任务工作区', first.id))
+    await writeFile(join(first.workDir!, 'report.md'), 'new result')
+    const explicit = join(userDataDir, 'task-selected')
+    assert.equal((await manager.createTask('explicit', 'goal', explicit)).workDir, explicit)
+    await rename(selected, renamed)
+    await assert.rejects(manager.createTask('offline', 'goal'))
+    assert.deepEqual((await manager.getAllTasks()).map(task => task.title).sort(), ['explicit', 'new task'])
+    assert.equal((await manager.getTask(first.id))?.workDir, first.workDir)
+    await assert.rejects(stat(join(userDataDir, 'task-workspaces')), { code: 'ENOENT' })
   })
 
   it('creates distinct task workspaces beneath the configured default parent and can clear it', async () => {
