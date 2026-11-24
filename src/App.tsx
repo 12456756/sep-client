@@ -74,7 +74,7 @@ function AppContent() {
   useEffect(() => window.electronAPI.onPiEvent(event => {
     if (event.type !== 'approval_resolved' || !currentAuth.current || event.occurredAt < sessionStartedAt.current) return;
     setToolApprovalRequests(current => removeResolvedBrowserHandoff(current, event).filter(item =>
-      !isInlineFileApproval(item.toolName) || !(event.data && typeof event.data === 'object' && 'requestId' in event.data && event.data.requestId === item.requestId && event.runId === item.runId && event.taskId === item.taskId)));
+      !isInlineFileApproval(item.toolName) || !(event.data && typeof event.data === 'object' && 'requestId' in event.data && event.data.requestId === item.requestId)));
   }), []);
   const resolveApproval = useCallback((requestId: string, approved: boolean) => {
     window.electronAPI.sendToolApprovalResponse({ requestId, approved, ...(approved ? {} : { reason: 'User denied or request expired' }) });

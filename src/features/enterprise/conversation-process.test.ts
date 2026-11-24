@@ -201,16 +201,21 @@ test('shows the latest oversized request failure before its timeline has been re
   assert.ok(html.slice(latest).includes(message))
 })
 
-test('keeps image preview space and dimensions visible while preserving ordinary file attachments', () => {
+test('keeps image preview and lists PDF and Excel attachments without document preview actions', () => {
   const base = { byteLength: 2048, sha256: 'a'.repeat(64), importSource: 'picker' as const, extractionStatus: 'not-required' as const, warnings: [] }
   const html = renderMessages([{ id: 'user-images', role: 'user', content: '看一下图片', createdAt: 1, attachments: [
     { ...base, attachmentId: 'image', displayName: 'reference.png', mediaType: 'image/png', width: 1600, height: 900 },
     { ...base, attachmentId: 'document', displayName: 'brief.pdf', mediaType: 'application/pdf' },
+    { ...base, attachmentId: 'sheet', displayName: 'sales.XLSX', mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+    { ...base, attachmentId: 'text', displayName: 'notes.txt', mediaType: 'text/plain' },
   ] }], false)
   assert.match(html, /ent-message-attachment-preview/)
   assert.match(html, /1600 × 900/)
   assert.match(html, /图片加载中/)
-  assert.match(html, /brief.pdf/)
+  assert.match(html, /brief\.pdf/)
+  assert.match(html, /sales\.XLSX/)
+  assert.match(html, /notes\.txt/)
+  assert.doesNotMatch(html, /预览文档：|另存为：/)
   assert.match(html, /2 KB/)
 })
 

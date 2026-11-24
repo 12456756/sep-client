@@ -1014,8 +1014,8 @@ export class TaskRuntime {
         parentCreated = true
       }
       arrangement = new ArrangementExecutor({
-        createModelTrace: this.createModelTrace,
         fullFileAccess: queued.fullFileAccess,
+        createModelTrace: this.createModelTrace,
         scope,
         taskManager: this.taskManager,
         taskRunStore: this.taskRunStore,

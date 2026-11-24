@@ -48,8 +48,8 @@ export interface TaskWorkerPort {
 }
 
 export interface QueuedRun {
-  signal?: AbortSignal
   fullFileAccess?: boolean
+  signal?: AbortSignal
   taskId: string
   runId: string
   subscriptionId: string

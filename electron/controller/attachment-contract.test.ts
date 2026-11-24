@@ -216,7 +216,7 @@ test('draft-node imports reject stale revision and unknown nodes before opening 
 test('canceling a native picker preserves the existing session without import', async () => {
   const select = routes().find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_SELECT)!
   const session = { sessionId: 'session-a', status: 'open', attachments: [] }
-  const result = await select.handle({ window: () => ({}), attachments: { async listSession() { return session }, async importFiles() { assert.fail('must not import') } } } as never, { sessionId: 'session-a' } as never)
+  const result = await select.handle({ window: () => ({}), attachments: { async listSession() { return session }, async importSelectedFiles() { assert.fail('must not import') } } } as never, { sessionId: 'session-a' } as never)
   assert.deepEqual(result, { success: true, cancelled: true, data: session })
 })
 

@@ -385,6 +385,27 @@ async function mediaSession(
 }
 
 describe('conversation attachments through the real Pi SDK', () => {
+  it('advertises only the scoped reader and returns the selected document to the model', async () => {
+    const conversationAttachments: NonNullable<PiAgentSessionConfig['conversationAttachments']> = {
+      list: () => ({ files: [{ attachmentId: 'attachment-doc', name: 'notes.txt', mediaType: 'text/plain', messageNumber: 1 }], nextOffset: null }),
+      async read(id, offset) {
+        assert.equal(id, 'attachment-doc')
+        assert.equal(offset, 0)
+        return { text: JSON.stringify({ text: 'Original document content.' }) }
+      },
+    }
+    const call = { name: 'conversation_attachment', input: { operation: 'read', attachmentId: 'attachment-doc' } }
+    const { bodies, approvals } = await mediaSession({ conversationAttachments, mediaTools: undefined }, call)
+    assert.equal(bodies[0].tools!.find(tool => tool.function.name === call.name)?.function.parameters.type, 'object')
+    const result = bodies[1].messages.find(message => message.role === 'tool')!
+    assert.equal(JSON.parse(messageText(result.content)).text, 'Original document content.')
+    assert.equal(approvals, 0)
+
+    const blocked = await mediaSession({ conversationAttachments, disableTools: true }, call)
+    assert.ok(!blocked.bodies[0].tools?.some(tool => tool.function.name === call.name))
+    assert.ok(!JSON.stringify(blocked.bodies).includes('Original document content.'))
+  })
+
   it('executes a structured XLSX query through the existing scoped attachment tool', async () => {
     const query = { operation: 'xlsx_analyze', sheet: 'Sales', range: 'A2:E8002', kind: 'count', filters: [{ column: 'E', op: 'gte', value: 0 }] } as const
     const call = { name: 'conversation_attachment', input: { attachmentId: 'attachment-xlsx', ...query, filters: [{ column: 'E', op: 'gte', number: 0 }] } }
@@ -405,27 +426,6 @@ describe('conversation attachments through the real Pi SDK', () => {
     assert.match(text, /^\{/, text)
     assert.equal(JSON.parse(text).includedRows, 8000)
     assert.equal(approvals, 0)
-  })
-
-  it('advertises only the scoped reader and returns the selected document to the model', async () => {
-    const conversationAttachments: NonNullable<PiAgentSessionConfig['conversationAttachments']> = {
-      list: () => ({ files: [{ attachmentId: 'attachment-doc', name: 'notes.txt', mediaType: 'text/plain', messageNumber: 1 }], nextOffset: null }),
-      async read(id, offset) {
-        assert.equal(id, 'attachment-doc')
-        assert.equal(offset, 0)
-        return { text: JSON.stringify({ text: 'Original document content.' }) }
-      },
-    }
-    const call = { name: 'conversation_attachment', input: { operation: 'read', attachmentId: 'attachment-doc' } }
-    const { bodies, approvals } = await mediaSession({ conversationAttachments, mediaTools: undefined }, call)
-    assert.equal(bodies[0].tools!.find(tool => tool.function.name === call.name)?.function.parameters.type, 'object')
-    const result = bodies[1].messages.find(message => message.role === 'tool')!
-    assert.equal(JSON.parse(messageText(result.content)).text, 'Original document content.')
-    assert.equal(approvals, 0)
-
-    const blocked = await mediaSession({ conversationAttachments, disableTools: true }, call)
-    assert.ok(!blocked.bodies[0].tools?.some(tool => tool.function.name === call.name))
-    assert.ok(!JSON.stringify(blocked.bodies).includes('Original document content.'))
   })
 
   it('forwards a selected attachment image as image content, not an encoded text result', async () => {

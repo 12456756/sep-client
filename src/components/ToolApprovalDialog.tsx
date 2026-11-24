@@ -56,13 +56,6 @@ function compositionApproval(input: unknown): string | undefined {
   return `在本机合成并保存 MP4？${aspect}，${resolution}p，预计 ${seconds(durationSeconds)} 秒。原素材不会被覆盖。\n\n${lines.join('\n')}`
 }
 const messages: Readonly<Record<string, string>> = {
-  mcp__playwright__browser_navigate: '允许打开指定网页？',
-  mcp__playwright__browser_snapshot: '允许读取当前网页内容？',
-  mcp__playwright__browser_click: '允许点击网页元素？此操作可能触发网页提交或其他操作。',
-  mcp__playwright__browser_set_mode: '允许切换浏览器显示模式？',
-  mcp__playwright__browser_scroll: '允许滚动当前网页？',
-  mcp__playwright__browser_extract: '允许提取当前网页的可见内容？',
-  mcp__playwright__browser_save_assets: '允许将当前网页已加载的素材保存到本对话的成果目录？',
   bash: '允许员工在本机执行命令？此操作可能修改文件或访问系统资源。',
   write: '允许员工创建或覆盖文件？覆盖后原有内容可能无法恢复。',
   edit: '允许员工修改文件内容？',
@@ -71,7 +64,10 @@ const messages: Readonly<Record<string, string>> = {
   video_generate: '允许员工按已确认的要求生成视频？',
   video_from_image: '允许员工上传所选参考图或生成视频？',
   local_media_process: '允许在本机处理所选素材并保存新文件？原素材不会被覆盖。',
+  mcp__playwright__browser_navigate: '允许打开指定网页？',
   mcp__playwright__browser_navigate_back: '允许返回当前标签页的上一页？',
+  mcp__playwright__browser_snapshot: '允许读取当前网页内容？',
+  mcp__playwright__browser_click: '允许点击网页元素？此操作可能触发网页提交或其他操作。',
   mcp__playwright__browser_type: '允许在网页中输入内容？此操作可能提交输入。',
   mcp__playwright__browser_fill_form: '允许填写网页表单？',
   mcp__playwright__browser_select_option: '允许在网页中选择选项？',
@@ -80,6 +76,10 @@ const messages: Readonly<Record<string, string>> = {
   mcp__playwright__browser_wait_for: '允许等待网页状态变化？',
   mcp__playwright__browser_handle_dialog: '允许确认或取消网页对话框？',
   mcp__playwright__browser_close: '允许关闭浏览器页面？未保存的网页内容可能丢失。',
+  mcp__playwright__browser_set_mode: '允许切换浏览器显示模式？',
+  mcp__playwright__browser_scroll: '允许滚动当前网页？',
+  mcp__playwright__browser_extract: '允许提取当前网页的可见内容？',
+  mcp__playwright__browser_save_assets: '允许将当前网页已加载的素材保存到本对话的成果目录？',
 }
 
 function approvalSummaryMessage(request: ToolApprovalRequest): string | undefined {
