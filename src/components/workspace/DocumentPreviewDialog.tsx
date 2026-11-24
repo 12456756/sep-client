@@ -1,10 +1,10 @@
 import { ChevronLeft, ChevronRight, Copy, Ellipsis, LoaderCircle, Minus, Plus, RotateCcw, X } from 'lucide-react'
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkCjkFriendly from 'remark-cjk-friendly/parseOnly'
 import remarkGfm from 'remark-gfm'
 import type { DocumentPreview, DocumentPreviewRequest } from '../../shared/document-preview'
-import { documentPreviewFrame } from './document-preview-frame'
+import { documentPreviewFrame, staticHtmlPreviewFrame } from './document-preview-frame'
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { operationFailure, responseError } from '../../shared/arrangement-feedback'
 import { useContentCopy } from '../ContentCopyMenu'
@@ -28,6 +28,7 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const [section, setSection] = useState(0)
+  const [showSource, setShowSource] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [copied, setCopied] = useState(false)
   useEffect(() => {
@@ -43,7 +44,7 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
       setError(message)
       notice.show(message, 'error', `document-preview:${taskId}:${fileId}:${nodeId}:${deliverableId}:${version}:${attempt}`, true)
     }
-    setData(null); setError(null); setSection(0); setZoom(1)
+    setData(null); setError(null); setSection(0); setShowSource(false); setZoom(1); setCopied(false)
     const request: DocumentPreviewRequest = attachmentId !== undefined && sha256 !== undefined ? { taskId, attachmentId, sha256 }
       : fileId !== undefined ? { taskId, fileId } : { taskId, nodeId: nodeId!, deliverableId: deliverableId! }
     void window.electronAPI.previewArrangementDocument(request).then(result => {
@@ -55,7 +56,10 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
   }, [taskId, nodeId, deliverableId, fileId, attachmentId, sha256, version, attempt, capture])
   const content = data?.content
   const text = content?.kind === 'text' || content?.kind === 'markdown' ? content.text : ''
-  const count = content?.kind === 'html' ? content.sections.length : Math.max(1, Math.ceil(text.length / 100_000))
+  const isHtmlFile = content?.kind === 'text' && data?.format.toLowerCase().replace(/^\./, '') === 'html'
+  const showStaticHtml = isHtmlFile && !showSource
+  const staticHtml = useMemo(() => showStaticHtml ? staticHtmlPreviewFrame(text, zoom) : '', [showStaticHtml, text, zoom])
+  const count = content?.kind === 'html' ? content.sections.length : showStaticHtml ? 1 : Math.max(1, Math.ceil(text.length / 100_000))
   const index = Math.min(section, count - 1)
   const part = text.slice(index * 100_000, (index + 1) * 100_000)
   const copyText = async () => {
@@ -86,11 +90,17 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
         : content.kind === 'pdf' ? <Suspense fallback={<div className="document-preview-state" role="status">正在加载 PDF</div>}><PdfPreview bytes={content.bytes} /></Suspense>
           : <>
             <div className="document-preview-toolbar">
-              {content.kind === 'html' && count > 1 ? <select aria-label="选择文档章节、工作表或页面" value={index} onChange={event => setSection(Number(event.target.value))}>{content.sections.map((item, i) => <option key={i} value={i}>{item.title}</option>)}</select> : <span>{content.kind === 'html' ? content.sections[0].title : content.kind === 'markdown' ? 'Markdown' : '文本'}</span>}
+              {isHtmlFile ? <div className="document-preview-modes" role="group" aria-label="HTML 显示方式">
+                <button type="button" className="ent-btn sm" aria-pressed={!showSource} onClick={() => { setShowSource(false); setSection(0); setCopied(false) }}>预览效果</button>
+                <button type="button" className="ent-btn sm" aria-pressed={showSource} onClick={() => { setShowSource(true); setCopied(false) }}>查看源码</button>
+              </div> : content.kind === 'html' && count > 1 ? <select aria-label="选择文档章节、工作表或页面" value={index} onChange={event => setSection(Number(event.target.value))}>{content.sections.map((item, i) => <option key={i} value={i}>{item.title}</option>)}</select> : <span>{content.kind === 'html' ? content.sections[0].title : content.kind === 'markdown' ? 'Markdown' : '文本'}</span>}
               {count > 1 ? <div className="document-preview-pager"><button type="button" title="上一页" aria-label="上一页" disabled={index === 0} onClick={() => setSection(value => value - 1)}><ChevronLeft size={17} /></button><span>{index + 1} / {count}</span><button type="button" title="下一页" aria-label="下一页" disabled={index + 1 === count} onClick={() => setSection(value => value + 1)}><ChevronRight size={17} /></button></div> : null}
-              <div className="document-preview-actions"><button type="button" title="缩小" aria-label="缩小文档" disabled={zoom <= 0.5} onClick={() => setZoom(value => Math.max(0.5, value - 0.1))}><Minus size={16} /></button><span className="document-preview-zoom">{Math.round(zoom * 100)}%</span><button type="button" title="放大" aria-label="放大文档" disabled={zoom >= 2} onClick={() => setZoom(value => Math.min(2, value + 0.1))}><Plus size={16} /></button>{text ? <button type="button" title={copied ? '已复制' : '复制当前页文本'} aria-label="复制当前页文本" onClick={() => void copyText()}><Copy size={16} /></button> : null}</div>
+              <div className="document-preview-actions"><button type="button" title="缩小" aria-label="缩小文档" disabled={zoom <= 0.5} onClick={() => setZoom(value => Math.max(0.5, value - 0.1))}><Minus size={16} /></button><span className="document-preview-zoom">{Math.round(zoom * 100)}%</span><button type="button" title="放大" aria-label="放大文档" disabled={zoom >= 2} onClick={() => setZoom(value => Math.min(2, value + 0.1))}><Plus size={16} /></button>{!showStaticHtml && text ? <button type="button" title={copied ? '已复制' : '复制当前页文本'} aria-label="复制当前页文本" onClick={() => void copyText()}><Copy size={16} /></button> : null}</div>
             </div>
-            {content.kind === 'html' ? <>
+            {showStaticHtml ? <>
+              <p className="document-preview-notice">静态预览 · 脚本和外部资源未加载</p>
+              <iframe className="document-preview-frame" title={`${name} · 静态预览`} sandbox="" referrerPolicy="no-referrer" srcDoc={staticHtml} />
+            </> : content.kind === 'html' ? <>
               <p className="document-preview-notice">{content.notices.join(' ')}</p>
               <iframe key={index} className="document-preview-frame" title={`${name} · ${content.sections[index].title}`} sandbox="" referrerPolicy="no-referrer" srcDoc={documentPreviewFrame(content.sections[index].html, zoom)} />
             </> : <div className="document-preview-text" style={{ fontSize: `${Math.round(15 * zoom)}px` }}>

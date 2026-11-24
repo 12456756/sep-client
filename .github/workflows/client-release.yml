@@ -133,6 +133,8 @@ jobs:
       - run: npm ci
       - name: Verify layered Mac icon source
         run: node --test scripts/mac-icon.test.mjs
+      - name: Exercise static HTML preview in Electron (macOS)
+        run: npm run test:html-preview:electron
       - name: Install pinned target macOS speech runtime
         run: npm install --no-save --package-lock=false --ignore-scripts --force sherpa-onnx-darwin-${{ matrix.arch }}@1.13.8
       - name: Cache pinned speech assets
@@ -212,6 +214,8 @@ jobs:
         run: |
           set "PSModulePath="
           npm ci
+      - name: Exercise static HTML preview in Electron (Windows)
+        run: npm run test:html-preview:electron
       - name: Cache pinned speech assets
         uses: actions/cache@v4
         with:

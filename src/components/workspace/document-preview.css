@@ -12,6 +12,8 @@
 .document-preview-dialog button:disabled { opacity: 0.4; cursor: default; }
 .document-preview-dialog :is(button, select, input):focus-visible { outline: 2px solid var(--ent-brand-solid); outline-offset: 2px; }
 .document-preview-toolbar { flex-wrap: wrap; justify-content: space-between; padding-block: 6px; font-size: 12px; background: var(--ent-panel-subtle); }
+.document-preview-modes { display: inline-flex; gap: 4px; }
+.document-preview-modes [aria-pressed="true"] { border-color: var(--ent-line-strong); background: var(--ent-muted-bg); color: var(--ent-ink); }
 .document-preview-toolbar select { max-width: min(440px, 100%); min-width: 0; padding: 6px 8px; border: 1px solid var(--ent-line); border-radius: 4px; background: var(--ent-panel); color: inherit; }
 .document-preview-pager span { min-width: 40px; text-align: center; }
 .document-preview-pager input { width: 56px; padding: 4px; border: 1px solid #d9dfe1; border-radius: 4px; }

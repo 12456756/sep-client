@@ -11,6 +11,7 @@ It does not change delivery validation, dependency scheduling, task status or me
 - Office parsing runs in disposable Electron utility processes, serialized independently of task execution. A parser timeout/crash only fails the preview.
 - PDF renders one page at a time in a browser worker. CMaps and standard fonts ship locally. Office preview presents content, not original pagination or chart fidelity.
 - HTML output is sanitized and rendered in an opaque sandboxed iframe, with scripts and network access disabled. Markdown does not load external images or execute HTML. Spreadsheet formulas are not evaluated; missing cached values are labeled explicitly.
+- `.html` files keep their source view and open by default in a separate static render mode. It preserves inline CSS and embedded PNG, JPEG and WebP. Scripts, navigation, external files and sibling assets are not loaded; the HTML file is not opened with a `file:` URL.
 - Unsupported files retain the existing copy-path action. Image/video previews keep their existing service, state and player behavior.
 
 ## Verification
@@ -18,11 +19,14 @@ It does not change delivery validation, dependency scheduling, task status or me
 ```text
 npx tsx --test electron/controller/document-preview-contract.test.ts electron/data/document-preview-files.test.ts electron/data/document-preview-store.test.ts electron/service/document-preview-service.test.ts electron/runtime/document-preview-converter.test.ts electron/runtime/document-preview-runtime.test.ts
 npx tsx scripts/test-document-preview.mjs
+npm run test:html-preview:electron
 npm run build
 node scripts/test-document-preview-electron.mjs
 ```
 
 The browser check uses an isolated route/IPC fixture, not a fake API installed in the application. It verifies browser-side HTML sanitization as well as rendering. The Electron check forks the built conversion worker in a real utility process; runtime adapter lifecycle and queue behavior are covered by unit tests.
+
+`test:html-preview:electron` exercises the real preview dialog in Electron without a system browser. It uses a fixture for the authorized file response and verifies styled rendering, source mode, resource blocking and Office regression. The Windows and macOS release jobs run the same check.
 
 ## Remaining Risks
 
