@@ -210,6 +210,7 @@ const electronAPI = {
   deleteNotification: id => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_DELETE, id),
   clearReadNotifications: query => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_CLEAR_READ, query ?? {}),
   openNotificationAction: url => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_OPEN_ACTION, url),
+  openMarketplace: () => ipcRenderer.invoke(INVOKE_CHANNELS.MARKETPLACE_OPEN),
   onNotificationUpdate: callback => {
     const handler = (_event: IpcRendererEvent, update: NotificationUpdate) => callback(update);
     ipcRenderer.on(EVENT_CHANNELS.NOTIFICATION_UPDATED, handler);

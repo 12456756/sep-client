@@ -4,8 +4,8 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 arch=${1:-$(node -p 'process.arch')}
 case "$arch" in
-  x64) native=x86_64 ;;
-  arm64) native=arm64 ;;
+  x64) native=x86_64; asm_flags=(--disable-asm) ;;
+  arm64) native=arm64; asm_flags=(--disable-x86asm) ;;
   *) echo "Unsupported macOS FFmpeg target: $arch" >&2; exit 1 ;;
 esac
 test "$(uname -s)" = Darwin && test "$(uname -m)" = "$native" || {
@@ -31,7 +31,7 @@ printf '%s  %s\n' "$sha256" "$source" | shasum -a 256 -c -
 tar -xf "$source"
 cd "ffmpeg-$version"
 ./configure --prefix=/usr --cc=/usr/bin/clang --disable-autodetect --disable-network --disable-doc \
-  --disable-ffplay --disable-debug --disable-x86asm --enable-videotoolbox --enable-libmp3lame \
+  --disable-ffplay --disable-debug "${asm_flags[@]}" --enable-videotoolbox --enable-zlib --enable-libmp3lame \
   --extra-cflags="-I$lame_prefix/include" --extra-ldflags="-L$lame_prefix/lib"
 make -j"${FFMPEG_BUILD_JOBS:-4}" ffmpeg ffprobe
 for tool in ffmpeg ffprobe; do
@@ -40,6 +40,8 @@ done
 ./ffmpeg -hide_banner -v error -f lavfi -i 'testsrc2=s=320x180:r=24:d=1' \
   -pix_fmt nv12 -c:v h264_videotoolbox -allow_sw 1 -bf 0 -an sample.mp4
 ./ffprobe -hide_banner -v error -show_entries stream=codec_name -of csv=p=0 sample.mp4 | grep -Fx h264
+./ffmpeg -hide_banner -v error -f lavfi -i 'color=red:s=32x32' -frames:v 1 -c:v png sample.png
+./ffmpeg -hide_banner -v error -i sample.png -f null -
 mkdir -p "$dest"
 cp ffmpeg ffprobe COPYING.LGPLv2.1 "../$source" "$root/scripts/build-local-media-mac.sh" "$dest/"
 cp "$build/$lame_source" "$manifest" "$root/scripts/build-local-media-lame.sh" "$dest/"

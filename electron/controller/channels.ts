@@ -7,6 +7,7 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  MARKETPLACE_OPEN: 'marketplace:open',
   MULTIMEDIA_GET_SETTINGS: 'multimedia:get-settings',
   SKILL_IMPORT_STATE: 'skill-import:state',
   SKILL_IMPORT_CONSENT: 'skill-import:consent',

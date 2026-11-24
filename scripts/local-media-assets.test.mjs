@@ -27,6 +27,8 @@ for (const [platform, arch, target] of [['win32', 1, 'win-x64'], ['darwin', 1, '
       SHA256SUMS: `${hash(target)}  ${ffmpeg}\n${hash('probe')}  ${ffprobe}\n` }
     for (const [file, contents] of Object.entries(files)) await writeFile(join(dir, file), contents)
     await beforeLocalMediaPack(context)
+    await writeFile(join(dir, 'SHA256SUMS'), `${hash(target)} *${ffmpeg}\r\n${hash('probe')} *${ffprobe}\r\n`)
+    await beforeLocalMediaPack(context)
     await afterLocalMediaPack(context)
     const resources = isMac ? join(context.appOutDir, '元机AI.app', 'Contents', 'Resources') : join(context.appOutDir, 'resources')
     const out = join(resources, 'local-media')
@@ -59,4 +61,26 @@ test('macOS app signing skips the corresponding source archive, not the Mach-O t
   assert.ok(ignored('ffmpeg-8.1.2.tar.xz'))
   assert.ok(ignored('lame-4.0.tar.gz'))
   assert.ok(!ignored('ffmpeg') && !ignored('ffprobe'))
+})
+
+test('Windows Media Foundation enables its D3D11 dependency with autodetection disabled', async () => {
+  const script = await readFile(new URL('./build-local-media-win.sh', import.meta.url), 'utf8')
+  assert.match(script, /--disable-autodetect/)
+  assert.match(script, /--enable-mediafoundation/)
+  assert.match(script, /--enable-d3d11va/)
+})
+
+test('native media builds retain PNG support when autodetection is disabled', async () => {
+  for (const platform of ['mac', 'win']) {
+    const script = await readFile(new URL(`./build-local-media-${platform}.sh`, import.meta.url), 'utf8')
+    assert.match(script, /--enable-zlib/)
+    assert.match(script, /-c:v png/)
+  }
+})
+
+test('Intel Mac builds avoid the SIMD path that corrupts composition colors', async () => {
+  const script = await readFile(new URL('./build-local-media-mac.sh', import.meta.url), 'utf8')
+  assert.match(script, /x64\) native=x86_64; asm_flags=\(--disable-asm\)/)
+  assert.match(script, /arm64\) native=arm64; asm_flags=\(--disable-x86asm\)/)
+  assert.ok(script.includes('"${asm_flags[@]}"'))
 })

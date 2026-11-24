@@ -2,7 +2,16 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
-import { afterBashRuntimePack, runtimePackages, verifyArchive } from './bash-runtime-packaging.mjs'
+import { zstdCompressSync } from 'node:zlib'
+import { afterBashRuntimePack, runtimePackages, verifyArchive, unpackBashArchive } from './bash-runtime-packaging.mjs'
+
+test('Bash archives are verified and decompressed without relying on system tar Zstandard support', () => {
+  const tar = Buffer.from('uncompressed tar fixture')
+  const compressed = zstdCompressSync(tar)
+  const spec = { archive: 'fixture.tar.zst', sha256: createHash('sha256').update(compressed).digest('hex') }
+  assert.deepEqual(unpackBashArchive(spec, compressed), tar)
+  assert.throws(() => unpackBashArchive({ ...spec, sha256: '0'.repeat(64) }, compressed), /checksum mismatch/)
+})
 
 test('non-Windows and non-x64 builds do not stage Bash', async () => {
   for (const [electronPlatformName, arch] of [['linux', 1], ['darwin', 1], ['win32', 3]]) {

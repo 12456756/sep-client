@@ -304,7 +304,8 @@ test('native composition orders photos and video, animates photos, and preserves
     for (const [t, color] of [['0.4', 0], ['1.5', 1], ['2.5', 2]] as const) {
       const picture = frame(t)
       const pixel = (28 * 32 + 16) * 3
-      assert.ok(picture[pixel + color] > picture[pixel + (color + 1) % 3] + 40)
+      assert.ok(picture[pixel + color] > picture[pixel + (color + 1) % 3] + 40,
+        `frame ${t}: RGB=${[...picture.subarray(pixel, pixel + 3)]}, bytes=${picture.length}`)
     }
     // Look for actual movement of the white shape, rather than compression noise between frames.
     const bright = (picture: Buffer) => Array.from({ length: picture.length / 3 }, (_, i) => picture[i * 3] > 190 && picture[i * 3 + 1] > 190 && picture[i * 3 + 2] > 190)
@@ -494,7 +495,8 @@ test('native phase-one edit trims repeated video ranges, mixes music and renders
       const rgb = ffmpeg('-ss', t, '-i', resultPath, '-vf', 'scale=16:28', '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1')
       return [...rgb.subarray((y * 16 + x) * 3, (y * 16 + x) * 3 + 3)]
     }
-    assert.ok(sample('0').every(value => value < 12), 'fade in starts at black')
+    const firstPixel = sample('0')
+    assert.ok(firstPixel.every(value => value < 12), `fade in starts at black: RGB=${firstPixel}`)
     assert.ok(sample('0.35')[2] > 150, 'first photo fills canvas')
     const blend = sample('0.7')
     assert.ok(blend[1] > 30 && blend[2] > 50, 'transition blends both inputs')

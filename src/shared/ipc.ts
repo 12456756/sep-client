@@ -379,6 +379,7 @@ export interface ElectronAPI {
   deleteNotification: (id: string) => Promise<IpcCommandResult>
   clearReadNotifications: (query?: NotificationCategoryQuery) => Promise<IpcCommandResult>
   openNotificationAction: (url: string) => Promise<IpcCommandResult>
+  openMarketplace: () => Promise<IpcCommandResult>
   onNotificationUpdate: (callback: (event: NotificationUpdate) => void) => () => void
   platform: RuntimePlatform
   windowChrome: WindowChromeRuntime

@@ -147,6 +147,17 @@
   place-items: center;
 }
 
+.ent-side.ent-icon-nav .ent-marketplace-entry {
+  flex: 0 0 auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--ent-line-soft);
+}
+
+.ent-side.ent-icon-nav .ent-marketplace-button:disabled {
+  cursor: progress;
+  opacity: .55;
+}
+
 .ent-side.ent-icon-nav .ent-icon-account-button .ent-face {
   width: 36px;
   height: 36px;

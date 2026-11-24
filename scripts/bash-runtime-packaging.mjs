@@ -4,6 +4,7 @@ import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, 
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import sevenZip from '7zip-bin'
+import { zstdDecompressSync } from 'node:zlib'
 
 const upstream = 'https://repo.msys2.org/msys/'
 const project = fileURLToPath(new URL('../', import.meta.url))
@@ -39,6 +40,11 @@ export function verifyArchive(spec, bytes) {
   if (createHash('sha256').update(bytes).digest('hex') !== spec.sha256) {
     throw new Error(`MSYS2 Bash archive checksum mismatch: ${spec.archive}`)
   }
+}
+
+export function unpackBashArchive(spec, bytes) {
+  verifyArchive(spec, bytes)
+  return zstdDecompressSync(bytes, { maxOutputLength: 512 * 1024 * 1024 })
 }
 
 async function archiveBytes(spec, cache) {
@@ -101,11 +107,10 @@ export async function stageBashRuntime(appOutDir, root = project, cache = proces
     await mkdir(stage)
     await mkdir(join(stage, 'etc'))
     await writeFile(join(stage, 'etc/fstab'), 'none /tmp usertemp binary,posix=0,noacl 0 0\n')
-    const archive = join(parent, 'package.tar.zst')
+    const archive = join(parent, 'package.tar')
     for (const spec of packages) {
       const bytes = await archiveBytes(spec, cache)
-      verifyArchive(spec, bytes)
-      await writeFile(archive, bytes)
+      await writeFile(archive, unpackBashArchive(spec, bytes))
       const entries = [...spec.files.map(file => `usr/bin/${file}`), ...(licenseEntries[spec.name] ?? [])]
       run(tar, ['-xf', archive, '-C', stage, '--', ...entries])
       for (const entry of entries) {

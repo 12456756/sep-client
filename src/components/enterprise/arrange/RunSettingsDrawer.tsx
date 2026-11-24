@@ -4,7 +4,7 @@
  */
 
 import { FolderOpen, ShieldCheck } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ModelSelector } from '../ModelSelector';
 import { RUN_PERMISSIONS, type RunSettings } from '../../../features/enterprise/run-settings';
 import { formatDirectoryPath } from '../../../shared/path-display';
@@ -22,6 +22,7 @@ interface DirectoryProps {
   onChange: (patch: Partial<RunSettings>) => void;
   onChooseFolder: (currentPath?: string) => Promise<string | null>;
   allowedPresets?: RunSettings['permissions']['preset'][];
+  inheritDefaultDirectory?: boolean;
 }
 
 interface Props extends SharedProps, DirectoryProps {
@@ -42,23 +43,30 @@ function directoryLabel(workDir: string): string {
  * 既占位又读不懂。这里把两者移到目录行——语义上它们和「选哪个目录」同属
  * 「这次工作在什么环境下跑」，放在一起才讲得通。
  */
-export function RunSettingsDirectory({ settings, onChange, onChooseFolder, allowedPresets }: DirectoryProps) {
+export function RunSettingsDirectory({ settings, onChange, onChooseFolder, allowedPresets, inheritDefaultDirectory = false }: DirectoryProps) {
   const [defaultWorkspacePath, setDefaultWorkspacePath] = useState('');
+  const currentDirectory = useRef({ workDir: settings.workDir, onChange, inheritDefaultDirectory });
+  currentDirectory.current = { workDir: settings.workDir, onChange, inheritDefaultDirectory };
   const permission = RUN_PERMISSIONS.find(item => item.id === settings.permissions.preset);
   const autoApprove = settings.permissions.approvalMode === 'auto-approve';
 
   useEffect(() => {
     let changedDuringLoad = false;
+    const applyDefaultDirectory = (path: string) => {
+      setDefaultWorkspacePath(path);
+      const current = currentDirectory.current;
+      if (path && current.inheritDefaultDirectory && !current.workDir.trim()) current.onChange({ workDir: path });
+    };
     const onDefaultWorkspaceChanged = (event: Event) => {
       changedDuringLoad = true;
-      setDefaultWorkspacePath((event as CustomEvent<string | null>).detail ?? '');
+      applyDefaultDirectory((event as CustomEvent<string | null>).detail ?? '');
     };
     if (settings.workDir.trim()) {
       setDefaultWorkspacePath('');
     }
     let mounted = true;
     void window.electronAPI.getDefaultWorkspaceDirectory().then(result => {
-      if (mounted && !changedDuringLoad && result.success && result.path) setDefaultWorkspacePath(result.path);
+      if (mounted && !changedDuringLoad && result.success && result.path) applyDefaultDirectory(result.path);
     }).catch(() => undefined);
     window.addEventListener('default-workspace-directory-changed', onDefaultWorkspaceChanged);
     return () => {

@@ -64,6 +64,14 @@ export const systemRoutes = [
     })
     return { success: true, data: data ?? undefined }
   }, { ...trusted, errorShape: 'ipc' }),
+  route(INVOKE_CHANNELS.MARKETPLACE_OPEN, NO_INPUT, async () => {
+    try {
+      await shell.openExternal('https://sep.longdaoec.com/marketplace')
+    } catch (cause) {
+      throw appError('SERVICE_UNAVAILABLE', { message: '无法打开员工市场，请重试', cause })
+    }
+    return { success: true }
+  }, { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY, NO_INPUT, async ctx => ({ success: true, path: await ctx.tasks.getDefaultWorkspaceDirectory() }), { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY, NO_INPUT, async ctx => {
     const window = ctx.window()
