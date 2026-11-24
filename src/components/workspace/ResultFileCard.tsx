@@ -1,4 +1,4 @@
-import { Copy, FileText, FolderOpen, LoaderCircle, RefreshCw, X } from 'lucide-react'
+import { Copy, Eye, FileText, Film, FolderOpen, Image, LoaderCircle, RefreshCw, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { WorkDeliverable } from '../../features/enterprise/types'
 import { useResultFilePreview, type ResultFilePreviewSource } from '../../features/enterprise/use-result-file-preview'
@@ -15,6 +15,7 @@ export interface ResultFileCardProps {
   visible?: boolean
   conversation?: boolean
   mediaRequest?: ResultFileRequest
+  presentation?: 'card' | 'list'
 }
 
 export function resultFileRequest(taskId: string, file: WorkDeliverable): ResultFileRequest | null {
@@ -84,10 +85,15 @@ function InlineMedia({ request, name, version, showMenu, commands }: { request: 
   </>
 }
 
-export function ResultFileCard({ taskId, file, visible = true, conversation = false, mediaRequest }: ResultFileCardProps) {
+export function ResultFileCard({ taskId, file, visible = true, conversation = false, mediaRequest, presentation = 'card' }: ResultFileCardProps) {
   const request = mediaRequest ?? resultFileRequest(taskId, file)
   const detectedKind = mediaKind(file)
   const kind = conversation && !mediaRequest && detectedKind === 'video' ? null : detectedKind
+  const list = presentation === 'list'
+  const [previewExpanded, setPreviewExpanded] = useState(false)
+  const Icon = detectedKind === 'image' ? Image : detectedKind === 'video' ? Film : FileText
+  const format = (file.format || (file.name.includes('.') ? file.name.split('.').at(-1) : '') || '').replace(/^\./, '').toUpperCase()
+  const fileType = format === 'MD' || format === 'MARKDOWN' ? 'Markdown 文档' : [format, detectedKind === 'image' ? '图片' : detectedKind === 'video' ? '视频' : '文件'].filter(Boolean).join(' ')
   const commands = useFileMenuCommands(request, file.name)
   const feedback = useFeedback()
   const { showMenu, menu } = useContentCopy()
@@ -125,6 +131,7 @@ export function ResultFileCard({ taskId, file, visible = true, conversation = fa
     return () => { active = false; clearTimeout(timer) }
   }, [visible, requestKey, file.previewVersion, statusRefresh])
   useEffect(() => { setRetryError(null) }, [requestKey, file.previewVersion])
+  useEffect(() => { if (!visible) setPreviewExpanded(false) }, [visible])
   const reveal = async () => {
     if (!request) return
     setOpening(true); setError(null)
@@ -160,19 +167,26 @@ export function ResultFileCard({ taskId, file, visible = true, conversation = fa
       if (confirmed && !controller.signal.aborted && feedback.getRevision() === revision) await retryArchive(confirmation)
     } finally { if (alternatePrompt.current === controller) alternatePrompt.current = null }
   }
-  return <article className={`result-file-card${kind ? ' result-file-card-media' : ''}`} aria-label={`产物 ${file.name}`} tabIndex={request ? 0 : undefined} {...(request ? fileMenu : undefined)}>
-    {kind && visible && request ? <InlineMedia key={`${file.id}:${file.previewVersion ?? ''}`} request={request} name={file.name} version={file.previewVersion} showMenu={showMenu} commands={commands} /> : null}
+  const inlineMedia = kind && visible && request && (!list || previewExpanded)
+    ? <InlineMedia key={`${file.id}:${file.previewVersion ?? ''}`} request={request} name={file.name} version={file.previewVersion} showMenu={showMenu} commands={commands} /> : null
+  return <article className={`result-file-card${kind ? ' result-file-card-media' : ''}${list ? ' result-file-card-list' : ''}`} aria-label={`产物 ${file.name}`} tabIndex={request ? 0 : undefined} {...(request ? fileMenu : undefined)}>
+    {!list && inlineMedia}
     <div className="result-file-footer">
-      {!kind ? <FileText size={22} aria-hidden /> : null}
-      <strong className="result-file-name" title={file.name}>{file.name}</strong>
+      {list ? <span className="result-list-file-icon" data-kind={detectedKind ?? 'file'}><Icon size={17} aria-hidden /></span> : !kind ? <FileText size={22} aria-hidden /> : null}
+      {list ? <div className="result-list-file-label"><strong className="result-file-name" title={file.name}>{file.name}</strong><small>{fileType}</small></div>
+        : <strong className="result-file-name" title={file.name}>{file.name}</strong>}
       <div className="result-file-actions">
+        {list && kind && request && <button type="button" className="ent-btn sm result-list-preview-toggle" aria-expanded={previewExpanded} aria-label={`${previewExpanded ? '收起' : '预览'}${kind === 'image' ? '图片' : '视频'}：${file.name}`} onClick={() => setPreviewExpanded(value => !value)}>
+          <Eye size={14} aria-hidden /><span>{previewExpanded ? '收起预览' : '预览'}</span>
+        </button>}
         {!mediaRequest && !kind && file.format && request && ('nodeId' in request || 'fileId' in request) ? <DocumentPreviewButton {...request} name={file.name} format={file.format} version={file.previewVersion} /> : null}
         {!mediaRequest && !kind && /^\.?docx?$/i.test(file.format ?? '') && request && ('nodeId' in request || 'fileId' in request) ? <SaveWordCopyButton request={request} name={file.name} /> : null}
-        <button type="button" className="ent-btn sm" aria-busy={opening} disabled={opening || !request} onClick={() => void reveal()} title="打开文件所在目录" aria-label={`打开 ${file.name} 所在文件夹`}>
+        <button type="button" className="ent-btn sm result-file-reveal" aria-busy={opening} disabled={opening || !request} onClick={() => void reveal()} title="打开文件所在目录" aria-label={`打开 ${file.name} 所在文件夹`}>
           {opening ? <LoaderCircle size={14} className="animate-spin" /> : <FolderOpen size={14} />}<span>打开所在文件夹</span>
         </button>
       </div>
     </div>
+    {list && inlineMedia}
     {error ? <p className="result-file-error" role="alert">{error}</p> : null}
     {saveStatus.state === 'pending' ? <div className="result-file-save-status" role="status">正在保存到指定文件夹…</div> : null}
     {saveStatus.state === 'failed' || saveStatus.state === 'missing' ? <div className="result-file-error result-file-save-status" role="status">

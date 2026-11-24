@@ -89,20 +89,28 @@ export function mediaSpecFailureMessage(error: { code: string; message?: string 
   return parts.join('；')
 }
 
+export function mediaUnconfirmedNotice(job: MediaIssueState, kind: 'image' | 'video') {
+  if (job.generationStatus !== 'SUBMISSION_UNKNOWN') return null
+  const name = kind === 'image' ? '图片' : '视频'
+  const receiptReason = job.upstreamError ? mediaUpstreamReason(job.upstreamError.body) : null
+  const initialReason = job.submissionFailure ? failureReason({ ...job, failure: job.submissionFailure, error: null }) : null
+  return {
+    title: `${name}提交结果尚未确认`,
+    advice: job.error === 'QUERY_UNAVAILABLE' || job.canResumeTracking === false
+      ? '当前无法查询原任务，请联系平台管理员核实' : '请查询原任务',
+    detail: [...new Set([receiptReason, initialReason, failureReason(job)].filter(Boolean))].join('；'),
+  }
+}
+
 export function mediaIssueMessage(job: MediaIssueState, kind: 'image' | 'video'): string | null {
   if (kind === 'image' && job.generationStatus === 'FAILED' && isImageMissingTargetRejection(job.failure)) return IMAGE_MISSING_TARGET_MESSAGE
   const name = kind === 'image' ? '图片' : '视频'
   // An unconfirmed submission must never be presented as a proven rejection.
+  const unconfirmed = mediaUnconfirmedNotice(job, kind)
+  if (unconfirmed) return `${unconfirmed.title}${unconfirmed.detail ? `；已知异常：${unconfirmed.detail}` : ''}；${unconfirmed.advice}，勿重复提交`
   const reason = failureReason(job)
   const receiptReason = job.upstreamError ? mediaUpstreamReason(job.upstreamError.body) : null
   const outputReasons = outputFailureReasons(job)
-  if (job.generationStatus === 'SUBMISSION_UNKNOWN') {
-    const advice = job.error === 'QUERY_UNAVAILABLE' || job.canResumeTracking === false
-      ? '当前无法查询原任务，请联系平台管理员核实，勿重复提交' : '请查询原任务，勿重复提交'
-    const initialReason = job.submissionFailure ? failureReason({ ...job, failure: job.submissionFailure, error: null }) : null
-    const reasons = [...new Set([receiptReason, initialReason, reason].filter(Boolean))].join('；')
-    return `${name}提交结果尚未确认${reasons ? `；已知异常：${reasons}` : ''}；${advice}`
-  }
   const generationIssue = ['FAILED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) && receiptReason
     ? `${job.generationStatus === 'PARTIAL_SUCCEEDED' ? `部分${name}` : name}生成失败：${receiptReason}` : ''
   if (job.generationStatus === 'RESULT_EXPIRED' || job.error === 'RESULT_EXPIRED') {

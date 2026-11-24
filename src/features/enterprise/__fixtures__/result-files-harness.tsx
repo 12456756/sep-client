@@ -16,7 +16,8 @@ const files: WorkDeliverable[] = [
 export function ResultFilesHarness() {
   const search = new URLSearchParams(window.location.search)
   const replay = search.get('replay')
-  const conversation = search.has('conversation') || replay !== null
+  const empty = search.has('empty')
+  const conversation = search.has('conversation') || replay !== null || empty
   const work: WorkItem = {
     id: 'results-test', title: '商品主图与展示视频', goal: '制作商品主图与展示视频', kind: 'flow',
     workType: { state: 'resolved', kind: 'arrangement' }, status: 'completed', progress: 100,
@@ -26,11 +27,11 @@ export function ResultFilesHarness() {
     stopReason: null, workDir: null,
     arrangementExecution: { activeRunId: null, status: 'completed', updatedAt: 2, nodes: [] },
   }
-  const item: WorkItem = conversation ? { ...work, id: replay ? `conversation-replay-${replay}` : 'conversation-test', kind: 'conversation',
+  const item: WorkItem = conversation ? { ...work, id: replay ? `conversation-replay-${replay}` : empty ? 'conversation-empty' : 'conversation-test', kind: 'conversation',
     ...(replay ? { status: 'failed', stopReason: '工作运行失败，请重试' } as const : {}),
     workType: { state: 'resolved', kind: 'conversation' }, deliverables: [], arrangementExecution: undefined } : work
   const workspace = { works: [item], employees: [], myEmployees: [], busy: false, canGoBack: false, attachmentScopeKey: 'result-test' } as unknown as EnterpriseWorkspace
-  return <FeedbackProvider><main className="ent-shell" style={{ height: '100dvh' }}><div className="ent-work-hub" style={{ flex: 1, minWidth: 0 }}>
+  return <FeedbackProvider><main className={`ent-shell${search.has('dark') ? ' dark' : ''}`} style={{ height: '100dvh' }}><div className="ent-work-hub" style={{ flex: 1, minWidth: 0 }}>
     <WorkDetailPage workspace={workspace} workId={item.id} />
   </div></main></FeedbackProvider>
 }

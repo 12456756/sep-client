@@ -14,7 +14,8 @@ import { imageRequestedSpecSchema, type ImageRequestedSpec, type MediaParameterS
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { useFeedback } from '../feedback/FeedbackProvider'
 import { operationFailure, responseError, feedbackMessage, type FeedbackOperation } from '../../shared/arrangement-feedback'
-import { mediaIssueMessage, mediaSpecFailureMessage } from '../../shared/media-feedback'
+import { mediaIssueMessage, mediaSpecFailureMessage, mediaUnconfirmedNotice } from '../../shared/media-feedback'
+import { MediaSubmissionNotice } from './MediaSubmissionNotice'
 import { ResultFileCard } from './ResultFileCard'
 import { useImagePreviewCopy } from '../ContentCopyMenu'
 import { useFileMenuCommands } from './file-menu-actions'
@@ -233,19 +234,20 @@ export function MediaCreationForm({ profiles, protocolVersion, defaultProfileId,
 }
 
 export function MediaJobList({ jobs, archived, busy, onAction, compact = false }: { jobs: MediaJobView[]; archived: boolean; busy: boolean; onAction: (job: MediaJobView, action: JobAction, cancelUpstream?: boolean) => void; compact?: boolean }) {
-  return <div className="media-jobs">{jobs.map(job => {
+  const rows = jobs.map(job => {
     const actions = mediaJobActions(job, archived)
     const issue = mediaIssueMessage(job, 'image')
     if (compact) {
       const pending = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
       if (!issue && !pending && !actions.retrySave && !actions.resumeTracking) return null
       const label = issue || (pending ? mediaGenerationLabels[job.generationStatus as keyof typeof mediaGenerationLabels]?.label || '正在生成图片' : mediaSaveLabels[job.saveStatus].label)
-      return <div className="media-result-status" key={job.jobId} role={issue ? 'alert' : 'status'}>
-        <span>{label}</span>
-        <div className="media-job-actions">
+      const notice = mediaUnconfirmedNotice(job, 'image')
+      return <div className="media-result-job" key={job.jobId}>
+        {notice ? <MediaSubmissionNotice notice={notice} /> : <p className="media-result-status" role={issue ? 'alert' : 'status'}>{label}</p>}
+        {(actions.resumeTracking || actions.retrySave) && <div className="media-job-actions">
           {actions.resumeTracking && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />继续</button>}
           {actions.retrySave && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'retry')}><Download size={13} />重新保存</button>}
-        </div>
+        </div>}
       </div>
     }
     return <div className="media-job" key={job.jobId}>
@@ -274,7 +276,8 @@ export function MediaJobList({ jobs, archived, busy, onAction, compact = false }
         {actions.redo && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'redo')} title="按原任务重做，新生成可能收费"><RotateCcw size={13} />重做（可能收费）</button>}
       </div>
     </div>
-  })}</div>
+  })
+  return compact && !rows.some(Boolean) ? null : <div className="media-jobs">{rows}</div>
 }
 
 function MediaPreviewDialog({ taskId, asset, busy, onClose, onExport, feedback }: { taskId: string; asset: MediaAssetView; busy: boolean; onClose: () => void; onExport: () => void; feedback: CommandFeedback }) {
@@ -425,11 +428,12 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
   useEffect(() => { onSummary?.({ outputs: outputCount, error: summaryError, retryState }) }, [onSummary, outputCount, summaryError, retryState])
   const busy = pending !== null
   const feedback = { pending }
-  if (!visible) return null
-  return <section className={`artifact-section media-artifacts${presentation === 'results' ? ' media-results-compact' : ''}`} aria-label="图片成果" hidden={!visible}>
+  if (!visible || (presentation === 'results' && view && !error && !busy && jobs.length === 0 && outputs.size === 0 && !preview)) return null
+  return <section className={`media-artifacts ${presentation === 'results' ? 'media-results-compact' : 'artifact-section'}`} aria-label="图片成果">
     {presentation === 'full' && <h3><ImageIcon size={15} />图片创作与成果<button type="button" className="media-icon-button" title="刷新图片能力与任务" aria-label="刷新图片能力与任务" onClick={() => { void refresh(true) }}><RefreshCw size={14} /></button></h3>}
-    {!view && !error && <p className="artifact-empty" role="status">{presentation === 'results' ? '正在读取成果' : '正在读取图片能力'}</p>}
+    {!view && !error && <p className="artifact-empty" role="status">{presentation === 'results' ? '正在读取图片成果…' : '正在读取图片能力'}</p>}
     {error && <p className="media-notice" role="alert">图片成果暂时无法读取</p>}
+    {presentation === 'results' && <MediaCommandFeedback pending={pending} />}
     {presentation === 'full' && !preview && !view?.capabilities?.tools.includes('media_generate_image') && <MediaCommandFeedback {...feedback} />}
     {view && <>
       {presentation === 'full' && <>
@@ -444,7 +448,7 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
       {!view.capabilities?.tools.includes('media_generate_image') && videoReferenceAvailable && <div className="media-subheading"><span>视频参考图</span><button type="button" className="media-command" disabled={busy || view.archived} onClick={() => { void run('video-import', api => api.importVideoReferences(taskId)) }}><ImagePlus size={14} />导入视频参考图</button></div>}
       </>}
       {!!jobs.length && <MediaJobList jobs={jobs} archived={view.archived} busy={busy} onAction={jobAction} compact={presentation === 'results'} />}
-      {outputs.size > 0 && <>{presentation === 'results' ? <><h3 className="media-results-heading">图片成果</h3><div className="result-file-list">{[...outputs.values()].map(asset => <ResultFileCard key={asset.localAssetId} taskId={taskId} file={imageResultFile(asset)} mediaRequest={{ taskId, assetId: asset.localAssetId }} />)}</div></> : <><h4>图片成果</h4><MediaAssetGrid taskId={taskId} assets={[...outputs.values()]} onPreview={setPreview} onExport={exportAsset} disabled={busy} /></>}</>}
+      {outputs.size > 0 && <>{presentation === 'results' ? <div className="result-file-list">{[...outputs.values()].map(asset => <ResultFileCard key={asset.localAssetId} taskId={taskId} file={imageResultFile(asset)} presentation="list" mediaRequest={{ taskId, assetId: asset.localAssetId }} />)}</div> : <><h4>图片成果</h4><MediaAssetGrid taskId={taskId} assets={[...outputs.values()]} onPreview={setPreview} onExport={exportAsset} disabled={busy} /></>}</>}
     </>}
     {preview && <MediaPreviewDialog key={preview.localAssetId} taskId={taskId} asset={preview} busy={busy} feedback={feedback} onClose={() => setPreview(null)} onExport={() => exportAsset(preview)} />}
   </section>

@@ -51,11 +51,13 @@
 .media-preview-dialog > p { margin: 10px 0 0; font-size: 11px; overflow-wrap: anywhere; }
 .media-results-compact { display: grid; gap: 12px; }
 .media-results-compact > .media-jobs { gap: 8px; }
-.media-results-compact .media-job,
-.media-results-compact .media-result-job { padding: 0 0 10px; border-bottom: 1px solid var(--workspace-line, #ddd); }
-.media-results-compact .media-job:last-child,
-.media-results-compact .media-result-job:last-child { padding-bottom: 0; border-bottom: 0; }
-.media-results-heading { margin: 0; color: var(--color-text-primary, #373737); font-size: 13px; }
+.media-submission-notice { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 12px; border-radius: 8px; color: var(--ent-ink, #434047); background: var(--ent-attention-bg, #fbf3e5); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.media-submission-notice > svg { flex: 0 0 auto; margin-top: 2px; color: var(--ent-ink-2, #774c15); }
+.media-submission-notice strong { font-size: 14px; font-weight: 650; }
+.media-submission-notice p { margin: 3px 0 0; }
+.media-submission-notice details { margin-top: 7px; font-size: 12px; }
+.media-submission-notice summary { width: fit-content; cursor: pointer; }
+.media-submission-notice summary:hover { text-decoration: underline; }
 .media-result-status { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; color: var(--color-text-secondary, #606060); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .media-result-status.error { color: #a33b3b; }
 .media-result-output { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; }

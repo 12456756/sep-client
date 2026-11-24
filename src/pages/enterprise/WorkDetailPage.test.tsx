@@ -183,7 +183,9 @@ it('associates each final media file with its original delivery identity only on
   const html = renderDetail({ ...work, kind: 'flow', deliverables: [file] });
   assert.equal((html.match(/aria-label="产物 mug.png"/g) ?? []).length, 1);
   assert.match(html, /打开 mug.png 所在文件夹/);
-  assert.doesNotMatch(html, /正在读取媒体|预览图片|复制路径/);
+  assert.match(html, /result-file-card-list/);
+  assert.match(html, /aria-expanded="false" aria-label="预览图片：mug\.png"/);
+  assert.doesNotMatch(html, /正在读取媒体|复制路径/);
 });
 
 it('keeps pending media visible but removes delivery status after final acceptance including historical files', () => {

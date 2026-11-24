@@ -1,7 +1,7 @@
 /** 会话显示对话，编排显示实时节点消息；结果和工作信息按需查看。 */
 
 import {
-  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, Info, LoaderCircle,
+  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, Inbox, Info, LoaderCircle,
   RotateCcw, Sparkles, StopCircle, Trash2, X, XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -81,8 +81,9 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const [mediaSummary, setMediaSummary] = useState<MediaArtifactsSummary>({ images: null, videos: null, error: null, retryState: 'checking' });
   const [conversationSkipped, setConversationSkipped] = useState(false);
   const handleMediaSummary = useCallback((summary: typeof mediaSummary) => setMediaSummary(summary), []);
-  const noConversationResults = mediaSummary.images === 0 && mediaSummary.videos === 0 && !mediaSummary.error;
+  const noConversationResults = mediaSummary.images === 0 && mediaSummary.videos === 0 && !mediaSummary.error && mediaSummary.retryState === 'clear';
   const showEmptyResults = work.deliverables.length === 0 && (isConversation ? noConversationResults : !work.arrangementExecution?.media?.length);
+  const resultCount = work.deliverables.length + (isConversation ? (mediaSummary.images ?? 0) + (mediaSummary.videos ?? 0) : 0);
   const inspectorCloseButton = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     const dialog = inspector.current;
@@ -201,7 +202,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         <dialog
           ref={inspector}
           id={`work-inspector-${work.id}`}
-          className="ent-wk-inspector"
+          className={`ent-wk-inspector${panel === 'results' ? ' ent-wk-inspector-results' : ''}`}
           aria-modal="true"
           aria-label="工作详情面板"
           aria-labelledby={`work-inspector-title-${work.id}`}
@@ -217,11 +218,15 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) setPanel(null);
           }}
         >
-          <div className="ent-wk-inspector-heading"><strong id={`work-inspector-title-${work.id}`}>{panel === 'results' ? '产出结果' : panel === 'process' ? '工作过程' : panel === 'skills' ? '使用技能' : '工作信息'}</strong><button ref={inspectorCloseButton} type="button" className="ent-icon-btn" aria-label="关闭详情面板" onClick={() => setPanel(null)}><X size={16} aria-hidden /></button></div>
+          <div className="ent-wk-inspector-heading">
+            <strong id={`work-inspector-title-${work.id}`}>{panel === 'results' ? '产出结果' : panel === 'process' ? '工作过程' : panel === 'skills' ? '使用技能' : '工作信息'}</strong>
+            {panel === 'results' && resultCount > 0 ? <span className="ent-wk-result-count">{resultCount} 个文件</span> : null}
+            <button ref={inspectorCloseButton} type="button" className="ent-icon-btn" aria-label="关闭详情面板" onClick={() => setPanel(null)}><X size={16} aria-hidden /></button>
+          </div>
           <section className="ent-panel ent-wk-inspector-content" aria-label="使用技能" hidden={panel !== 'skills'}>
             <WorkSkills work={work} scopeKey={workspace.attachmentScopeKey} visible={panel === 'skills'} />
           </section>
-          <section className="ent-panel ent-wk-inspector-content" aria-label="产出结果" hidden={panel !== 'results'}>
+          <section className="ent-panel ent-wk-inspector-content ent-wk-results-content" aria-label="产出结果" hidden={panel !== 'results'}>
             <FileAttachmentTarget.Provider value={isConversation ? addFromResults : null}>
             {isConversation ? <MediaArtifactsPanel taskId={work.id} visible={panel === 'results'} onSummary={handleMediaSummary} presentation="results" /> : null}
             {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel media={work.arrangementExecution.media} deliverables={work.deliverables} /> : null}
@@ -231,12 +236,16 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                   <section key={group.key} className="ent-wk-final-group">
                     {group.title ? <h3>{group.title}</h3> : null}
                     <div className="result-file-list">
-                      {group.files.map(file => <ResultFileCard key={file.id} taskId={work.id} file={file} visible={panel === 'results'} conversation={isConversation} />)}
+                      {group.files.map(file => <ResultFileCard key={file.id} taskId={work.id} file={file} visible={panel === 'results'} conversation={isConversation} presentation="list" />)}
                     </div>
                   </section>
                 ))}
               </div>
-            ) : showEmptyResults ? <p className="ent-hint">暂无产出结果</p> : null}
+            ) : showEmptyResults ? <div className="ent-wk-results-empty" role="status">
+              <span><Inbox size={18} aria-hidden /></span>
+              <strong>暂无产出结果</strong>
+              <p>该工作还没有生成可查看的文件。</p>
+            </div> : null}
             </FileAttachmentTarget.Provider>
           </section>
 

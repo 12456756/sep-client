@@ -15,7 +15,8 @@ import { mediaRetryState, type MediaJobSummary } from '../../shared/media-retry'
 
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { operationFailure, responseError, type FeedbackOperation } from '../../shared/arrangement-feedback'
-import { mediaIssueMessage, mediaSpecFailureMessage } from '../../shared/media-feedback'
+import { mediaIssueMessage, mediaSpecFailureMessage, mediaUnconfirmedNotice } from '../../shared/media-feedback'
+import { MediaSubmissionNotice } from './MediaSubmissionNotice'
 import { ResultFileCard } from './ResultFileCard'
 import type { WorkDeliverable } from '../../features/enterprise/types'
 
@@ -143,8 +144,11 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
       const status = issue || (unfinished ? generation.label
           : videoBillingPending(job.billingStatus) ? '生成完成，费用核对中'
             : savedOutputs.length === 0 ? mediaSaveLabels[job.saveStatus].label : null)
+      const notice = mediaUnconfirmedNotice(job, 'video')
+      const specIssue = notice && job.specFailure ? mediaSpecFailureMessage(job.specFailure) : null
       return <article className="media-result-job" key={job.jobId}>
-        {status && <p className="media-result-status" role={issue ? 'alert' : 'status'}>{status}</p>}
+        {notice ? <MediaSubmissionNotice notice={{ ...notice, detail: [notice.detail, specIssue].filter(Boolean).join('；') }} />
+          : status && <p className="media-result-status" role={issue ? 'alert' : 'status'}>{status}</p>}
         {acceptanceLabel && <p className="media-result-status" role="status">{acceptanceLabel}</p>}
         {(resume || retry) && <div className="media-job-actions">
           {resume && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />继续</button>}
@@ -152,7 +156,7 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
         </div>}
         {job.outputs.map((output, index) => <div className="media-result-output" key={output.outputId}>
           {videoOutputIsSaved(job, output.outputId) && (['video/mp4', 'video/webm'].includes(output.mimeType)
-            ? <ResultFileCard taskId={job.taskId} file={videoResultFile(job, output, index)} mediaRequest={{ taskId: job.taskId, jobId: job.jobId, outputId: output.outputId }} />
+            ? <ResultFileCard taskId={job.taskId} file={videoResultFile(job, output, index)} presentation="list" mediaRequest={{ taskId: job.taskId, jobId: job.jobId, outputId: output.outputId }} />
             : <div className="media-job-actions"><strong>视频成果 {index + 1}</strong><button type="button" className="media-command" disabled={busy} onClick={() => onExport({ jobId: job.jobId, outputId: output.outputId })}><Download size={13} />导出</button></div>)}
         </div>)}
       </article>
@@ -197,8 +201,8 @@ export function VideoTaskContent({ taskId, view: value, busy, pending, onAction,
   onAction: (job: VideoJobView, action: JobAction) => void; onPreview: (selection: OutputSelection) => void; onExport: (selection: OutputSelection) => void
 }) {
   const view = safeView(value, taskId)
-  if (!view) return null
-  return <section className={`artifact-section media-artifacts video-artifacts${presentation === 'results' ? ' media-results-compact' : ''}`} aria-label="视频成果" hidden={!visible}>
+  if (!view || (presentation === 'results' && !view.jobs.length && !pending)) return null
+  return <section className={`media-artifacts video-artifacts ${presentation === 'results' ? 'media-results-compact' : 'artifact-section'}`} aria-label="视频成果" hidden={!visible}>
     {presentation === 'full' && <h3><Film size={15} />视频成果{view.mock && <span className="video-mock-badge">Mock · 不收费</span>}</h3>}
     {presentation === 'full' && view.mock && <p className="media-notice">仅供 Mock 视频验证 · MOCK_NOT_CHARGED</p>}
     <VideoFeedback pending={pending} />
@@ -348,7 +352,7 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
   useEffect(() => { if (preview && !previewAvailable) setPreview(null) }, [preview, previewAvailable])
   useEffect(() => { if (!visible) setPreview(null) }, [visible])
   const busy = pending !== null || error !== null
-  const savedOutputCount = savedVideoOutputCount(view?.jobs ?? null, Boolean(error))
+  const savedOutputCount = savedVideoOutputCount(view?.jobs ?? (loaded ? [] : null), Boolean(error))
   const outputCount = savedOutputCount
   const taskIssue = videoTaskIssue(view?.jobs ?? [])
   const summaryError = error || taskIssue
@@ -357,6 +361,9 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
     onSummary?.({ outputs: outputCount, error: summaryError, retryState })
   }, [onSummary, outputCount, summaryError, retryState])
   return <>
+    {visible && presentation === 'results' && (error
+      ? <p className="media-notice" role="alert">{error}</p>
+      : !loaded && <p className="artifact-empty" role="status">正在读取视频成果…</p>)}
     {visible ? <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending} presentation={presentation}
       onAction={(job, action) => { void run(action, api => action === 'resume' ? api.resumeVideoTracking({ taskId, jobId: job.jobId }) : api.retryVideoSave({ taskId, jobId: job.jobId })) }}
       onPreview={setPreview} onExport={exportOutput} /> : null}
