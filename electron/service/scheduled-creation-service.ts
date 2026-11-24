@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput, type ConversationScheduleReceipt } from '../../src/shared/scheduled-creation'
+import { isScheduledCreationWorking, scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput, type ConversationScheduleReceipt } from '../../src/shared/scheduled-creation'
 import type { ScheduleInput } from '../../src/shared/scheduled-tasks'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { TaskOwnerScope } from '../data/scope-path'
@@ -116,7 +116,7 @@ export class ScheduledCreationService {
         if (!!existing.fromConversation !== !!review) throw new AppError('INVALID_STATE')
         if (existing.submissionKey === submissionKey) return existing
         if (existing.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
-        if (['completed', 'cancelled'].includes(existing.stage)) throw new AppError('INVALID_STATE', { message: '本次创建已结束，请从任务详情修改配置，或新建任务。' })
+        if (existing.deleted || ['completed', 'cancelled'].includes(existing.stage)) throw new AppError('INVALID_STATE', { message: '本次创建已结束，请从任务详情修改配置，或新建任务。' })
         if (existing.messages.length >= 20) throw new AppError('INVALID_ARGUMENT', { message: '补充次数已达上限，请重新描述并新建任务。' })
         Object.assign(existing, { request: input, submissionKey,
           messages: [...existing.messages, messageWithReferences], stage: 'parsing', error: null,
@@ -132,7 +132,7 @@ export class ScheduledCreationService {
       return created
     })
     this.assertScope(scope, generation)
-    if (['completed', 'cancelled', 'needs_input', 'blocked'].includes(record.stage)) return record
+    if (record.deleted || ['completed', 'cancelled', 'needs_input', 'blocked'].includes(record.stage)) return record
     const change = async (mutate: (item: ScheduledCreation) => void) => {
       guard()
       record = await this.options.repository.update(scope, data => {
@@ -293,6 +293,7 @@ export class ScheduledCreationService {
       const item = data.creations?.find(value => value.id === id)
       if (!item) throw new AppError('NOT_FOUND')
       if (item.stage === 'cancelled') return item
+      if (item.deleted) throw new AppError('NOT_FOUND')
       if (item.revision !== revision) throw new AppError('DRAFT_REVISION_CONFLICT')
       if (item.stage === 'completed') throw new AppError('INVALID_STATE', { message: '任务已创建，请从任务详情暂停或删除。' })
       item.stage = 'cancelled'; item.error = null; item.revision++; item.updatedAt = this.now()
@@ -302,12 +303,30 @@ export class ScheduledCreationService {
     this.operations.get(this.key(scope, id))?.controller.abort()
     return result
   }
+  async deleteRecord(id: string, revision: number): Promise<ScheduledCreation> {
+    const scope = this.scope(), generation = this.generation
+    const result = await this.options.repository.update(scope, data => {
+      this.assertScope(scope, generation)
+      const item = data.creations?.find(value => value.id === id)
+      if (!item) throw new AppError('NOT_FOUND')
+      if (item.deleted) return item
+      if (item.revision !== revision) throw new AppError('DRAFT_REVISION_CONFLICT')
+      if (isScheduledCreationWorking(item.stage) || (item.stage !== 'cancelled' && this.operations.has(this.key(scope, id)))) {
+        throw new AppError('INVALID_STATE', { message: '创建正在处理中，请等操作完成后再删除记录。' })
+      }
+      // Keep the request identity so a delayed retry cannot create or enable work again.
+      item.deleted = true; item.revision++; item.updatedAt = this.now()
+      return item
+    })
+    this.assertScope(scope, generation)
+    return result
+  }
   async recover(): Promise<void> {
     const scope = this.scope(), generation = this.generation
     await this.options.repository.update(scope, data => {
       this.assertScope(scope, generation)
       for (const item of data.creations ?? []) {
-        if (['parsing', 'planning', 'enabling'].includes(item.stage) && !this.operations.has(this.key(scope, item.id))) {
+        if (isScheduledCreationWorking(item.stage) && !this.operations.has(this.key(scope, item.id))) {
           item.stage = 'failed'; item.error = '创建过程已中断，已保存进度，请继续创建。'; item.revision++; item.updatedAt = this.now()
         }
       }

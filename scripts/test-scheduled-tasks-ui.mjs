@@ -10,6 +10,7 @@ import { chromium } from 'playwright-core'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const creationNavigationOnly = process.argv.includes('--creation-navigation')
+const creationDeletionOnly = process.argv.includes('--creation-deletion')
 const historyLabelsOnly = process.argv.includes('--history-labels')
 const defaultWorkspaceOnly = process.argv.includes('--default-workspace')
 const fixture = `
@@ -77,6 +78,11 @@ window.electronAPI = {
   const item = data.creations.find(item => item.id === value.id);
   if (value.expectedRevision !== item.revision) return {success: false, error: {message: '创建状态已变化'}};
   item.stage = 'cancelled'; item.revision++; return {success: true, data: copy(item)};
+ },
+ async deleteScheduledCreation(value) {
+  const item = data.creations.find(item => item.id === value.id);
+  if (value.expectedRevision !== item.revision) return {success: false, error: {message: '创建状态已变化'}};
+  item.deleted = true; item.revision++; return {success: true, data: copy(item)};
  },
  async interpretScheduleTime(value) { counters.interpret++; if (value.description.includes('网络失败')) throw Error('offline'); if (value.description.includes('不明确')) return {success: true, data: {status: 'blocked', reasons: ['请明确运行时间']}}; return {success: true, data: {status: 'ready', expression: '30 9 1,15,30 * *'}}; },
  async listScheduledTasks() { return { success: true, data: copy({...data, creations: window.lostResponse ? [] : data.creations}) }; },
@@ -153,12 +159,59 @@ const screenshots = process.env.SCHEDULED_UI_OUTPUT_DIR || resolve(tmpdir(), 'se
 let browser
 try {
   browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge' })
-  if (!historyLabelsOnly) await mkdir(screenshots, { recursive: true })
+  if (!historyLabelsOnly && !creationDeletionOnly) await mkdir(screenshots, { recursive: true })
   for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 620 }, { width: 1000, height: 760 }, { width: 760, height: 900 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport })
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
     await page.goto(`http://127.0.0.1:${server.address().port}${viewport.width === 1280 ? '/?dark' : ''}`)
+    if (creationDeletionOnly) {
+      await page.getByRole('button', { name: '新建任务', exact: true }).first().waitFor()
+      await page.evaluate(async () => {
+        const request = { requestId: '11111111-1111-4111-8111-111111111111', message: '每天生成一份报告', modelId: 'test-model', workDir: 'D:/reports', timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
+        await window.electronAPI.submitScheduledCreation(request)
+        void window.electronAPI.submitScheduledCreation({ ...request, requestId: '22222222-2222-4222-8222-222222222222', message: '保持规划：每天整理资料' })
+        window.scheduleNavigate({ name: 'scheduled', view: 'creations' })
+      })
+      const dialog = page.getByRole('dialog').filter({ hasText: '已创建的定时任务和执行记录不受影响' })
+      const active = page.getByRole('article', { name: '创建任务：自然语言报告' }).filter({ hasText: '保持规划：每天整理资料' })
+      const activeRemove = active.getByRole('button', { name: '删除记录', exact: true })
+      const hint = active.getByText('创建中暂不可删除，可等待完成或取消创建。', { exact: true })
+      await activeRemove.waitFor()
+      await hint.waitFor()
+      assert.equal(await activeRemove.isDisabled(), true)
+      assert.equal(await activeRemove.getAttribute('aria-describedby'), await hint.getAttribute('id'))
+      assert.ok(await active.evaluate(element => element.scrollWidth <= element.clientWidth + 1))
+      await activeRemove.evaluate(button => button.click())
+      assert.equal(await dialog.count(), 0)
+      await active.getByRole('button', { name: '取消创建', exact: true }).click()
+      await active.getByText('已取消创建', { exact: true }).waitFor()
+      await hint.waitFor({ state: 'detached' })
+      assert.equal(await activeRemove.isEnabled(), true)
+      await activeRemove.click()
+      await dialog.getByRole('button', { name: '删除', exact: true }).click()
+      await active.waitFor({ state: 'detached' })
+      const record = page.getByRole('article', { name: '创建任务：自然语言报告' }).filter({ hasText: '每天生成一份报告' })
+      const remove = record.getByRole('button', { name: '删除记录', exact: true })
+      await remove.waitFor()
+      assert.ok(await remove.evaluate(button => Math.abs(button.getBoundingClientRect().right - button.closest('footer').getBoundingClientRect().right) < 2))
+      await remove.click()
+      await dialog.getByRole('button', { name: '取消', exact: true }).click()
+      assert.equal(await record.isVisible(), true)
+      await remove.click()
+      await dialog.getByRole('button', { name: '删除', exact: true }).click()
+      await record.waitFor({ state: 'detached' })
+      const empty = page.getByRole('status').filter({ hasText: '暂无创建进度' })
+      await empty.waitFor()
+      await page.evaluate(() => window.switchScope('reopen'))
+      await empty.waitFor()
+      const task = page.getByRole('region', { name: '进行中的定时任务' }).getByRole('button', { name: /自然语言报告/ })
+      await task.click()
+      await page.getByRole('tab', { name: '执行记录', exact: true }).waitFor()
+      assert.deepEqual(errors, [])
+      await page.close()
+      continue
+    }
     if (defaultWorkspaceOnly) {
       const send = page.getByRole('button', { name: '创建并启用定时任务', exact: true })
       const goal = page.getByLabel('定时任务工作内容', { exact: true })
@@ -691,5 +744,5 @@ try {
     assert.deepEqual(errors, [])
     await page.close()
   }
-  console.log(historyLabelsOnly ? 'Scheduled history labels passed at all viewport sizes' : `Scheduled module UI smoke passed; screenshots: ${screenshots}`)
+  console.log(creationDeletionOnly ? 'Scheduled creation deletion passed at all viewport sizes' : historyLabelsOnly ? 'Scheduled history labels passed at all viewport sizes' : `Scheduled module UI smoke passed; screenshots: ${screenshots}`)
 } finally { await browser?.close(); await new Promise(done => server.close(done)) }

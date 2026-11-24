@@ -6,12 +6,14 @@ import { NO_INPUT, route } from '../router'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const mutation = z.object({ id, expectedRevision: z.number().int().positive() }).strict()
+const creationMutation = mutation.extend({ id: z.string().uuid() })
 export const scheduledRoutes = [
   route(INVOKE_CHANNELS.SCHEDULE_WORK_SOURCE, id, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.workSource(value) })),
   route(INVOKE_CHANNELS.SCHEDULE_CREATE_FROM_WORK, createWorkScheduleSchema, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.createFromWork(value) })),
   route(INVOKE_CHANNELS.SCHEDULE_EDIT_FROM_WORK, editWorkScheduleSchema, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.editFromWork(value) })),
   route(INVOKE_CHANNELS.SCHEDULE_SUBMIT_CREATION, scheduledCreationRequestSchema, async (ctx, value) => ({ success: true, data: await ctx.scheduledCreations.submit(value) })),
-  route(INVOKE_CHANNELS.SCHEDULE_CANCEL_CREATION, z.object({ id: z.string().uuid(), expectedRevision: z.number().int().positive() }).strict(), async (ctx, value) => ({ success: true, data: await ctx.scheduledCreations.cancel(value.id, value.expectedRevision) })),
+  route(INVOKE_CHANNELS.SCHEDULE_CANCEL_CREATION, creationMutation, async (ctx, value) => ({ success: true, data: await ctx.scheduledCreations.cancel(value.id, value.expectedRevision) })),
+  route(INVOKE_CHANNELS.SCHEDULE_DELETE_CREATION, creationMutation, async (ctx, value) => ({ success: true, data: await ctx.scheduledCreations.deleteRecord(value.id, value.expectedRevision) })),
   route(INVOKE_CHANNELS.SCHEDULE_INTERPRET_TIME, scheduleTimeRequestSchema, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.interpretTime(value) })),
   route(INVOKE_CHANNELS.SCHEDULE_LIST, NO_INPUT, async ctx => ({ success: true, data: await ctx.scheduledTasks.list() })),
   route(INVOKE_CHANNELS.SCHEDULE_CREATE, z.object({ requestId: id, input: scheduleInputSchema }).strict(), async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.create(value.requestId, value.input) })),

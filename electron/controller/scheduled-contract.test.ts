@@ -75,3 +75,15 @@ test('homepage creation rejects renderer-authored identity, plan, credentials an
   assert.deepEqual(calls, [input])
   assert.equal(entry(INVOKE_CHANNELS.SCHEDULE_CANCEL_CREATION).schema.safeParse({ id: input.requestId }).success, false)
 })
+
+test('creation deletion only accepts a UUID and expected revision and routes to the creation service', async () => {
+  const route = entry(INVOKE_CHANNELS.SCHEDULE_DELETE_CREATION)
+  const input = { id: '11111111-1111-4111-8111-111111111111', expectedRevision: 2 }
+  for (const invalid of [{ id: input.id }, { ...input, id: 'task' }, { ...input, expectedRevision: 0 }, { ...input, ownerId: 'other' }]) {
+    assert.equal(route.schema.safeParse(invalid).success, false)
+  }
+  const calls: unknown[] = []
+  const context = { scheduledCreations: { async deleteRecord(...args: unknown[]) { calls.push(args) } } } as unknown as RequestContext
+  await route.handle(context, route.schema.parse(input) as never)
+  assert.deepEqual(calls, [[input.id, 2]])
+})

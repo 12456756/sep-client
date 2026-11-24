@@ -92,6 +92,7 @@ export function formatScheduleReceiptTime(timestamp: number, timezone: string): 
 export const scheduledCreationSchema = z.object({
   id: z.string().uuid(), revision: z.number().int().positive(),
   fromConversation: z.literal(true).optional(),
+  deleted: z.literal(true).optional(),
   stage: z.enum(['parsing', 'needs_input', 'blocked', 'planning', 'enabling', 'completed', 'failed', 'cancelled']),
   request: z.object(creationRequestFields).strict(), submissionKey: submissionKeySchema,
   parsedSubmissionKey: submissionKeySchema.nullable(), definitionSubmissionKey: submissionKeySchema.nullable(),
@@ -101,6 +102,10 @@ export const scheduledCreationSchema = z.object({
   createdAt: timestampSchema, updatedAt: timestampSchema,
 }).strict()
 export type ScheduledCreation = z.infer<typeof scheduledCreationSchema>
+
+export function isScheduledCreationWorking(stage: ScheduledCreation['stage']): boolean {
+  return stage === 'parsing' || stage === 'planning' || stage === 'enabling'
+}
 
 export interface ScheduledCreationInterpreterInput {
   fromConversation?: true

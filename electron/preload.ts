@@ -158,6 +158,7 @@ const electronAPI = {
   },
   submitScheduledCreation: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_SUBMIT_CREATION, input),
   cancelScheduledCreation: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_CANCEL_CREATION, input),
+  deleteScheduledCreation: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_DELETE_CREATION, input),
   listScheduledTasks: () => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_LIST),
   getScheduledWorkSource: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_WORK_SOURCE, taskId),
   createScheduledTaskFromWork: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_CREATE_FROM_WORK, input),

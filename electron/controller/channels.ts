@@ -27,6 +27,7 @@ export const INVOKE_CHANNELS = {
   SCHEDULE_EDIT_FROM_WORK: 'schedule:edit-from-work',
   SCHEDULE_SUBMIT_CREATION: 'schedule:submit-creation',
   SCHEDULE_CANCEL_CREATION: 'schedule:cancel-creation',
+  SCHEDULE_DELETE_CREATION: 'schedule:delete-creation',
   SCHEDULE_INTERPRET_TIME: 'schedule:interpret-time',
   SCHEDULE_CREATE: 'schedule:create',
   SCHEDULE_EDIT: 'schedule:edit',

@@ -58,6 +58,7 @@ export function useScheduledTasks(api: ElectronAPI = window.electronAPI, scopeKe
     ...state,
     submitCreation: (request: ScheduledCreationRequest) => client?.submitCreation(request, value => api.submitScheduledCreation(value)),
     cancelCreation: (creation: ScheduledCreation) => client?.cancelCreation(creation, () => api.cancelScheduledCreation({ id: creation.id, expectedRevision: creation.revision })),
+    deleteCreation: (creation: ScheduledCreation) => client?.deleteCreation(creation, () => api.deleteScheduledCreation({ id: creation.id, expectedRevision: creation.revision })),
     interpretTime: async (input: ScheduleTimeRequest) => {
       const result = await api.interpretScheduleTime(input)
       if (!result.success) throw new Error(result.error?.message || '时间解析失败，请稍后重试。')

@@ -38,7 +38,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
   const [continuationId, setContinuationId] = useState<string | null>(null)
   const [container] = useState(() => typeof document === 'undefined' ? undefined : document.querySelector<HTMLElement>('.ent-shell') ?? undefined)
   const data = model.data
-  const continuation = data?.creations?.find(item => item.id === continuationId)
+  const continuation = data?.creations?.find(item => item.id === continuationId && !item.deleted)
   const models = authorizedScheduledModels(workspace.myEmployees)
   const { defaultModelId } = useModelPreference()
   const settings = { ...draft.settings, modelId: continuation
@@ -107,7 +107,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     })
   }, [])
   useEffect(() => () => { if (resizeScrollFrame.current !== null) cancelAnimationFrame(resizeScrollFrame.current) }, [])
-  const creationDefinitions = new Set(data?.creations?.filter(item => item.stage !== 'cancelled').map(item => item.definitionId))
+  const creationDefinitions = new Set(data?.creations?.filter(item => !item.deleted && item.stage !== 'cancelled').map(item => item.definitionId))
   const pendingDefinitions = groups.pending.filter(item => !creationDefinitions.has(item.id))
   const matches = (item: ScheduledDefinition) => `${item.input.name} ${item.input.goal}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
   const list = (items: ScheduledDefinition[], label: string, inHistory = false) => items.length ? <section className="ent-sch-nav-group" aria-label={label}>
@@ -116,7 +116,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
       <span className="ent-sch-nav-task-recurrence">{recurrenceLabel(item)}</span>
     </button>)}
   </section> : null
-  const hasCreations = Boolean(data?.creations?.length || pending.length)
+  const hasCreations = Boolean(data?.creations?.some(item => !item.deleted) || pending.length)
   const creationsView = workspace.route.name === 'scheduled' && workspace.route.view === 'creations'
   const missingTask = workspace.route.name === 'scheduled' && workspace.route.taskId && !selectedDefinition
   const home = !creationsView && !selectedDefinition && !missingTask
@@ -132,7 +132,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
         <details className="ent-sch-nav-fold" open><summary>已暂停<ChevronDown size={14} /><small>{groups.paused.length || ''}</small></summary>{list(groups.paused, '已暂停的定时任务')}</details>
         {groups.history.length ? <details className="ent-sch-nav-fold"><summary>历史记录<ChevronDown size={14} /><small>{groups.history.length}</small></summary>{list(groups.history, '定时任务历史', true)}</details> : null}
         {search.trim() && ![...groups.active, ...groups.paused, ...pendingDefinitions, ...groups.history].some(matches) ? <p className="ent-sch-search-empty">没有匹配的任务</p> : null}
-        {hasCreations ? <button type="button" className="ent-sch-nav-new" aria-current={creationsView ? 'page' : undefined} onClick={() => workspace.replaceRoute({ name: 'scheduled', view: 'creations' })}>创建进度</button> : null}
+        {hasCreations || creationsView ? <button type="button" className="ent-sch-nav-new" aria-current={creationsView ? 'page' : undefined} onClick={() => workspace.replaceRoute({ name: 'scheduled', view: 'creations' })}>创建进度</button> : null}
       </div>
     </aside>
     <section ref={mainPane} className={`ent-sch-main-pane${home ? ' ent-sch-compose-pane' : ''}`} aria-label="定时任务内容">

@@ -224,3 +224,28 @@ test('an accepted failed creation clears transient retry state and remains durab
   assert.equal(retained.size, 0)
   assert.equal(client.getSnapshot().data?.creations?.[0].stage, 'failed')
 })
+
+test('deleted progress wins over stale polls and lost submission responses, including after remount', async () => {
+  const original = creation(2, 'failed')
+  const deleted = { ...original, revision: 3, deleted: true as const }
+  let incoming = original
+  const read = async () => ({ success: true, data: { ...snapshot, creations: [incoming] } })
+  const pending = new Map()
+  const client = new ScheduledTaskClient(read, pending)
+  await client.refresh()
+  let reject!: (error: Error) => void
+  const submitting = client.submitCreation(request, () => new Promise((_resolve, fail) => { reject = fail }))
+  assert.equal(await client.deleteCreation(original, async () => ({ success: true, data: original })), null)
+  assert.deepEqual(client.getSnapshot().data?.creations, [original])
+  await client.deleteCreation(original, async () => ({ success: true, data: deleted }))
+  reject(Error('late reply'))
+  await submitting
+  await client.refresh()
+  assert.deepEqual(client.getSnapshot().data?.creations, [deleted])
+  assert.equal(client.getSnapshot().pendingCreations.length, 0)
+  incoming = deleted
+  const reopened = new ScheduledTaskClient(read, pending)
+  await reopened.refresh()
+  assert.deepEqual(reopened.getSnapshot().data?.creations, [deleted])
+  assert.equal(reopened.getSnapshot().pendingCreations.length, 0)
+})

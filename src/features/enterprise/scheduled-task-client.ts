@@ -43,7 +43,7 @@ function mergeRevisions<T extends { id: string; revision: number }>(current: T[]
 }
 
 export function creationAccepted(creation: ScheduledCreation, request: ScheduledCreationRequest): boolean {
-  return creation.id === request.requestId && (creation.stage === 'cancelled' || (
+  return creation.id === request.requestId && (creation.deleted || creation.stage === 'cancelled' || (
     creation.revision > (request.expectedRevision ?? 0) && creation.messages.at(-1)?.content === request.message &&
     creation.request.modelId === request.modelId && creation.request.workDir === request.workDir && creation.request.timezone === request.timezone &&
     creation.request.permissions.preset === request.permissions.preset && creation.request.permissions.approvalMode === request.permissions.approvalMode &&
@@ -146,6 +146,20 @@ export class ScheduledTaskClient {
       this.update({ error: this.operationError })
       return null
     } finally { this.update({ cancellingCreations: this.state.cancellingCreations.filter(id => id !== creation.id) }) }
+  }
+  async deleteCreation(creation: ScheduledCreation, operation: () => Promise<CreationResult>): Promise<CreationResult | null> {
+    if (this.disposed) return null
+    try {
+      const result = await operation()
+      if (this.disposed) return null
+      if (!result.success) return result
+      const data = scheduledCreationSchema.parse(result.data)
+      if (data.id !== creation.id || !data.deleted || data.revision <= creation.revision) throw new Error('Invalid creation deletion response')
+      this.acceptCreation(data)
+      return { ...result, data }
+    } catch {
+      return null
+    }
   }
   async command<T extends IpcCommandResult>(operation: () => Promise<T>): Promise<T | null> {
     if (this.state.busy || this.disposed) return null

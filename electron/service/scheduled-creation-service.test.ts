@@ -84,6 +84,40 @@ test('homepage creation plans and enables without confirmation, then repeated re
   } finally { h.stop() }
 })
 
+test('deleting completed creation progress preserves scheduling and prevents replay from enabling again', async () => {
+  const h = harness()
+  try {
+    const created = await h.creation.submit(request)
+    const before = await h.schedules.list()
+    await assert.rejects(h.creation.deleteRecord(created.id, created.revision - 1), { code: 'DRAFT_REVISION_CONFLICT' })
+    const deleted = await h.creation.deleteRecord(created.id, created.revision)
+    assert.equal(deleted.deleted, true)
+    assert.equal(deleted.revision, created.revision + 1)
+    assert.deepEqual(await h.creation.deleteRecord(created.id, created.revision), deleted)
+    const after = await h.schedules.list()
+    assert.deepEqual(after.definitions, before.definitions)
+    assert.deepEqual(after.occurrences, before.occurrences)
+    assert.deepEqual(after.creations, [deleted])
+    assert.deepEqual(await h.make().submit(request), deleted)
+    assert.equal(h.interpretations, 1)
+    assert.equal(h.plans, 1)
+  } finally { h.stop() }
+})
+
+test('deleting failed progress cannot be undone by replaying or revising the old request', async () => {
+  const h = harness()
+  try {
+    h.setInterpret(async () => { throw Error('interpretation failed') })
+    const failed = await h.creation.submit(request)
+    assert.equal(failed.stage, 'failed')
+    const deleted = await h.creation.deleteRecord(failed.id, failed.revision)
+    assert.deepEqual(await h.make().submit(request), deleted)
+    await assert.rejects(h.creation.submit({ ...request, message: 'A new instruction', expectedRevision: deleted.revision }), { code: 'INVALID_STATE' })
+    assert.equal(h.interpretations, 1)
+    assert.deepEqual(h.data.definitions, [])
+  } finally { h.stop() }
+})
+
 test('a conversation schedule is not saved or enabled before approval, and a replay returns the same receipt', async () => {
   const h = harness()
   let approvals = 0
@@ -266,7 +300,7 @@ test('planning failure resumes from saved parsing and does not add another defin
   } finally { h.stop() }
 })
 
-test('cancel while parsing prevents a late model response from creating or enabling work', async () => {
+test('an active creation must be cancelled before its progress can be deleted', async () => {
   const h = harness()
   let finish!: (value: ScheduleInterpretation) => void
   h.setInterpret(() => new Promise(resolve => { finish = resolve }))
@@ -274,11 +308,13 @@ test('cancel while parsing prevents a late model response from creating or enabl
     const pending = h.creation.submit(request)
     for (let i = 0; !finish && i < 30; i++) await new Promise(resolve => setImmediate(resolve))
     const current = h.data.creations![0]
-    await h.creation.cancel(current.id, current.revision)
+    await assert.rejects(h.creation.deleteRecord(current.id, current.revision), { code: 'INVALID_STATE' })
+    const cancelled = await h.creation.cancel(current.id, current.revision)
+    const deleted = await h.creation.deleteRecord(cancelled.id, cancelled.revision)
     finish(interpretation)
     assert.equal((await pending).stage, 'cancelled')
     assert.equal(h.data.definitions.length, 0)
-    assert.equal(h.data.creations![0].stage, 'cancelled')
+    assert.deepEqual(h.data.creations, [deleted])
   } finally { h.stop() }
 })
 

@@ -328,6 +328,7 @@ export interface ElectronAPI {
   editScheduledTaskFromWork: (value: import('./scheduled-tasks').EditWorkSchedule) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
   submitScheduledCreation: (value: import('./scheduled-creation').ScheduledCreationRequest) => Promise<IpcCommandResult & { data?: import('./scheduled-creation').ScheduledCreation }>
   cancelScheduledCreation: (value: { id: string; expectedRevision: number }) => Promise<IpcCommandResult & { data?: import('./scheduled-creation').ScheduledCreation }>
+  deleteScheduledCreation: (value: { id: string; expectedRevision: number }) => Promise<IpcCommandResult & { data?: import('./scheduled-creation').ScheduledCreation }>
   listScheduledTasks: () => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledSnapshot }>
   interpretScheduleTime: (value: import('./scheduled-tasks').ScheduleTimeRequest) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduleTimeResult }>
   createScheduledTask: (value: { requestId: string; input: import('./scheduled-tasks').ScheduleInput }) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
