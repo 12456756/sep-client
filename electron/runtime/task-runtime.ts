@@ -221,7 +221,7 @@ export class TaskRuntime {
           data: {
             requestId: request.requestId,
             toolName: request.toolName,
-            input: request.input,
+            input: request.toolName === 'file_edit_once' || request.toolName === 'file_select_original' ? undefined : request.input,
           },
         })
         options.onApprovalRequest(request)
@@ -869,6 +869,10 @@ export class TaskRuntime {
 
   respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {
     return this.approvals.respond(response)
+  }
+
+  pendingApproval(requestId: string): ToolAuthorizationRequest | undefined {
+    return this.approvals.getPending(requestId)
   }
 
   readonly requestMediaApproval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>): Promise<boolean> => {

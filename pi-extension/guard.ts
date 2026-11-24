@@ -3,8 +3,8 @@
  *
  * The side-effecting tool list has one shared definition in electron/common/constants.ts.
  */
-import { realpathSync, statSync } from 'node:fs'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { lstatSync, realpathSync, statSync } from 'node:fs'
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { hasSideEffects, SIDE_EFFECT_TOOLS } from '../electron/common/constants'
 
 export const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
@@ -25,6 +25,10 @@ export interface ToolPolicy {
   commandPolicy: 'disabled' | 'restricted' | 'confirm-each'
   approvalMode: 'confirm-each' | 'auto-approve'
   workspaceDir: string
+  fileAccess?: 'workspace' | 'local'
+  unattended?: boolean
+  applicationDataRoot?: string
+  originalFiles?: ReadonlyMap<string, { path: string; identity: string }>
   /** Canonical paths fixed by the host from this run's approved skill snapshot. */
   approvedSkillPaths?: readonly ApprovedSkillReadPath[]
   /** Exact host-verified delivery snapshot files; never a directory-wide write grant. */
@@ -44,7 +48,7 @@ export interface ToolDecision {
 export function isUnrestrictedToolPolicy(
   policy: Pick<ToolPolicy, 'preset' | 'approvalMode'> | undefined,
 ): boolean {
-  return policy?.preset === 'full-local' && policy.approvalMode === 'auto-approve'
+  return policy?.preset === 'full-local' && policy.approvalMode === 'auto-approve' && !('fileAccess' in policy && policy.fileAccess)
 }
 
 export function isReadOnlyTool(toolName: string): boolean {
@@ -80,6 +84,18 @@ export function evaluateToolCall(
   if (!isKnownTool(toolName)) return { allowed: false, requiresApproval: false, reason: 'unknown-tool' }
   if (!policy.allowedTools.includes(toolName)) return { allowed: false, requiresApproval: false, reason: 'tool-not-allowed' }
 
+  if (policy.fileAccess) {
+    if (toolName === 'bash') return { allowed: false, requiresApproval: false, reason: 'command-disabled' }
+    const path = readString(input, ['path', 'filePath', 'file_path', 'filename', 'target'])
+      ?? (toolName === 'ls' || toolName === 'grep' || toolName === 'find' ? policy.workspaceDir : null)
+    const writing = toolName === 'write' || toolName === 'edit'
+    if (path && (writing ? policy.preset !== 'read-only' && (boundOriginal(path, policy) || managedFilePath(path, policy, true) || externalEditCandidate(path, policy)) :
+      managedFilePath(path, policy) || toolName === 'read' && (isManagedReadException(path, policy) || externalFileCandidate(path, policy)))) {
+      return { allowed: true, requiresApproval: false }
+    }
+    return { allowed: false, requiresApproval: false, reason: 'path-not-allowed' }
+  }
+
   if (toolName === 'bash') {
     if (policy.commandPolicy === 'disabled') return { allowed: false, requiresApproval: false, reason: 'command-disabled' }
     const command = readString(input, ['command', 'cmd'])
@@ -104,6 +120,69 @@ export function evaluateToolCall(
     allowed: true,
     requiresApproval: hasSideEffects(toolName) && policy.approvalMode !== 'auto-approve',
   }
+}
+
+/** Resolves native paths without guessing another spelling for an existing file. */
+function normalizedManagedPath(candidate: string, policy: ToolPolicy): string | null {
+  if (!candidate || candidate !== candidate.trim() || [...candidate].some(char => char.charCodeAt(0) < 32)) return null
+  if (process.platform === 'win32' && (/^(?:[\\/]{1,2}|[A-Za-z]:(?![\\/]))/.test(candidate) || /:/.test(candidate.replace(/^[A-Za-z]:/, '')))) return null
+  const target = resolve(policy.workspaceDir, candidate)
+  const parts = target.slice(parse(target).root.length).split(sep)
+  if (parts.some(part => /^(?:\.git|\.ssh|\.aws|\.azure|\.gnupg|\.codex|\.agents|\.pi-runs|\.pi-sessions|\.npmrc|\.netrc|\.env(?:\..*)?)$/i.test(part) ||
+    process.platform === 'win32' && (/[. ]$/.test(part) || /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(part)))) return null
+  if (policy.deniedPaths.some(path => containsNativePath(resolve(policy.workspaceDir, path), target))) return null
+  if (policy.allowedPaths.length && !policy.allowedPaths.some(path => containsNativePath(resolve(policy.workspaceDir, path), target))) return null
+  if (policy.applicationDataRoot && containsNativePath(policy.applicationDataRoot, target)) {
+    const workspaces = join(policy.applicationDataRoot, 'task-workspaces', 'v1')
+    const workspace = resolve(policy.workspaceDir)
+    if (workspace === workspaces || !containsNativePath(workspaces, workspace) || !containsNativePath(workspace, target)) return null
+  }
+  return target
+}
+
+export function externalEditCandidate(input: string, policy: ToolPolicy): string | null {
+  return policy.preset === 'read-only' ? null : externalFileCandidate(input, policy)
+}
+
+export function boundOriginal(input: string, policy: ToolPolicy) {
+  const original = !policy.unattended && policy.preset !== 'read-only' ? policy.originalFiles?.get(input) : undefined
+  if (!original || !managedFilePath(original.path, { ...policy, fileAccess: 'local' }, true)) return undefined
+  return original
+}
+
+export function externalFileCandidate(input: string, policy: ToolPolicy): string | null {
+  if (policy.fileAccess !== 'workspace' || policy.unattended || !isAbsolute(input)) return null
+  const target = normalizedManagedPath(input, policy)
+  return target && !containsNativePath(resolve(policy.workspaceDir), target) ? target : null
+}
+
+export function isManagedReadException(path: string, policy: ToolPolicy): boolean {
+  return isApprovedSkillRead(path, policy) || isApprovedDeliveryRead(path, policy) || isApprovedAttachmentRead(path, policy)
+}
+
+export function managedFilePath(candidate: string, policy: ToolPolicy, writing = false): string | null {
+  const target = normalizedManagedPath(candidate, policy)
+  if (!target) return null
+  try {
+    if (policy.fileAccess !== 'local') {
+      const root = realpathSync(policy.workspaceDir)
+      if (!containsNativePath(resolve(policy.workspaceDir), target) || !containsNativePath(root, target)) return null
+    }
+    let current = target
+    while (true) {
+      try {
+        const info = lstatSync(current)
+        if (info.isSymbolicLink() || realpathSync(current) !== current || (info.isFile() && info.nlink !== 1)) return null
+        if (current === target) return writing ? info.isFile() ? target : null : info.isFile() || info.isDirectory() ? target : null
+        return info.isDirectory() ? target : null
+      } catch (error) {
+        if (!writing || (error as NodeJS.ErrnoException).code !== 'ENOENT') return null
+        const parent = dirname(current)
+        if (parent === current) return null
+        current = parent
+      }
+    }
+  } catch { return null }
 }
 
 function readString(input: unknown, keys: readonly string[]): string | null {

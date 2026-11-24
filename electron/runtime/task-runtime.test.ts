@@ -623,14 +623,14 @@ describe('conversation task lifecycle', () => {
       assert.deepEqual(context.employeeProfile, employeeProfile)
       assert.equal(context.modelId, 'selected')
       assert.equal(context.toolPolicy?.preset, 'workspace-edit')
-      assert.equal(context.toolPolicy?.approvalMode, 'auto-approve')
+      assert.equal(context.toolPolicy?.approvalMode, 'confirm-each')
       assert.ok(context.toolPolicy?.allowedTools.includes('write'))
       assert.ok(!context.toolPolicy?.allowedTools.includes('bash'))
     }
   })
 
   for (const preset of ['full-local', 'workspace-edit', 'read-only'] as const) {
-    it(`registers local media for a saved general conversation only with unrestricted permissions (${preset})`, async () => {
+    it(`keeps local media separately approved for a writable conversation (${preset})`, async () => {
       const userData = await makeUserDataDir()
       const manager = new TaskManager(userData)
       await manager.initialize()
@@ -684,10 +684,10 @@ describe('conversation task lifecycle', () => {
       await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
       assert.equal((await manager.getTask(task.id))?.status, TaskStatus.COMPLETED)
       assert.equal(contexts.length, 1)
-      assert.equal(contexts[0].toolPolicy?.preset, preset)
-      assert.equal(!!contexts[0].localMedia, preset === 'full-local')
+      assert.equal(contexts[0].toolPolicy?.preset, preset === 'read-only' ? 'read-only' : 'workspace-edit')
+      assert.equal(!!contexts[0].localMedia, preset !== 'read-only')
       assert.deepEqual(requests.map(request => [request.taskId, request.runId, request.toolName]),
-        preset === 'full-local' ? [[task.id, contexts[0].runId, LOCAL_MEDIA_TOOL]] : [])
+        preset !== 'read-only' ? [[task.id, contexts[0].runId, LOCAL_MEDIA_TOOL]] : [])
     })
   }
 
@@ -808,6 +808,7 @@ const PUBLIC_SIGNATURES = [
   'releaseTaskResources(taskId: string, scope:',
   'async stopArrangement(taskId: string, reason?: string): Promise<void> {',
   'respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {',
+  'pendingApproval(requestId: string): ToolAuthorizationRequest | undefined {',
 ]
 
 describe('TaskRuntime public surface', () => {
@@ -827,7 +828,7 @@ describe('TaskRuntime public surface', () => {
       declared.sort(),
       [
         'cancelTask', 'confirmArrangementNodes', 'continueConversation', 'executeTask', 'getContextUsage', 'hasConversationRun', 'interruptConversation', 'pauseTask',
-        'releaseTaskResources', 'respondToApproval', 'retryTask', 'stopAll', 'stopArrangement', 'switchConversationEmployee',
+        'pendingApproval', 'releaseTaskResources', 'respondToApproval', 'retryTask', 'stopAll', 'stopArrangement', 'switchConversationEmployee',
       ],
       'public method set changed: runtime must expose only the documented methods',
     )

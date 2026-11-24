@@ -9,11 +9,12 @@
  * 路由用受控状态而不是 URL，因为桌面端不需要地址栏，返回行为由 hook 维护的历史栈决定。
  */
 
-import { Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, ShieldCheck, Sun } from 'lucide-react';
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
 import { ModelPreferenceProvider, useModelPreference } from '../components/workspace/model-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
+import { InlineFileApprovals } from '../components/enterprise/InlineFileApproval';
 import { ConversationSessionsContext, createConversationSessions } from '../features/enterprise/conversation-sessions';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
@@ -92,6 +93,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
   }, [workspace.works, conversationSessions]);
   const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;
+  const pendingFileApproval = useContext(InlineFileApprovals)?.requests[0];
   const contentRoute = workspace.employeeBackgroundRoute;
   const contentWorkspace = route.name === 'employee' ? { ...workspace, route: contentRoute } : workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -161,6 +163,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
       }}
       actions={(
         <div className="ent-top-actions-group">
+          {pendingFileApproval && <button type="button" className="ent-btn ghost sm" title="查看待审批的文件操作" aria-label="查看待审批的文件操作" onClick={() => openWorkspacePage({ name: 'work', workId: pendingFileApproval.taskId })}><ShieldCheck size={16} aria-hidden />待审批</button>}
           <div className="ent-view-switch" role="group" aria-label="页面切换">
             <button type="button" className={contentRoute.name === 'organization' ? undefined : 'active'} onClick={() => openWorkspacePage({ name: 'home' })} aria-pressed={contentRoute.name !== 'organization'} title="切换到个人工作台"><LayoutGrid size={14} aria-hidden />个人</button>
             <button type="button" className={contentRoute.name === 'organization' ? 'active' : undefined} onClick={() => openWorkspacePage({ name: 'organization' })} aria-pressed={contentRoute.name === 'organization'} title="切换到企业组织"><Network size={14} aria-hidden />企业</button>

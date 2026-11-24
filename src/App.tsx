@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoginPage } from './pages/LoginPage';
 import { ClientAppPage } from './pages/ClientAppPage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
+import { InlineFileApprovals, isInlineFileApproval } from './components/enterprise/InlineFileApproval';
 import type { RememberedAccount, ToolAuthorizationRequest } from './shared/types';
 import { useWorkspaceEmployees } from './features/enterprise/use-workspace-employees';
 import { FeedbackProvider, useFeedback } from './components/feedback/FeedbackProvider';
@@ -69,6 +70,11 @@ function AppContent() {
     if (!currentAuth.current || request.timestamp < sessionStartedAt.current) return;
     setToolApprovalRequests(current => current.some(item => item.requestId === request.requestId) ? current : [...current, request]);
   }), []);
+  useEffect(() => window.electronAPI.onPiEvent(event => {
+    if (event.type !== 'approval_resolved' || !currentAuth.current || event.occurredAt < sessionStartedAt.current) return;
+    setToolApprovalRequests(current => current.filter(item =>
+      !isInlineFileApproval(item.toolName) || !(event.data && typeof event.data === 'object' && 'requestId' in event.data && event.data.requestId === item.requestId && event.runId === item.runId && event.taskId === item.taskId)));
+  }), []);
   const resolveApproval = useCallback((requestId: string, approved: boolean) => {
     window.electronAPI.sendToolApprovalResponse({ requestId, approved, ...(approved ? {} : { reason: 'User denied or request expired' }) });
     setToolApprovalRequests(current => current.filter(item => item.requestId !== requestId));
@@ -120,13 +126,15 @@ function AppContent() {
 
   return <>
     <div className="electron-window-chrome electron-drag-region" aria-hidden="true" />
-    <div hidden={skillImport.state.visible}>{renderRoute()}</div>
+    <InlineFileApprovals.Provider value={{ requests: toolApprovalRequests.filter(request => isInlineFileApproval(request.toolName)), resolve: resolveApproval }}>
+      <div hidden={skillImport.state.visible}>{renderRoute()}</div>
+    </InlineFileApprovals.Provider>
     {skillImport.state.visible && <SkillImportPage state={skillImport.state} busy={skillImport.loading} error={skillImport.error}
       onClose={() => { void skillImport.setSkillImportVisible(false); }}
       onConfirm={input => { void skillImport.confirmConsent(input); }} onSelectRoot={() => { void skillImport.selectRoot(); }}
       onRemoveRoot={id => { void skillImport.removeRoot(id); }} onCancel={() => { void skillImport.cancel(); }}
       onRevoke={(id, instanceId) => { void skillImport.revoke(id, instanceId); }} onCheckForUpdate={() => { void update.check(); }} />}
-    {toolApprovalRequests.map(request => <Approval key={request.requestId} request={request} onResolve={resolveApproval} />)}
+    {toolApprovalRequests.filter(request => !isInlineFileApproval(request.toolName)).map(request => <Approval key={request.requestId} request={request} onResolve={resolveApproval} />)}
   </>;
 }
 

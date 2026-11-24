@@ -12,6 +12,7 @@ export class SharedPiSession {
   private sessionFile: string | null = null
   private vision: boolean | null = null
   private modelId: string | undefined
+  private managedFileTools = false
   private connectorRevision: string | undefined
   private localMediaBinding?: { host: NonNullable<PiAgentSessionConfig['localMedia']> }
   private scheduleBinding?: { submit: NonNullable<PiAgentSessionConfig['conversationSchedule']> }
@@ -39,7 +40,8 @@ export class SharedPiSession {
       if (this.disposed) throw new Error('Shared Pi session adapter has been disposed.')
       this.browserOwner.resume()
       if (this.session && this.browserPolicyKey !== this.browserPolicy(config)) await this.disposeCurrent()
-      if (this.session && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision && !!this.localMediaBinding === !!config.localMedia && !!this.scheduleBinding === !!config.conversationSchedule && this.browserArtifactTaskId === config.browserArtifactTaskId && this.browserTaskStateDir === config.browserTaskStateDir) {
+      // Tools close over the current run's file grants and created-file identities.
+      if (this.session && !this.managedFileTools && !config.toolPolicy?.fileAccess && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision && !!this.localMediaBinding === !!config.localMedia && !!this.scheduleBinding === !!config.conversationSchedule && this.browserArtifactTaskId === config.browserArtifactTaskId && this.browserTaskStateDir === config.browserTaskStateDir) {
         if (this.localMediaBinding && config.localMedia) this.localMediaBinding.host = config.localMedia
         if (this.scheduleBinding && config.conversationSchedule) this.scheduleBinding.submit = config.conversationSchedule
         if (this.approvalBinding) this.approvalBinding.authorize = config.authorizeTool
@@ -112,6 +114,7 @@ export class SharedPiSession {
 
   private bindTurn(config: PiAgentSessionConfig): PiAgentSessionConfig {
     this.browserPolicyKey = this.browserPolicy(config)
+    this.managedFileTools = Boolean(config.toolPolicy?.fileAccess)
     this.browserArtifactTaskId = config.browserArtifactTaskId
     this.browserTaskStateDir = config.browserTaskStateDir
     const binding = { authorize: config.authorizeTool }

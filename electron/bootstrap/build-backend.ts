@@ -102,6 +102,7 @@ import { ScheduledTaskStore } from '../data/scheduled-task-store'
 import { ScheduledTaskService } from '../service/scheduled-task-service'
 import { ScheduledCreationService } from '../service/scheduled-creation-service'
 import { ScheduledTaskRunner } from '../service/scheduled-task-runner'
+import { runtimeFileToolPolicy } from '../runtime/file-tool-policy'
 import { ScheduledWorkSource } from '../service/scheduled-work-source'
 import { validateArrangementNodes, type ArrangementDraft, type RequestedTaskPermissionPolicy } from '../domain/arrangement-plan'
 import type { ArrangementWorkPlan } from '../../src/shared/scheduled-tasks'
@@ -304,7 +305,7 @@ class BackendRuntime {
         const plan = await this.workPlans.get(scope, taskId)
         if (!plan) return undefined
         const task = await this.taskManager.getTask(taskId)
-        return { ...plan.permissions, approvalMode: plan.permissions.approvalMode ?? 'confirm-each', workspaceDir: task?.workDir ?? join(userDataDir, 'task-workspaces') }
+        return runtimeFileToolPolicy(plan.permissions, task?.workDir ?? join(userDataDir, 'task-workspaces'), { unattended: !!plan.scheduledOrigin })
       },
     })
 
@@ -357,7 +358,7 @@ class BackendRuntime {
           const plan = await this.workPlans.get(scope, taskId)
           if (!plan) return undefined
           const task = await this.taskManager.getTask(taskId)
-          return { ...plan.permissions, approvalMode: plan.permissions.approvalMode ?? 'confirm-each', workspaceDir: task?.workDir ?? join(userDataDir, 'task-workspaces') }
+          return runtimeFileToolPolicy(plan.permissions, task?.workDir ?? join(userDataDir, 'task-workspaces'), { unattended: !!plan.scheduledOrigin })
         },
       }
       this.video = new MockVideoHostService(videoOptions)

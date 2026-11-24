@@ -53,21 +53,29 @@ export class AttachmentService {
     const scope = this.currentScope()
     return Promise.all(paths.map(path => this.importFile(scope, sessionId, operationId, path, source)))
   }
-  async importDroppedFiles(sessionId: string, operationId: string, composerId: string, paths: readonly string[]): Promise<void> {
+  importSelectedFiles(sessionId: string, operationId: string, paths: readonly string[]): Promise<void> {
+    return this.importOriginalFiles(sessionId, operationId, paths)
+  }
+  importDroppedFiles(sessionId: string, operationId: string, composerId: string, paths: readonly string[]): Promise<void> {
+    return this.importOriginalFiles(sessionId, operationId, paths, composerId)
+  }
+  private async importOriginalFiles(sessionId: string, operationId: string, paths: readonly string[], dropComposerId?: string): Promise<void> {
     const scope = this.currentScope()
     const epoch = this.epoch
     const assertOwner = () => {
       if (epoch !== this.epoch || !this.sameOwner(scope, this.currentScope())) throw new AppError('AUTH_REQUIRED')
     }
-    const session = await this.require(scope, sessionId)
-    assertOwner()
-    if (session.target.kind !== 'compose' || session.target.composerId !== composerId || session.status !== 'open' || session.expiresAt <= Date.now()) {
-      throw new AppError('INVALID_STATE')
+    if (dropComposerId !== undefined) {
+      const session = await this.require(scope, sessionId)
+      assertOwner()
+      if (session.target.kind !== 'compose' || session.target.composerId !== dropComposerId || session.status !== 'open' || session.expiresAt <= Date.now()) {
+        throw new AppError('INVALID_STATE')
+      }
     }
     for (const path of paths) {
       const original = await selectedAttachmentOriginal(path)
       assertOwner()
-      const { item } = await this.importFile(scope, sessionId, operationId, path, 'paste-file')
+      const { item } = await this.importFile(scope, sessionId, operationId, path, dropComposerId === undefined ? 'picker' : 'paste-file')
       const after = original && await selectedAttachmentOriginal(path)
       assertOwner()
       if (original && after?.path === original.path && after.identity === original.identity) {

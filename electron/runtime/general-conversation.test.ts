@@ -50,7 +50,8 @@ for (const kind of ['general', 'employee'] as const) {
         createWorker: options => ({
           async run(prompt) {
             promptSeen = prompt
-            const { taskId, browserArtifactTaskId, browserTaskStateDir } = options.context
+            const { taskId, toolPolicy, browserArtifactTaskId, browserTaskStateDir } = options.context
+            assert.equal(toolPolicy?.fileAccess, 'workspace')
             assert.equal(browserArtifactTaskId, directoryStatus === 'ready' ? taskId : undefined)
             assert.equal(browserTaskStateDir, directoryStatus === 'ready' ? runs.getTaskDir(scope, taskId) : undefined)
             assert.match(prompt, /通过文件工具创建的普通文件/)
@@ -81,7 +82,7 @@ for (const kind of ['general', 'employee'] as const) {
           title: task.title, goal: task.prompt, nodes: [], confirmedInputs: [],
           conversation: { ...(kind === 'general' ? { kind, modelId: 'model' } : {}),
             participants: [{ subscriptionId: 'subscription', modelId: 'model' }], activeSubscriptionId: 'subscription' },
-          workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'full-local', approvalMode: 'auto-approve' }),
+          workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'workspace-edit', approvalMode: 'confirm-each' }),
           planHash: 'media', createdAt: Date.now(),
         })
         await runtime.executeTask(task.id, { conversation: true })

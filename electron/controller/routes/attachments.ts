@@ -34,7 +34,7 @@ export const attachmentRoutes = [
     const selected = await dialog.showOpenDialog(window, { title: input.single ? '引用文件' : '添加附件', properties: input.single ? ['openFile'] : ['openFile', 'multiSelections'] })
     if (selected.canceled) return { success: true, cancelled: true, data: session }
     if (selected.filePaths.length > (input.single ? 1 : attachmentImportLimits.maxImportFiles)) throw new AppError('INVALID_ARGUMENT', { message: input.single ? '请选择一个文件。' : '每次最多导入 10 个附件。' })
-    await ctx.attachments.importFiles(input.sessionId, randomUUID(), selected.filePaths, 'picker')
+    await ctx.attachments.importSelectedFiles(input.sessionId, randomUUID(), selected.filePaths)
     return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
   }, trusted),
   route(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, operationInput.extend({ paths: localPaths }).strict(), async (ctx, input) => {

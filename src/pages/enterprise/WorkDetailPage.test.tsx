@@ -61,6 +61,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/IconHint': { IconHint: ({ children, label }: { children: React.ReactNode; label: string }) => React.createElement('span', { 'data-hint': label }, children) },
   '../../components/enterprise/WorkIndicators': { WorkStatusIcon: () => null, WorkTypeTag: () => null },
   '../../components/enterprise/WorkSkills': { WorkSkills: () => null },
+  '../../components/enterprise/InlineFileApproval': { InlineFileApproval: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
   '../../shared/media-retry': mediaRetry,
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },

@@ -77,6 +77,7 @@ export function route<TSchema extends z.ZodType>(
 
 /** renderer -> main 的单向通道。没有返回值，因此也没有信封。 */
 export interface Listener {
+  readonly trustedMainFrame?: boolean
   readonly channel: SendChannel
   readonly schema: z.ZodType
   readonly handle: (ctx: RequestContext, input: never) => void
@@ -86,8 +87,14 @@ export function listener<TSchema extends z.ZodType>(
   channel: SendChannel,
   schema: TSchema,
   handle: (ctx: RequestContext, input: z.output<TSchema>) => void,
+  options: Pick<RouteOptions, 'trustedMainFrame'> = {},
 ): Listener {
-  return { channel, schema, handle: handle as Listener['handle'] }
+  return { channel, schema, handle: handle as Listener['handle'], ...options }
+}
+
+function trustedMainFrame(ctx: RequestContext, event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
+  const window = ctx.window()
+  return !!window && !window.isDestroyed() && event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame
 }
 
 /**
@@ -128,11 +135,8 @@ export function registerRoutes(
     ipcMain.handle(entry.channel, async (event, raw: unknown) => {
       let validated: unknown
       try {
-        if (entry.trustedMainFrame) {
-          const window = ctx.window()
-          if (!window || window.isDestroyed() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) {
-            throw appError('INVALID_ARGUMENT', { message: '无法从此页面执行此操作。' })
-          }
+        if (entry.trustedMainFrame && !trustedMainFrame(ctx, event)) {
+          throw appError('INVALID_ARGUMENT', { message: '无法从此页面执行此操作。' })
         }
         const parsed = entry.schema.safeParse(raw)
         if (!parsed.success) {
@@ -159,7 +163,8 @@ export function registerRoutes(
   }
 
   for (const entry of tables.listeners) {
-    ipcMain.on(entry.channel, (_event, raw: unknown) => {
+    ipcMain.on(entry.channel, (event, raw: unknown) => {
+      if (entry.trustedMainFrame && !trustedMainFrame(ctx, event)) return
       const parsed = entry.schema.safeParse(raw)
       if (!parsed.success) {
         // 单向通道没有回程，校验失败只能记日志——静默丢弃过的正是 C5 那类问题。

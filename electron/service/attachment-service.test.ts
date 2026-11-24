@@ -7,12 +7,13 @@ import { AttachmentStore } from '../data/attachment-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { AttachmentService } from './attachment-service'
 import { AppError } from '../errors/app-error'
+import { runtimeFileToolPolicy, runtimeOriginalFiles } from '../runtime/file-tool-policy'
 
 const ownerA: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const ownerB: TaskOwnerScope = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
 
-test('a native drop binds the exact original without exposing its path in the attachment or altering the frozen snapshot', async t => {
+test('a native drop binds the exact original for authorized runs while sending only a frozen snapshot', async t => {
   const tmp = await mkdtemp(join(tmpdir(), 'csep-drop-original-'))
   t.after(() => rm(tmp, { recursive: true, force: true }))
   const root = await realpath(tmp)
@@ -40,6 +41,11 @@ test('a native drop binds the exact original without exposing its path in the at
   const [dropped, pasted] = attachments
   assert.equal(dropped?.originalFile?.path, source)
   assert.equal(pasted?.originalFile, undefined)
+  const policy = runtimeFileToolPolicy(undefined, root)
+  const alias = `@original/${dropped?.attachmentId}`
+  assert.deepEqual([...runtimeOriginalFiles(policy, attachments).bindings.keys()], [alias])
+  assert.equal(runtimeOriginalFiles({ ...policy, preset: 'read-only' }, attachments).bindings.size, 0)
+  assert.equal(runtimeOriginalFiles({ ...policy, unattended: true }, attachments).bindings.size, 0)
   await writeFile(source, 'updated outside the app')
   assert.equal(await readFile(dropped!.readPath!, 'utf8'), 'initial content')
   await service.stop()

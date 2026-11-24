@@ -72,6 +72,11 @@ export class ToolApprovals {
    * 渲染进程本来就一直带着 requestId（src/App.tsx 从 request.requestId 取），
    * 所以回退分支从来没有真实调用方，只是个隐患。
    */
+  getPending(requestId: string): ToolAuthorizationRequest | undefined {
+    const request = this.pending.get(requestId)?.request
+    return request && request.expiresAt! > Date.now() ? request : undefined
+  }
+
   respond(response: ToolApprovalResponse): boolean {
     if (!response.requestId) {
       log.warn('rejected approval response without requestId', {
@@ -80,7 +85,8 @@ export class ToolApprovals {
       })
       return false
     }
-    if (!this.pending.has(response.requestId)) {
+    const pending = this.pending.get(response.requestId)
+    if (!pending) {
       // 多半是超时自动拒绝之后用户才点的按钮。不能追认，只记一笔。
       log.warn('approval response for an unknown request', {
         pending: this.pending.size,
@@ -88,6 +94,7 @@ export class ToolApprovals {
       })
       return false
     }
+    if (Date.now() >= pending.request.expiresAt!) return this.resolve(response.requestId, false, 'timeout')
     return this.resolve(response.requestId, response.approved, response.reason ?? 'user_response')
   }
 

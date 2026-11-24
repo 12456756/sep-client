@@ -23,6 +23,7 @@ const approvalResponse = z.object({
   approved: z.boolean(),
   reason: z.string().optional(),
 })
+const selectingOriginal = new Set<string>()
 
 const windowTheme = z.enum(['light', 'dark'])
 const directorySelection = z.string().trim().max(32768).refine(path => !path || isAbsolute(path)).optional()
@@ -120,10 +121,33 @@ export const systemRoutes = [
 ]
 
 export const systemListeners = [
-  listener(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, approvalResponse, (ctx, input) => {
+  listener(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, approvalResponse, async (ctx, input) => {
     // 运行时没加载过就没有待批的调用，直接丢掉；不能因为一条响应而触发加载。
-    ctx.backend.peekTaskRuntime()?.respondToApproval(input)
-  }),
+    const runtime = ctx.backend.peekTaskRuntime()
+    const request = runtime?.pendingApproval(input.requestId)
+    if (input.approved && request?.toolName === 'file_select_original') {
+      if (selectingOriginal.has(input.requestId)) return
+      const parsed = z.object({ path: z.string().max(4096).refine(isAbsolute) }).safeParse(request.input)
+      const window = ctx.window()
+      let approved = false
+      if (parsed.success && window) {
+        selectingOriginal.add(input.requestId)
+        try {
+          const selected = await dialog.showOpenDialog(window, { title: '选择要操作的原文件', defaultPath: parsed.data.path, properties: ['openFile'] })
+          approved = !selected.canceled && selected.filePaths.length === 1 && selected.filePaths[0] === parsed.data.path
+        } catch {
+          approved = false
+        } finally {
+          selectingOriginal.delete(input.requestId)
+          runtime?.respondToApproval({ ...input, approved })
+        }
+        return
+      }
+      runtime?.respondToApproval({ ...input, approved: false })
+      return
+    }
+    runtime?.respondToApproval(input)
+  }, trusted),
 ]
 
 

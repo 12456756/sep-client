@@ -23,6 +23,19 @@ class FakeSession implements PiAgentSession {
 }
 
 describe('SharedPiSession', () => {
+  it('reopens a persisted session without restoring local file grants across turns', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession(`session-${configs.length}`) } })
+    const config: PiAgentSessionConfig = { runId: 'first', modelId: 'model', gatewayUrl: 'g', workspaceDir: 'w', agentDir: 'a', sessionDir: 's', getAccessToken: async () => 'token', authorizeTool: async () => false,
+      toolPolicy: { preset: 'workspace-edit', allowedTools: ['write'], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled', approvalMode: 'confirm-each', workspaceDir: 'w', fileAccess: 'local' } }
+    try {
+      const first = await adapter.open(config)
+      const second = await adapter.open({ ...config, runId: 'second', toolPolicy: { ...config.toolPolicy!, fileAccess: 'workspace' } })
+      assert.notEqual(first, second)
+      assert.equal(configs[1]?.toolPolicy?.fileAccess, 'workspace')
+      assert.equal(configs[1]?.resumeSessionFile, 'task-session.jsonl')
+    } finally { await adapter.dispose() }
+  })
   it('uses only the active turn approval handler for a reused conversation', async () => {
     const configs: PiAgentSessionConfig[] = []
     const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession('shared') } })

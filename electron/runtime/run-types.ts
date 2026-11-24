@@ -10,6 +10,10 @@ export interface TaskToolPolicy {
   commandPolicy: 'disabled' | 'restricted' | 'confirm-each'
   approvalMode: 'confirm-each' | 'auto-approve'
   workspaceDir: string
+  fileAccess?: 'workspace' | 'local'
+  unattended?: boolean
+  applicationDataRoot?: string
+  originalFiles?: ReadonlyMap<string, import('../domain/attachment-input').BoundOriginalFile>
   readableDeliveryPaths?: readonly string[]
   /** Exact host-verified attachment snapshots; read-only grants only. */
   readableAttachmentPaths?: readonly string[]

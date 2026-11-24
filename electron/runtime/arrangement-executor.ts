@@ -1,4 +1,5 @@
 import { withApprovedSkillReadPaths } from './run-skill-policy'
+import { runtimeFileToolPolicy, runtimeOriginalFiles } from './file-tool-policy'
 import { runSkillDisplay } from '../common/run-skill-display'
 /**
  * 编排式任务的节点执行器。
@@ -20,7 +21,7 @@ import type { ArrangementReplacementSearchInput, ArrangementReplacementSearchRes
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskRunStorePort } from '../data/task-run-store'
 import type { ArrangementCheckpoint, ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
-import type { WorkPlan, ArrangementNode, EffectiveTaskPermissionPolicy } from '../domain/arrangement-plan'
+import type { WorkPlan, ArrangementNode } from '../domain/arrangement-plan'
 import type { TaskManager } from './task-manager'
 import {
   createArrangementExecutionState,
@@ -37,7 +38,7 @@ import {
   stopArrangement,
   type ArrangementExecutionState,
 } from '../domain/arrangement-execution'
-import type { EmployeeRuntimeConfig, TaskToolPolicy, TaskWorkerPort } from './run-types'
+import type { EmployeeRuntimeConfig, TaskWorkerPort } from './run-types'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
 import { buildArrangementNodeSystemPrompt } from './arrangement-node-prompts'
@@ -205,18 +206,6 @@ ${JSON.stringify(ending, null, 2)}
     '共享工作区：\n只能使用分配的共享工作区，不要重放或虚构前置节点的工具调用。',
     '请返回可供后续节点使用的简洁结果，不要透露隐藏的推理过程。',
   ].join('\n\n')
-}
-
-function toToolPolicy(policy: EffectiveTaskPermissionPolicy, workspaceDir: string): TaskToolPolicy {
-  return {
-    preset: policy.preset,
-    allowedTools: [...policy.allowedTools],
-    allowedPaths: [...policy.allowedPaths],
-    deniedPaths: [...policy.deniedPaths],
-    commandPolicy: policy.commandPolicy,
-    approvalMode: policy.approvalMode ?? 'confirm-each',
-    workspaceDir,
-  }
 }
 
 function nodeMap(plan: WorkPlan): Map<string, ArrangementNode> {
@@ -727,9 +716,15 @@ export class ArrangementExecutor {
         })
         created = true
       }
-      const toolPolicy = { ...withApprovedSkillReadPaths(toToolPolicy(plan.permissions, workspaceDir), employee)!,
+      const toolPolicy = { ...withApprovedSkillReadPaths(runtimeFileToolPolicy(plan.permissions, workspaceDir, {
+        unattended: !!plan.scheduledOrigin, applicationDataRoot: this.options.taskRunStore?.userDataDir,
+      }), employee)!,
         readableDeliveryPaths: dependencies.flatMap(dependency => dependency.files.flatMap(file => file.readPath ? [file.readPath] : [])),
-        readableAttachmentPaths: attachmentInputs?.attachments.flatMap(item => item.readPath ? [item.readPath] : []) ?? [] }
+        readableAttachmentPaths: attachmentInputs?.attachments.flatMap(item => item.readPath ? [item.readPath] : []) ?? [],
+        originalFiles: undefined as ReturnType<typeof runtimeOriginalFiles>['bindings'] | undefined }
+      const originals = runtimeOriginalFiles(toolPolicy, attachmentInputs?.attachments ?? [])
+      toolPolicy.originalFiles = originals.bindings
+      prompt += originals.prompt
       if (!scheduledFileNode) diagnosticPhase = 'media-setup'
       if (requiresMediaBridge) mediaSession = await this.options.arrangementMedia!.prepareNode({
         taskId, arrangementRunId, nodeRunId, attempt: checkpoint.attempt, planHash: plan.planHash, node,

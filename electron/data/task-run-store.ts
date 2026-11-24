@@ -69,6 +69,7 @@ export interface CreateTaskRunInput {
 }
 
 export interface TaskRunStorePort {
+  readonly userDataDir?: string
   create(scope: TaskOwnerScope, input: CreateTaskRunInput): Promise<TaskRunRecord>
   get(scope: TaskOwnerScope, taskId: string, runId: string): Promise<TaskRunRecord | null>
   list(scope: TaskOwnerScope, taskId: string): Promise<TaskRunRecord[]>
@@ -98,7 +99,7 @@ export class TaskRunStore implements TaskRunStorePort {
   private readonly writes = new WriteChain()
   readonly events: TaskEventStore
 
-  constructor(userDataDir: string) {
+  constructor(readonly userDataDir: string) {
     this.paths = new ScopePath(userDataDir)
     // 事件必须属于一个已持久化、订阅一致的 run，这个判断只有 run 记录知道。
     this.events = new TaskEventStore(userDataDir, (scope, taskId, runId) => this.get(scope, taskId, runId))

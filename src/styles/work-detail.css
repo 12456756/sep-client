@@ -187,3 +187,9 @@
   .ent-transcript-node-body { padding-left: 12px; }
   .ent-transcript-node-heading .ent-chip { max-width: 90px; white-space: normal; }
 }
+.ent-wk-file-approval { margin: 0 16px 12px; padding: 12px; border: 1px solid currentColor; border-radius: 8px; overflow-wrap: anywhere; }
+.ent-wk-file-approval p { margin: 6px 0; }
+.ent-wk-file-approval summary { cursor: pointer; }
+.ent-wk-file-diff { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); gap: 12px; margin-top: 8px; }
+.ent-wk-file-diff pre { max-height: 8rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ent-wk-file-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 8px; }

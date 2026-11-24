@@ -79,6 +79,8 @@ import { CREATE_SCHEDULED_TASK_TOOL } from '../../../src/shared/scheduled-creati
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
+import { managedFileTools } from './pi-managed-file-tools'
+import { managedReadTools } from './pi-managed-read-tools'
 import { modelPayloadText, readableTraceValue, traceModelStream } from './pi-model-trace'
 import { fetchWithModelDiagnostics } from './model-transport-diagnostics'
 import { guardGatewayResponse } from './gateway-response'
@@ -103,14 +105,16 @@ const READ_ONLY_MEDIA_TOOLS = new Set<MediaToolName>(['media_get_capabilities', 
 
 function browserToolAvailability(config: Pick<PiAgentSessionConfig, 'browserArtifactTaskId' | 'toolPolicy' | 'disableTools'>) {
   const policy = config.toolPolicy
-  if (config.disableTools) return new Set<string>()
+  if (config.disableTools || policy?.unattended) return new Set<string>()
   const writeAllowed = !policy || isUnrestrictedToolPolicy(policy) ||
     (policy.preset !== 'read-only' && policy.allowedTools.includes('write') && !policy.allowedPaths.length && !policy.deniedPaths.length)
+  // The host binds browser artifacts to the current conversation's result directory, not to a disk-wide grant.
+  const managedConversation = !!policy?.fileAccess && !!config.browserArtifactTaskId && writeAllowed
   const allowPageTool = (name: string) => !policy || policy.preset === 'full-local' || policy.allowedTools.includes(name)
-  const canSave = !!config.browserArtifactTaskId && writeAllowed && allowPageTool(BROWSER_SAVE_ASSETS)
+  const canSave = !!config.browserArtifactTaskId && writeAllowed && (managedConversation || allowPageTool(BROWSER_SAVE_ASSETS))
   return new Set<string>([
-    ...(allowPageTool(BROWSER_SCROLL) ? [BROWSER_SCROLL] : []),
-    ...(allowPageTool(BROWSER_EXTRACT) ? [BROWSER_EXTRACT] : []),
+    ...(managedConversation || allowPageTool(BROWSER_SCROLL) ? [BROWSER_SCROLL] : []),
+    ...((managedConversation && policy.allowedTools.includes('read')) || allowPageTool(BROWSER_EXTRACT) ? [BROWSER_EXTRACT] : []),
     ...(canSave ? [BROWSER_SAVE_ASSETS] : []),
   ])
 }
@@ -743,11 +747,10 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
   }
   const encodingTools: ExtensionFactory = pi => {
     const selected = sessionToolOptions(config.toolPolicy, config.disableTools).tools ?? []
-    for (const tool of encodingToolDefinitions(config.workspaceDir, {
+    const definitions = config.toolPolicy?.fileAccess ? [...managedReadTools(config), ...managedFileTools(config)] : encodingToolDefinitions(config.workspaceDir, {
       createBashToolDefinition, createGrepToolDefinition, createReadToolDefinition, defineTool, getShellConfig,
-    })) {
-      if (selected.includes(tool.name)) pi.registerTool(tool)
-    }
+    })
+    for (const tool of definitions) if (selected.includes(tool.name)) pi.registerTool(tool)
     if (selected.includes(CURRENT_TIME_TOOL_NAME)) pi.registerTool(currentTimeToolDefinition())
     if (conversationAttachmentsEnabled(config) && config.conversationAttachments) pi.registerTool(conversationAttachmentTool(config.conversationAttachments))
     if (!config.disableTools && config.localMedia) pi.registerTool(localMediaTool(config.localMedia))

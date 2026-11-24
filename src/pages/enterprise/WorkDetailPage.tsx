@@ -9,6 +9,7 @@ import { Empty, StepStateChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { ArrangementTranscript } from '../../components/enterprise/arrange/ArrangementTranscript';
 import { WorkConversation } from '../../components/enterprise/WorkTalkDrawer';
+import { InlineFileApproval } from '../../components/enterprise/InlineFileApproval';
 import { IconHint } from '../../components/enterprise/IconHint';
 import { WorkStatusIcon, WorkTypeTag } from '../../components/enterprise/WorkIndicators';
 import { WorkSkills } from '../../components/enterprise/WorkSkills';
@@ -196,6 +197,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} onSkippedChange={setConversationSkipped} addFileRef={addToConversation} />
           </section> : <ArrangementTranscript work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey}
             busy={workspace.busy} onStop={workspace.stopWork} onResults={() => openInspector('results')} />}
+          <InlineFileApproval taskId={work.id} />
         </div>
 
         {/* 原生模态面板悬浮在工作空间上方，查询组件在关闭时仍保持挂载。 */}

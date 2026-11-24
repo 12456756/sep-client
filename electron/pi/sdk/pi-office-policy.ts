@@ -1,6 +1,6 @@
 import { lstatSync, realpathSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
-import { evaluateToolCall, isUnrestrictedToolPolicy, type ToolPolicy } from '../../../pi-extension/guard'
+import { evaluateToolCall, isManagedReadException, isUnrestrictedToolPolicy, managedFilePath, type ToolPolicy } from '../../../pi-extension/guard'
 import { approvalFileName, type ToolApprovalSummary } from '../../../src/shared/tool-approval'
 
 export { OFFICE_TOOL_NAME } from '../../../src/shared/tool-approval'
@@ -92,7 +92,16 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
         return within(denied, absolute) || within(canonicalCandidate(denied), actual)
       })) throw new Error('File is denied by task policy.')
       if (writing && policy.preset === 'read-only') throw new Error('This task is read-only.')
-      if (!unrestricted) {
+      if (policy.fileAccess) {
+        // Office operates outside the managed text tools; never inherit their external file grants.
+        const workspacePolicy = { ...policy, fileAccess: 'workspace' as const }
+        if (!policy.allowedTools.includes(writing ? 'write' : 'read') ||
+            (!managedFilePath(absolute, workspacePolicy, writing) && (writing || !isManagedReadException(absolute, workspacePolicy)))) {
+          throw new Error('File operation is outside this task permission.')
+        }
+        if (writing && policy.unattended) throw new Error('Office changes require interactive approval.')
+        requiresApproval ||= writing
+      } else if (!unrestricted) {
         const operation = writing ? 'write' : 'read'
         const decision = evaluateToolCall(operation, { path: actual }, policy)
         if (!decision.allowed) throw new Error('File operation is outside this task permission.')
