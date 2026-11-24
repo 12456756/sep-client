@@ -99,7 +99,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
         />
         <FileMentionChips mention={mention} />
         <div className="ent-chat-askbar">
-          <AttachmentComposer operationsRef={attachmentOps} visibleAttachments={mention.unreferencedAttachments} connectorId={connectorId} onConnectorChange={setConnectorId} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+          <AttachmentComposer conversationXlsx operationsRef={attachmentOps} visibleAttachments={mention.unreferencedAttachments} connectorId={connectorId} onConnectorChange={setConnectorId} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
           <FileMentionPicker mention={mention} />
           <ConversationEmployeePicker employees={employees} employeeId={employeeId} onChange={onEmployeeChange} onChoose={() => input.current?.focus()} />
           <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />

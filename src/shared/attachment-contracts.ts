@@ -70,6 +70,12 @@ export const attachmentViewSchema = z.object({
   extractionSummary: z.string().max(2000).optional(),
 }).strict()
 export type AttachmentView = z.infer<typeof attachmentViewSchema>
+export const XLSX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+export function hasTruncatedXlsxSummary(item: AttachmentView): boolean {
+  return item.mediaType === XLSX_MEDIA_TYPE && item.extractionStatus === 'partial' &&
+    item.warnings.includes('TEXT_TRUNCATED') && item.warnings.every(warning => warning === 'TEXT_TRUNCATED' || warning === 'FORMULAS_NOT_EXECUTED')
+}
 
 export type AttachmentPreviewMediaType = 'image/png' | 'image/jpeg' | 'image/webp'
 export const attachmentPreviewRequestSchema = z.union([

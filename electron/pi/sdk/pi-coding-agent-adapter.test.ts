@@ -385,6 +385,28 @@ async function mediaSession(
 }
 
 describe('conversation attachments through the real Pi SDK', () => {
+  it('executes a structured XLSX query through the existing scoped attachment tool', async () => {
+    const query = { operation: 'xlsx_analyze', sheet: 'Sales', range: 'A2:E8002', kind: 'count', filters: [{ column: 'E', op: 'gte', value: 0 }] } as const
+    const call = { name: 'conversation_attachment', input: { attachmentId: 'attachment-xlsx', ...query, filters: [{ column: 'E', op: 'gte', number: 0 }] } }
+    const conversationAttachments: NonNullable<PiAgentSessionConfig['conversationAttachments']> = {
+      list: () => ({ files: [], nextOffset: null }),
+      read: async () => assert.fail('analysis must not read the extracted text'),
+      async xlsx(id, received) {
+        assert.equal(id, 'attachment-xlsx')
+        assert.deepEqual(received, query)
+        return { operation: query.operation, sheet: query.sheet, range: query.range, kind: query.kind, scannedRows: 8001,
+          emptyRows: 1, filteredRows: 0, unavailableFilterRows: 0, matchedRows: 8000, includedRows: 8000, excludedKeyRows: 0, excludedValueRows: 0 }
+      },
+    }
+    const { bodies, approvals } = await mediaSession({ conversationAttachments, mediaTools: undefined }, call)
+    assert.match(JSON.stringify(bodies[0].tools?.find(tool => tool.function.name === call.name)), /xlsx_analyze/)
+    const result = bodies[1].messages.find(message => message.role === 'tool')!
+    const text = messageText(result.content)
+    assert.match(text, /^\{/, text)
+    assert.equal(JSON.parse(text).includedRows, 8000)
+    assert.equal(approvals, 0)
+  })
+
   it('advertises only the scoped reader and returns the selected document to the model', async () => {
     const conversationAttachments: NonNullable<PiAgentSessionConfig['conversationAttachments']> = {
       list: () => ({ files: [{ attachmentId: 'attachment-doc', name: 'notes.txt', mediaType: 'text/plain', messageNumber: 1 }], nextOffset: null }),

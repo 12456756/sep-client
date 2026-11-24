@@ -11,9 +11,14 @@ const provider = '@earendil-works/pi-ai'
 const preview = `{ kind: 'html', sections: [{ title: 'Probe', html: '<td>packaged-xlsx-probe</td>' }, { title: 'Empty', html: '<p>空工作表</p>' }] }`
 const documentWorker = `
 process.parentPort.on('message', ({ data }) => {
-  const valid = data.format === 'xlsx' &&
+  if (data.format === 'xlsx') { process.parentPort.postMessage(${preview}); return }
+  if (data.xlsx?.operation === 'xlsx_analyze') {
+    process.parentPort.postMessage({ result: { operation: 'xlsx_analyze', scannedRows: 8001, emptyRows: 7999, includedRows: 2, total: 11, groups: [{ key: ['001'], count: 2, sum: 11 }] } })
+    return
+  }
+  const valid = data.extract && data.mediaType.endsWith('spreadsheetml.sheet') &&
     data.bytes instanceof Uint8Array && data.bytes[0] === 0x50 && data.bytes[1] === 0x4b
-  process.parentPort.postMessage(valid ? ${preview} : { error: 'INVALID_INPUT' })
+  process.parentPort.postMessage(valid ? { status: 'ready', text: 'A1: packaged-xlsx-probe' } : { error: 'INVALID_INPUT' })
 })`
 
 async function fixture(t, { nested = false, version = '0.83.0', source = 'export function streamSimple() {}', dependency = 'production', documentSource = documentWorker } = {}) {
@@ -52,6 +57,7 @@ test('imports a packaged provider with Electron, including Chinese and spaced ar
   assert.equal(result.version, '0.2.0')
   assert.equal(result.module, `${provider}/api/openai-completions`)
   assert.equal(result.xlsx, 'ready')
+  assert.equal(result.xlsxAnalysis, 'ready')
   assert.match(result.electron, /^33\./)
 })
 
@@ -63,6 +69,20 @@ test('rejects the released nested-only dependency layout even when development h
 test('rejects missing transitive imports rather than only checking package presence', async t => {
   const { archive } = await fixture(t, { source: "import 'missing-packaged-transport'; export function streamSimple() {}" })
   await assert.rejects(verifyPackagedRuntime(archive), /Packaged runtime import failed[\s\S]*missing-packaged-transport/)
+})
+
+test('rejects a worker that reports XLSX extraction failure', async t => {
+  const { archive } = await fixture(t, { documentSource: `
+    process.parentPort.on('message', ({ data }) => process.parentPort.postMessage(data.format === 'xlsx'
+      ? ${preview} : { status: 'failed', warnings: ['EXTRACTION_FAILED'] }))` })
+  await assert.rejects(verifyPackagedRuntime(archive), /Packaged XLSX extraction failed.*EXTRACTION_FAILED/)
+})
+
+test('rejects a package that extracts XLSX but cannot analyze the original workbook', async t => {
+  const { archive } = await fixture(t, { documentSource: `
+    process.parentPort.on('message', ({ data }) => process.parentPort.postMessage(data.format === 'xlsx'
+      ? ${preview} : data.extract ? { status: 'ready', text: 'A1: packaged-xlsx-probe' } : { xlsxError: 'XLSX_PARSE_FAILED' }))` })
+  await assert.rejects(verifyPackagedRuntime(archive), /Packaged XLSX analysis failed.*XLSX_PARSE_FAILED/)
 })
 
 test('rejects a worker that cannot render a namespaced XLSX preview', async t => {

@@ -2,6 +2,7 @@ import { app, utilityProcess } from 'electron'
 import { join } from 'node:path'
 import { DocumentPreviewRuntime, type DocumentPreviewWorker } from '../runtime/document-preview-runtime'
 import { AttachmentExtractionRuntime } from '../runtime/attachment-extraction-runtime'
+import { XlsxAnalysisRuntime } from '../runtime/xlsx-analysis-runtime'
 
 export function createDocumentPreviewRuntime(): DocumentPreviewRuntime {
   return new DocumentPreviewRuntime(createWorker)
@@ -9,6 +10,10 @@ export function createDocumentPreviewRuntime(): DocumentPreviewRuntime {
 
 export function createAttachmentExtractionRuntime(): AttachmentExtractionRuntime {
   return new AttachmentExtractionRuntime(createWorker)
+}
+
+export function createXlsxAnalysisRuntime(): XlsxAnalysisRuntime {
+  return new XlsxAnalysisRuntime(createWorker)
 }
 
 function createWorker(): DocumentPreviewWorker {

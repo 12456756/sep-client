@@ -2,7 +2,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { FileText, Film, FolderOpen, Image, Music2, X } from 'lucide-react'
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react'
 import { createPortal } from 'react-dom'
-import { attachmentImportLimits, type AttachmentFolderPreview, type AttachmentImportSession, type AttachmentImportTarget, type AttachmentView } from '../../../shared/attachment-contracts'
+import { attachmentImportLimits, hasTruncatedXlsxSummary, type AttachmentFolderPreview, type AttachmentImportSession, type AttachmentImportTarget, type AttachmentView } from '../../../shared/attachment-contracts'
 import { isAttachmentAudioVideo } from '../../../shared/attachment-media-formats'
 import { useAttachmentComposer, type AttachmentComposerOptions, type RetainedAttachmentState } from '../../../features/enterprise/use-attachment-composer'
 import { useOperationFeedback } from '../../feedback/use-operation-feedback'
@@ -12,6 +12,7 @@ import type { ConnectorId } from '../../../shared/connectors'
 import type { AddFileToConversation } from '../../workspace/file-menu-actions'
 
 interface Props {
+  conversationXlsx?: boolean
   addFileRef?: Ref<AddFileToConversation>
   operationsRef?: Ref<AttachmentComposerOperations>
   target: AttachmentImportTarget
@@ -38,7 +39,7 @@ export interface AttachmentComposerOperations {
   addFile(file: Parameters<AddFileToConversation>[0]): Promise<AttachmentView[] | undefined>
 }
 
-export function AttachmentComposer({ target, bindingKey, disabled = false, allowFolderPaste, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer, connectorId, onConnectorChange, addFileRef, operationsRef, visibleAttachments }: Props) {
+export function AttachmentComposer({ target, bindingKey, disabled = false, allowFolderPaste, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer, connectorId, onConnectorChange, addFileRef, operationsRef, visibleAttachments, conversationXlsx = false }: Props) {
   const { capture } = useOperationFeedback(bindingKey)
   const notice = capture()
   const composer = useAttachmentComposer({ target, bindingKey, disabled, allowFolderPaste, retainedState, onError: message => notice.show(message), onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished })
@@ -61,7 +62,7 @@ export function AttachmentComposer({ target, bindingKey, disabled = false, allow
           {listContainer ? <div className="ent-attachment-preview" aria-hidden><Icon size={28} strokeWidth={1.5} /></div> : null}
           <div className="ent-attachment-details">
             <span className="ent-attachment-name" title={item.displayName}>{item.displayName}</span>
-            <small>{formatBytes(item.byteLength)} · {audioVideo && item.extractionStatus === 'not-required' ? (Icon === Film ? '视频素材' : '音频素材') : statusLabel(item.extractionStatus)}</small>
+            <small>{formatBytes(item.byteLength)}{conversationXlsx && hasTruncatedXlsxSummary(item) ? null : <> · {audioVideo && item.extractionStatus === 'not-required' ? (Icon === Film ? '视频素材' : '音频素材') : statusLabel(item.extractionStatus)}</>}</small>
           </div>
           <button type="button" className="ent-icon-btn" aria-label={`移除 ${item.displayName}`} onClick={() => void composer.remove(item.attachmentId)} disabled={disabled || composer.busy}>
             <X size={13} aria-hidden />

@@ -7,9 +7,10 @@ import { createHash, randomUUID } from 'node:crypto'
 import { extname } from 'node:path'
 import type { AttachmentExtractor } from '../domain/attachment-extraction'
 import type { BoundOriginalFile, ResolvedAttachmentInput } from '../domain/attachment-input'
+import type { RunXlsxQuery, XlsxQuery } from '../domain/xlsx-analysis'
 import { selectedAttachmentOriginal } from '../data/attachment-original'
 import { AppError } from '../errors/app-error'
-import { attachmentImportLimits, referenceAttachmentSelectionSchema, referenceTextLimit, type ReferenceAttachmentSelection, type ReferenceMaterials } from '../../src/shared/attachment-contracts'
+import { attachmentImportLimits, referenceAttachmentSelectionSchema, referenceTextLimit, XLSX_MEDIA_TYPE, type ReferenceAttachmentSelection, type ReferenceMaterials } from '../../src/shared/attachment-contracts'
 import { assertAttachmentFolderEntry, scanAttachmentFolder, type AttachmentFolderEntry } from '../data/attachment-folder'
 
 
@@ -35,9 +36,25 @@ export class AttachmentService {
   private readonly selectedOriginals = new Map<string, BoundOriginalFile>()
   private readonly folderPreviews = new Map<string, { id: string; scope: TaskOwnerScope; expiresAt: number; entries: AttachmentFolderEntry[] }>()
 
+  readonly queryTaskXlsx?: (scope: TaskOwnerScope, taskId: string, ref: AttachmentRef, query: XlsxQuery, signal?: AbortSignal) => ReturnType<RunXlsxQuery>
   private epoch = 0
 
-  constructor(private readonly store: AttachmentStorePort, private readonly scopeProvider?: () => TaskOwnerScope | null) {}
+  constructor(private readonly store: AttachmentStorePort, private readonly scopeProvider?: () => TaskOwnerScope | null,
+    runXlsx?: (...args: [...Parameters<RunXlsxQuery>, validate: () => void]) => ReturnType<RunXlsxQuery>) {
+    if (runXlsx) this.queryTaskXlsx = async (scope, taskId, ref, query, signal) => {
+      const epoch = this.epoch
+      const validate = () => {
+        signal?.throwIfAborted()
+        if (epoch !== this.epoch || !this.sameOwner(scope, this.currentScope())) throw new AppError('AUTH_REQUIRED')
+      }
+      validate()
+      const { bytes } = await this.readTaskAttachment(taskId, ref.attachmentId, ref.sha256, XLSX_MEDIA_TYPE)
+      validate()
+      const result = await runXlsx(bytes, query, signal, validate)
+      validate()
+      return result
+    }
+  }
 
   static fromUserData(userDataDir: string, scopeProvider?: () => TaskOwnerScope | null, extractor?: AttachmentExtractor): AttachmentService { return new AttachmentService(new AttachmentStore(userDataDir, undefined, extractor), scopeProvider) }
 
@@ -231,11 +248,12 @@ export class AttachmentService {
     return this.require(scope, sessionId)
   }
 
-  private async readTaskAttachment(taskId: string, attachmentId: string, sha256: string) {
+  private async readTaskAttachment(taskId: string, attachmentId: string, sha256: string, expectedMediaType?: string) {
     const scope = this.currentScope()
     const metadata = await this.store.readTaskMetadata(scope, taskId)
     const item = metadata.items.find(candidate => candidate.attachmentId === attachmentId && candidate.sha256 === sha256)
     if (!item) throw new Error('ATTACHMENT_REFERENCE_INVALID')
+    if (expectedMediaType && item.mediaType !== expectedMediaType) throw new Error('XLSX_INVALID_REQUEST')
     if (item.byteLength > attachmentImportLimits.maxFileBytes) throw new Error('ATTACHMENT_TOO_LARGE')
     const bytes = await this.store.readTask(scope, taskId, attachmentId)
     if (bytes.byteLength !== item.byteLength || createHash('sha256').update(bytes).digest('hex') !== sha256) {

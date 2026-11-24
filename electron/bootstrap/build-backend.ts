@@ -97,6 +97,7 @@ import type { DocumentPreviewRuntime } from '../runtime/document-preview-runtime
 import { AttachmentStore } from '../data/attachment-store'
 import { AttachmentService } from '../service/attachment-service'
 import type { AttachmentExtractionRuntime } from '../runtime/attachment-extraction-runtime'
+import type { XlsxAnalysisRuntime } from '../runtime/xlsx-analysis-runtime'
 import { randomUUID } from 'node:crypto'
 import { ScheduledTaskStore } from '../data/scheduled-task-store'
 import { ScheduledTaskService } from '../service/scheduled-task-service'
@@ -147,6 +148,7 @@ class BackendRuntime {
   readonly attachments: AttachmentService
   private readonly attachmentStore: AttachmentStore
   private readonly attachmentExtractionRuntime: LazyAsync<AttachmentExtractionRuntime>
+  private readonly xlsxAnalysisRuntime: LazyAsync<XlsxAnalysisRuntime>
   readonly documentPreviews: DocumentPreviewService
   readonly resultFiles: ResultFileService
   readonly resultArchive: ResultArchiveService
@@ -205,6 +207,7 @@ class BackendRuntime {
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.documentPreviewRuntime = loadOnce(async () => (await import('./create-document-preview-runtime')).createDocumentPreviewRuntime())
     this.attachmentExtractionRuntime = loadOnce(async () => (await import('./create-document-preview-runtime')).createAttachmentExtractionRuntime())
+    this.xlsxAnalysisRuntime = loadOnce(async () => (await import('./create-document-preview-runtime')).createXlsxAnalysisRuntime())
     this.speechRuntime = loadOnce(async () => (await import('./create-speech-runtime')).createSpeechRuntime())
     this.speech = new SpeechService({
       scope: this, settings: new SpeechSettingsStore(userDataDir),
@@ -243,7 +246,11 @@ class BackendRuntime {
     })
     this.taskManager = new TaskManager(userDataDir, renderer)
     this.attachmentStore = new AttachmentStore(userDataDir, undefined, async (mediaType: string, bytes: Uint8Array) => (await this.attachmentExtractionRuntime.get()).extract(mediaType, bytes))
-    this.attachments = new AttachmentService(this.attachmentStore, () => this.currentScope())
+    this.attachments = new AttachmentService(this.attachmentStore, () => this.currentScope(), async (bytes, query, signal, validate) => {
+      const runtime = await this.xlsxAnalysisRuntime.get()
+      validate()
+      return runtime.run(bytes, query, signal)
+    })
     this.taskRunStore = new TaskRunStore(userDataDir)
     this.clientMonitor = new ClientMonitorService({
       store: new ClientMonitorStore(userDataDir),
@@ -728,6 +735,7 @@ class BackendRuntime {
     this.sessionRecovery.stop()
     await this.clientMonitor.stop()
     this.attachmentExtractionRuntime.peek()?.stop()
+    this.xlsxAnalysisRuntime.peek()?.stop()
     await this.attachments.stop()
     this.knowledge.clear()
     this.documentPreviews.clear()

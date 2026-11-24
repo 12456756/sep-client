@@ -1,4 +1,4 @@
-import { attachmentRefSchema, type AttachmentRef } from '../../src/shared/attachment-contracts'
+import { attachmentRefSchema, XLSX_MEDIA_TYPE, type AttachmentRef } from '../../src/shared/attachment-contracts'
 import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
 import type { AttachmentInputPort, ConversationAttachmentReader, ResolvedAttachmentInput } from '../domain/attachment-input'
 import type { ConversationMessage } from '../domain/conversation-context'
@@ -11,6 +11,7 @@ export async function prepareConversationAttachments(input: {
   messages: readonly ConversationMessage[]
   current: readonly ResolvedAttachmentInput[]
   assertActive: (signal?: AbortSignal) => void
+  lifecycleSignal?: AbortSignal
   canRead: (item: ResolvedAttachmentInput) => boolean
   allowsImages: boolean
 }): Promise<{ history: ResolvedAttachmentInput[]; reader?: ConversationAttachmentReader }> {
@@ -40,10 +41,11 @@ export async function prepareConversationAttachments(input: {
     if (!item) return []
     const number = item.mediaType.startsWith('image/') ? ++imageNumber : undefined
     if (!input.canRead(item)) return []
-    return [{ attachmentId: item.attachmentId, name: item.displayName, mediaType: item.mediaType, messageNumber, imageNumber: number }]
+    return [{ attachmentId: item.attachmentId, name: item.displayName, mediaType: item.mediaType, messageNumber, imageNumber: number,
+      ...(store.queryTaskXlsx && item.mediaType === XLSX_MEDIA_TYPE ? { xlsxAnalysis: true as const } : {}) }]
   })
   const visible = new Set(files.map(file => file.attachmentId))
-  return { history, reader: files.length ? {
+  const reader: ConversationAttachmentReader | undefined = files.length ? {
     list(offset) {
       assertActive()
       const page = files.slice(offset, offset + 30)
@@ -76,5 +78,16 @@ export async function prepareConversationAttachments(input: {
         ...(image ? { image: { data: Buffer.from(image.bytes).toString('base64'), mimeType: image.mediaType } } : {}),
       }
     },
-  } : undefined }
+  } : undefined
+  if (reader && files.some(file => file.xlsxAnalysis)) reader.xlsx = async (id, query, signal) => {
+    const combinedSignal = signal && input.lifecycleSignal ? AbortSignal.any([signal, input.lifecycleSignal]) : signal ?? input.lifecycleSignal
+    assertActive(combinedSignal)
+    const item = visible.has(id) ? byId.get(id) : undefined
+    if (!item || item.mediaType !== XLSX_MEDIA_TYPE || !input.canRead(item)) throw new Error('Attachment is not available for XLSX analysis in this conversation.')
+    const result = await store.queryTaskXlsx!(scope, taskId, { attachmentId: id, sha256: item.sha256 }, query, combinedSignal)
+    assertActive(combinedSignal)
+    if (!input.canRead(item)) throw new Error('Attachment is not available for XLSX analysis in this conversation.')
+    return result
+  }
+  return { history, reader }
 }

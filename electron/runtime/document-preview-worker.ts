@@ -2,6 +2,9 @@ import { z } from 'zod'
 import { convertDocumentPreview } from './document-preview-converter'
 import { extractAttachment } from './attachment-extractor'
 import { DocumentPreviewError } from '../errors/document-preview-error'
+import { attachmentImportLimits } from '../../src/shared/attachment-contracts'
+import { xlsxQuerySchema } from '../domain/xlsx-analysis'
+import { queryXlsx, XlsxAnalysisError } from './xlsx-analyzer'
 
 interface ParentPort {
   on(event: 'message', callback: (event: { data: unknown }) => void): void
@@ -10,8 +13,16 @@ interface ParentPort {
 const parent = (process as NodeJS.Process & { parentPort: ParentPort }).parentPort
 const requestSchema = z.object({ format: z.string(), bytes: z.instanceof(Uint8Array) }).strict()
 const extractionSchema = z.object({ extract: z.literal(true), mediaType: z.string().max(128), bytes: z.instanceof(Uint8Array).refine(value => value.byteLength <= 20 * 1024 * 1024) }).strict()
+const xlsxRequestSchema = z.object({ xlsx: xlsxQuerySchema, bytes: z.instanceof(Uint8Array).refine(value => value.byteLength <= attachmentImportLimits.maxFileBytes) }).strict()
 parent.on('message', ({ data }) => {
   void (async () => {
+    if (data && typeof data === 'object' && 'xlsx' in data) {
+      const request = xlsxRequestSchema.safeParse(data)
+      if (!request.success) { parent.postMessage({ xlsxError: 'XLSX_INVALID_REQUEST' }); return }
+      try { parent.postMessage({ result: await queryXlsx(request.data.bytes, request.data.xlsx) }) }
+      catch (error) { parent.postMessage({ xlsxError: error instanceof XlsxAnalysisError ? error.reason : 'XLSX_PARSE_FAILED' }) }
+      return
+    }
     const extraction = extractionSchema.safeParse(data)
     if (extraction.success) { parent.postMessage(await extractAttachment(extraction.data.mediaType, extraction.data.bytes)); return }
     const request = requestSchema.safeParse(data)

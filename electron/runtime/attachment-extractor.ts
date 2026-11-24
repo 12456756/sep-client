@@ -1,11 +1,10 @@
-import { createRequire } from 'node:module'
 import { unzipSync } from 'fflate'
 import { XMLParser } from 'fast-xml-parser'
 import type { AttachmentExtraction } from '../domain/attachment-extraction'
 import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
 import { readLegacyWordText } from './legacy-word-text'
+import { loadXlsxWorkbook } from './xlsx-workbook'
 
-const require = createRequire(import.meta.url)
 const maxText = 100000
 const parser = new XMLParser({ removeNSPrefix: true, parseTagValue: false, processEntities: false })
 const officeTypes = new Map([
@@ -51,9 +50,7 @@ export async function extractAttachment(mediaType: string, bytes: Uint8Array): P
       warnings.push('LAYOUT_AND_EMBEDDED_IMAGES_NOT_EXTRACTED')
     } else if (mediaType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
       archive(bytes, /$^/)
-      const ExcelJS = require('exceljs') as typeof import('exceljs')
-      const workbook = new ExcelJS.Workbook()
-      await workbook.xlsx.load(Buffer.from(bytes) as unknown as Parameters<typeof workbook.xlsx.load>[0])
+      const { workbook } = await loadXlsxWorkbook(bytes)
       let cells = 0
       for (const sheet of workbook.worksheets) {
         text += `\n[${sheet.name}]\n`

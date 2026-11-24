@@ -8,6 +8,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import { AttachmentService } from './attachment-service'
 import { AppError } from '../errors/app-error'
 import { runtimeFileToolPolicy, runtimeOriginalFiles } from '../runtime/file-tool-policy'
+import { prepareConversationAttachments } from '../runtime/conversation-attachments'
 
 const ownerA: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const ownerB: TaskOwnerScope = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
@@ -59,6 +60,54 @@ test('dropping into a closed or non-composer import session cannot bind original
     const service = new AttachmentService({ get: async () => session, importPath: async () => assert.fail('must not import') } as never, () => ownerA)
     await assert.rejects(service.importDroppedFiles('session-a', 'drop', compose.composerId, ['unused.txt']), { code: 'INVALID_STATE' })
   }
+})
+
+test('XLSX analysis uses only authorized frozen bytes and never returns results after cancellation or identity change', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-attachment-xlsx-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const source = join(root, 'source.xlsx')
+  await writeFile(source, 'original bytes')
+  const store = new AttachmentStore(root, undefined, async () => ({ status: 'partial', text: 'summary', warnings: ['TEXT_TRUNCATED'] }))
+  let owner = ownerA, canRead = true, calls = 0
+  let afterRead: () => void = () => undefined
+  const query = { operation: 'xlsx_inspect' } as const
+  const service = new AttachmentService(store, () => owner, async (bytes, _query, _signal, validate) => {
+    validate()
+    calls++
+    assert.equal(Buffer.from(bytes).toString(), 'original bytes')
+    afterRead()
+    return { ...query, visibleSheets: 0, omittedSheets: 0, sheets: [] }
+  })
+  const taskId = 'xlsx-task'
+  const session = await service.beginSession({ kind: 'conversation', taskId })
+  const { item: { attachmentId, sha256 } } = (await service.importFiles(session.sessionId, 'xlsx-pick', [source]))[0]
+  const ref = { attachmentId, sha256 }
+  await service.claimTask(session.sessionId, taskId, [ref])
+  await writeFile(source, 'modified source')
+  const message = { id: 'm', taskId, role: 'user' as const, runId: 'run', turnId: 'turn', modelId: 'model', subscriptionId: 'sub', createdAt: 0, content: '', attachmentRefs: [ref] }
+  const { reader } = await prepareConversationAttachments({ store: service, scope: ownerA, taskId,
+    messages: [message], current: [], assertActive: signal => signal?.throwIfAborted(), canRead: () => canRead, allowsImages: false })
+  assert.equal(reader?.list(0).files[0].xlsxAnalysis, true)
+  const run = (signal?: AbortSignal) => reader!.xlsx!(attachmentId, query, signal)
+  await assert.rejects(reader!.xlsx!('other-id', query), /not available/)
+  await assert.rejects(service.queryTaskXlsx!(ownerA, 'other-task', ref, query))
+  canRead = false
+  await assert.rejects(run(), /not available/)
+  canRead = true
+  assert.equal(calls, 0)
+  assert.equal((await run()).operation, query.operation)
+  afterRead = () => { owner = ownerB }
+  await assert.rejects(run(), (error: unknown) => error instanceof AppError && error.code === 'AUTH_REQUIRED')
+  owner = ownerA
+  const stop = new AbortController()
+  afterRead = () => stop.abort(new Error('user cancelled'))
+  await assert.rejects(run(stop.signal), /user cancelled/)
+  afterRead = () => { canRead = false }
+  await assert.rejects(run(), /not available/)
+  canRead = true
+  await writeFile(store.taskReadPath(ownerA, taskId, attachmentId), 'tampered bytes')
+  await assert.rejects(run(), /ATTACHMENT_INTEGRITY_MISMATCH/)
+  assert.equal(calls, 4)
 })
 
 test('an MP4 picked as a single file is video material and bypasses text extraction', async t => {

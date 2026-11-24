@@ -55,8 +55,15 @@ const preview = await request({ format: 'xlsx' })
 assert.equal(preview.kind, 'html', 'Packaged XLSX preview failed: ' + JSON.stringify(preview.error))
 assert.ok(preview.sections.some(section => section.title === 'Empty' && section.html.includes('空工作表')), 'Packaged XLSX preview lost the empty sheet')
 assert.ok(preview.sections.some(section => section.html.includes(marker)), 'Packaged XLSX preview lost the test cell')
+const extraction = await request({ extract: true, mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 assert.equal(externalDependency, undefined, 'Packaged document dependency resolved outside app.asar: ' + externalDependency)
-console.log(JSON.stringify({ module: specifier, xlsx: 'ready', electron: process.versions.electron, node: process.versions.node }))
+assert.equal(extraction?.status, 'ready', 'Packaged XLSX extraction failed: ' + JSON.stringify(extraction?.warnings ?? extraction?.error))
+assert.ok(extraction.text.includes('A1: ' + marker), 'Packaged XLSX extraction did not return the test cell')
+const analysis = await request({ xlsx: { operation: 'xlsx_analyze', sheet: 'Probe', range: 'A2:B8002', kind: 'group_sum', columns: ['A'], valueColumn: 'B' } })
+assert.equal(analysis.result?.operation, 'xlsx_analyze', 'Packaged XLSX analysis failed: ' + JSON.stringify(analysis.xlsxError))
+assert.deepEqual([analysis.result.scannedRows, analysis.result.emptyRows, analysis.result.includedRows, analysis.result.total], [8001, 7999, 2, 11])
+assert.deepEqual(analysis.result.groups, [{ key: ['001'], count: 2, sum: 11 }])
+console.log(JSON.stringify({ module: specifier, xlsx: extraction.status, xlsxAnalysis: 'ready', electron: process.versions.electron, node: process.versions.node }))
 `
 
 export async function verifyPackagedRuntime(archivePath) {
@@ -77,6 +84,8 @@ export async function verifyPackagedRuntime(archivePath) {
   const workbook = new (require('exceljs').Workbook)()
   const sheet = workbook.addWorksheet('Probe')
   sheet.getCell('A1').value = xlsxMarker
+  sheet.getRow(2).values = ['001', 2]
+  sheet.getRow(8002).values = ['001', 9]
   workbook.addWorksheet('Empty')
   const parts = unzipSync(new Uint8Array(await workbook.xlsx.writeBuffer()))
   // Reproduce Open XML exporters that prefix the spreadsheet's main namespace.
@@ -115,7 +124,7 @@ export async function verifyAfterPack(context) {
     ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
     : join(context.appOutDir, 'resources')
   const result = await verifyPackagedRuntime(join(resources, 'app.asar'))
-  console.log(`Verified packaged task provider imports and XLSX preview: ${result.version}, target ${context.electronPlatformName}, host Electron ${result.electron}/${process.arch}`)
+  console.log(`Verified packaged task provider imports, XLSX preview, extraction and analysis: ${result.version}, target ${context.electronPlatformName}, host Electron ${result.electron}/${process.arch}`)
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
