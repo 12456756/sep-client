@@ -322,7 +322,7 @@ function messageText(value: unknown): string {
 
 async function mediaSession(
   overrides: Partial<PiAgentSessionConfig>,
-  call?: { name: string; input: unknown },
+  call?: { name: string; input: unknown } | Array<{ name: string; input: unknown } | undefined>,
   result: unknown = jobView,
   prepare?: (root: string) => Promise<void>,
   continueSession?: (session: Awaited<ReturnType<PiCodingAgentAdapter['createSession']>>) => Promise<void>,
@@ -339,8 +339,8 @@ async function mediaSession(
     request.on('end', () => {
       bodies.push(JSON.parse(body))
       response.writeHead(200, { 'Content-Type': 'text/event-stream' })
-      const toolCall = bodies.length === 1 && call
-      const delta = toolCall ? { role: 'assistant', tool_calls: [{ index: 0, id: 'call-media', type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input) } }] }
+      const toolCall = Array.isArray(call) ? call[bodies.length - 1] : bodies.length === 1 && call
+      const delta = toolCall ? { role: 'assistant', tool_calls: [{ index: 0, id: Array.isArray(call) ? `call-${bodies.length}` : 'call-media', type: 'function', function: { name: toolCall.name, arguments: JSON.stringify(toolCall.input) } }] }
         : { role: 'assistant', content: 'done' }
       for (const [current, reason] of [[delta, null], [{}, toolCall ? 'tool_calls' : 'stop']] as const) {
         response.write(`data: ${JSON.stringify({ id: 'response-a', object: 'chat.completion.chunk', created: 1, model: 'model-a', choices: [{ index: 0, delta: current, finish_reason: reason }] })}\n\n`)
@@ -548,7 +548,46 @@ describe('built-in browser handoff with the real Pi SDK', () => {
     }
   })
 
+  it('reuses handoff approval for inline snapshots in this turn, not for files or later turns', { timeout: 30_000 }, async t => {
+    if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+      t.skip('Requires default browser configuration.'); return
+    }
+    const site = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      res.end('<main><h1>Local snapshot fixture</h1></main>')
+    })
+    await new Promise<void>(resolve => site.listen(0, '127.0.0.1', resolve))
+    try {
+      const address = site.address()
+      assert.ok(address && typeof address !== 'string')
+      const navigate = 'mcp__playwright__browser_navigate'
+      const snapshot = 'mcp__playwright__browser_snapshot'
+      const approvals: string[] = []
+      const { bodies } = await mediaSession({ mcpServers: undefined, disableSkills: true, authorizeTool: async request => {
+        approvals.push(request.toolName)
+        return request.toolName === navigate || request.toolName === BROWSER_MODE_TOOL
+      } }, [
+        { name: navigate, input: { url: `http://127.0.0.1:${address.port}/` } },
+        { name: BROWSER_MODE_TOOL, input: { mode: 'visible' } },
+        { name: snapshot, input: {} },
+        { name: snapshot, input: { filename: 'not-approved.md' } },
+        undefined,
+        { name: snapshot, input: {} },
+      ], jobView, undefined, session => session.prompt('Start a new turn.'))
+      assert.deepEqual(approvals, [navigate, BROWSER_MODE_TOOL, snapshot, snapshot])
+      const lastTool = (step: number) => messageText(bodies[step - 1].messages.filter(message => message.role === 'tool').at(-1)?.content)
+      assert.match(lastTool(4), /Local snapshot fixture/)
+      assert.match(lastTool(5), /User denied/)
+      assert.match(lastTool(7), /User denied/)
+    } finally {
+      site.closeAllConnections()
+      await new Promise<void>(resolve => site.close(() => resolve()))
+    }
+  })
+
   const browserBinding = { browserArtifactTaskId: 'task', browserTaskStateDir: 'task' }
+  const managedPolicy = { ...readOnlyPolicy, preset: 'workspace-edit' as const, approvalMode: 'confirm-each' as const,
+    allowedTools: [...readOnlyPolicy.allowedTools, 'write', 'edit'], fileAccess: 'workspace' as const }
   const saveCall = { name: BROWSER_SAVE_ASSETS, input: { folder: 'media', refs: ['fb582074-ddc4-4e4b-8a39-8072dcb1dc8b'] } }
 
   it('asks before enabling a persistent profile in full-local auto mode', async t => {
@@ -590,6 +629,39 @@ describe('built-in browser handoff with the real Pi SDK', () => {
     const names = bodies[0].tools?.map(tool => tool.function.name) ?? []
     for (const name of [BROWSER_EXTRACT, BROWSER_SCROLL, BROWSER_SAVE_ASSETS]) assert.ok(!names.includes(name), name)
   })
+
+  for (const fileAccess of ['workspace', 'local'] as const) {
+    it(`advertises page tools for managed ${fileAccess} access without bypassing save approval`, async t => {
+      if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+        t.skip('Requires default browser configuration.'); return
+      }
+      const { bodies, approvals } = await mediaSession({ mcpServers: undefined, ...browserBinding,
+        toolPolicy: { ...managedPolicy, fileAccess } }, saveCall)
+      const names = bodies[0].tools?.map(tool => tool.function.name) ?? []
+      for (const name of [BROWSER_SCROLL, BROWSER_EXTRACT, BROWSER_SAVE_ASSETS]) assert.ok(names.includes(name), name)
+      assert.ok(!names.includes('bash'))
+      assert.equal(approvals, 1)
+      assert.match(messageText(bodies[1].messages.find(message => message.role === 'tool')!.content), /not approved/)
+    })
+  }
+
+  for (const [label, overrides] of [
+    ['read-only', { toolPolicy: { ...managedPolicy, preset: 'read-only' } }],
+    ['unattended', { toolPolicy: { ...managedPolicy, unattended: true } }],
+    ['restricted paths', { toolPolicy: { ...managedPolicy, deniedPaths: ['results'] } }],
+    ['missing artifact directory', { browserArtifactTaskId: undefined }],
+  ] as const satisfies ReadonlyArray<readonly [string, Partial<PiAgentSessionConfig>]>) {
+    it(`does not expose browser asset saving with ${label}`, async t => {
+      if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+        t.skip('Requires default browser configuration.'); return
+      }
+      const defaults: Partial<PiAgentSessionConfig> = { mcpServers: undefined, ...browserBinding, toolPolicy: managedPolicy }
+      const { bodies, approvals } = await mediaSession({ ...defaults, ...overrides }, saveCall)
+      const names = bodies[0].tools?.map(tool => tool.function.name) ?? []
+      assert.ok(!names.includes(BROWSER_SAVE_ASSETS))
+      assert.equal(approvals, 0)
+    })
+  }
 
   for (const approvalMode of ['auto-approve', 'confirm-each'] as const) {
     it(`rejects a blank-window handoff in full-local ${approvalMode}`, async t => {

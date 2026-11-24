@@ -827,7 +827,7 @@ export class ArrangementExecutor {
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
-        onApprovalRequest: request => this.options.onApprovalRequest(request),
+        onApprovalRequest: this.options.onApprovalRequest,
         onModelRequest: structured ? kind => saveModelRequestProgress(kind, recovery !== null) : undefined,
         shouldYieldAfterToolTurn: () => {
           if (mediaHandoffUsed || !mediaSession?.readyForTracking()) return false

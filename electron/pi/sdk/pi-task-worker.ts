@@ -67,7 +67,7 @@ export interface PiTaskWorkerOptions {
   context: PiTaskWorkerContext
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
-  onApprovalRequest: (request: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
+  onApprovalRequest: (request: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>, detection?: Parameters<PiAgentSessionConfig['authorizeTool']>[1]) => Promise<boolean>
   onEvent: (event: TaskExecutionEvent) => Promise<void> | void
   onSessionCreated?: (session: { sessionId: string; sessionFile: string | null }) => Promise<void> | void
   /** Runs only after a complete agent execution, never after individual tool turns. */
@@ -192,7 +192,7 @@ export class PiTaskWorker {
         registerWrittenFile: this.context.registerWrittenFile,
         disableTools: this.context.disableTools,
         getAccessToken: () => this.tokenManager.getValidToken(),
-        authorizeTool: async request => {
+        authorizeTool: async (request, detection) => {
           return this.onApprovalRequest({
             taskId: this.context.taskId,
             runId: this.context.runId,
@@ -201,7 +201,7 @@ export class PiTaskWorker {
             input: request.input,
             ...(request.registeredTool ? { registeredTool: request.registeredTool } : {}),
             ...(request.summary ? { summary: request.summary } : {}),
-          })
+          }, detection)
         },
         reportPolicyEvent: (type, data) => this.emit(type, data),
       }

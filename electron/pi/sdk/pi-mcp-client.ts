@@ -100,6 +100,10 @@ function createTool(config: McpServerConfig, client: Client, tool: Tool) {
 export interface McpRuntime {
   /** Set only by the host browser facade; its handoff owns the completion prompt. */
   readonly builtinBrowser?: true
+  readonly browserSnapshotApproval?: {
+    claim(toolCallId: string, input: unknown): boolean
+    reset(): void
+  }
   /** Set only by the built-in Office facade, never by an external server. */
   readonly builtinOffice?: true
   readonly tools: ReturnType<typeof createTool>[]

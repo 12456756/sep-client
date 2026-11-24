@@ -119,8 +119,8 @@ export class SharedPiSession {
     this.browserTaskStateDir = config.browserTaskStateDir
     const binding = { authorize: config.authorizeTool }
     this.approvalBinding = binding
-    return this.bindLocalMedia(this.bindConversationSchedule({ ...config, authorizeTool: request =>
-      this.approvalBinding === binding ? binding.authorize(request) : Promise.resolve(false) }))
+    return this.bindLocalMedia(this.bindConversationSchedule({ ...config, authorizeTool: (request, detection) =>
+      this.approvalBinding === binding ? binding.authorize(request, detection) : Promise.resolve(false) }))
   }
 
   private browserPolicy(config: PiAgentSessionConfig): string | undefined {

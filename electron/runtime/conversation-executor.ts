@@ -363,7 +363,7 @@ export class ConversationExecutor {
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
-        onApprovalRequest: request => this.options.approvals.request(request),
+        onApprovalRequest: (request, detection) => this.options.approvals.request(request, detection),
         shouldYieldAfterToolTurn: toolResults => scheduleReceiptReady && !!toolResults?.every(result => result.toolName === CREATE_SCHEDULED_TASK_TOOL),
         onResponseSettled: async () => { await waitForMedia() },
         onEvent: event => this.options.events.enqueue(describeSkillRead(event)),

@@ -915,6 +915,8 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
         })
         return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
       }
+      if (toolName === 'mcp__playwright__browser_snapshot' && pi.getActiveTools().includes(toolName)
+        && mcp.browserSnapshotApproval?.claim(event.toolCallId, event.input)) return { block: false }
       const summary = registeredMcp ? browserApprovalSummary(toolName, event.input) : undefined
       const approved = await config.authorizeTool({ toolName, input: summary ? {} : redactValue(event.input),
         ...(registeredMcp ? { registeredTool: true } : {}), ...(summary ? { summary } : {}) })
@@ -1052,13 +1054,17 @@ class PiCodingAgentSession implements PiAgentSession {
     this.requestTracker?.startPrompt()
     this.retryWait.reset()
     this.settingsManager.setRetryEnabled(true)
-    await this.session.prompt(text, options?.images?.length ? {
-      images: options.images.map(image => ({ type: 'image', data: image.data, mimeType: image.mimeType })),
-    } : undefined)
+    this.mcp.browserSnapshotApproval?.reset()
+    try {
+      await this.session.prompt(text, options?.images?.length ? {
+        images: options.images.map(image => ({ type: 'image', data: image.data, mimeType: image.mimeType })),
+      } : undefined)
+    } finally { this.mcp.browserSnapshotApproval?.reset() }
     if (this.requestTracker?.failure) throw this.requestTracker.failure
   }
 
   abort(): Promise<void> {
+    this.mcp.browserSnapshotApproval?.reset()
     return this.session.abort()
   }
 
@@ -1298,7 +1304,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     const browserTools = browserToolAvailability(config)
     const discoveredMcp = attachConnectorTools(await createHostMcpRuntime([...servers, ...(connector?.servers ?? [])], config.workspaceDir, builtinBrowser,
       connector ? new Map(connector.servers.map(server => [server.name, connector.fetch])) : undefined,
-      () => config.authorizeTool({ toolName: BROWSER_MODE_TOOL, input: { operation: 'manual-handoff' } }), config.browserOwner,
+      detection => config.authorizeTool({ toolName: BROWSER_MODE_TOOL, input: { operation: 'manual-handoff', ...(detection ? { autoDetect: true } : {}) } }, detection), config.browserOwner,
       browserTools.has(BROWSER_SAVE_ASSETS) ? config.browserArtifactTaskId : undefined,
       browserTools.has(BROWSER_SAVE_ASSETS) ? config.browserTaskStateDir : undefined), connector, config.workspaceDir)
     const hidden = new Set([BROWSER_SCROLL, BROWSER_EXTRACT, BROWSER_SAVE_ASSETS].filter(name => !browserTools.has(name)))

@@ -4,7 +4,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { createConnection } from '@playwright/mcp'
-import type { Browser, BrowserContext, BrowserServer } from 'playwright-core'
+import type { Browser, BrowserContext, BrowserServer, Page } from 'playwright-core'
 import { Type } from 'typebox'
 import { z } from 'zod'
 import { BrowserAssetStore } from '../../data/browser-asset-store'
@@ -13,12 +13,23 @@ import { withTimeout } from '../../common/with-timeout'
 import type { McpServerConfig } from './pi-agent-runtime'
 import { createMcpRuntime, type McpRuntime, type McpToolResult } from './pi-mcp-client'
 import { createBrowserWindowController, type BrowserWindowController } from './pi-browser-window'
-import type { SharedBrowserOwner } from './pi-browser-owner'
+import type { BrowserHandoff, SharedBrowserOwner } from './pi-browser-owner'
 import { BROWSER_SAVE_ASSETS, BrowserPageAssets, createBrowserPageTools } from './pi-browser-page-tools'
+import { handoffCompletionSchema, prepareHandoffDetection } from './pi-browser-handoff'
+import { BrowserAccessGuard, browserRateLimitMessage } from './pi-browser-access-guard'
 
 export const BROWSER_MODE_TOOL = 'mcp__playwright__browser_set_mode'
+const BROWSER_SNAPSHOT_TOOL = 'mcp__playwright__browser_snapshot'
+const inlineSnapshotSchema = z.object({ depth: z.number().optional(), boxes: z.boolean().optional() }).strict()
+
+function pageOrigin(page: Page): string | undefined {
+  try {
+    const url = new URL(page.url())
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.origin
+  } catch { /* Unusable page. */ }
+}
 const modeSchema = z.object({ mode: z.enum(['background', 'visible']), purpose: z.enum(['handoff', 'observe']).optional(),
-  profile: z.literal('persistent').optional() }).strict()
+  profile: z.literal('persistent').optional(), completion: handoffCompletionSchema.optional() }).strict()
 type BrowserMode = z.infer<typeof modeSchema>['mode']
 const require = createRequire(import.meta.url)
 // Use the MCP package's pinned browser engine, including after asar unpacking.
@@ -26,6 +37,7 @@ const playwright = createRequire(require.resolve('@playwright/mcp/package.json')
 
 export class BrowserModeSession {
   readonly pageAssets = new BrowserPageAssets()
+  private readonly accessGuard = new BrowserAccessGuard()
   private browser?: Browser
   private server?: BrowserServer
   private window?: BrowserWindowController
@@ -51,6 +63,15 @@ export class BrowserModeSession {
 
   get backgroundHidden(): boolean { return this.mode === 'background' && this.visibilityApplied }
   get unavailable(): boolean { return this.disposed || this.lost }
+
+  isRateLimited(): Promise<boolean> { return this.accessGuard.isLimited(this.context) }
+
+  singleBackgroundPage(url: string): Page | undefined {
+    const pages = this.context?.pages()
+    if (!this.backgroundHidden || pages?.length !== 1) return undefined
+    try { if (pages[0].url() === new URL(url).href) return pages[0] }
+    catch { return undefined }
+  }
 
   hasNavigatedPage(): boolean {
     return !!this.context?.pages().some(page => /^https?:\/\//i.test(page.url()))
@@ -94,6 +115,7 @@ export class BrowserModeSession {
       }
       if (!pid) throw new Error('Dedicated browser process is unavailable.')
       window = this.createWindow(pid)
+      this.accessGuard.observe(context)
       await withTimeout(this.pageAssets.observe(context), 5_000, 'Observe browser media')
       if (this.disposed) throw new Error('Browser session is closed.')
       this.server = server
@@ -184,7 +206,7 @@ export class BrowserModeSession {
 export async function createHostMcpRuntime(
   servers: readonly McpServerConfig[], workspaceDir: string, builtinBrowser: boolean,
   fetches?: ReadonlyMap<string, typeof fetch>,
-  waitForHuman?: () => Promise<boolean>,
+  waitForHuman?: BrowserHandoff,
   owner?: SharedBrowserOwner,
   browserArtifactTaskId?: string,
   browserTaskStateDir?: string,
@@ -197,7 +219,7 @@ export async function createHostMcpRuntime(
       handoff => createHostMcpRuntime(browserServers, workspaceDir, true, undefined, handoff, undefined, browserArtifactTaskId, browserTaskStateDir), waitForHuman)
     try {
       const other = await createMcpRuntime(otherServers, workspaceDir, fetches)
-      return { builtinBrowser: true, tools: [...browser.tools, ...other.tools],
+      return { builtinBrowser: true, browserSnapshotApproval: browser.browserSnapshotApproval, tools: [...browser.tools, ...other.tools],
         permissions: new Map([...browser.permissions, ...other.permissions]),
         dispose: async () => { try { await other.dispose() } finally { await browser.dispose() } } }
     } catch (error) { await browser.dispose(); throw error }
@@ -223,6 +245,43 @@ export async function createHostMcpRuntime(
     runtime = await createMcpRuntime(servers, workspaceDir, fetches, new Map([['playwright', { client, transport }]]))
     const active = runtime
     let tail = Promise.resolve()
+    let lastNavigation: { url: string; page: Page; at: number } | undefined
+    type SnapshotGrant = { page: Page; origin: string }
+    let snapshotGrant: SnapshotGrant | undefined
+    let approvalEpoch = 0
+    let detachSnapshotGrant: (() => void) | undefined
+    const snapshotClaims = new Map<string, SnapshotGrant>()
+    const currentSnapshotGrant = () => {
+      const grant = snapshotGrant
+      if (!grant || lifetime.signal.aborted) return undefined
+      if (pageOrigin(grant.page) !== grant.origin || browser.singleBackgroundPage(grant.page.url()) !== grant.page) {
+        browserSnapshotApproval.reset()
+        return undefined
+      }
+      return grant
+    }
+    const browserSnapshotApproval: NonNullable<McpRuntime['browserSnapshotApproval']> = {
+      claim(id, input) {
+        const grant = currentSnapshotGrant()
+        if (!grant || !inlineSnapshotSchema.safeParse(input).success || snapshotClaims.has(id) || snapshotClaims.size >= 64) return false
+        snapshotClaims.set(id, grant)
+        return true
+      },
+      reset() {
+        approvalEpoch++
+        snapshotGrant = undefined
+        detachSnapshotGrant?.()
+        detachSnapshotGrant = undefined
+      },
+    }
+    const checkRateLimit = async (signal: AbortSignal): Promise<boolean> => {
+      signal.throwIfAborted()
+      const limited = await browser.isRateLimited()
+      signal.throwIfAborted()
+      return limited
+    }
+    const rateLimited = (toolName: string): McpToolResult => ({ content: [{ type: 'text', text: browserRateLimitMessage }],
+      details: { serverName: 'playwright', toolName, isError: true } })
     const serial = <T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> => {
       const result = tail.then(() => { signal?.throwIfAborted(); return run() })
       tail = result.then(() => undefined, () => undefined)
@@ -239,9 +298,10 @@ export async function createHostMcpRuntime(
     }
     const modeTool: McpRuntime['tools'][number] = {
       name: BROWSER_MODE_TOOL, label: '切换浏览器显示',
-      description: 'The same conversation shares one browser across turns and employees. Always inspect the current snapshot first. Navigate to the target site before requesting login. Use visible for login, QR scan or CAPTCHA (purpose: handoff, default). Shows the SAME window and blocks actions until the host completion prompt is accepted (3 minutes), then hides it without closing or reloading pages. Denial, timeout or cancellation closes the browser. Use purpose: observe only when the user asks to watch automation. Native hiding may be unavailable; if reported, the same window remains visible. Read a fresh snapshot and verify login after handoff. Never ask for another completion message after the user already completed the host prompt. Window visibility never authorizes business submissions.',
+      description: 'Navigate to the target site first. Use visible with purpose handoff (default) for login, QR scan or CAPTCHA. Shows the same tab and pauses until a clear completion signal or the user clicks the fallback, for up to 3 minutes. By default the host looks for a new sign-out control on the same site. If the expected result is known, pass completion with the exact destination URL (no query or fragment) and exact visible success text that is absent before handoff. Never guess either value or include account details, tokens or form values. Denial, timeout or cancellation closes the browser. Use purpose observe only when the user asks to watch automation. Read a fresh snapshot and verify the result after handoff. Handoff never grants business authorization.',
       promptSnippet: 'Switch between background browsing, human handoff and watching automated actions.',
       parameters: Type.Unsafe<Record<string, unknown>>({ type: 'object', properties: { mode: { type: 'string', enum: ['background', 'visible'] }, purpose: { type: 'string', enum: ['handoff', 'observe'] },
+        completion: { type: 'object', properties: { url: { type: 'string', maxLength: 2048 }, text: { type: 'string', minLength: 3, maxLength: 100 } }, required: ['url', 'text'], additionalProperties: false },
         ...(browserTaskStateDir ? { profile: { type: 'string', enum: ['persistent'], description: 'Opt in before opening any page. Use with mode background, then verify site login.' } } : {}),
       }, required: ['mode'], additionalProperties: false }),
       executionMode: 'sequential',
@@ -252,39 +312,59 @@ export async function createHostMcpRuntime(
           details: { serverName: 'playwright', toolName: 'browser_set_mode', isError, ...(closed ? { browserSessionClosed: true as const } : {}) } })
         if (!parsed.success) return result('Invalid browser mode: choose background or visible.', true)
         const handoff = parsed.data.mode === 'visible' && parsed.data.purpose !== 'observe'
+        if (parsed.data.completion && !handoff) return result('Completion can only be used for a visible handoff.', true)
         if (handoff && !waitForHuman) return result('Manual browser handoff is unavailable in this host.', true)
         try {
-          operationSignal.throwIfAborted()
+          if (await checkRateLimit(operationSignal)) return rateLimited('browser_set_mode')
+          lastNavigation = undefined
+          if (parsed.data.mode === 'visible') browserSnapshotApproval.reset()
+          const epoch = approvalEpoch
           if (parsed.data.profile) {
             if (parsed.data.mode !== 'background' || parsed.data.purpose) return result('Select the profile with mode background and no purpose.', true)
             try { browser.enablePersistent() }
             catch { return result('Persistent profile is unavailable or a temporary page is open. Close that session before opting in.', true) }
           }
           if (handoff && !browser.hasNavigatedPage()) return result('No target website is open. Navigate to the intended login page before requesting handoff; do not show a blank window.', true)
-          if (handoff) {
-            const tabs = await active.tools.find(tool => tool.name.endsWith('__browser_tabs'))!.execute(_id, { action: 'list' }, operationSignal)
-            if (tabs.details.isError || !/^- \d+: \(current\).*https?:\/\//m.test(tabs.content.map(item => item.text).join('\n'))) {
-              return result('Select the target website tab before requesting login; the current tab is blank or unavailable.', true)
-            }
-          }
+          const page = handoff ? await currentPage(_id, operationSignal).catch(() => undefined) : undefined
+          if (handoff && !page) return result('Select the target website tab before requesting login; the current tab is blank or unavailable.', true)
+          const waitForCompletion = page && await prepareHandoffDetection(page, parsed.data.completion)
           const switchMode = (mode: BrowserMode) => browser.setMode(mode, operationSignal)
           await switchMode(parsed.data.mode)
-          if (handoff) {
+          if (page && waitForCompletion) {
+            const closed = new AbortController()
+            const onClose = () => closed.abort()
+            const handoffSignal = AbortSignal.any([operationSignal, closed.signal])
             let onAbort: (() => void) | undefined
+            page.once('close', onClose)
+            if (page.isClosed()) onClose()
+            let origin: string | undefined
             try {
               const cancelled = new Promise<never>((_resolve, reject) => {
                 onAbort = () => reject(new Error('Manual handoff cancelled.'))
-                operationSignal.addEventListener('abort', onAbort, { once: true })
+                handoffSignal.addEventListener('abort', onAbort, { once: true })
               })
-              operationSignal.throwIfAborted()
-              const completed = await Promise.race([waitForHuman!(), cancelled])
-              operationSignal.throwIfAborted()
+              handoffSignal.throwIfAborted()
+              const completed = await Promise.race([waitForHuman!({ signal: handoffSignal, waitForCompletion }), cancelled])
+              handoffSignal.throwIfAborted()
               if (!completed) {
                 await browser.dispose()
                 return result('Human handoff was denied or expired. Browser session closed. Do not assume login succeeded; ask the user before retrying in a new session.', true, true)
               }
-            } finally { if (onAbort) operationSignal.removeEventListener('abort', onAbort) }
+              origin = pageOrigin(page)
+            } finally {
+              if (onAbort) handoffSignal.removeEventListener('abort', onAbort)
+              page.removeListener('close', onClose)
+            }
             await switchMode('background')
+            if (await checkRateLimit(operationSignal)) return rateLimited('browser_set_mode')
+            if (epoch === approvalEpoch && origin && pageOrigin(page) === origin && browser.singleBackgroundPage(page.url()) === page) {
+              snapshotGrant = { page, origin }
+              const revoke = () => browserSnapshotApproval.reset()
+              const onNavigation = () => { if (pageOrigin(page) !== origin) revoke() }
+              page.on('framenavigated', onNavigation)
+              page.once('close', revoke)
+              detachSnapshotGrant = () => { page.off('framenavigated', onNavigation); page.off('close', revoke) }
+            }
           }
           if (parsed.data.mode === 'visible' && !handoff) return result('Browser window remains visible for the user to watch automated actions. Read a fresh snapshot. Use a manual handoff before the user edits the page; use background when observation ends. Window visibility does not authorize business submissions.')
           return result(`${browser.backgroundHidden ? 'Background browser ready.' : 'Native hiding unavailable; the original browser window remains visible.'}${parsed.data.profile ? ' Conversation persistent profile enabled.' : ''} The same pages are retained without reload. Read a fresh snapshot and verify login now. Human completion does not authorize business submissions. Do not replay any submission.`)
@@ -295,11 +375,36 @@ export async function createHostMcpRuntime(
       }),
     }
     const tools = active.tools.map(tool => ({ ...tool, execute: (...args: Parameters<typeof tool.execute>) => tool.name.startsWith('mcp__playwright__') ? serial(args[2], async () => {
+      const name = tool.name.slice('mcp__playwright__'.length)
+      const claim = tool.name === BROWSER_SNAPSHOT_TOOL ? snapshotClaims.get(args[0]) : undefined
+      if (claim) snapshotClaims.delete(args[0])
+      const snapshotScopeChanged = (): McpToolResult => ({ content: [{ type: 'text', text: 'The handed-off page changed. No snapshot is returned. Recheck the target and request fresh approval if needed.' }],
+        details: { serverName: 'playwright', toolName: name, isError: true } })
+      if (lifetime.signal.aborted) return {
+        content: [{ type: 'text' as const, text: 'Browser session is closed.' }],
+        details: { serverName: 'playwright', toolName: name, isError: true, browserSessionClosed: true as const },
+      }
+      const signal = args[2] ? AbortSignal.any([args[2], lifetime.signal]) : lifetime.signal
+      if (name !== 'browser_close' && await checkRateLimit(signal)) return rateLimited(name)
+      signal.throwIfAborted()
+      if (claim && (claim !== currentSnapshotGrant() || !inlineSnapshotSchema.safeParse(args[1]).success)) return snapshotScopeChanged()
+      const url = name === 'browser_navigate' && typeof args[1].url === 'string' ? args[1].url : undefined
+      if (url && lastNavigation?.url === url && performance.now() - lastNavigation.at < 10_000
+        && lastNavigation.page === browser.singleBackgroundPage(url)) {
+        return { content: [{ type: 'text' as const, text: 'The same URL was just opened. No new network request was sent. Reuse the previous navigation result; read the current page only if its state may have changed.' }],
+          details: { serverName: 'playwright', toolName: name, isError: false } }
+      }
+      if (name !== 'browser_snapshot') lastNavigation = undefined
       const result = await tool.execute(...args)
       // A cancelled upstream action may still run. Close this isolated browser before another call.
       if (result.details.executionUncertain) await browser.dispose()
       else if (tool.name === 'mcp__playwright__browser_close' && !result.details.isError) await browser.close()
       if (browser.unavailable) result.details.browserSessionClosed = true
+      if (name !== 'browser_close' && !result.details.browserSessionClosed && await checkRateLimit(signal)) return rateLimited(name)
+      if (claim && !result.details.browserSessionClosed && currentSnapshotGrant() !== claim) return snapshotScopeChanged()
+      if (name === 'browser_close' || name === 'browser_tabs') browserSnapshotApproval.reset()
+      const page = url && !result.details.isError ? browser.singleBackgroundPage(url) : undefined
+      if (url && page) lastNavigation = { url, page, at: performance.now() }
       if (!result.details.isError && tool.name !== 'mcp__playwright__browser_close' && !browser.backgroundHidden) {
         result.content.push({ type: 'text', text: 'Browser visibility is not confirmed hidden. Do not claim the window is hidden; use browser_set_mode when visibility matters.' })
       }
@@ -310,8 +415,12 @@ export async function createHostMcpRuntime(
       assets: browser.pageAssets,
       store: browserArtifactTaskId ? new BrowserAssetStore(workspaceDir, browserArtifactTaskId) : undefined,
       lifetime: lifetime.signal, serial,
+      checkAccess: async signal => {
+        lastNavigation = undefined
+        return await checkRateLimit(signal) ? browserRateLimitMessage : undefined
+      },
     }) : []
-    return { builtinBrowser: true, tools: [...tools, modeTool, ...pageTools], permissions: new Map([...active.permissions,
+    return { builtinBrowser: true, browserSnapshotApproval, tools: [...tools, modeTool, ...pageTools], permissions: new Map([...active.permissions,
       [BROWSER_MODE_TOOL, 'confirm-each' as const], ...pageTools.map(tool => [tool.name, tool.name === BROWSER_SAVE_ASSETS ? 'confirm-each' : 'auto-approve'] as const)]), dispose }
   } catch (error) { await dispose(); throw error }
 }

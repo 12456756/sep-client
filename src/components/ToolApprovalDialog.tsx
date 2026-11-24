@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { z } from 'zod'
 import { useFeedback } from './feedback/FeedbackProvider'
-import { approvalBrowserOrigin, isBrowserHandoffRequest, isMediaResubmissionRequest, OFFICE_TOOL_NAME, toolApprovalSummarySchema, toolApprovalTimeoutMs } from '../shared/tool-approval'
+import { approvalBrowserOrigin, isBrowserHandoffRequest, isDetectedBrowserHandoff, isMediaResubmissionRequest, OFFICE_TOOL_NAME, toolApprovalSummarySchema, toolApprovalTimeoutMs } from '../shared/tool-approval'
 import type { ToolAuthorizationRequest } from '../shared/types'
 import { conversationScheduleApprovalSchema, CREATE_SCHEDULED_TASK_TOOL, formatScheduleReceiptTime } from '../shared/scheduled-creation'
 
@@ -71,6 +71,15 @@ const messages: Readonly<Record<string, string>> = {
   video_generate: '允许员工按已确认的要求生成视频？',
   video_from_image: '允许员工上传所选参考图或生成视频？',
   local_media_process: '允许在本机处理所选素材并保存新文件？原素材不会被覆盖。',
+  mcp__playwright__browser_navigate_back: '允许返回当前标签页的上一页？',
+  mcp__playwright__browser_type: '允许在网页中输入内容？此操作可能提交输入。',
+  mcp__playwright__browser_fill_form: '允许填写网页表单？',
+  mcp__playwright__browser_select_option: '允许在网页中选择选项？',
+  mcp__playwright__browser_press_key: '允许在网页中执行按键操作？此操作可能触发提交。',
+  mcp__playwright__browser_tabs: '允许查看或管理浏览器标签页？',
+  mcp__playwright__browser_wait_for: '允许等待网页状态变化？',
+  mcp__playwright__browser_handle_dialog: '允许确认或取消网页对话框？',
+  mcp__playwright__browser_close: '允许关闭浏览器页面？未保存的网页内容可能丢失。',
 }
 
 function approvalSummaryMessage(request: ToolApprovalRequest): string | undefined {
@@ -145,10 +154,11 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     const raw = z.object({ mock: z.boolean().optional() }).safeParse(request.input)
     const input = z.record(z.string(), z.unknown()).safeParse(request.input)
     const browserHandoff = isBrowserHandoffRequest(request)
+    const detectedHandoff = isDetectedBrowserHandoff(request)
     const resubmission = isMediaResubmissionRequest(request)
     const transmission = (isVideo || request.toolName === 'media_generate_image') && input.success && input.data.operation === 'upload-references'
     if (!Number.isFinite(deadline) || remaining <= 0 || isVideo && !transmission && !resubmission && (!raw.success || raw.data.mock !== true && !quote.success)) {
-      settle(false)
+      if (!detectedHandoff) settle(false)
       return
     }
     const price = request.toolName === 'media_generate_image' ? imageQuote.safeParse(request.input) : null
@@ -204,6 +214,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     if (Array.isArray(officeCommand) && officeCommand[0] === 'export-doc') message = '允许用本机 Microsoft Word 生成一个新的 Word 97–2003 文件？原文件不会被覆盖。'
     message = approvalSummaryMessage(request) ?? message
     if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。员工将在原页面继续操作。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
+    if (detectedHandoff) message = '请在浏览器中完成登录或验证。检测到完成后会自动继续；若未自动继续，可点击“已完成，继续”。本轮读取接管后同一标签页、同一站点的网页快照无需再确认，不包括保存文件或提交操作。请在 3 分钟内完成。'
     if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
     if (resubmission) message = isVideo
       ? '原任务是否受理及计费尚未确认，可能仍在生成。仍要创建新的视频任务？新旧任务可能分别生成并计费，原任务状态仍会保留。'
@@ -214,7 +225,11 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       if (typeof target === 'string') message += ` ${request.toolName === 'bash' ? '命令' : '文件'}：${target}`
       else if (target && typeof target === 'object') message += ` 命令：${JSON.stringify(target)}`
     }
-    const timer = window.setTimeout(() => { approval.abort(); settle(false) }, remaining)
+    const timer = window.setTimeout(() => {
+      if (detectedHandoff) settled = true // The host owns expiry for browser detection.
+      approval.abort()
+      settle(false)
+    }, remaining)
     void feedback.ask({
       key: `approval:${request.requestId ?? request.timestamp ?? deadline}`,
       message: isVideo && quote.success ? `${message} 本次报价 ¥${quote.data.quote.amount}。` : message,
@@ -225,6 +240,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       active = false
       window.clearTimeout(timer)
       approval.abort()
+      if (detectedHandoff) return // A resolved host request is removed by the app, not denied again.
       // StrictMode replays the same request's effect; only a real departure denies it.
       queueMicrotask(() => {
         if (!settled && (lifetime.current?.token === token || lifetime.current?.request !== request)) {

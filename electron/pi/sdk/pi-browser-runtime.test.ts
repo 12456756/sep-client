@@ -15,8 +15,11 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR
 async function fixture() {
   let posts = 0
   let mediaRequests = 0
+  const visits = new Map<string, number>()
+  let handoffState = 'waiting'
   let hold: { started: () => void; finish: () => void } | undefined
   const server = createServer((request, response) => {
+    if (request.url) visits.set(request.url, (visits.get(request.url) ?? 0) + 1)
     if (hold && request.method === 'GET') {
       const current = hold
       hold = undefined
@@ -25,6 +28,37 @@ async function fixture() {
       return
     }
     if (request.method === 'POST') posts++
+    if (request.url === '/rate-limit-text' || request.url === '/rate-limit-http') {
+      const message = request.url === '/rate-limit-text'
+      response.writeHead(message ? 200 : 429, { 'content-type': 'text/html; charset=utf-8' })
+      response.end(message ? '<main>由于访问频繁，无法搜索</main>' : '<main>Unavailable</main>')
+      return
+    }
+    if (request.url === '/handoff-state') {
+      response.end(handoffState)
+      return
+    }
+    if (request.url === '/handoff' || request.url === '/handoff-configured') {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      response.end(`<title>Handoff fixture</title><input type="password"><section></section><script>
+        setInterval(async () => {
+          const state = await (await fetch('/handoff-state')).text();
+          if (state.startsWith('configured-')) {
+            history.replaceState(null, '', state === 'configured-wrong-path' ? '/other' : '/verified');
+            document.querySelector('input').hidden = true;
+            document.querySelector('section').textContent = state === 'configured-url-only' ? '' : 'Verification complete';
+            return;
+          }
+          const section = document.querySelector('section');
+          section.innerHTML = state === 'waiting' ? '' : '<button>Sign out</button>';
+          document.querySelector('input').hidden = state === 'complete' || state === 'complete-throttled';
+          if (state === 'complete-throttled') {
+            section.insertAdjacentHTML('beforeend', '<p><span>抱歉由于访问频繁导致无法搜索，</span> <span>请稍后再试！</span></p>');
+          }
+        }, 50);
+      </script>`)
+      return
+    }
     if (request.url === '/media.png') {
       mediaRequests++
       response.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length })
@@ -39,6 +73,11 @@ async function fixture() {
         </section>`)
       return
     }
+    if (request.url === '/other') {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      response.end('<p>本文说明如何处理“抱歉由于访问频繁导致无法搜索，请稍后再试！”这类提示。</p><p hidden>抱歉由于访问频繁导致无法搜索，请稍后再试！</p>')
+      return
+    }
     response.writeHead(200, { 'content-type': 'text/html' })
     response.end('<title>Browser modes</title><label>Name<input id="name"></label><label>Password<input id="password" type="password"></label><form method="POST"><button>Submit</button></form><p>Public query content</p>')
   })
@@ -51,6 +90,8 @@ async function fixture() {
   const address = server.address()
   assert.ok(address && typeof address !== 'string')
   return { url: `http://127.0.0.1:${address.port}`, posts: () => posts, mediaRequests: () => mediaRequests,
+    visits: (path: string) => visits.get(path) ?? 0,
+    setHandoffState: (state: string) => { handoffState = state },
     holdNextGet() {
       let started!: () => void
       const pending = new Promise<void>(resolve => { started = resolve })
@@ -62,6 +103,46 @@ async function fixture() {
 }
 
 describe('background browser and manual window', () => {
+  it('skips a duplicate navigation on the same background tab but allows reopening after leaving', { timeout: 40_000 }, async () => {
+    const http = await fixture()
+    let runtime: McpRuntime | undefined
+    try {
+      runtime = await createHostMcpRuntime([createPlaywrightMcpServer()], tmpdir(), true)
+      const call = (name: string, input: Record<string, unknown>) => runtime!.tools.find(tool => tool.name === `mcp__playwright__${name}`)!.execute(name, input, undefined)
+      const url = `${http.url}/original`
+      assert.equal((await call('browser_navigate', { url })).details.isError, false)
+      assert.match((await call('browser_snapshot', {})).content[0].text, /Public query content/)
+      assert.match((await call('browser_navigate', { url })).content[0].text, /No new network request/)
+      assert.equal(http.visits('/original'), 1)
+      assert.equal((await call('browser_navigate', { url: `${http.url}/other` })).details.isError, false)
+      assert.equal((await call('browser_navigate', { url })).details.isError, false)
+      assert.equal(http.visits('/original'), 2)
+    } finally { await runtime?.dispose(); await http.close() }
+  })
+
+  for (const path of ['/rate-limit-text', '/rate-limit-http']) {
+    it(`stops queued browser operations and allows cleanup after ${path}`, { timeout: 40_000 }, async () => {
+      const http = await fixture()
+      let runtime: McpRuntime | undefined
+      try {
+        runtime = await createHostMcpRuntime([createPlaywrightMcpServer()], tmpdir(), true)
+        const call = (name: string, input: Record<string, unknown>) => runtime!.tools.find(tool => tool.name === `mcp__playwright__${name}`)!.execute(name, input, undefined)
+        const limited = call('browser_navigate', { url: http.url + path })
+        const scroll = call('browser_scroll', { container: 'body' })
+        const retry = call('browser_navigate', { url: `${http.url}/retry` })
+        for (const result of await Promise.all([limited, scroll, retry])) {
+          assert.equal(result.details.isError, true)
+          assert.match(result.content[0].text, /站点提示访问频繁/)
+        }
+        assert.equal(http.visits(path), 1)
+        assert.equal(http.visits('/retry'), 0)
+        assert.equal((await call('browser_close', {})).details.isError, false)
+        assert.equal((await call('browser_navigate', { url: `${http.url}/retry` })).details.isError, true)
+        assert.equal(http.visits('/retry'), 0)
+      } finally { await runtime?.dispose(); await http.close() }
+    })
+  }
+
   it('reopens persistent Edge state only within the same conversation, without exporting credentials', { timeout: 60_000 }, async () => {
     const http = await fixture()
     const root = await mkdtemp(join(tmpdir(), 'sep-persistent-edge-'))
@@ -387,4 +468,95 @@ describe('background browser and manual window', () => {
       } finally { approvals.denyAll(); await runtime.dispose(); await http.close(); await rm(root, { recursive: true, force: true }) }
     })
   }
+
+  it('automatically completes generic handoff after a new sign-out control appears without a login prompt', { timeout: 30_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-browser-auto-handoff-'))
+    const http = await fixture()
+    let requested!: () => void
+    const ready = new Promise<void>(resolve => { requested = resolve })
+    const outcomes: Array<[boolean, string]> = []
+    const approvals = new ToolApprovals({ timeoutMs: 10_000, onRequest: requested,
+      onResolved: (_request, approved, reason) => outcomes.push([approved, reason]) })
+    const runtime = await createHostMcpRuntime([createPlaywrightMcpServer()], root, true, undefined, detection =>
+      approvals.request({ taskId: 'task', runId: 'run', subscriptionId: 'sub', toolName: BROWSER_MODE_TOOL,
+        input: { operation: 'manual-handoff', autoDetect: true } }, detection))
+    try {
+      const navigate = await runtime.tools.find(tool => tool.name.endsWith('__browser_navigate'))!.execute('navigate', { url: `${http.url}/handoff` }, undefined)
+      assert.equal(navigate.details.isError, false, navigate.content[0]?.text)
+      const pending = runtime.tools.find(tool => tool.name === BROWSER_MODE_TOOL)!.execute('handoff', { mode: 'visible' }, undefined)
+      // Surface an early tool failure rather than waiting for a prompt that will not arrive.
+      await Promise.race([ready, pending.then(result => { assert.fail(result.content[0]?.text) })])
+      http.setHandoffState('blocked')
+      await new Promise<void>(resolve => setTimeout(resolve, 1_100))
+      assert.deepEqual(outcomes, [])
+      http.setHandoffState('complete')
+      assert.equal((await pending).details.isError, false)
+      assert.deepEqual(outcomes, [[true, 'browser_handoff_detected']])
+      const approval = runtime.browserSnapshotApproval!
+      const snapshotTool = runtime.tools.find(tool => tool.name.endsWith('__browser_snapshot'))!
+      assert.equal(approval.claim('save', { filename: 'page.md' }), false)
+      assert.equal(approval.claim('after', {}), true)
+      const snapshot = await snapshotTool.execute('after', {}, undefined)
+      assert.match(snapshot.content[0]?.text ?? '', /Sign out/)
+      assert.equal(approval.claim('queued', {}), true)
+      const navigateAway = runtime.tools.find(tool => tool.name.endsWith('__browser_navigate'))!.execute('navigate-away', {
+        url: `${http.url.replace('127.0.0.1', 'localhost')}/other`,
+      }, undefined)
+      const stale = snapshotTool.execute('queued', {}, undefined)
+      assert.equal((await navigateAway).details.isError, false)
+      assert.match((await stale).content[0]?.text ?? '', /handed-off page changed/)
+      assert.equal(approval.claim('outside', {}), false)
+    } finally { approvals.denyAll(); await runtime.dispose(); await http.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('requires both the configured destination and the new visible success marker', { timeout: 30_000 }, async () => {
+    const http = await fixture()
+    let requested!: () => void
+    const ready = new Promise<void>(resolve => { requested = resolve })
+    const outcomes: boolean[] = []
+    const approvals = new ToolApprovals({ timeoutMs: 10_000, onRequest: requested,
+      onResolved: (_request, approved) => outcomes.push(approved) })
+    const runtime = await createHostMcpRuntime([createPlaywrightMcpServer()], '.', true, undefined, detection =>
+      approvals.request({ taskId: 'task', runId: 'run', subscriptionId: 'sub', toolName: BROWSER_MODE_TOOL,
+        input: { operation: 'manual-handoff', autoDetect: true } }, detection))
+    try {
+      const navigate = await runtime.tools.find(tool => tool.name.endsWith('__browser_navigate'))!.execute('navigate', { url: `${http.url}/handoff-configured` }, undefined)
+      assert.equal(navigate.details.isError, false, navigate.content[0]?.text)
+      const pending = runtime.tools.find(tool => tool.name === BROWSER_MODE_TOOL)!.execute('handoff', {
+        mode: 'visible', completion: { url: `${http.url}/verified`, text: 'Verification complete' },
+      }, undefined)
+      await Promise.race([ready, pending.then(result => { assert.fail(result.content[0]?.text) })])
+      for (const state of ['configured-wrong-path', 'configured-url-only']) {
+        http.setHandoffState(state)
+        await new Promise<void>(resolve => setTimeout(resolve, 1_100))
+        assert.deepEqual(outcomes, [])
+      }
+      http.setHandoffState('configured-complete')
+      assert.equal((await pending).details.isError, false)
+      assert.deepEqual(outcomes, [true])
+    } finally { approvals.denyAll(); await runtime.dispose(); await http.close() }
+  })
+
+  it('stops before any retry when the full search-limit message appears during login handoff', { timeout: 30_000 }, async () => {
+    const http = await fixture()
+    let runtime: McpRuntime | undefined
+    try {
+      runtime = await createHostMcpRuntime([createPlaywrightMcpServer()], tmpdir(), true, undefined, async detection => {
+        assert.ok(detection)
+        http.setHandoffState('complete-throttled')
+        await detection.waitForCompletion(detection.signal)
+        return true
+      })
+      const call = (name: string, input: Record<string, unknown>) => runtime!.tools.find(tool => tool.name === `mcp__playwright__${name}`)!.execute(name, input, undefined)
+      assert.equal((await call('browser_navigate', { url: `${http.url}/handoff` })).details.isError, false)
+      const handoff = call('browser_set_mode', { mode: 'visible', purpose: 'handoff' })
+      const retry = call('browser_navigate', { url: `${http.url}/retry` })
+      for (const result of await Promise.all([handoff, retry])) {
+        assert.equal(result.details.isError, true)
+        assert.match(result.content[0].text, /站点提示访问频繁/)
+      }
+      assert.equal(http.visits('/retry'), 0)
+      assert.equal((await call('browser_close', {})).details.isError, false)
+    } finally { await runtime?.dispose(); await http.close() }
+  })
 })

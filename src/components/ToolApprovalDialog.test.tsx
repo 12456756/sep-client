@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import { compileFunction } from 'node:vm'
 import ts from 'typescript'
 import { FeedbackController } from '../shared/feedback-controller'
-import { OFFICE_TOOL_NAME, toolApprovalTimeoutMs } from '../shared/tool-approval'
+import { OFFICE_TOOL_NAME, removeResolvedBrowserHandoff, toolApprovalTimeoutMs } from '../shared/tool-approval'
 import { CREATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-creation'
 import type { ToolApprovalDialog } from './ToolApprovalDialog'
 
@@ -40,6 +40,47 @@ function mount(toolName: string, input: unknown, expiresAt: number | null = Date
   let cleanup = effect()
   return { feedback, decisions, replay() { cleanup?.(); cleanup = effect() }, cleanup() { cleanup?.(); feedback.clear() } }
 }
+
+test('browser snapshots describe reading or saving without skipping approval', () => {
+  for (const [input, message] of [
+    [{}, '允许读取当前网页内容？'],
+    [{ filename: 'page.yml' }, '允许读取当前网页内容并将快照保存为文件？'],
+  ] as const) {
+    const ui = mount('mcp__playwright__browser_snapshot', input)
+    try {
+      assert.equal(ui.feedback.getSnapshot()?.message, message)
+      assert.equal(ui.feedback.getSnapshot()?.tone, 'confirm')
+      assert.deepEqual(ui.decisions, [])
+    } finally { ui.cleanup() }
+  }
+})
+
+test('browser navigation approval shows only the target origin, not credentials or URL parameters', async () => {
+  const ui = mount('mcp__playwright__browser_navigate', { url: 'https://user:secret@example.test:8443/private?token=secret#fragment' })
+  try {
+    const dialog = ui.feedback.getSnapshot()!
+    assert.equal(dialog.message, '允许打开网页？目标站点：https://example.test:8443')
+    assert.deepEqual(ui.decisions, [])
+    ui.feedback.dismiss(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(ui.decisions, [false])
+  } finally { ui.cleanup() }
+})
+
+test('general browser operations have specific approval copy without disguising unknown tools', () => {
+  for (const name of ['browser_navigate', 'browser_navigate_back', 'browser_snapshot', 'browser_click',
+    'browser_type', 'browser_fill_form', 'browser_select_option', 'browser_press_key', 'browser_tabs',
+    'browser_wait_for', 'browser_handle_dialog', 'browser_close', 'browser_set_mode', 'browser_scroll',
+    'browser_extract', 'browser_save_assets', 'browser_run_code']) {
+    const ui = mount(`mcp__playwright__${name}`, {})
+    try {
+      const dialog = ui.feedback.getSnapshot()!
+      assert.equal(dialog.tone, 'confirm', name)
+      assert.equal(dialog.message.includes('未知工具'), name === 'browser_run_code', name)
+      assert.deepEqual(ui.decisions, [])
+    } finally { ui.cleanup() }
+  }
+})
 
 test('registered Office edits show only the validated write targets and still require consent', async () => {
   const ui = mount(OFFICE_TOOL_NAME, { command: ['batch', 'private/source.xlsx', '--commands', 'PRIVATE_CELL_VALUE'] }, undefined, undefined,
@@ -293,4 +334,44 @@ test('manual browser handoff waits for completion and uses the existing expiry a
     assert.deepEqual(expired.decisions, [false])
     assert.equal(expired.feedback.getSnapshot(), null)
   } finally { expired.cleanup() }
+})
+
+test('browser media saving explains its scope and an old workflow receives no special approval', async () => {
+  for (const [name, input, message, action, approved] of [
+    ['mcp__playwright__browser_save_assets', { folder: '主图', count: 1 }, /当前网页已加载的素材.*本对话的成果目录/, '允许', true],
+    ['mcp__playwright__browser_run_workflow', { workflow: 'competitor-collection' }, /未知工具.*建议拒绝/, '允许', false],
+  ] as const) {
+    const ui = mount(name, input)
+    try {
+      const dialog = ui.feedback.getSnapshot()!
+      assert.match(dialog.message, message)
+      assert.equal(dialog.actionLabel, action)
+      assert.deepEqual(ui.decisions, [])
+      if (approved) await ui.feedback.accept(dialog.id)
+      else ui.feedback.dismiss(dialog.id)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.deepEqual(ui.decisions, [approved])
+    } finally { ui.cleanup() }
+  }
+})
+
+test('host-detected browser handoff removes only its own dialog and sends no duplicate decision', async () => {
+  const input = { operation: 'manual-handoff', autoDetect: true }
+  const toolName = 'mcp__playwright__browser_set_mode'
+  const request = { taskId: 'task', runId: 'run', subscriptionId: 'employee', requestId: 'request', toolName, input, timestamp: Date.now() }
+  const unrelated = { ...request, requestId: 'other' }
+  const requests = [request, unrelated]
+  const event = { ...request, sequence: 2, occurredAt: Date.now(), type: 'approval_resolved', data: { requestId: request.requestId, approved: true } }
+  const ui = mount(toolName, input)
+  try {
+    assert.match(ui.feedback.getSnapshot()!.message, /检测到完成后会自动继续/)
+    assert.match(ui.feedback.getSnapshot()!.message, /同一站点的网页快照无需再确认，不包括保存文件或提交操作/)
+    assert.equal(ui.feedback.getSnapshot()!.actionLabel, '已完成，继续')
+    assert.equal(removeResolvedBrowserHandoff(requests, { ...event, runId: 'old' }), requests)
+    assert.deepEqual(removeResolvedBrowserHandoff(requests, event), [unrelated])
+    ui.cleanup()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(ui.feedback.getSnapshot(), null)
+    assert.deepEqual(ui.decisions, [])
+  } finally { ui.cleanup() }
 })

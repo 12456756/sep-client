@@ -7,6 +7,7 @@ import type { RememberedAccount, ToolAuthorizationRequest } from './shared/types
 import { useWorkspaceEmployees } from './features/enterprise/use-workspace-employees';
 import { FeedbackProvider, useFeedback } from './components/feedback/FeedbackProvider';
 import { LOGIN_FEEDBACK } from './shared/login-feedback';
+import { removeResolvedBrowserHandoff } from './shared/tool-approval';
 import { useUpdate } from './features/update/use-update';
 import { useSkillImport } from './features/skill-import/use-skill-import';
 import { useWindowClosePrompt } from './features/enterprise/window-close';
@@ -72,7 +73,7 @@ function AppContent() {
   }), []);
   useEffect(() => window.electronAPI.onPiEvent(event => {
     if (event.type !== 'approval_resolved' || !currentAuth.current || event.occurredAt < sessionStartedAt.current) return;
-    setToolApprovalRequests(current => current.filter(item =>
+    setToolApprovalRequests(current => removeResolvedBrowserHandoff(current, event).filter(item =>
       !isInlineFileApproval(item.toolName) || !(event.data && typeof event.data === 'object' && 'requestId' in event.data && event.data.requestId === item.requestId && event.runId === item.runId && event.taskId === item.taskId)));
   }), []);
   const resolveApproval = useCallback((requestId: string, approved: boolean) => {

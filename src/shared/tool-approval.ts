@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { TaskExecutionEvent, ToolAuthorizationRequest } from './types'
 
 export const OFFICE_TOOL_NAME = 'mcp__officecli__officecli'
 
@@ -45,6 +46,19 @@ export function isMediaResubmissionRequest(request: { toolName: string; input: u
   const input = request.input as Record<string, unknown>
   return input.operation === 'confirm-new-generation' && Number.isSafeInteger(input.unconfirmedJobCount)
     && Number(input.unconfirmedJobCount) > 0
+}
+
+export function isDetectedBrowserHandoff(request: { toolName: string; input: unknown }): boolean {
+  return isBrowserHandoffRequest(request) && typeof request.input === 'object' && request.input !== null
+    && 'autoDetect' in request.input && request.input.autoDetect === true
+}
+
+export function removeResolvedBrowserHandoff(requests: ToolAuthorizationRequest[], event: TaskExecutionEvent): ToolAuthorizationRequest[] {
+  const { data } = event
+  if (event.type !== 'approval_resolved' || !data || typeof data !== 'object' || !('requestId' in data) || typeof data.requestId !== 'string') return requests
+  const index = requests.findIndex(request => isDetectedBrowserHandoff(request) && request.requestId === data.requestId &&
+    request.runId === event.runId && request.taskId === event.taskId)
+  return index < 0 ? requests : requests.filter((_, position) => position !== index)
 }
 
 export function toolApprovalTimeoutMs(request: { toolName: string; input: unknown }): number {

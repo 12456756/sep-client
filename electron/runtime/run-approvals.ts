@@ -12,7 +12,8 @@
 import { randomUUID } from 'node:crypto'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { ToolApprovalResponse } from '../../src/shared/ipc'
-import { toolApprovalTimeoutMs } from '../../src/shared/tool-approval'
+import { isDetectedBrowserHandoff, toolApprovalTimeoutMs } from '../../src/shared/tool-approval'
+import type { BrowserHandoffDetection } from '../domain/browser-handoff'
 import { logger } from '../common/logger'
 
 const log = logger.child('run-approvals')
@@ -21,6 +22,7 @@ interface PendingApproval {
   request: ToolAuthorizationRequest
   resolve: (approved: boolean) => void
   timer: NodeJS.Timeout
+  stopVerification?: () => void
 }
 
 export interface ToolApprovalsOptions {
@@ -41,7 +43,8 @@ export class ToolApprovals {
     this.onResolved = options.onResolved
   }
 
-  request(input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>): Promise<boolean> {
+  request(input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>, detection?: BrowserHandoffDetection): Promise<boolean> {
+    if (isDetectedBrowserHandoff(input) !== !!detection || detection?.signal.aborted) return Promise.resolve(false)
     const timeoutMs = this.timeoutMs ?? toolApprovalTimeoutMs(input)
     const timestamp = Date.now()
     const request: ToolAuthorizationRequest = {
@@ -54,10 +57,29 @@ export class ToolApprovals {
       const timer = setTimeout(() => {
         this.resolve(request.requestId, false, 'timeout')
       }, timeoutMs)
-      this.pending.set(request.requestId, { request, resolve, timer })
-      void Promise.resolve(this.onRequest(request)).catch(() => {
-        this.resolve(request.requestId, false, 'request_delivery_failed')
-      })
+      const pending: PendingApproval = { request, resolve, timer }
+      this.pending.set(request.requestId, pending)
+      const verification = detection ? new AbortController() : undefined
+      if (detection && verification) {
+        const onAbort = () => { this.resolve(request.requestId, false, 'browser_handoff_cancelled') }
+        detection.signal.addEventListener('abort', onAbort, { once: true })
+        pending.stopVerification = () => {
+          detection.signal.removeEventListener('abort', onAbort)
+          verification.abort()
+        }
+      }
+      void (async () => {
+        try { await this.onRequest(request) }
+        catch { this.resolve(request.requestId, false, 'request_delivery_failed'); return }
+        if (!detection || !verification || verification.signal.aborted) return
+        try {
+          await detection.waitForCompletion(verification.signal)
+          if (!verification.signal.aborted) {
+            const withinDeadline = Date.now() < timestamp + timeoutMs
+            this.resolve(request.requestId, withinDeadline, withinDeadline ? 'browser_handoff_detected' : 'timeout')
+          }
+        } catch { /* Manual completion remains available if detection cannot confirm a result. */ }
+      })()
     })
   }
 
@@ -118,6 +140,7 @@ export class ToolApprovals {
     if (!pending) return false
     this.pending.delete(requestId)
     clearTimeout(pending.timer)
+    pending.stopVerification?.()
     pending.resolve(approved)
     void Promise.resolve(this.onResolved?.(pending.request, approved, reason)).catch(() => undefined)
     return true

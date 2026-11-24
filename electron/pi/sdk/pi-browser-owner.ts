@@ -1,7 +1,9 @@
 import type { McpRuntime } from './pi-mcp-client'
+import type { BrowserHandoffDetection } from '../../domain/browser-handoff'
 
-type BrowserFactory = (waitForHuman: () => Promise<boolean>) => Promise<McpRuntime>
-type Lease = { cancellation: AbortController; waitForHuman?: () => Promise<boolean>; pending: number }
+export type BrowserHandoff = (detection?: BrowserHandoffDetection) => Promise<boolean>
+type BrowserFactory = (waitForHuman: BrowserHandoff) => Promise<McpRuntime>
+type Lease = { cancellation: AbortController; waitForHuman?: BrowserHandoff; pending: number }
 
 /** Owns only the built-in browser, not employee-specific connectors or permissions. */
 export class SharedBrowserOwner {
@@ -15,7 +17,7 @@ export class SharedBrowserOwner {
 
   constructor(private readonly idleMs = 30 * 60_000) {}
 
-  async acquire(workspace: string, factory: BrowserFactory, waitForHuman?: () => Promise<boolean>): Promise<McpRuntime> {
+  async acquire(workspace: string, factory: BrowserFactory, waitForHuman?: BrowserHandoff): Promise<McpRuntime> {
     if (this.blocked || this.retired) throw new Error('Browser lease has been revoked.')
     if (this.lease) throw new Error('Browser lease is already active.')
     if (this.idle) clearTimeout(this.idle)
@@ -34,17 +36,22 @@ export class SharedBrowserOwner {
         assertLease()
       }
       if (!this.runtime) {
-        const runtime = await factory(async () => {
+        const runtime = await factory(async detection => {
           const active = this.lease
           if (!active || active.cancellation.signal.aborted || !active.waitForHuman) return false
-          return active.waitForHuman()
+          return active.waitForHuman(detection)
         })
         if (this.lease !== lease) { await runtime.dispose(); assertLease() }
         this.runtime = runtime
         this.workspace = workspace
       }
       const active = this.runtime!
-      return { ...active, tools: active.tools.map(tool => ({ ...tool, execute: async (id, input, signal, ...rest) => {
+      const snapshotApproval = active.browserSnapshotApproval
+      snapshotApproval?.reset()
+      return { ...active, browserSnapshotApproval: snapshotApproval && {
+        claim(id, input) { assertLease(); return snapshotApproval.claim(id, input) },
+        reset: () => { if (this.lease === lease) snapshotApproval.reset() },
+      }, tools: active.tools.map(tool => ({ ...tool, execute: async (id, input, signal, ...rest) => {
         assertLease()
         const operationSignal = signal ? AbortSignal.any([signal, lease.cancellation.signal]) : lease.cancellation.signal
         operationSignal.throwIfAborted()
