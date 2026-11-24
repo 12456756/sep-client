@@ -8,8 +8,15 @@ import { createPackage } from '@electron/asar'
 import { verifyAfterPack, verifyPackagedRuntime } from './verify-packaged-runtime.mjs'
 
 const provider = '@earendil-works/pi-ai'
+const preview = `{ kind: 'html', sections: [{ title: 'Probe', html: '<td>packaged-xlsx-probe</td>' }, { title: 'Empty', html: '<p>空工作表</p>' }] }`
+const documentWorker = `
+process.parentPort.on('message', ({ data }) => {
+  const valid = data.format === 'xlsx' &&
+    data.bytes instanceof Uint8Array && data.bytes[0] === 0x50 && data.bytes[1] === 0x4b
+  process.parentPort.postMessage(valid ? ${preview} : { error: 'INVALID_INPUT' })
+})`
 
-async function fixture(t, { nested = false, version = '0.83.0', source = 'export function streamSimple() {}', dependency = 'production' } = {}) {
+async function fixture(t, { nested = false, version = '0.83.0', source = 'export function streamSimple() {}', dependency = 'production', documentSource = documentWorker } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'sep-packaged-runtime-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const app = join(directory, 'app')
@@ -21,6 +28,7 @@ async function fixture(t, { nested = false, version = '0.83.0', source = 'export
     [dependency === 'production' ? 'dependencies' : 'devDependencies']: { [provider]: '0.83.0' },
   }))
   await writeFile(join(app, 'out/main/chunks/pi-task-worker-fixture.js'), 'export {}')
+  await writeFile(join(app, 'out/main/document-preview-worker.js'), documentSource)
   await writeFile(join(providerRoot, 'package.json'), JSON.stringify({
     name: provider, version, type: 'module',
     exports: { './api/*': { import: './dist/api/*.js' } },
@@ -43,6 +51,7 @@ test('imports a packaged provider with Electron, including Chinese and spaced ar
   const result = await verifyPackagedRuntime(moved)
   assert.equal(result.version, '0.2.0')
   assert.equal(result.module, `${provider}/api/openai-completions`)
+  assert.equal(result.xlsx, 'ready')
   assert.match(result.electron, /^33\./)
 })
 
@@ -54,6 +63,23 @@ test('rejects the released nested-only dependency layout even when development h
 test('rejects missing transitive imports rather than only checking package presence', async t => {
   const { archive } = await fixture(t, { source: "import 'missing-packaged-transport'; export function streamSimple() {}" })
   await assert.rejects(verifyPackagedRuntime(archive), /Packaged runtime import failed[\s\S]*missing-packaged-transport/)
+})
+
+test('rejects a worker that cannot render a namespaced XLSX preview', async t => {
+  const { archive } = await fixture(t, { documentSource: `
+    process.parentPort.on('message', () => process.parentPort.postMessage({ error: 'SPREADSHEET_PARSE_FAILED' }))` })
+  await assert.rejects(verifyPackagedRuntime(archive), /Packaged XLSX preview failed.*SPREADSHEET_PARSE_FAILED/)
+})
+
+test('rejects XLSX dependency resolution outside the archive', async t => {
+  const { archive, resources } = await fixture(t, { documentSource: `
+    import { createRequire } from 'node:module'
+    createRequire(import.meta.url)('xlsx-outside-probe')
+    ${documentWorker}` })
+  const external = join(resources, 'node_modules', 'xlsx-outside-probe')
+  await mkdir(external, { recursive: true })
+  await writeFile(join(external, 'index.js'), 'module.exports = true')
+  await assert.rejects(verifyPackagedRuntime(archive), /Packaged document dependency resolved outside app.asar: xlsx-outside-probe/)
 })
 
 test('rejects a broken provider export', async t => {
