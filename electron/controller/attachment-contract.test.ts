@@ -31,13 +31,18 @@ function routes(): Route[] {
 
 test('all attachment routes require trusted main-frame calls and bounded strict inputs', () => {
   const list = routes()
-  assert.equal(list.length, 10)
+  assert.equal(list.length, 11)
   for (const route of list) assert.deepEqual((route as unknown as { options: unknown }).options, { trustedMainFrame: true })
   const files = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES)!
   const input = { sessionId: 'session-a', operationId: 'op-a', paths: ['/tmp/report.txt'] }
   assert.deepEqual(files.schema.parse(input), input)
   assert.equal(files.schema.safeParse({ ...input, paths: Array(10).fill('/tmp/report.txt') }).success, true)
   for (const invalid of [{ ...input, sessionId: '../escape' }, { ...input, paths: [] }, { ...input, paths: Array(11).fill('/tmp/report.txt') }, { ...input, allowAll: true }]) assert.equal(files.schema.safeParse(invalid).success, false)
+  const drop = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_DROP)!
+  const dropped = { ...input, composerId: 'composer-a' }
+  assert.deepEqual(drop.schema.parse(dropped), dropped)
+  for (const invalid of [input, { ...dropped, composerId: '../escape' }, { ...dropped, paths: [] }, { ...dropped, paths: Array(11).fill('/tmp/report.txt') }, { ...dropped, allowAll: true }]) assert.equal(drop.schema.safeParse(invalid).success, false)
+  assert.equal(files.schema.safeParse(dropped).success, false)
   const image = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_IMAGE)!
   const base = { sessionId: 'session-a', operationId: 'op-a', name: 'screenshot.png', type: 'image/png' }
   assert.equal(image.schema.safeParse({ ...base, bytes: new Uint8Array([1]) }).success, true)
@@ -51,6 +56,26 @@ test('all attachment routes require trusted main-frame calls and bounded strict 
   assert.equal(preview.schema.safeParse({ ...draftPreviewInput, taskId: 'task-a' }).success, false)
   assert.equal(preview.schema.safeParse({ ...draftPreviewInput, sessionId: '../session' }).success, false)
   for (const invalid of [{ ...previewInput, taskId: '../task' }, { ...previewInput, attachmentId: '../image' }, { ...previewInput, sha256: 'A'.repeat(64) }, { ...previewInput, path: 'secret' }]) assert.equal(preview.schema.safeParse(invalid).success, false)
+})
+
+test('native drop and clipboard import use separate service paths', async () => {
+  const list = routes()
+  const drop = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_DROP)!
+  const paste = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES)!
+  const calls: unknown[][] = []
+  const session = { status: 'open' }
+  const ctx = { attachments: {
+    async importDroppedFiles(...args: unknown[]) { calls.push(['drop', ...args]) },
+    async importFiles(...args: unknown[]) { calls.push(['paste', ...args]) },
+    async listSession() { return session },
+  } }
+  const input = { sessionId: 'session-a', operationId: 'op-a', paths: ['D:\\report.txt'] }
+  assert.deepEqual(await drop.handle(ctx as never, drop.schema.parse({ ...input, composerId: 'composer-a' }) as never), { success: true, data: session })
+  await paste.handle(ctx as never, paste.schema.parse(input) as never)
+  assert.deepEqual(calls, [
+    ['drop', input.sessionId, input.operationId, 'composer-a', input.paths],
+    ['paste', input.sessionId, input.operationId, input.paths, 'paste-file'],
+  ])
 })
 
 test('folder preview accepts one local drive path and confirmation accepts only distinct candidate IDs', () => {
@@ -158,11 +183,27 @@ test('trusted file drops batch only native files into the active, matching compo
   const operationId = events[0]?.operationId
   assert.ok(operationId)
   assert.equal(events[1]?.operationId, operationId)
-  assert.deepEqual(calls, [[INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, { sessionId: 'session', operationId, paths: files.map(file => file.nativePath) }]])
+  assert.deepEqual(calls, [[INVOKE_CHANNELS.ATTACHMENT_IMPORT_DROP, { sessionId: 'session', composerId: 'compose', operationId, paths: files.map(file => file.nativePath) }]])
+  assert.equal('importDroppedFiles' in api, false)
   dispose()
   unsubscribe()
   assert.equal(drop(), false)
   assert.equal(calls.length, 1)
+})
+
+test('trusted clipboard files still import as snapshots without original bindings', async () => {
+  const { api, calls, dispatch } = mockAttachmentPreload()
+  const binding = { composerId: 'compose', sessionId: 'session', target: { kind: 'compose' as const, composerId: 'compose' } }
+  const dispose = api.bindAttachmentPaste(binding)
+  const nativePath = 'D:\\report.txt'
+  dispatch('paste', { isTrusted: true, preventDefault() {},
+    target: { matches: () => true, closest: () => ({ getAttribute: () => binding.composerId }) },
+    clipboardData: { getData: () => '', files: [{ nativePath }] } })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.deepEqual(calls[0]?.[0], INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES)
+  assert.deepEqual(calls[0]?.[1], { sessionId: binding.sessionId, operationId: (calls[0]?.[1] as { operationId: string }).operationId, paths: [nativePath] })
+  assert.equal(calls.length, 1)
+  dispose()
 })
 
 test('draft-node imports reject stale revision and unknown nodes before opening a session', async () => {

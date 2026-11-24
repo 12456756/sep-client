@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
@@ -11,6 +11,49 @@ import { AppError } from '../errors/app-error'
 const ownerA: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const ownerB: TaskOwnerScope = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
+
+test('a native drop binds the exact original without exposing its path in the attachment or altering the frozen snapshot', async t => {
+  const tmp = await mkdtemp(join(tmpdir(), 'csep-drop-original-'))
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  const root = await realpath(tmp)
+  const source = join(root, 'draft.md')
+  await writeFile(source, 'initial content')
+  let owner = ownerA
+  const service = new AttachmentService(new AttachmentStore(root), () => owner)
+  const { sessionId } = await service.beginSession({ kind: 'compose', composerId: 'composer-a' })
+  const drop = (composerId = 'composer-a') => service.importDroppedFiles(sessionId, 'drop', composerId, [source])
+  await assert.rejects(drop('composer-b'), { code: 'INVALID_STATE' })
+  owner = ownerB
+  await assert.rejects(drop())
+  owner = ownerA
+  assert.deepEqual((await service.listSession(sessionId))?.attachments, [])
+  await drop()
+  await service.importFiles(sessionId, 'paste', [source], 'paste-file')
+  const draft = (await service.listSession(sessionId))!
+  assert.equal(draft.attachments.length, 2)
+  assert.ok(draft.attachments.every(item => !('originalFile' in item) && !('path' in item)))
+  assert.equal(await readFile(source, 'utf8'), 'initial content')
+  const refs = draft.attachments.map(({ attachmentId, sha256 }) => ({ attachmentId, sha256 }))
+  await service.claimTask(sessionId, 'drop-task', refs)
+  const resolved = () => service.resolveTaskInputs(ownerA, 'drop-task', refs)
+  const { attachments } = await resolved()
+  const [dropped, pasted] = attachments
+  assert.equal(dropped?.originalFile?.path, source)
+  assert.equal(pasted?.originalFile, undefined)
+  await writeFile(source, 'updated outside the app')
+  assert.equal(await readFile(dropped!.readPath!, 'utf8'), 'initial content')
+  await service.stop()
+  assert.equal((await resolved()).attachments[0]?.originalFile, undefined)
+})
+
+test('dropping into a closed or non-composer import session cannot bind originals', async () => {
+  const compose = { kind: 'compose', composerId: 'composer-a' } as const
+  const open = { status: 'open' as const, target: compose, expiresAt: Date.now() + 60_000 }
+  for (const session of [{ ...open, status: 'cancelled' }, { ...open, expiresAt: 0 }, { ...open, target: { kind: 'conversation', taskId: 'task-a' } }]) {
+    const service = new AttachmentService({ get: async () => session, importPath: async () => assert.fail('must not import') } as never, () => ownerA)
+    await assert.rejects(service.importDroppedFiles('session-a', 'drop', compose.composerId, ['unused.txt']), { code: 'INVALID_STATE' })
+  }
+})
 
 test('an MP4 picked as a single file is video material and bypasses text extraction', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'csep-attachment-media-')))

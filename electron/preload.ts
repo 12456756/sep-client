@@ -124,7 +124,8 @@ function registerPasteTarget(binding: Parameters<ElectronAPI['bindAttachmentPast
     if (files.length > attachmentImportLimits.maxImportFiles) { fail(`一次最多添加 ${attachmentImportLimits.maxImportFiles} 个附件`); return; }
     const paths = Array.from(files, localAttachmentPath);
     if (paths.some(path => !path)) { fail('无法读取拖入的文件，请从本地文件管理器拖入。'); return; }
-    void importPaths(operationId, paths).then(result => {
+    // Only this native-drop handler may request original-file bindings; do not expose it through the bridge.
+    void ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_IMPORT_DROP, { sessionId: input.sessionId, composerId: input.composerId, operationId, paths }).then(result => {
       if (!result.success) fail(result.error?.message);
       else notify(operationId, { status: 'completed' }, 'drop');
     }).catch(() => fail());

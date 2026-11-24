@@ -9,6 +9,7 @@ import { route } from '../router'
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const sessionInput = z.object({ sessionId: id }).strict()
 const operationInput = sessionInput.extend({ operationId: id })
+const localPaths = z.array(z.string().min(1).max(4096)).min(1).max(attachmentImportLimits.maxImportFiles)
 const trusted = { trustedMainFrame: true }
 
 export const attachmentRoutes = [
@@ -36,8 +37,12 @@ export const attachmentRoutes = [
     await ctx.attachments.importFiles(input.sessionId, randomUUID(), selected.filePaths, 'picker')
     return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
   }, trusted),
-  route(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, operationInput.extend({ paths: z.array(z.string().min(1).max(4096)).min(1).max(attachmentImportLimits.maxImportFiles) }).strict(), async (ctx, input) => {
+  route(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, operationInput.extend({ paths: localPaths }).strict(), async (ctx, input) => {
     await ctx.attachments.importFiles(input.sessionId, input.operationId, input.paths, 'paste-file')
+    return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
+  }, trusted),
+  route(INVOKE_CHANNELS.ATTACHMENT_IMPORT_DROP, operationInput.extend({ composerId: id, paths: localPaths }).strict(), async (ctx, input) => {
+    await ctx.attachments.importDroppedFiles(input.sessionId, input.operationId, input.composerId, input.paths)
     return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
   }, trusted),
   route(INVOKE_CHANNELS.ATTACHMENT_FOLDER_PREVIEW, sessionInput.extend({ path: z.string().max(4096).refine(value => pastedAttachmentFolderPath(value) === value) }).strict(), async (ctx, input) => {

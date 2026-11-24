@@ -1,6 +1,8 @@
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 
+export interface BoundOriginalFile { path: string; identity: string }
+
 export interface ResolvedAttachmentInput {
   attachmentId: string
   sha256: string
@@ -10,6 +12,8 @@ export interface ResolvedAttachmentInput {
   width?: number
   height?: number
   readPath?: string
+  /** Host-only binding from a trusted native file selection or drop; never a media or upload grant. */
+  originalFile?: BoundOriginalFile
   extractedText?: string
   extractionStatus: string
 }

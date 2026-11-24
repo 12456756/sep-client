@@ -6,7 +6,8 @@ import type { AttachmentStorePort } from '../data/attachment-store'
 import { createHash, randomUUID } from 'node:crypto'
 import { extname } from 'node:path'
 import type { AttachmentExtractor } from '../domain/attachment-extraction'
-import type { ResolvedAttachmentInput } from '../domain/attachment-input'
+import type { BoundOriginalFile, ResolvedAttachmentInput } from '../domain/attachment-input'
+import { selectedAttachmentOriginal } from '../data/attachment-original'
 import { AppError } from '../errors/app-error'
 import { attachmentImportLimits, referenceAttachmentSelectionSchema, referenceTextLimit, type ReferenceAttachmentSelection, type ReferenceMaterials } from '../../src/shared/attachment-contracts'
 import { assertAttachmentFolderEntry, scanAttachmentFolder, type AttachmentFolderEntry } from '../data/attachment-folder'
@@ -31,7 +32,10 @@ export type InputSnapshotRef = SharedInputSnapshotRef
 
 /** Scope-aware attachment use cases. The service delegates all filesystem paths to data. */
 export class AttachmentService {
+  private readonly selectedOriginals = new Map<string, BoundOriginalFile>()
   private readonly folderPreviews = new Map<string, { id: string; scope: TaskOwnerScope; expiresAt: number; entries: AttachmentFolderEntry[] }>()
+
+  private epoch = 0
 
   constructor(private readonly store: AttachmentStorePort, private readonly scopeProvider?: () => TaskOwnerScope | null) {}
 
@@ -48,6 +52,32 @@ export class AttachmentService {
   importFiles(sessionId: string, operationId: string, paths: readonly string[], source: AttachmentView['importSource'] = 'picker'): Promise<AttachmentImportResult[]> {
     const scope = this.currentScope()
     return Promise.all(paths.map(path => this.importFile(scope, sessionId, operationId, path, source)))
+  }
+  async importDroppedFiles(sessionId: string, operationId: string, composerId: string, paths: readonly string[]): Promise<void> {
+    const scope = this.currentScope()
+    const epoch = this.epoch
+    const assertOwner = () => {
+      if (epoch !== this.epoch || !this.sameOwner(scope, this.currentScope())) throw new AppError('AUTH_REQUIRED')
+    }
+    const session = await this.require(scope, sessionId)
+    assertOwner()
+    if (session.target.kind !== 'compose' || session.target.composerId !== composerId || session.status !== 'open' || session.expiresAt <= Date.now()) {
+      throw new AppError('INVALID_STATE')
+    }
+    for (const path of paths) {
+      const original = await selectedAttachmentOriginal(path)
+      assertOwner()
+      const { item } = await this.importFile(scope, sessionId, operationId, path, 'paste-file')
+      const after = original && await selectedAttachmentOriginal(path)
+      assertOwner()
+      if (original && after?.path === original.path && after.identity === original.identity) {
+        this.selectedOriginals.set(this.selectedOriginalKey(scope, item), original)
+        if (this.selectedOriginals.size > 512) this.selectedOriginals.delete(this.selectedOriginals.keys().next().value!)
+      }
+    }
+  }
+  private selectedOriginalKey(scope: TaskOwnerScope, ref: AttachmentRef) {
+    return JSON.stringify([scope.memberId, scope.enterpriseId, ref.attachmentId, ref.sha256])
   }
   importImageForSession(sessionId: string, operationId: string, bytes: Uint8Array, displayName: string, mediaType: string): Promise<AttachmentImportResult> { return this.importImage(this.currentScope(), sessionId, operationId, bytes, displayName, mediaType) }
   removeFromSession(sessionId: string, attachmentId: string, expectedRevision?: number): Promise<AttachmentImportSession> { return this.remove(this.currentScope(), sessionId, attachmentId, expectedRevision) }
@@ -264,7 +294,7 @@ export class AttachmentService {
     return refs.flatMap(ref => {
       const item = items.get(ref.attachmentId)
       if (!item || item.sha256 !== ref.sha256) return []
-      return [{ attachmentId: item.attachmentId, sha256: item.sha256, displayName: item.displayName, mediaType: item.mediaType, byteLength: item.byteLength, width: item.width, height: item.height, extractionStatus: item.extractionStatus, readPath: this.store.taskReadPath?.(scope, taskId, item.attachmentId) }]
+      return [{ attachmentId: item.attachmentId, sha256: item.sha256, displayName: item.displayName, mediaType: item.mediaType, byteLength: item.byteLength, width: item.width, height: item.height, extractionStatus: item.extractionStatus, readPath: this.store.taskReadPath?.(scope, taskId, item.attachmentId), originalFile: this.selectedOriginals.get(this.selectedOriginalKey(scope, item)) }]
     })
   }
 
@@ -299,7 +329,7 @@ export class AttachmentService {
   }
 
   async releaseDraft(draftId: string): Promise<void> { await this.store.releaseDraft(this.currentScope(), draftId) }
-  async stop(): Promise<void> {}
+  async stop(): Promise<void> { this.epoch++; this.selectedOriginals.clear() }
 
   begin(scope: TaskOwnerScope, target: AttachmentImportTarget): Promise<AttachmentImportSession> { return this.store.begin(scope, target) }
   get(scope: TaskOwnerScope, sessionId: string): Promise<AttachmentImportSession | null> { return this.store.get(scope, sessionId) }
