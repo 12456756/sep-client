@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BROWSER_MODE_TOOL, BrowserModeSession, createHostMcpRuntime } from './pi-browser-runtime'
@@ -10,8 +10,11 @@ import type { McpRuntime } from './pi-mcp-client'
 import { ToolApprovals } from '../../runtime/run-approvals'
 import { SharedBrowserOwner } from './pi-browser-owner'
 
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAwMDAxAADAA0dAQNV85kQAAAAAElFTkSuQmCC', 'base64')
+
 async function fixture() {
   let posts = 0
+  let mediaRequests = 0
   let hold: { started: () => void; finish: () => void } | undefined
   const server = createServer((request, response) => {
     if (hold && request.method === 'GET') {
@@ -22,6 +25,20 @@ async function fixture() {
       return
     }
     if (request.method === 'POST') posts++
+    if (request.url === '/media.png') {
+      mediaRequests++
+      response.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length })
+      response.end(png)
+      return
+    }
+    if (request.url === '/collection') {
+      response.writeHead(200, { 'content-type': 'text/html' })
+      response.end(`<title>Collection fixture</title><section id="panel" style="height:100px;overflow:auto">
+        <article style="height:80px"><span>First</span><a href="/item?id=not-exposed">link</a><img src="/media.png"></article>
+        <article style="display:none"><span>Hidden</span></article><article style="height:100px"><span>Second</span></article>
+        </section>`)
+      return
+    }
     response.writeHead(200, { 'content-type': 'text/html' })
     response.end('<title>Browser modes</title><label>Name<input id="name"></label><label>Password<input id="password" type="password"></label><form method="POST"><button>Submit</button></form><p>Public query content</p>')
   })
@@ -33,7 +50,7 @@ async function fixture() {
   }
   const address = server.address()
   assert.ok(address && typeof address !== 'string')
-  return { url: `http://127.0.0.1:${address.port}`, posts: () => posts,
+  return { url: `http://127.0.0.1:${address.port}`, posts: () => posts, mediaRequests: () => mediaRequests,
     holdNextGet() {
       let started!: () => void
       const pending = new Promise<void>(resolve => { started = resolve })
@@ -45,6 +62,76 @@ async function fixture() {
 }
 
 describe('background browser and manual window', () => {
+  it('reopens persistent Edge state only within the same conversation, without exporting credentials', { timeout: 60_000 }, async () => {
+    const http = await fixture()
+    const root = await mkdtemp(join(tmpdir(), 'sep-persistent-edge-'))
+    const state = join(root, 'task')
+    const otherState = join(root, 'other-task')
+    await mkdir(state)
+    await mkdir(otherState)
+    const first = new BrowserModeSession(undefined, state)
+    const second = new BrowserModeSession(undefined, state)
+    const other = new BrowserModeSession(undefined, otherState)
+    try {
+      first.enablePersistent()
+      const context = await first.getContext()
+      const page = context.pages()[0] ?? await context.newPage()
+      await page.goto(http.url)
+      await page.evaluate('document.cookie = "fixture=persisted; Path=/; Max-Age=3600"')
+      assert.equal(await first.setMode('visible'), true)
+      await first.dispose()
+
+      second.enablePersistent()
+      const reopened = await second.getContext()
+      assert.equal((await reopened.cookies(http.url)).find(cookie => cookie.name === 'fixture')?.value, 'persisted')
+      other.enablePersistent()
+      assert.deepEqual(await (await other.getContext()).cookies(http.url), [])
+    } finally { await first.dispose(); await second.dispose(); await other.dispose(); await http.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('extracts visible fields, scrolls the active tab, and saves only live page media handles', { timeout: 60_000 }, async () => {
+    const http = await fixture()
+    const root = await mkdtemp(join(tmpdir(), 'sep-page-tools-'))
+    let runtime: McpRuntime | undefined
+    try {
+      await mkdir(join(root, '成果', 'task'), { recursive: true })
+      runtime = await createHostMcpRuntime([createPlaywrightMcpServer()], root, true, undefined, undefined, undefined, 'task', root)
+      const call = async (name: string, input: Record<string, unknown>) => await runtime!.tools.find(tool => tool.name === `mcp__playwright__${name}`)!.execute('test', input, undefined)
+      assert.equal((await call('browser_set_mode', { mode: 'background', profile: 'persistent' })).details.isError, false)
+      assert.equal((await call('browser_navigate', { url: http.url + '/collection' })).details.isError, false)
+      const extract = { container: '#panel', item: 'article', fields: [
+        { key: 'text', kind: 'text', selector: 'span' }, { key: 'url', kind: 'link', selector: 'a' },
+        { key: 'ref', kind: 'media', selector: 'img' },
+      ] }
+      const first = await call('browser_extract', extract)
+      assert.equal(first.details.isError, false, first.details.isError ? JSON.stringify({ first, tabs: await call('browser_tabs', { action: 'list' }) }) : undefined)
+      const data = JSON.parse(first.content[0].text)
+      assert.equal(data.rows.length, 2)
+      assert.equal(data.rows[0].text, 'First')
+      assert.equal(data.rows[0].url, http.url + '/item')
+      assert.ok(data.rows[0].ref, first.content[0].text)
+      assert.deepEqual(data.rows[1], { text: 'Second', url: null, ref: null })
+      const start = JSON.parse((await call('browser_extract', { ...extract, limit: 1 })).content[0].text)
+      assert.equal(start.nextOffset, 1)
+      const more = JSON.parse((await call('browser_extract', { ...extract, limit: 1, offset: start.nextOffset })).content[0].text)
+      assert.deepEqual(more, { rows: [data.rows[1]], truncated: false, nextOffset: null })
+      const scroll = await call('browser_scroll', { container: '#panel' })
+      assert.deepEqual(JSON.parse(scroll.content[0].text), { moved: true, atStart: false, atEnd: true })
+      assert.equal((await call('browser_save_assets', { folder: '../bad', refs: [data.rows[0].ref] })).details.isError, true)
+      assert.equal((await call('browser_save_assets', { folder: '主图', refs: [http.url + '/media.png'] })).details.isError, true)
+      const firstSave = await call('browser_save_assets', { folder: '主图', refs: [data.rows[0].ref] })
+      const { results: [saved] } = JSON.parse(firstSave.content[0].text)
+      assert.equal(saved.status, 'saved', firstSave.content[0].text)
+      assert.deepEqual(await readFile(join(root, saved.path)), png)
+      const duplicate = await call('browser_save_assets', { folder: '主图', refs: [data.rows[0].ref] })
+      assert.deepEqual(JSON.parse(duplicate.content[0].text).results, [{ ...saved, status: 'already_saved' }])
+      assert.equal(http.mediaRequests(), 1, 'saving must not refetch a media URL')
+      await call('browser_navigate', { url: http.url + '/collection?new-document' })
+      const stale = await call('browser_save_assets', { folder: '主图', refs: [data.rows[0].ref] })
+      assert.deepEqual(JSON.parse(stale.content[0].text).results, [{ ref: data.rows[0].ref, status: 'stale_or_unknown_reference' }])
+    } finally { await runtime?.dispose(); await http.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
   it('preserves task cookies, site storage, session storage and tabs across real headed/background switches without resubmitting POST', { timeout: 60_000 }, async () => {
     const http = await fixture()
     const session = new BrowserModeSession()
@@ -173,7 +260,7 @@ describe('background browser and manual window', () => {
         return new Promise<boolean>(resolve => { complete = resolve })
       })
       const call = (name: string, input: Record<string, unknown>) => runtime!.tools.find(tool => tool.name === 'mcp__playwright__' + name)!.execute('test', input, undefined)
-      assert.equal(runtime.tools.length, preset.enabledTools!.length + 1)
+      assert.equal(runtime.tools.length, preset.enabledTools!.length + 3)
       assert.equal(runtime.permissions.get(BROWSER_MODE_TOOL), 'confirm-each')
       assert.equal(runtime.tools.some(tool => /browser_(evaluate|run_code|file_upload)/.test(tool.name)), false)
       assert.equal((await call('browser_set_mode', { mode: 'unknown' })).details.isError, true)

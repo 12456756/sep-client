@@ -23,6 +23,27 @@ class FakeSession implements PiAgentSession {
 }
 
 describe('SharedPiSession', () => {
+  it('uses only the active turn approval handler for a reused conversation', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession('shared') } })
+    const config: PiAgentSessionConfig = { runId: 'first', modelId: 'model', gatewayUrl: 'g', workspaceDir: 'w', agentDir: 'a', sessionDir: 's', getAccessToken: async () => 'token', authorizeTool: async () => false }
+    const request = { toolName: 'mcp__playwright__browser_set_mode', input: { operation: 'manual-handoff' } }
+    try {
+      const browser = { browserArtifactTaskId: 'task-a', browserTaskStateDir: 'task-state-a' }
+      const first = await adapter.open({ ...config, ...browser })
+      assert.equal(await configs[0].authorizeTool(request), false)
+      assert.equal(await adapter.open({ ...config, ...browser, runId: 'second', authorizeTool: async () => true }), first)
+      assert.equal(await configs[0].authorizeTool(request), true)
+      const changed = await adapter.open({ ...config, ...browser, browserTaskStateDir: 'task-state-b', runId: 'changed-profile' })
+      assert.notEqual(changed, first)
+      assert.equal(await configs[0].authorizeTool(request), false)
+      const restricted = await adapter.open({ ...config, ...browser, browserTaskStateDir: 'task-state-b', runId: 'restricted',
+        toolPolicy: { preset: 'read-only', allowedTools: ['read'], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled',
+          approvalMode: 'confirm-each', workspaceDir: 'w' } })
+      assert.notEqual(restricted, changed)
+      assert.notEqual(await adapter.open({ ...config, runId: 'unbound' }), restricted)
+    } finally { await adapter.dispose() }
+  })
   it('uses the current turn media binding without reopening the same conversation', async () => {
     const configs: PiAgentSessionConfig[] = []
     const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession(`session-${configs.length}`) } })

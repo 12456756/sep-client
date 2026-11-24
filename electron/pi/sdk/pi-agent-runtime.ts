@@ -68,6 +68,9 @@ export interface PiAgentSessionConfig {
   conversationAttachments?: import('../../domain/attachment-input').ConversationAttachmentReader
   conversationSchedule?: import('./pi-conversation-schedule').ConversationScheduleTool
   localMedia?: import('../../domain/local-media-tools').LocalMediaTool
+  /** Host-only conversation ID, bound after validating the conversation result directory. */
+  browserArtifactTaskId?: string
+  browserTaskStateDir?: string
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
   /** Host-owned instructions retained outside compacted conversation history. */
   fixedSystemPrompt?: string

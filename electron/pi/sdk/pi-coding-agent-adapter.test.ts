@@ -14,6 +14,7 @@ import { prepareCommonSkills } from './common-skills'
 import { OFFICE_TOOL_NAME } from './pi-office-policy'
 import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
 import { BROWSER_MODE_TOOL } from './pi-browser-runtime'
+import { BROWSER_EXTRACT, BROWSER_SAVE_ASSETS, BROWSER_SCROLL } from './pi-browser-page-tools'
 import { createPlaywrightMcpServer, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
 import type { ModelTraceEntry } from '../../domain/model-trace'
 
@@ -506,6 +507,49 @@ describe('browser instructions in real provider requests', () => {
 })
 
 describe('built-in browser handoff with the real Pi SDK', () => {
+  const browserBinding = { browserArtifactTaskId: 'task', browserTaskStateDir: 'task' }
+  const saveCall = { name: BROWSER_SAVE_ASSETS, input: { folder: 'media', refs: ['fb582074-ddc4-4e4b-8a39-8072dcb1dc8b'] } }
+
+  it('asks before enabling a persistent profile in full-local auto mode', async t => {
+    if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+      t.skip('Requires default browser configuration.'); return
+    }
+    const { approvals, bodies } = await mediaSession({ mcpServers: undefined, ...browserBinding,
+      toolPolicy: { ...readOnlyPolicy, preset: 'full-local', approvalMode: 'auto-approve' },
+    }, { name: BROWSER_MODE_TOOL, input: { mode: 'background', profile: 'persistent' } })
+    assert.equal(approvals, 1)
+    assert.match(messageText(bodies[1].messages.find(message => message.role === 'tool')!.content), /persistence was not approved/)
+  })
+
+  it('advertises scoped page tools but not the retired workflow, and asks before saving in full-local auto mode', async t => {
+    if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+      t.skip('Requires default browser configuration.'); return
+    }
+    const { approvals, bodies } = await mediaSession({ mcpServers: undefined, useNativeSystemPrompt: true,
+      ...browserBinding, toolPolicy: { ...readOnlyPolicy, preset: 'full-local', approvalMode: 'auto-approve' },
+    }, saveCall)
+    const names = bodies[0].tools?.map(tool => tool.function.name) ?? []
+    for (const name of [BROWSER_EXTRACT, BROWSER_SCROLL, BROWSER_SAVE_ASSETS]) assert.ok(names.includes(name), name)
+    assert.ok(!names.includes('mcp__playwright__browser_run_workflow'))
+    const modeTool = bodies[0].tools?.find(tool => tool.function.name === BROWSER_MODE_TOOL)
+    assert.match(JSON.stringify(modeTool), /"persistent"/)
+    const system = bodies[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+    assert.doesNotMatch(system, /browser_run_workflow|竞品采集/)
+    assert.equal(approvals, 1)
+    assert.match(messageText(bodies[1].messages.find(message => message.role === 'tool')!.content), /not approved/)
+  })
+
+  it('does not advertise the new page tools for a read-only policy without an explicit browser grant', async t => {
+    if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+      t.skip('Requires default browser configuration.'); return
+    }
+    const { bodies } = await mediaSession({ mcpServers: undefined, useNativeSystemPrompt: true,
+      browserArtifactTaskId: 'task', toolPolicy: { ...readOnlyPolicy, preset: 'read-only' },
+    })
+    const names = bodies[0].tools?.map(tool => tool.function.name) ?? []
+    for (const name of [BROWSER_EXTRACT, BROWSER_SCROLL, BROWSER_SAVE_ASSETS]) assert.ok(!names.includes(name), name)
+  })
+
   for (const approvalMode of ['auto-approve', 'confirm-each'] as const) {
     it(`rejects a blank-window handoff in full-local ${approvalMode}`, async t => {
       if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {

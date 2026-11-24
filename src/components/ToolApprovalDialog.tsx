@@ -60,6 +60,10 @@ function compositionApproval(input: unknown): string | undefined {
   return `在本机合成并保存 MP4？${aspect}，${resolution}p，预计 ${seconds(durationSeconds)} 秒。原素材不会被覆盖。\n\n${lines.join('\n')}`
 }
 const messages: Readonly<Record<string, string>> = {
+  mcp__playwright__browser_set_mode: '允许切换浏览器显示模式？',
+  mcp__playwright__browser_scroll: '允许滚动当前网页？',
+  mcp__playwright__browser_extract: '允许提取当前网页的可见内容？',
+  mcp__playwright__browser_save_assets: '允许将当前网页已加载的素材保存到本对话的成果目录？',
   bash: '允许员工在本机执行命令？此操作可能修改文件或访问系统资源。',
   write: '允许员工创建或覆盖文件？覆盖后原有内容可能无法恢复。',
   edit: '允许员工修改文件内容？',
@@ -122,6 +126,9 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       return
     }
     let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
+    if (request.toolName === 'mcp__playwright__browser_set_mode' && input.success && input.data.profile === 'persistent') {
+      message = '允许在本对话中保留浏览器资料和网站登录状态？'
+    }
     const scheduling = request.toolName === CREATE_SCHEDULED_TASK_TOOL
     if (scheduling) {
       const schedule = conversationScheduleApprovalSchema.safeParse(request.input)

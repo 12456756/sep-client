@@ -267,6 +267,7 @@ export class ConversationExecutor {
         }
       }
       const directory = artifactDirectory
+      const browserArtifactTaskId = scope && queued.conversation && !task.scheduledOrigin && directory?.status === 'ready' ? taskId : undefined
       const allowLocalMedia = !toolPolicy || (queued.arrangement?.mode === 'conversation' && !task.scheduledOrigin && isUnrestrictedToolPolicy(toolPolicy))
       const localMedia = scope && queued.conversation && allowLocalMedia && directory?.status === 'ready'
         ? this.options.localMedia?.bind({
@@ -349,6 +350,8 @@ export class ConversationExecutor {
           conversationAttachments: attachmentContext?.reader,
           conversationSchedule,
           localMedia,
+          browserArtifactTaskId,
+          browserTaskStateDir: browserArtifactTaskId ? runPaths?.taskDir : undefined,
           toolPolicy,
           employeeProfile: general ? undefined : employee.employeeProfile,
           inputImages: attachmentImages,

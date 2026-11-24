@@ -7,6 +7,7 @@ import { SharedBrowserOwner } from './pi-browser-owner'
  * 是唯一的对话上下文来源。
  */
 export class SharedPiSession {
+  private browserPolicyKey?: string
   private session: PiAgentSession | null = null
   private sessionFile: string | null = null
   private vision: boolean | null = null
@@ -14,6 +15,9 @@ export class SharedPiSession {
   private connectorRevision: string | undefined
   private localMediaBinding?: { host: NonNullable<PiAgentSessionConfig['localMedia']> }
   private scheduleBinding?: { submit: NonNullable<PiAgentSessionConfig['conversationSchedule']> }
+  private approvalBinding?: { authorize: PiAgentSessionConfig['authorizeTool'] }
+  private browserArtifactTaskId?: string
+  private browserTaskStateDir?: string
   private unsubscribeSession: (() => void) | null = null
   private listener: ((event: PiAgentEvent) => void) | null = null
   private disposed = false
@@ -34,14 +38,16 @@ export class SharedPiSession {
     return this.enqueue(async () => {
       if (this.disposed) throw new Error('Shared Pi session adapter has been disposed.')
       this.browserOwner.resume()
-      if (this.session && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision && !!this.localMediaBinding === !!config.localMedia && !!this.scheduleBinding === !!config.conversationSchedule) {
+      if (this.session && this.browserPolicyKey !== this.browserPolicy(config)) await this.disposeCurrent()
+      if (this.session && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision && !!this.localMediaBinding === !!config.localMedia && !!this.scheduleBinding === !!config.conversationSchedule && this.browserArtifactTaskId === config.browserArtifactTaskId && this.browserTaskStateDir === config.browserTaskStateDir) {
         if (this.localMediaBinding && config.localMedia) this.localMediaBinding.host = config.localMedia
         if (this.scheduleBinding && config.conversationSchedule) this.scheduleBinding.submit = config.conversationSchedule
+        if (this.approvalBinding) this.approvalBinding.authorize = config.authorizeTool
         return this.session
       }
       if (this.session) await this.disposeCurrent()
       const session = await this.runtime.createSession({
-        ...this.bindLocalMedia(this.bindConversationSchedule(config)),
+        ...this.bindTurn(config),
         browserOwner: this.browserOwner,
         resumeSessionFile: this.sessionFile ?? config.resumeSessionFile,
       })
@@ -61,7 +67,7 @@ export class SharedPiSession {
       this.browserOwner.resume()
       const resumeSessionFile = this.sessionFile ?? config.resumeSessionFile
       await this.disposeCurrent()
-      const session = await this.runtime.createSession({ ...this.bindLocalMedia(this.bindConversationSchedule(config)), browserOwner: this.browserOwner, resumeSessionFile: resumeSessionFile ?? undefined })
+      const session = await this.runtime.createSession({ ...this.bindTurn(config), browserOwner: this.browserOwner, resumeSessionFile: resumeSessionFile ?? undefined })
       this.session = session
       this.modelId = config.modelId
       this.vision = config.vision ?? null
@@ -104,6 +110,23 @@ export class SharedPiSession {
     this.unsubscribeSession = session.subscribe(event => this.listener?.(event))
   }
 
+  private bindTurn(config: PiAgentSessionConfig): PiAgentSessionConfig {
+    this.browserPolicyKey = this.browserPolicy(config)
+    this.browserArtifactTaskId = config.browserArtifactTaskId
+    this.browserTaskStateDir = config.browserTaskStateDir
+    const binding = { authorize: config.authorizeTool }
+    this.approvalBinding = binding
+    return this.bindLocalMedia(this.bindConversationSchedule({ ...config, authorizeTool: request =>
+      this.approvalBinding === binding ? binding.authorize(request) : Promise.resolve(false) }))
+  }
+
+  private browserPolicy(config: PiAgentSessionConfig): string | undefined {
+    if (!config.browserArtifactTaskId) return undefined
+    const policy = config.toolPolicy
+    return JSON.stringify([config.workspaceDir, config.disableTools, policy?.preset, policy?.approvalMode,
+      policy?.allowedTools, policy?.allowedPaths, policy?.deniedPaths])
+  }
+
   private bindConversationSchedule(config: PiAgentSessionConfig): PiAgentSessionConfig {
     if (!config.conversationSchedule) return config
     const binding = { submit: config.conversationSchedule }
@@ -129,6 +152,10 @@ export class SharedPiSession {
     this.session = null
     this.localMediaBinding = undefined
     this.scheduleBinding = undefined
+    this.approvalBinding = undefined
+    this.browserArtifactTaskId = undefined
+    this.browserTaskStateDir = undefined
+    this.browserPolicyKey = undefined
     this.unsubscribeSession?.()
     this.unsubscribeSession = null
     if (!session) return

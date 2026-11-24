@@ -61,6 +61,7 @@ import { logger } from '../../common/logger'
 import { safeApiDiagnostic } from '../../common/platform/api-diagnostic'
 import type { McpRuntime } from './pi-mcp-client'
 import { BROWSER_MODE_TOOL, createHostMcpRuntime } from './pi-browser-runtime'
+import { BROWSER_EXTRACT, BROWSER_SAVE_ASSETS, BROWSER_SCROLL, browserSaveAssetsInput } from './pi-browser-page-tools'
 import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
 import { buildMediaExecutionPrompt } from './media-execution-prompts'
@@ -99,6 +100,20 @@ export type PiResourceLoaderOptions = ConstructorParameters<typeof DefaultResour
 const DEFAULT_SESSION_TOOLS = ['read', 'bash', 'edit', 'write'] as const
 const MEDIA_TOOL_NAMES: readonly MediaToolName[] = ['media_get_capabilities', 'media_generate_image', 'media_replace_images', 'media_get_job', 'media_cancel_job']
 const READ_ONLY_MEDIA_TOOLS = new Set<MediaToolName>(['media_get_capabilities', 'media_get_job'])
+
+function browserToolAvailability(config: Pick<PiAgentSessionConfig, 'browserArtifactTaskId' | 'toolPolicy' | 'disableTools'>) {
+  const policy = config.toolPolicy
+  if (config.disableTools) return new Set<string>()
+  const writeAllowed = !policy || isUnrestrictedToolPolicy(policy) ||
+    (policy.preset !== 'read-only' && policy.allowedTools.includes('write') && !policy.allowedPaths.length && !policy.deniedPaths.length)
+  const allowPageTool = (name: string) => !policy || policy.preset === 'full-local' || policy.allowedTools.includes(name)
+  const canSave = !!config.browserArtifactTaskId && writeAllowed && allowPageTool(BROWSER_SAVE_ASSETS)
+  return new Set<string>([
+    ...(allowPageTool(BROWSER_SCROLL) ? [BROWSER_SCROLL] : []),
+    ...(allowPageTool(BROWSER_EXTRACT) ? [BROWSER_EXTRACT] : []),
+    ...(canSave ? [BROWSER_SAVE_ASSETS] : []),
+  ])
+}
 
 function registeredMediaNames(config: PiAgentSessionConfig): MediaToolName[] {
   if (config.disableTools || !config.mediaTools) return []
@@ -840,8 +855,26 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
         return { block: !approved, ...(approved ? {} : { reason: 'User denied Office document modification.' }) }
       }
       if (toolName === BROWSER_MODE_TOOL && mcp.builtinBrowser && pi.getActiveTools().includes(toolName)) {
+        if (typeof event.input === 'object' && event.input && 'profile' in event.input) {
+          const input = event.input as { mode?: unknown; purpose?: unknown; profile?: unknown }
+          if (input.profile !== 'persistent' || input.mode !== 'background' || input.purpose !== undefined ||
+            !config.browserTaskStateDir || !browserToolAvailability(config).has(BROWSER_SAVE_ASSETS)) {
+            return { block: true, reason: 'Persistent browser profiles are not available for this input or run.' }
+          }
+          const approved = await config.authorizeTool({ toolName, input: { profile: 'persistent' } })
+          return approved ? { block: false } : { block: true, reason: 'Browser profile persistence was not approved.' }
+        }
         // The host opens the window first, then waits for actual human completion.
         return { block: false }
+      }
+      if (toolName === BROWSER_SAVE_ASSETS && mcp.builtinBrowser) {
+        const parsed = browserSaveAssetsInput.safeParse(event.input)
+        if (!parsed.success || !browserToolAvailability(config).has(toolName) || !pi.getActiveTools().includes(toolName)) {
+          return { block: true, reason: 'Browser asset saving is not available for this input or run.' }
+        }
+        // Asset publication always requires explicit consent, including in full-local auto mode.
+        const approved = await config.authorizeTool({ toolName, input: { folder: parsed.data.folder, count: parsed.data.refs.length } })
+        return approved ? { block: false } : { block: true, reason: 'Browser asset saving was not approved.' }
       }
       if (toolPolicy && isUnrestrictedToolPolicy(toolPolicy)) {
         // In the explicit highest-permission mode, the policy is no longer a
@@ -1252,9 +1285,17 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     }
     const connector = canUseMcp ? config.connectorBinding : undefined
     const builtinBrowser = canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG && process.env.SEP_PLAYWRIGHT_MCP !== '0'
-    const baseMcp = attachConnectorTools(await createHostMcpRuntime([...servers, ...(connector?.servers ?? [])], config.workspaceDir, builtinBrowser,
+    const browserTools = browserToolAvailability(config)
+    const discoveredMcp = attachConnectorTools(await createHostMcpRuntime([...servers, ...(connector?.servers ?? [])], config.workspaceDir, builtinBrowser,
       connector ? new Map(connector.servers.map(server => [server.name, connector.fetch])) : undefined,
-      () => config.authorizeTool({ toolName: BROWSER_MODE_TOOL, input: { operation: 'manual-handoff' } }), config.browserOwner), connector, config.workspaceDir)
+      () => config.authorizeTool({ toolName: BROWSER_MODE_TOOL, input: { operation: 'manual-handoff' } }), config.browserOwner,
+      browserTools.has(BROWSER_SAVE_ASSETS) ? config.browserArtifactTaskId : undefined,
+      browserTools.has(BROWSER_SAVE_ASSETS) ? config.browserTaskStateDir : undefined), connector, config.workspaceDir)
+    const hidden = new Set([BROWSER_SCROLL, BROWSER_EXTRACT, BROWSER_SAVE_ASSETS].filter(name => !browserTools.has(name)))
+    const baseMcp = discoveredMcp.builtinBrowser ? { ...discoveredMcp,
+      tools: discoveredMcp.tools.filter(tool => !hidden.has(tool.name)),
+      permissions: new Map([...discoveredMcp.permissions].filter(([name]) => !hidden.has(name))),
+    } : discoveredMcp
     const attached = await attachOfficeRuntime(baseMcp, common, config).catch(async error => {
       await baseMcp.dispose()
       throw error

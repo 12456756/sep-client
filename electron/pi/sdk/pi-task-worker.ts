@@ -45,6 +45,8 @@ export interface PiTaskWorkerContext {
   conversationAttachments?: PiAgentSessionConfig['conversationAttachments']
   conversationSchedule?: PiAgentSessionConfig['conversationSchedule']
   localMedia?: PiAgentSessionConfig['localMedia']
+  browserArtifactTaskId?: PiAgentSessionConfig['browserArtifactTaskId']
+  browserTaskStateDir?: PiAgentSessionConfig['browserTaskStateDir']
   employeeProfile?: PiAgentSessionConfig['employeeProfile']
   fixedSystemPrompt?: string
   arrangementNodeId?: string
@@ -173,6 +175,8 @@ export class PiTaskWorker {
         conversationAttachments: this.context.conversationAttachments,
         conversationSchedule: this.context.conversationSchedule,
         localMedia: this.context.localMedia,
+        browserArtifactTaskId: this.context.browserArtifactTaskId,
+        browserTaskStateDir: this.context.browserTaskStateDir,
         employeeProfile: this.context.employeeProfile,
         fixedSystemPrompt: this.context.fixedSystemPrompt,
         arrangementNodeId: this.context.arrangementNodeId,

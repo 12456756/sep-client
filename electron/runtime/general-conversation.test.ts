@@ -50,6 +50,9 @@ for (const kind of ['general', 'employee'] as const) {
         createWorker: options => ({
           async run(prompt) {
             promptSeen = prompt
+            const { taskId, browserArtifactTaskId, browserTaskStateDir } = options.context
+            assert.equal(browserArtifactTaskId, directoryStatus === 'ready' ? taskId : undefined)
+            assert.equal(browserTaskStateDir, directoryStatus === 'ready' ? runs.getTaskDir(scope, taskId) : undefined)
             assert.match(prompt, /通过文件工具创建的普通文件/)
             assert.match(prompt, /图片和视频工具的成果由客户端独立保存/)
             assert.match(prompt, /saveStatus="SAVED" 且有已保存成果时/)

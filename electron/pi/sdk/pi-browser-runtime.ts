@@ -7,19 +7,25 @@ import { createConnection } from '@playwright/mcp'
 import type { Browser, BrowserContext, BrowserServer } from 'playwright-core'
 import { Type } from 'typebox'
 import { z } from 'zod'
+import { BrowserAssetStore } from '../../data/browser-asset-store'
+import { prepareBrowserProfile } from '../../data/browser-profile'
+import { withTimeout } from '../../common/with-timeout'
 import type { McpServerConfig } from './pi-agent-runtime'
 import { createMcpRuntime, type McpRuntime, type McpToolResult } from './pi-mcp-client'
 import { createBrowserWindowController, type BrowserWindowController } from './pi-browser-window'
 import type { SharedBrowserOwner } from './pi-browser-owner'
+import { BROWSER_SAVE_ASSETS, BrowserPageAssets, createBrowserPageTools } from './pi-browser-page-tools'
 
 export const BROWSER_MODE_TOOL = 'mcp__playwright__browser_set_mode'
-const modeSchema = z.object({ mode: z.enum(['background', 'visible']), purpose: z.enum(['handoff', 'observe']).optional() }).strict()
+const modeSchema = z.object({ mode: z.enum(['background', 'visible']), purpose: z.enum(['handoff', 'observe']).optional(),
+  profile: z.literal('persistent').optional() }).strict()
 type BrowserMode = z.infer<typeof modeSchema>['mode']
 const require = createRequire(import.meta.url)
 // Use the MCP package's pinned browser engine, including after asar unpacking.
 const playwright = createRequire(require.resolve('@playwright/mcp/package.json'))('playwright-core') as typeof import('playwright-core')
 
 export class BrowserModeSession {
+  readonly pageAssets = new BrowserPageAssets()
   private browser?: Browser
   private server?: BrowserServer
   private window?: BrowserWindowController
@@ -27,13 +33,21 @@ export class BrowserModeSession {
   private mode: BrowserMode = 'background'
   private visibilityApplied = false
   private lost = false
+  private persistent = false
   private disposed = false
   private opening?: Promise<BrowserContext>
   private changing?: Promise<boolean>
   private readonly lifetime = new AbortController()
   private closingResources: Promise<void> = Promise.resolve()
 
-  constructor(private readonly createWindow = createBrowserWindowController) {}
+  constructor(private readonly createWindow = createBrowserWindowController, private readonly taskStateDir?: string) {}
+
+  enablePersistent(): void {
+    if (!this.taskStateDir || this.disposed || this.lost || (!this.persistent && (this.context || this.opening))) {
+      throw new Error('Persistent profile must be selected before opening a page, in a supported conversation.')
+    }
+    this.persistent = true
+  }
 
   get backgroundHidden(): boolean { return this.mode === 'background' && this.visibilityApplied }
   get unavailable(): boolean { return this.disposed || this.lost }
@@ -55,24 +69,42 @@ export class BrowserModeSession {
   private async openContext(): Promise<BrowserContext> {
     await this.closingResources
     if (this.disposed) throw new Error('Browser session is closed.')
-    const server = await playwright.chromium.launchServer({ channel: process.platform === 'win32' ? 'msedge' : 'chrome',
-      headless: false, host: '127.0.0.1', timeout: 20_000 })
+    const channel = process.platform === 'win32' ? 'msedge' : 'chrome'
+    let server: BrowserServer | undefined
+    let context: BrowserContext | undefined
     let window: BrowserWindowController | undefined
     try {
-      const pid = server.process().pid
+      let browser: Browser | null
+      let pid: number | undefined
+      if (this.persistent) {
+        const profile = await prepareBrowserProfile(this.taskStateDir!)
+        context = await playwright.chromium.launchPersistentContext(profile, { channel, headless: false, timeout: 20_000 })
+        browser = context.browser()
+        if (!browser) throw new Error('Persistent browser is unavailable.')
+        const cdp = await browser.newBrowserCDPSession()
+        try {
+          const { processInfo } = await withTimeout(cdp.send('SystemInfo.getProcessInfo'), 5_000, 'Resolve dedicated browser process')
+          pid = processInfo.find(process => process.type === 'browser')?.id
+        } finally { await cdp.detach().catch(() => undefined) }
+      } else {
+        server = await playwright.chromium.launchServer({ channel, headless: false, host: '127.0.0.1', timeout: 20_000 })
+        pid = server.process().pid
+        browser = await playwright.chromium.connect(server.wsEndpoint())
+        context = await browser.newContext()
+      }
       if (!pid) throw new Error('Dedicated browser process is unavailable.')
       window = this.createWindow(pid)
-      const browser = await playwright.chromium.connect(server.wsEndpoint())
-      const context = await browser.newContext()
+      await withTimeout(this.pageAssets.observe(context), 5_000, 'Observe browser media')
       if (this.disposed) throw new Error('Browser session is closed.')
       this.server = server
       this.window = window
       this.browser = browser
       this.context = context
       this.visibilityApplied = await window.setVisible(this.mode === 'visible')
-      context.on('page', page => {
+      const openedContext = context
+      openedContext.on('page', page => {
         page.once('close', () => {
-          if (this.context === context && !context.pages().length) {
+          if (this.context === openedContext && !openedContext.pages().length) {
             this.lost = true
             void this.closeResources().catch(() => undefined)
           }
@@ -84,15 +116,15 @@ export class BrowserModeSession {
           if (this.mode === 'background') void window!.setVisible(false).catch(() => undefined)
         })
       })
-      context.once('close', () => {
-        if (this.context !== context) return
+      openedContext.once('close', () => {
+        if (this.context !== openedContext) return
         this.lost = true
-        this.context = undefined
         void this.closeResources().catch(() => undefined)
       })
       return context
     } catch (error) {
-      await server.close().catch(() => undefined)
+      if (server) await server.close().catch(() => undefined)
+      else await context?.close().catch(() => undefined)
       await window?.dispose()
       throw error
     }
@@ -127,13 +159,14 @@ export class BrowserModeSession {
 
   private closeResources(): Promise<void> {
     const server = this.server
+    const context = this.context
     const window = this.window
     this.server = undefined
     this.window = undefined
     this.browser = undefined
     this.context = undefined
     this.closingResources = this.closingResources.catch(() => undefined).then(async () => {
-      try { await server?.close() } finally { await window?.dispose() }
+      try { if (server) await server.close(); else await context?.close() } finally { await window?.dispose() }
     })
     return this.closingResources
   }
@@ -153,13 +186,15 @@ export async function createHostMcpRuntime(
   fetches?: ReadonlyMap<string, typeof fetch>,
   waitForHuman?: () => Promise<boolean>,
   owner?: SharedBrowserOwner,
+  browserArtifactTaskId?: string,
+  browserTaskStateDir?: string,
 ): Promise<McpRuntime> {
   if (!builtinBrowser) return createMcpRuntime(servers, workspaceDir, fetches)
   if (owner) {
     const browserServers = servers.filter(server => server.name === 'playwright')
     const otherServers = servers.filter(server => server.name !== 'playwright')
-    const browser = await owner.acquire(workspaceDir,
-      handoff => createHostMcpRuntime(browserServers, workspaceDir, true, undefined, handoff), waitForHuman)
+    const browser = await owner.acquire(JSON.stringify([workspaceDir, browserArtifactTaskId, browserTaskStateDir]),
+      handoff => createHostMcpRuntime(browserServers, workspaceDir, true, undefined, handoff, undefined, browserArtifactTaskId, browserTaskStateDir), waitForHuman)
     try {
       const other = await createMcpRuntime(otherServers, workspaceDir, fetches)
       return { builtinBrowser: true, tools: [...browser.tools, ...other.tools],
@@ -167,7 +202,7 @@ export async function createHostMcpRuntime(
         dispose: async () => { try { await other.dispose() } finally { await browser.dispose() } } }
     } catch (error) { await browser.dispose(); throw error }
   }
-  const browser = new BrowserModeSession()
+  const browser = new BrowserModeSession(undefined, browserTaskStateDir)
   const server = await createConnection({ browser: { isolated: false }, imageResponses: 'omit',
     snapshot: { mode: 'full' }, codegen: 'none', webmcp: false,
     timeouts: { navigation: 20_000, action: 5_000 },
@@ -193,11 +228,22 @@ export async function createHostMcpRuntime(
       tail = result.then(() => undefined, () => undefined)
       return result
     }
+    const listTabs = active.tools.find(tool => tool.name === 'mcp__playwright__browser_tabs')
+    const currentPage = async (id: string, signal: AbortSignal) => {
+      const tabs = await listTabs?.execute(id, { action: 'list' }, signal)
+      const matches = tabs?.content.flatMap(item => [...item.text.matchAll(/^- (\d+): \(current\) (.*)$/gm)])
+      if (tabs?.details.isError || matches?.length !== 1) throw new Error('No unique active page.')
+      const page = (await browser.getContext()).pages()[Number(matches[0][1])]
+      if (!page || !/^https?:\/\//i.test(page.url()) || !matches[0][2].endsWith(`](${page.url()})`)) throw new Error('Active page changed.')
+      return page
+    }
     const modeTool: McpRuntime['tools'][number] = {
       name: BROWSER_MODE_TOOL, label: '切换浏览器显示',
       description: 'The same conversation shares one browser across turns and employees. Always inspect the current snapshot first. Navigate to the target site before requesting login. Use visible for login, QR scan or CAPTCHA (purpose: handoff, default). Shows the SAME window and blocks actions until the host completion prompt is accepted (3 minutes), then hides it without closing or reloading pages. Denial, timeout or cancellation closes the browser. Use purpose: observe only when the user asks to watch automation. Native hiding may be unavailable; if reported, the same window remains visible. Read a fresh snapshot and verify login after handoff. Never ask for another completion message after the user already completed the host prompt. Window visibility never authorizes business submissions.',
       promptSnippet: 'Switch between background browsing, human handoff and watching automated actions.',
-      parameters: Type.Unsafe<Record<string, unknown>>({ type: 'object', properties: { mode: { type: 'string', enum: ['background', 'visible'] }, purpose: { type: 'string', enum: ['handoff', 'observe'] } }, required: ['mode'], additionalProperties: false }),
+      parameters: Type.Unsafe<Record<string, unknown>>({ type: 'object', properties: { mode: { type: 'string', enum: ['background', 'visible'] }, purpose: { type: 'string', enum: ['handoff', 'observe'] },
+        ...(browserTaskStateDir ? { profile: { type: 'string', enum: ['persistent'], description: 'Opt in before opening any page. Use with mode background, then verify site login.' } } : {}),
+      }, required: ['mode'], additionalProperties: false }),
       executionMode: 'sequential',
       execute: async (_id, input, signal): Promise<McpToolResult> => serial(signal, async () => {
         const operationSignal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal
@@ -209,6 +255,11 @@ export async function createHostMcpRuntime(
         if (handoff && !waitForHuman) return result('Manual browser handoff is unavailable in this host.', true)
         try {
           operationSignal.throwIfAborted()
+          if (parsed.data.profile) {
+            if (parsed.data.mode !== 'background' || parsed.data.purpose) return result('Select the profile with mode background and no purpose.', true)
+            try { browser.enablePersistent() }
+            catch { return result('Persistent profile is unavailable or a temporary page is open. Close that session before opting in.', true) }
+          }
           if (handoff && !browser.hasNavigatedPage()) return result('No target website is open. Navigate to the intended login page before requesting handoff; do not show a blank window.', true)
           if (handoff) {
             const tabs = await active.tools.find(tool => tool.name.endsWith('__browser_tabs'))!.execute(_id, { action: 'list' }, operationSignal)
@@ -236,7 +287,7 @@ export async function createHostMcpRuntime(
             await switchMode('background')
           }
           if (parsed.data.mode === 'visible' && !handoff) return result('Browser window remains visible for the user to watch automated actions. Read a fresh snapshot. Use a manual handoff before the user edits the page; use background when observation ends. Window visibility does not authorize business submissions.')
-          return result(`${browser.backgroundHidden ? 'Background browser ready.' : 'Native hiding unavailable; the original browser window remains visible.'} The same pages are retained without reload. Read a fresh snapshot and verify login now. Human completion does not authorize business submissions. Do not replay any submission.`)
+          return result(`${browser.backgroundHidden ? 'Background browser ready.' : 'Native hiding unavailable; the original browser window remains visible.'}${parsed.data.profile ? ' Conversation persistent profile enabled.' : ''} The same pages are retained without reload. Read a fresh snapshot and verify login now. Human completion does not authorize business submissions. Do not replay any submission.`)
         } catch {
           await browser.dispose()
           return result('Browser handoff or mode switch did not complete; browser session closed. Login is unverified. Do not replay any business submission.', true, true)
@@ -254,6 +305,13 @@ export async function createHostMcpRuntime(
       }
       return result
     }) : tool.execute(...args) }))
-    return { builtinBrowser: true, tools: [...tools, modeTool], permissions: new Map([...active.permissions, [BROWSER_MODE_TOOL, 'confirm-each' as const]]), dispose }
+    const pageTools = listTabs ? createBrowserPageTools({
+      currentPage: () => currentPage('current-tab', lifetime.signal),
+      assets: browser.pageAssets,
+      store: browserArtifactTaskId ? new BrowserAssetStore(workspaceDir, browserArtifactTaskId) : undefined,
+      lifetime: lifetime.signal, serial,
+    }) : []
+    return { builtinBrowser: true, tools: [...tools, modeTool, ...pageTools], permissions: new Map([...active.permissions,
+      [BROWSER_MODE_TOOL, 'confirm-each' as const], ...pageTools.map(tool => [tool.name, tool.name === BROWSER_SAVE_ASSETS ? 'confirm-each' : 'auto-approve'] as const)]), dispose }
   } catch (error) { await dispose(); throw error }
 }
