@@ -38,14 +38,25 @@ ipcRenderer.on(EVENT_CHANNELS.WINDOW_CLOSE_REQUESTED, (_event, raw: unknown) => 
 });
 
 type PasteTarget = Parameters<ElectronAPI['bindAttachmentPaste']>[0] & { folder?: { id: string; path: string } };
+type AttachmentTransferListener = Parameters<ElectronAPI['onAttachmentPaste']>[0];
+type AttachmentImportStatus = { status: 'started' | 'completed' | 'failed'; error?: string };
 const pasteTargets = new Map<string, PasteTarget>();
-const pasteListeners = new Set<(event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void>();
+const pasteListeners = new Set<AttachmentTransferListener>();
 const pasteDisposers = new Map<string, () => void>();
+
+function localAttachmentPath(file: File): string {
+  try { return webUtils.getPathForFile(file); } catch { return ''; }
+}
 
 function registerPasteTarget(binding: Parameters<ElectronAPI['bindAttachmentPaste']>[0]): () => void {
   const input: PasteTarget = { ...binding };
   pasteDisposers.get(input.composerId)?.();
   pasteTargets.set(input.composerId, input);
+  const notify = (operationId: string, status: AttachmentImportStatus, source: 'paste' | 'drop', text?: string) => {
+    for (const callback of pasteListeners) callback({ composerId: input.composerId, sessionId: input.sessionId, operationId, source, text, ...status });
+  };
+  const importPaths = async (operationId: string, paths: string[]): Promise<{ success?: boolean; error?: { message?: string } }> =>
+    ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, { sessionId: input.sessionId, operationId, paths });
   const handler = (event: Event) => {
     if (!event.isTrusted) return;
     const target = event.target as { closest?: (selector: string) => { getAttribute?: (name: string) => string | null } | null } | null;
@@ -78,29 +89,52 @@ function registerPasteTarget(binding: Parameters<ElectronAPI['bindAttachmentPast
     // Preserve the browser's native text insertion for mixed image/text pastes.
     // Attachment-only pastes have no text to preserve and are consumed here.
     if (!text || handledText) event.preventDefault();
-    const notify = (event: { status?: 'started' | 'completed' | 'failed'; error?: string }) => { for (const callback of pasteListeners) callback({ composerId: input.composerId, sessionId: input.sessionId, operationId, text: text || undefined, ...event }); };
-    notify({ status: 'started' });
-    const entries = files.map(file => ({ file, path: (() => { try { return webUtils.getPathForFile(file as File); } catch { return ''; } })() }));
-    if (entries.length > attachmentImportLimits.maxImportFiles) { notify({ status: 'failed', error: `一次最多添加 ${attachmentImportLimits.maxImportFiles} 个附件` }); return; }
+    const notifyPaste = (status: AttachmentImportStatus) => notify(operationId, status, 'paste', text || undefined);
+    notifyPaste({ status: 'started' });
+    const entries = files.map(file => ({ file, path: localAttachmentPath(file as File) }));
+    if (entries.length > attachmentImportLimits.maxImportFiles) { notifyPaste({ status: 'failed', error: `一次最多添加 ${attachmentImportLimits.maxImportFiles} 个附件` }); return; }
     void (async () => {
       const paths = entries.flatMap(entry => entry.path ? [entry.path] : []);
       const imageEntries = entries.filter(entry => !entry.path);
       const results: Array<{ success?: boolean; error?: { message?: string } }> = [];
-      if (paths.length) results.push(await ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, { sessionId: input.sessionId, operationId, paths }));
+      if (paths.length) results.push(await importPaths(operationId, paths));
       for (const { file } of imageEntries) {
-        if (!file.type.startsWith('image/')) { notify({ status: 'failed', error: '剪贴板没有提供可读取的附件数据' }); return; }
-        if (file.size > attachmentImportLimits.maxFileBytes) { notify({ status: 'failed', error: '粘贴图片不能超过 20 MiB' }); return; }
+        if (!file.type.startsWith('image/')) { notifyPaste({ status: 'failed', error: '剪贴板没有提供可读取的附件数据' }); return; }
+        if (file.size > attachmentImportLimits.maxFileBytes) { notifyPaste({ status: 'failed', error: '粘贴图片不能超过 20 MiB' }); return; }
         const bytes = new Uint8Array(await file.arrayBuffer());
         results.push(await ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_IMPORT_IMAGE, { sessionId: input.sessionId, operationId, name: file.name || 'pasted-image', type: file.type, bytes }));
       }
       const failed = results.find(result => !result.success);
-      notify(failed ? { status: 'failed', error: failed.error?.message || '附件导入失败，请联系平台管理员' } : { status: 'completed' });
-    })().catch(() => notify({ status: 'failed', error: '附件导入失败，请联系平台管理员' }));
+      notifyPaste(failed ? { status: 'failed', error: failed.error?.message || '附件导入失败，请联系平台管理员' } : { status: 'completed' });
+    })().catch(() => notifyPaste({ status: 'failed', error: '附件导入失败，请联系平台管理员' }));
+  };
+  const handleDrop = (event: Event) => {
+    if (!event.isTrusted || input.target.kind !== 'compose') return;
+    const files = (event as Event & { dataTransfer?: { files: ArrayLike<File> } }).dataTransfer?.files;
+    if (!files?.length) return;
+    const target = event.target as { closest?: (selector: string) => { getAttribute: (name: string) => string | null } | null } | null;
+    const zone = target?.closest?.('[data-attachment-drop-zone]');
+    if (zone?.getAttribute('data-attachment-drop-zone') !== input.composerId) return;
+    event.preventDefault();
+    if (zone.getAttribute('data-attachment-drop-disabled') !== null || pasteTargets.get(input.composerId) !== input || input.isEnabled?.() === false) return;
+
+    const operationId = crypto.randomUUID();
+    const fail = (error = '附件导入失败，请联系平台管理员') => notify(operationId, { status: 'failed', error }, 'drop');
+    notify(operationId, { status: 'started' }, 'drop');
+    if (files.length > attachmentImportLimits.maxImportFiles) { fail(`一次最多添加 ${attachmentImportLimits.maxImportFiles} 个附件`); return; }
+    const paths = Array.from(files, localAttachmentPath);
+    if (paths.some(path => !path)) { fail('无法读取拖入的文件，请从本地文件管理器拖入。'); return; }
+    void importPaths(operationId, paths).then(result => {
+      if (!result.success) fail(result.error?.message);
+      else notify(operationId, { status: 'completed' }, 'drop');
+    }).catch(() => fail());
   };
   const doc = (globalThis as unknown as { document: { addEventListener: (type: string, listener: (event: Event) => void, capture: boolean) => void; removeEventListener: (type: string, listener: (event: Event) => void, capture: boolean) => void } }).document;
   doc.addEventListener('paste', handler, true);
+  if (input.target.kind === 'compose') doc.addEventListener('drop', handleDrop, true);
   const dispose = () => {
     doc.removeEventListener('paste', handler, true);
+    if (input.target.kind === 'compose') doc.removeEventListener('drop', handleDrop, true);
     if (pasteTargets.get(input.composerId) === input) { pasteTargets.delete(input.composerId); pasteDisposers.delete(input.composerId); }
   };
   pasteDisposers.set(input.composerId, dispose);

@@ -80,7 +80,10 @@
 .skill-rewrite-shortcuts button:disabled { opacity:.5; }
 .skill-rewrite-composer { position:relative; display:flex; align-items:center; gap:12px; min-height:92px; max-height:224px; padding:12px 26px 12px 17px; border:1px solid var(--ent-line); border-radius:var(--ent-radius-sm); background:var(--ent-panel); box-shadow:var(--ent-shadow); }
 .skill-rewrite-composer:focus-within { border-color:var(--ent-brand-border); }
-.skill-rewrite-composer > .ent-file-mention-editor { flex:1; align-self:stretch; }
+.skill-rewrite-composer:has(.ent-file-mention-chips) { min-height:112px; }
+.skill-rewrite-input { display:flex; flex:1; flex-direction:column; align-self:stretch; min-width:0; min-height:32px; }
+.skill-rewrite-references { flex:none; max-height:54px; overflow:auto; }
+.skill-rewrite-input .ent-file-mention-editor { flex:1; min-height:32px; }
 .skill-rewrite-composer textarea { display:block; width:100%; min-width:0; min-height:32px; max-height:none; padding:5px 0; resize:none; border:0; color:var(--ent-ink); background:transparent; font-family:inherit; line-height:1.7; font-size:var(--ent-fs-composer); }
 .skill-rewrite-composer textarea::placeholder { color:var(--ent-ink-3); }
 .skill-rewrite-composer textarea:focus-visible { outline:1px solid var(--ent-brand-border); outline-offset:3px; border-radius:3px; }
@@ -115,7 +118,8 @@
 .skill-rewrite-preview-footer > p { margin:0; color:var(--ent-ink-3); font-size:11px; }
 @container (max-width:639px) {
  .skill-rewrite-composer { flex-direction:column; gap:8px; min-height:102px; padding:12px 26px 12px 12px; }
- .skill-rewrite-composer > .ent-file-mention-editor { flex:1 1 auto; }
+ .skill-rewrite-composer:has(.ent-file-mention-chips) { min-height:156px; }
+ .skill-rewrite-input { flex:1 1 auto; }
  .skill-rewrite-tools { width:100%; justify-content:flex-end; }
  .skill-rewrite-comparison { grid-template-columns:minmax(0,1fr); gap:12px; }
  .skill-rewrite-comparison pre { height:180px; }

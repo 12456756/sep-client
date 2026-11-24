@@ -1,5 +1,5 @@
-import { ArrowUp, Check, ClipboardList, GitCompareArrows, ListChecks, LoaderCircle, MessageSquare, Pencil, RefreshCw, ShieldCheck, Sparkles, Square, X } from 'lucide-react';
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { ArrowUp, Check, ClipboardList, FileText, GitCompareArrows, ListChecks, LoaderCircle, MessageSquare, Pencil, RefreshCw, ShieldCheck, Sparkles, Square, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import { IconHint } from '../IconHint';
 import { ModelSelector } from '../ModelSelector';
 import { ComposerResizeHandle } from '../ComposerResizeHandle';
@@ -15,6 +15,7 @@ import type { AdjustmentRecord, RewriteRound, SkillRewriteSession } from '../../
 import { effectiveRewriteStatus } from '../../../features/enterprise/skill-rewrite-session';
 import { FileMentionChips, FileMentionPicker } from '../attachments/FileMentionPicker';
 import { FileMentionEditor } from '../attachments/FileMentionEditor';
+import { AttachmentDropZone } from '../attachments/AttachmentDropZone';
 import { useTextReferenceComposer } from '../attachments/use-text-reference-composer';
 
 interface Props {
@@ -48,7 +49,8 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
   const input = useRef<HTMLTextAreaElement>(null);
   const files = useTextReferenceComposer({ input, value: prompt, update: value => session.update({ prompt: value }), bindingKey: 'skill-rewrite', disabled: disabled || generating, retained: session.attachment });
   const { mention } = files;
-  const composer = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLElement | null>(null);
+  const setComposer = useCallback((element: HTMLElement | null) => { composer.current = element; }, []);
   const history = useRef<HTMLDivElement>(null);
   const catalog = useModelCatalog();
   const { defaultModelId } = useModelPreference();
@@ -135,17 +137,28 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
       {catalog.error ? <p className="skill-error" role="alert">{catalog.error}{catalog.retry ? <button className="skill-text-button" type="button" onClick={catalog.retry}>重试</button> : null}</p> : !models.length ? <p className="skill-caption" role="status">暂无可用模型</p> : null}
       {cancelError ? <p className="skill-error" role="alert">{cancelError}</p> : null}
       <div className="skill-rewrite-shortcuts" aria-label="快捷调整要求">{shortcuts.map(item => <button type="button" key={item.label} disabled={disabled} onClick={() => { session.update({ prompt: item.prompt }); input.current?.focus(); }}><item.icon size={13} aria-hidden />{item.label}</button>)}</div>
-      <div ref={composer} className="skill-rewrite-composer">
-        <FileMentionEditor mention={mention} ref={input} {...mention.editorAria} value={prompt} rows={1} maxLength={8_000} aria-label="技能调整要求" placeholder="描述你的调整要求…" disabled={disabled} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} onCompositionStart={mention.compositionStart} onCompositionEnd={event => mention.compositionEnd(event.currentTarget)} onKeyDown={event => { mention.keyDown(event); if (isSubmitEnter(event, event.nativeEvent.isComposing)) { event.preventDefault(); void preview(); } }} />
-        <FileMentionChips mention={mention} />
-        {files.error && <p className="skill-error" role="alert">{files.error}</p>}
+      {files.error && <p className="skill-error" role="alert">{files.error}</p>}
+      <AttachmentDropZone surfaceRef={setComposer} className="skill-rewrite-composer" composerId={files.composerId} disabled={files.dropDisabled}>
+        <div className="skill-rewrite-input">
+          <div className="skill-rewrite-references">
+            {mention.unreferencedAttachments.length > 0 && <div className="ent-file-mention-chips" aria-label="已添加附件">
+              {mention.unreferencedAttachments.map(item => <span key={item.attachmentId} className="ent-file-mention-chip">
+                <button type="button" title={item.displayName} aria-label={`移除 ${item.displayName}`} disabled={files.dropDisabled} onClick={() => void files.removeAttachment(item.attachmentId)}>
+                  <FileText size={12} aria-hidden /><span>{item.displayName}</span><X size={12} aria-hidden />
+                </button>
+              </span>)}
+            </div>}
+            <FileMentionChips mention={mention} />
+          </div>
+          <FileMentionEditor mention={mention} ref={input} {...mention.editorAria} value={prompt} rows={1} maxLength={8_000} aria-label="技能调整要求" placeholder="描述你的调整要求…" disabled={disabled} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} onCompositionStart={mention.compositionStart} onCompositionEnd={event => mention.compositionEnd(event.currentTarget)} onKeyDown={event => { mention.keyDown(event); if (isSubmitEnter(event, event.nativeEvent.isComposing)) { event.preventDefault(); void preview(); } }} />
+        </div>
         <div className="skill-rewrite-tools">
           <FileMentionPicker mention={mention} />
           <div className="skill-rewrite-model"><ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={disabled || generating} onChange={modelId => session.update({ modelId })} /></div>
           {generating ? <IconHint label="停止生成" side="top"><button type="button" className="skill-rewrite-send" aria-label="停止生成" onClick={() => void cancel()}><Square size={14} aria-hidden /></button></IconHint> : <IconHint label="发送调整要求" side="top"><button type="button" className="skill-rewrite-send" aria-label="发送调整要求" disabled={disabled || files.blocked || !selectedModel || !prompt.trim() || !content.trim()} onClick={() => void preview()}><ArrowUp size={18} aria-hidden /></button></IconHint>}
         </div>
         <ComposerResizeHandle inputRef={input} resizeTargetRef={composer} />
-      </div>
+      </AttachmentDropZone>
     </div>
   </section>;
 }

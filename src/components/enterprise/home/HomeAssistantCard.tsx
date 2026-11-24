@@ -23,6 +23,7 @@ import { resolveTaskModel } from '../../../shared/model-preferences'
 import { FileMentionChips, FileMentionPicker, useFileMention } from '../attachments/FileMentionPicker'
 import { FileMentionEditor } from '../attachments/FileMentionEditor'
 import type { AttachmentComposerOperations } from '../attachments/AttachmentComposer'
+import { AttachmentDropZone } from '../attachments/AttachmentDropZone'
 
 interface Props {
   employees: SiliconEmployee[]
@@ -71,7 +72,7 @@ function LiveAssistant(props: Props & { editor: Editor }) {
     return true
   }, [draft, update, version])
   const composer = useAttachmentComposer({ target, bindingKey: `${props.draft.composerId}:${props.draft.epoch}`, disabled: props.busy,
-    retainedState: props.draft.attachment, onPasteEdit, onError: setAttachmentError })
+    retainedState: props.draft.attachment, onPasteEdit, onPasteStarted: () => setAttachmentError(null), onError: setAttachmentError })
   const operations = useRef<AttachmentComposerOperations | null>(null)
   operations.current = { select: composer.select, addFile: composer.addFile }
   return <AssistantForm {...props} attachment={{ attachments: composer.attachments, sessionId: composer.session?.sessionId, busy: composer.busy, error: attachmentError,
@@ -147,7 +148,7 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
 
   return <section className="sep-home-assistant" aria-label="AI 助手">
     <div className="sep-home-assistant-heading"><img src={assistantImage} width={64} height={64} alt="" /><div><h2>AI 助手</h2><p>我可以帮您完成任务、分析数据、创建内容或调用企业员工</p></div><button type="button" aria-label="打开任务中心" onClick={onCreate}><ChevronRight size={19} aria-hidden /></button></div>
-    <div className="sep-home-composer" data-composer-id={draft.composerId} data-editor-version={editor.version.current}>
+    <AttachmentDropZone className="sep-home-composer" composerId={draft.composerId} editorVersion={editor.version.current} disabled={demo || blocked || !attachment?.sessionId || panel !== null}>
       <ComposerResizeHandle inputRef={input} />
       <FileMentionEditor mention={mention} {...speech.inputProps} {...mention.editorAria} aria-label="工作需求" placeholder="请输入您的需求，例如：帮我分析本月销售数据，生成可视化报表" value={editor.text} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} disabled={busy || submitting} rows={2}
         onCompositionStart={() => { speech.inputProps.onCompositionStart(); mention.compositionStart() }}
@@ -167,7 +168,7 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
           <ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={blocked} onChange={selectModel} />
         </div>
       </div><div className="sep-home-composer-send"><SpeechInputActions speech={speech} disabled={demo || busy || submitting || Boolean(attachment?.busy)} /><button type="button" className="sep-home-send" aria-label="发送需求" disabled={blocked || mention.invalid || !editor.text.trim()} onClick={() => { void submit() }}>{submitting || attachment?.busy ? <LoaderCircle size={19} aria-hidden /> : <Send size={19} aria-hidden />}</button></div></div>
-    </div>
+    </AttachmentDropZone>
     {error || attachment?.error ? <p role="alert" className="sep-home-composer-error">{error ?? attachment?.error}</p> : null}
     <Dialog.Root open={panel !== null} onOpenChange={open => { if (!open) setPanel(null) }}><Dialog.Portal><Dialog.Overlay className="sep-home-dialog-overlay" />
       <Dialog.Content className="sep-home-dialog" aria-describedby="home-assistant-dialog-description" onCloseAutoFocus={event => { event.preventDefault(); input.current?.focus() }}>

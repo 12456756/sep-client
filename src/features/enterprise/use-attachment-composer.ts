@@ -3,9 +3,7 @@ import type { AttachmentFolderPreview, AttachmentImportSession, AttachmentImport
 import type { ResultFileRequest } from '../../shared/result-files'
 import type { FileMentionMemory } from '../../shared/file-mention'
 
-type AttachmentApi = Pick<Window['electronAPI'], 'beginAttachmentImport' | 'selectAttachments' | 'listAttachments' | 'removeAttachment' | 'cancelAttachmentImport' | 'runResultFileAction'> & Partial<Pick<Window['electronAPI'], 'bindAttachmentPaste' | 'previewAttachmentFolder' | 'importAttachmentFolder' | 'platform'>> & {
-  onAttachmentPaste?: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
-}
+type AttachmentApi = Pick<Window['electronAPI'], 'beginAttachmentImport' | 'selectAttachments' | 'listAttachments' | 'removeAttachment' | 'cancelAttachmentImport' | 'runResultFileAction'> & Partial<Pick<Window['electronAPI'], 'bindAttachmentPaste' | 'onAttachmentPaste' | 'previewAttachmentFolder' | 'importAttachmentFolder' | 'platform'>>
 
 class AttachmentOperationError extends Error {}
 
@@ -25,7 +23,7 @@ export interface AttachmentComposerOptions {
   retainedState?: RetainedAttachmentState
   onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean
   onPasteImported?: (operationId: string, attachments: AttachmentView[]) => void
-  onPasteStarted?: (operationId: string) => void
+  onPasteStarted?: (operationId: string, source: 'paste' | 'drop') => void
   onSelectStarted?: () => void
   onSelectFinished?: (attachments: AttachmentView[] | null) => void
 }
@@ -227,37 +225,31 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
         inFlight.add(event.operationId)
         busyRef.current = true
         setBusy(true)
-        onPasteStartedRef.current?.(event.operationId)
+        onPasteStartedRef.current?.(event.operationId, event.source ?? 'paste')
         return
       }
-      const started = pasteOperations.delete(event.operationId)
-      inFlight.delete(event.operationId)
-      busyRef.current = inFlight.size > 0
-      setBusy(inFlight.size > 0)
-      if (!started) return
-      if (event.status === 'failed') {
-        reportError(event.error || '附件导入失败，请联系平台管理员')
-        void api.listAttachments({ sessionId: session.sessionId }).then(result => {
-          if (currentIdentity !== identityGeneration.current) return
-          if (result.success) {
-            const items = Array.isArray(result.data) ? result.data : result.data?.attachments ?? []
-            setAttachments(items)
-            onPasteImportedRef.current?.(event.operationId, items)
-          }
-        }).catch(() => undefined)
-        return
-      }
+      if (!pasteOperations.delete(event.operationId)) return
       if (pasteHandledRef.current.has(event.operationId)) return
       pasteHandledRef.current.add(event.operationId)
+      const failed = event.status === 'failed'
+      if (failed) reportError(event.error || '附件导入失败，请联系平台管理员')
+      // Keep sending disabled until the imported attachments are in the draft.
       void api.listAttachments({ sessionId: session.sessionId }).then(result => {
         if (currentIdentity !== identityGeneration.current) return
         if (result.success) {
           const items = Array.isArray(result.data) ? result.data : result.data?.attachments ?? []
           setAttachments(items)
-          if (event.status === 'completed') onPasteImportedRef.current?.(event.operationId, items)
+          if (failed || event.status === 'completed') onPasteImportedRef.current?.(event.operationId, items)
         }
-        else reportError(result.error?.message || '读取附件列表失败，请联系平台管理员')
-      }).catch(() => { if (currentIdentity === identityGeneration.current) reportError('读取附件列表失败，请联系平台管理员') })
+        else if (!failed) reportError(result.error?.message || '读取附件列表失败，请联系平台管理员')
+      }).catch(() => {
+        if (!failed && currentIdentity === identityGeneration.current) reportError('读取附件列表失败，请联系平台管理员')
+      }).finally(() => {
+        if (currentIdentity !== identityGeneration.current) return
+        inFlight.delete(event.operationId)
+        busyRef.current = inFlight.size > 0
+        setBusy(busyRef.current)
+      })
     })
   }, [api, composerId, session, reportError])
 

@@ -4,7 +4,7 @@ import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'reac
 import { createPortal } from 'react-dom'
 import { attachmentImportLimits, type AttachmentFolderPreview, type AttachmentImportSession, type AttachmentImportTarget, type AttachmentView } from '../../../shared/attachment-contracts'
 import { isAttachmentAudioVideo } from '../../../shared/attachment-media-formats'
-import { useAttachmentComposer, type RetainedAttachmentState } from '../../../features/enterprise/use-attachment-composer'
+import { useAttachmentComposer, type AttachmentComposerOptions, type RetainedAttachmentState } from '../../../features/enterprise/use-attachment-composer'
 import { useOperationFeedback } from '../../feedback/use-operation-feedback'
 import { ComposerAddMenu } from '../home/ComposerAddMenu'
 import { ComposerConnectorChip } from './ComposerConnectorChip'
@@ -24,7 +24,7 @@ interface Props {
   onSessionChange?: (session: AttachmentImportSession | null) => void
   onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean
   onPasteImported?: (operationId: string, attachments: AttachmentView[]) => void
-  onPasteStarted?: (operationId: string) => void
+  onPasteStarted?: AttachmentComposerOptions['onPasteStarted']
   onSelectStarted?: () => void
   onSelectFinished?: (attachments: AttachmentView[] | null) => void
   onBusyChange?: (busy: boolean) => void
@@ -63,7 +63,7 @@ export function AttachmentComposer({ target, bindingKey, disabled = false, allow
             <span className="ent-attachment-name" title={item.displayName}>{item.displayName}</span>
             <small>{formatBytes(item.byteLength)} · {audioVideo && item.extractionStatus === 'not-required' ? (Icon === Film ? '视频素材' : '音频素材') : statusLabel(item.extractionStatus)}</small>
           </div>
-          <button type="button" className="ent-icon-btn" aria-label={`移除 ${item.displayName}`} onClick={() => void composer.remove(item.attachmentId)} disabled={disabled}>
+          <button type="button" className="ent-icon-btn" aria-label={`移除 ${item.displayName}`} onClick={() => void composer.remove(item.attachmentId)} disabled={disabled || composer.busy}>
             <X size={13} aria-hidden />
           </button>
         </div>

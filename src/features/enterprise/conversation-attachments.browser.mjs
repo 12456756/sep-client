@@ -24,6 +24,177 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close() })
 
+test('all attachment composers show a file-only drop hint across the editor and toolbar', async () => {
+  const page = await browser.newPage()
+  const errors = []
+  page.setDefaultTimeout(7000)
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
+  try {
+    await page.addInitScript(() => {
+      let listener
+      let items = []
+      window.fixtureRewrites = []
+      window.completeFixtureImport = (composerId, source, name) => {
+        const event = { composerId, sessionId: 'drop-session', operationId: name, source }
+        listener({ ...event, status: 'started' })
+        const supported = name.endsWith('.txt')
+        items = [...items, { attachmentId: name, displayName: name, sha256: 'a'.repeat(64), byteLength: 7, mediaType: supported ? 'text/plain' : 'image/png',
+          extractionStatus: supported ? 'ready' : 'not-required', extractionSummary: supported ? 'fixture' : undefined }]
+        listener({ ...event, status: 'completed' })
+      }
+      window.electronAPI = {
+        beginAttachmentImport: async ({ target }) => ({ success: true, data: { target, sessionId: 'drop-session', status: 'open', attachments: [] } }),
+        cancelAttachmentImport: async () => ({ success: true }),
+        onAttachmentPaste: callback => { listener = callback; return () => { listener = undefined } },
+        listAttachments: async () => ({ success: true, data: items }),
+        removeAttachment: async ({ attachmentId }) => { items = items.filter(item => item.attachmentId !== attachmentId); return { success: true } },
+        getDefaultWorkspaceDirectory: async () => ({ success: true, path: null }),
+        listTaskRuns: async () => ({ success: true, runs: [] }),
+        onPiEvent: () => () => {},
+        conversationQueue: async () => ({ success: true, queue: { paused: false, failed: null, items: [] } }),
+      }
+    })
+    await page.route(/\/main\.tsx(?:\?.*)?$/, route => route.fulfill({ contentType: 'text/javascript', body: `${entry}
+      import '/index.css';
+      import '/styles/enterprise.css';
+      import '/styles/arrange.css';
+      import '/styles/home-v2.css';
+      import '/styles/skill-detail.css';
+      import { FeedbackProvider } from '/components/feedback/FeedbackProvider.tsx';
+      import { HomeAssistantCard } from '/components/enterprise/home/HomeAssistantCard.tsx';
+      import { ChatArrange } from '/components/enterprise/arrange/ChatArrange.tsx';
+      import { GoalComposer } from '/components/enterprise/arrange/GoalComposer.tsx';
+      import { ManualArrange } from '/components/enterprise/arrange/ManualArrange.tsx';
+      import { WorkConversation } from '/components/enterprise/WorkTalkDrawer.tsx';
+      import { WorkspaceComposer } from '/components/workspace/WorkspaceComposer.tsx';
+      import { SkillRewriteComposer } from '/components/enterprise/skills/SkillRewriteComposer.tsx';
+      import { ModelCatalogProvider } from '/components/enterprise/ModelCatalogContext.tsx';
+      import { SkillRewriteSession } from '/features/enterprise/skill-rewrite-session.ts';
+      import { createHomeDraft } from '/features/enterprise/home-draft.ts';
+      import { defaultRunSettings } from '/features/enterprise/run-settings.ts';
+      const params = new URL(location.href).searchParams;
+      const employees = [];
+      const busy = params.has('busy');
+      const demo = params.has('demo');
+      const shared = { employees, busy, settings: defaultRunSettings(), models: [], onSettingsChange() {}, onChooseFolder() {} };
+      const skillSession = new SkillRewriteSession();
+      const skill = { content: '# Skill', revision: 1, disabled: busy, session: skillSession, manualEdits: [], onCancel() {}, onApply() {}, onUndo() {},
+        onRewrite: async input => { window.fixtureRewrites.push(input); throw new Error('生成失败'); } };
+      function Composer() {
+        const [value, onChange] = React.useState('');
+        if (params.has('skill')) return React.createElement(ModelCatalogProvider, { models: [{ modelId: 'test-model', displayName: 'test-model' }] },
+          React.createElement('div', { className: 'skill-detail' }, React.createElement(SkillRewriteComposer, skill)));
+        if (params.has('home')) return React.createElement('div', { className: 'sep-home' }, React.createElement(HomeAssistantCard, { employees, busy, demo, draft: createHomeDraft(), onSubmit() {}, onCreate() {}, onManageConnectors() {} }));
+        if (params.has('auto')) return React.createElement(GoalComposer, { ...shared, value, onChange, submitLabel: '开始编排', submitDisabled: !value, onSubmit() {} });
+        if (params.has('manual')) return React.createElement(ManualArrange, { ...shared, seed: { steps: [{ id: 'step', employeeId: '', title: '', input: '', output: '', dependsOn: [] }] }, onSave() {}, onStart() {} });
+        if (params.has('existing')) return React.createElement(WorkConversation, { work: { id: 'work', status: 'completed', title: '工作', kind: 'conversation', currentEmployeeId: 'employee', currentEmployeeName: '员工', messages: [] }, workspace: { employees, myEmployees: [], busy, attachmentScopeKey: 'fixture' } });
+        if (params.has('legacy')) return React.createElement(WorkspaceComposer, { ...shared, mode: params.has('workflow') ? 'workflow' : 'conversation', draft: { employeeId: '', modelId: '', skillIds: [], workspace: { path: '', displayName: '', accessMode: 'read-write' } }, skills: [], workflows: [], onDraftChange() {}, onConversationSubmit() {}, onWorkflowSubmit() {} });
+        return React.createElement(ChatArrange, { ...shared, employeeId: '', onEmployeeChange() {}, onStart() {} });
+      }
+      ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider, null,
+        React.createElement('div', { className: params.has('dark') ? 'ent-shell dark' : 'ent-shell', style: { display: 'block' } }, React.createElement(Composer))));
+    ` }))
+    const zone = page.locator('[data-attachment-drop-zone]')
+    const hint = zone.getByText('松开添加附件')
+    const drag = (locator, type, files, toChild = false) => locator.evaluate((element, { type, files, toChild }) => {
+      const dataTransfer = new window.DataTransfer()
+      if (files) dataTransfer.items.add(new window.File(['fixture'], 'report.txt'))
+      else dataTransfer.setData('text/plain', 'fixture')
+      const event = new window.DragEvent(type, { dataTransfer, bubbles: true, cancelable: true,
+        relatedTarget: toChild ? element.querySelector('textarea') : null })
+      return !element.dispatchEvent(event)
+    }, { type, files, toChild })
+    for (const [query, width] of [['?home', 920], ['?dark', 480], ['?auto&dark', 760], ['?manual', 920], ['?existing&dark', 760], ['?skill', 920], ['?skill&dark', 420]]) {
+      await page.setViewportSize({ width, height: 620 })
+      await page.goto(new URL(query, base).href)
+      await page.locator('[data-attachment-drop-zone]:not([data-attachment-drop-disabled])').waitFor()
+      const editor = zone.locator('textarea').first()
+      const isSkill = query.includes('skill')
+      const addButton = zone.getByRole('button', { name: isSkill ? '引用文件' : '添加文件或连接器' })
+      await editor.fill('保留这段草稿')
+      assert.equal(await drag(editor, 'dragover', false), false)
+      assert.equal(await hint.count(), 0)
+      assert.equal(await drag(editor, 'dragenter', true), true)
+      await hint.waitFor()
+      const bounds = await zone.boundingBox()
+      const overlay = await hint.boundingBox()
+      assert.ok(bounds && overlay && overlay.x >= bounds.x && overlay.x + overlay.width <= bounds.x + bounds.width)
+      assert.equal(await hint.evaluate(element => window.getComputedStyle(element).pointerEvents), 'none')
+      assert.equal(await drag(addButton, 'dragover', true), true)
+      await drag(zone, 'dragleave', true, true)
+      assert.equal(await hint.isVisible(), true)
+      await drag(zone, 'dragleave', true)
+      await hint.waitFor({ state: 'hidden' })
+      await drag(addButton, 'dragenter', true)
+      await hint.waitFor()
+      assert.equal(await drag(addButton, 'drop', true), true)
+      await hint.waitFor({ state: 'hidden' })
+      assert.equal(await editor.inputValue(), '保留这段草稿')
+      const complete = (source, name) => zone.evaluate((element, { source, name }) => window.completeFixtureImport(element.getAttribute('data-attachment-drop-zone'), source, name), { source, name })
+      await complete('drop', 'report.txt')
+      await zone.getByRole('button', { name: '移除 report.txt' }).waitFor()
+      if (isSkill) {
+        const resize = zone.getByRole('button', { name: '调整输入框高度' })
+        const before = (await zone.boundingBox()).height
+        await resize.press('ArrowDown')
+        assert.ok((await zone.boundingBox()).height > before)
+        await resize.press('ArrowUp')
+
+        await complete('drop', 'image.png')
+        await page.getByText('无法读取「image.png」的文本', { exact: false }).waitFor()
+        const send = zone.getByRole('button', { name: '发送调整要求' })
+        const zoneBounds = await zone.boundingBox(), sendBounds = await send.boundingBox()
+        assert.ok(sendBounds.y + sendBounds.height <= zoneBounds.y + zoneBounds.height)
+        assert.equal(await send.isDisabled(), true)
+        const remove = zone.getByRole('button', { name: '移除 image.png' })
+        await remove.click()
+        await remove.waitFor({ state: 'hidden' })
+        assert.equal(await editor.inputValue(), '保留这段草稿')
+        assert.equal(await page.evaluate(() => window.fixtureRewrites.length), 0)
+
+        await send.click()
+        const retry = page.getByRole('button', { name: '重试', exact: true }).last()
+        await retry.waitFor()
+        await zone.getByRole('button', { name: '移除 report.txt' }).waitFor({ state: 'hidden' })
+        assert.deepEqual(await page.evaluate(() => window.fixtureRewrites.map(({ prompt, referenceFiles }) => ({ prompt, referenceFiles }))), [
+          { prompt: '保留这段草稿', referenceFiles: { sessionId: 'drop-session', attachments: [{ attachmentId: 'report.txt', sha256: 'a'.repeat(64) }] } },
+        ])
+        await retry.click()
+        await page.waitForFunction(() => window.fixtureRewrites.length === 2)
+        assert.equal(await page.evaluate(() => window.fixtureRewrites[1].referenceFiles.attachments[0].attachmentId), 'report.txt')
+        await editor.fill('下一轮不附带文件')
+        await send.click()
+        assert.equal(await page.evaluate(() => window.fixtureRewrites[2].referenceFiles), undefined)
+      }
+      if (query === '?manual') {
+        const stepAttachment = name => zone.getByRole('group', { name: '本步骤使用的附件' }).getByRole('checkbox', { name })
+        assert.equal(await stepAttachment('report.txt').isChecked(), false)
+        await complete('paste', 'pasted.txt')
+        await stepAttachment('pasted.txt').waitFor()
+        assert.equal(await stepAttachment('pasted.txt').isChecked(), true)
+      }
+    }
+    for (const query of ['?home&demo', '?busy']) {
+      await page.goto(new URL(query, base).href)
+      await page.locator('[data-attachment-drop-disabled]').waitFor()
+      assert.equal(await drag(zone, 'dragover', true), true)
+      assert.equal(await hint.count(), 0)
+    }
+    for (const query of ['?legacy', '?legacy&workflow']) {
+      await page.goto(new URL(query, base).href)
+      const legacy = page.getByRole('region', { name: '工作输入' })
+      await drag(legacy, 'dragover', true)
+      await legacy.getByText('松开添加附件').waitFor()
+      assert.equal(await drag(legacy, 'drop', true), true)
+      await legacy.getByRole('button', { name: '移除文件report.txt' }).waitFor()
+    }
+  } catch (error) {
+    assert.deepEqual(errors, [])
+    throw error
+  } finally { await page.close() }
+})
+
 test('Windows folder material dialog imports only checked files and fits narrow light and dark views', async () => {
   for (const width of [420, 920]) {
     const page = await browser.newPage({ viewport: { width, height: 580 } })

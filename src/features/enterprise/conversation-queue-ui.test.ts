@@ -13,6 +13,7 @@ import * as composerConnectors from './composer-connectors'
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant'
 import type { ConversationQueueView } from '../../shared/conversation-queue'
 import * as mediaRetry from '../../shared/media-retry'
+import { AttachmentDropZone } from '../../components/enterprise/attachments/AttachmentDropZone'
 import type { WorkItem } from './types'
 import type { EnterpriseWorkspace } from './useEnterpriseWorkspace'
 
@@ -27,6 +28,7 @@ const dependencies: Record<string, unknown> = {
   '../../features/speech/use-speech-input': { useSpeechInput: () => ({ busy: false, inputProps: { onKeyDown() {} }, isComposing: () => false }) },
   '../speech/SpeechInputActions': { SpeechInputActions: empty },
   './attachments/AttachmentComposer': { AttachmentComposer: empty },
+  './attachments/AttachmentDropZone': { AttachmentDropZone },
   './attachments/FileMentionPicker': { FileMentionPicker: empty, FileMentionChips: empty, useFileMention: () => ({}) },
   './attachments/FileMentionEditor': { FileMentionEditor: React.forwardRef<HTMLTextAreaElement, React.ComponentPropsWithoutRef<'textarea'> & { mention: unknown }>(({ mention: _mention, ...props }, ref) => React.createElement('textarea', { ...props, ref })) },
   '../workspace/ResultFileCard': { resultFileRequest: () => null },
@@ -60,7 +62,14 @@ function render(status: WorkItem['status'] = 'completed', employeeId = 'employee
     kind: 'conversation', status, modelId: 'model-a', isActive: status === 'running', messages: [] } as unknown as WorkItem
   work.currentEmployeeId = employeeId
   const workspace = { employees: [], myEmployees: [{ id: 'employee', name: '电商员工', allowedModels: ['model-a', 'model-b'] }], busy: false, attachmentScopeKey: 'account' } as unknown as EnterpriseWorkspace
-  return renderToStaticMarkup(React.createElement(WorkConversation, { work, workspace, mediaRetryState }))
+  const previousReact = Object.getOwnPropertyDescriptor(globalThis, 'React')
+  Object.defineProperty(globalThis, 'React', { configurable: true, value: React })
+  try {
+    return renderToStaticMarkup(React.createElement(WorkConversation, { work, workspace, mediaRetryState }))
+  } finally {
+    if (previousReact) Object.defineProperty(globalThis, 'React', previousReact)
+    else Reflect.deleteProperty(globalThis, 'React')
+  }
 }
 
 test('conversation shows persisted pending text and attachment names, count and employee-switch lock', () => {
@@ -72,6 +81,7 @@ test('conversation shows persisted pending text and attachment names, count and 
   assert.match(html, /附件：销量.xlsx/)
   assert.match(html, /<button aria-label="换一位员工接手" disabled=""/)
   assert.match(html, /补充信息将排队依次处理/)
+  assert.match(html, /data-attachment-drop-zone="conversation-task"/)
   assert.doesNotMatch(html, /重试并继续|继续处理<\/button>/)
 })
 

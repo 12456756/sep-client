@@ -1,0 +1,20 @@
+.ent-attachment-drop-zone { position: relative; }
+.ent-attachment-drop-hint {
+  position: absolute;
+  z-index: 5;
+  inset: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+  border: 2px dashed var(--ent-brand, var(--workspace-accent));
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--ent-panel, var(--color-surface-panel)) 88%, var(--ent-brand-soft, var(--color-status-error-bg)));
+  color: var(--ent-brand-ink, var(--color-action-primary));
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+}
+.ent-attachment-drop-hint svg { flex-shrink: 0; }

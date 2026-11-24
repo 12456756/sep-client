@@ -6,6 +6,7 @@ import type { AvailableEmployee, AvailableSkill, AvailableWorkflow, Conversation
 import { WorkspaceEmployeeAvatar } from './WorkspaceEmployeeAvatar';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { ComposerAddMenuLoader } from '../enterprise/attachments/ComposerAddMenuLoader';
+import { AttachmentDropZone } from '../enterprise/attachments/AttachmentDropZone';
 import { ComposerConnectorChip } from '../enterprise/attachments/ComposerConnectorChip';
 import { withComposerConnector } from '../../features/enterprise/composer-connectors';
 import type { ConnectorId } from '../../shared/connectors';
@@ -118,12 +119,16 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
     const result = await window.electronAPI.selectDirectory(workspace.path);
     if (result.success && result.path) updateWorkspace({ path: result.path, displayName: result.path.split(/[\\/]/).filter(Boolean).pop() || result.path, accessMode: workspace.accessMode });
   };
-  const handleFiles = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const next = Array.from(event.target.files ?? []).map(file => file.name).filter(Boolean);
+  const addFiles = (files: FileList | null) => {
+    if (busy) return;
+    const next = Array.from(files ?? [], file => file.name).filter(Boolean);
     if (next.length) setAttachments(items => Array.from(new Set([...items, ...next])));
-    event.currentTarget.value = '';
     setAddMenuOpen(false);
     setAddPanel(null);
+  };
+  const handleFiles = (event: React.ChangeEvent<HTMLInputElement>) => {
+    addFiles(event.currentTarget.files);
+    event.currentTarget.value = '';
   };
   const addSkill = (id: string) => {
     if (!selectedSkillIds.includes(id)) onDraftChange({ skillIds: [...selectedSkillIds, id] });
@@ -159,7 +164,7 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
     if (workflow) onWorkflowSubmit({ workflowId: workflow.id, employeeId: workflow.employeeIds[0], workspace, inputs: workflowInputs });
   };
 
-  return <section className={`workspace-composer ${compact ? 'compact' : ''} ${mode === 'workflow' ? 'workflow-mode' : ''}`} aria-label="工作输入">
+  return <AttachmentDropZone as="section" className={`workspace-composer ${compact ? 'compact' : ''} ${mode === 'workflow' ? 'workflow-mode' : ''}`} aria-label="工作输入" disabled={busy} onFiles={addFiles}>
     {mode === 'workflow' && <div className="workflow-fields"><label><span>工作方案</span><select value={workflowId} onChange={event => { setWorkflowId(event.target.value); setWorkflowInputs({}); }}><option value="">选择任务中心方案</option>{workflows.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>{workflow?.inputs.map(input => <label key={input.id}><span>{input.label}{input.required ? ' *' : ''}</span>{input.type === 'long-text' ? <textarea className="workflow-input-textarea" value={String(workflowInputs[input.id] ?? '')} onChange={event => setWorkflowInputs({ ...workflowInputs, [input.id]: event.target.value })} placeholder={input.placeholder} /> : <input value={String(workflowInputs[input.id] ?? '')} onChange={event => setWorkflowInputs({ ...workflowInputs, [input.id]: event.target.value })} placeholder={input.placeholder} />}</label>)}</div>}
     {mode === 'conversation' && <div className="composer-employee-strip" aria-label="当前对话员工">
       {employeeIds.length === 0 ? <span className="composer-empty-chip">点击左下角 + 添加硅基员工</span> : employeeIds.map(id => {
@@ -186,14 +191,14 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
           {addPanel === 'employees' ? employees.map(item => <button type="button" role="menuitem" key={item.id} onClick={() => addEmployee(item.id)}><WorkspaceEmployeeAvatar employee={item} /><span>{item.displayName}</span></button>) : null}
         </ComposerAddMenuLoader>
       </> : <div className="composer-add-wrap" ref={addMenuRef}>
-        <button className="workspace-add-button" type="button" onClick={() => { setAddMenuOpen(value => !value); setAddPanel(null); }} aria-expanded={addMenuOpen} aria-label="添加内容" title="添加文件、技能或硅基员工"><span className={`composer-add-icon ${addMenuOpen ? 'is-hidden' : ''}`}><Plus size={20} /></span><span className={`composer-add-icon ${addMenuOpen ? '' : 'is-hidden'}`}><X size={19} /></span></button>
+        <button className="workspace-add-button" type="button" disabled={busy} onClick={() => { setAddMenuOpen(value => !value); setAddPanel(null); }} aria-expanded={addMenuOpen} aria-label="添加内容" title="添加文件、技能或硅基员工"><span className={`composer-add-icon ${addMenuOpen ? 'is-hidden' : ''}`}><Plus size={20} /></span><span className={`composer-add-icon ${addMenuOpen ? '' : 'is-hidden'}`}><X size={19} /></span></button>
         {addMenuOpen && <div className="composer-add-menu" role="menu">
           <input ref={fileInputRef} className="composer-file-input" type="file" multiple aria-hidden="true" tabIndex={-1} onChange={handleFiles} />
-          <button type="button" role="menuitem" onClick={() => fileInputRef.current?.click()} title="添加文件"><Paperclip size={15} /><span>添加文件</span></button>
+          <button type="button" role="menuitem" disabled={busy} onClick={() => fileInputRef.current?.click()} title="添加文件"><Paperclip size={15} /><span>添加文件</span></button>
         </div>}
       </div>}
       {mode === 'conversation' && <label className="composer-model-control"><Sparkles size={14} /><span>模型</span><select value={draft.modelId} disabled={!employee} onChange={event => onDraftChange({ modelId: event.target.value })} title="选择模型"><option value="">默认</option>{employee?.modelOptions.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></label>}
       {(mode === 'workflow' || mode === 'conversation') && <div className={`composer-workspace-group ${workspaceLocked ? 'locked' : ''}`} aria-label="工作目录设置"><button className="workspace-tool-button workspace-directory-button" type="button" onClick={() => void chooseDirectory()} disabled={workspaceLocked} title={workspaceLocked ? '已创建的对话不能修改工作目录' : (visibleWorkspacePath || '选择工作目录')}><FolderOpen size={15} /><span>{visibleWorkspacePath ? formatDirectoryPath(visibleWorkspacePath) : '选择工作目录'}</span></button><label className="composer-permission-control"><ShieldCheck size={14} /><span>权限</span><select value={workspace.accessMode} onChange={event => updateWorkspace({ ...workspace, accessMode: event.target.value as LocalWorkspaceBinding['accessMode'] })} title="设置工作目录权限"><option value="read-write">读写</option><option value="read-only">只读</option></select></label></div>}
     </div>{mode === 'conversation' && currentTask?.type === 'conversation' ? <ContextUsageIndicator taskId={currentTask.id} /> : null}<button className="workspace-submit" onClick={submit} disabled={!canSubmit} aria-label="安排工作" title={busy ? '正在安排工作' : '安排工作'}>{busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>
-  </section>;
+  </AttachmentDropZone>;
 }

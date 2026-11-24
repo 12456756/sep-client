@@ -14,6 +14,7 @@ import { ConversationEmployeePicker } from '../ConversationEmployeePicker';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer, type AttachmentComposerOperations } from '../attachments/AttachmentComposer';
+import { AttachmentDropZone } from '../attachments/AttachmentDropZone';
 import { FileMentionChips, FileMentionPicker, useFileMention } from '../attachments/FileMentionPicker';
 import { FileMentionEditor } from '../attachments/FileMentionEditor';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
@@ -73,7 +74,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
         </div>
       ) : null}
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
-      <div className="ent-chat-ask">
+      <AttachmentDropZone className="ent-chat-ask" composerId={composerId.current} disabled={busy || speech.busy || attachmentsBusy || mention.pending || !attachmentSession}>
         <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
         <FileMentionEditor mention={mention}
           data-composer-id={composerId.current}
@@ -114,7 +115,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
             <ArrowUp size={17} aria-hidden />
           </button>
         </div>
-      </div>
+      </AttachmentDropZone>
     </section>
   );
 }

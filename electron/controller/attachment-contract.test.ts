@@ -69,31 +69,43 @@ test('folder preview accepts one local drive path and confirmation accepts only 
   }
 })
 
-test('the preload previews only a trusted clipboard path bound to the current composer', async () => {
+function mockAttachmentPreload() {
   const source = readFileSync(new URL('../preload.ts', import.meta.url), 'utf8')
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   let api!: ElectronAPI
   const calls: unknown[][] = []
   const dependencies: Record<string, unknown> = {
     electron: { contextBridge: { exposeInMainWorld: (_name: string, value: ElectronAPI) => { api = value } },
+      webUtils: { getPathForFile: (file: { nativePath?: string }) => file.nativePath ?? '' },
       ipcRenderer: { on() {}, invoke: async (...args: unknown[]) => { calls.push(args); return { success: true } } } },
     '../src/shared/attachment-contracts': contracts, './controller/channels': channels,
     './common/window-layout': { getWindowChromeConfig }, '../src/shared/window-close': {},
   }
-  let handlePaste: ((event: unknown) => void) | undefined
-  const document = { addEventListener: (_type: string, listener: typeof handlePaste) => { handlePaste = listener }, removeEventListener: () => {} }
+  const listeners = new Map<string, Set<(event: unknown) => void>>()
+  const document = {
+    addEventListener(type: string, listener: (event: unknown) => void) {
+      if (!listeners.has(type)) listeners.set(type, new Set())
+      listeners.get(type)!.add(listener)
+    },
+    removeEventListener(type: string, listener: (event: unknown) => void) { listeners.get(type)?.delete(listener) },
+  }
   compileFunction(compiled, ['require', 'exports', 'process', 'globalThis'])((id: string) => {
     assert.ok(Object.hasOwn(dependencies, id), id)
     return dependencies[id]
   }, {}, { platform: 'win32' }, { document })
+  return { api, calls, dispatch: (type: string, event: unknown) => { for (const listener of listeners.get(type) ?? []) listener(event) } }
+}
+
+test('the preload previews only a trusted clipboard path bound to the current composer', async () => {
+  const { api, calls, dispatch } = mockAttachmentPreload()
   let pasteId: string | null = null
   const binding = { composerId: 'compose', sessionId: 'session', target: { kind: 'compose' as const, composerId: 'compose' } }
   const dispose = api.bindAttachmentPaste(Object.freeze({ ...binding, onFolderPaste: id => { pasteId = id } }))
   const clipboardData = { getData: () => '"D:\\商品 素材"', files: [] }
   const target = { matches: () => true, closest: () => ({ getAttribute: () => binding.composerId }) }
-  handlePaste?.({ isTrusted: false, target, clipboardData })
+  dispatch('paste', { isTrusted: false, target, clipboardData })
   assert.equal(pasteId, null)
-  handlePaste?.({ isTrusted: true, target, clipboardData, preventDefault: () => assert.fail('plain text paste must be preserved') })
+  dispatch('paste', { isTrusted: true, target, clipboardData, preventDefault: () => assert.fail('plain text paste must be preserved') })
   assert.ok(pasteId)
   assert.deepEqual(calls, [])
   const request = { composerId: binding.composerId, sessionId: binding.sessionId, pasteId }
@@ -102,6 +114,55 @@ test('the preload previews only a trusted clipboard path bound to the current co
   assert.deepEqual(calls, [[INVOKE_CHANNELS.ATTACHMENT_FOLDER_PREVIEW, { sessionId: 'session', path: 'D:\\商品 素材' }]])
   dispose()
   assert.deepEqual(await api.previewAttachmentFolder(request), { success: false })
+})
+
+test('trusted file drops batch only native files into the active, matching composer session', async () => {
+  const { api, calls, dispatch } = mockAttachmentPreload()
+  const events: Parameters<Parameters<ElectronAPI['onAttachmentPaste']>[0]>[0][] = []
+  const unsubscribe = api.onAttachmentPaste(event => events.push(event))
+  let enabled = true
+  const dispose = api.bindAttachmentPaste({ composerId: 'compose', sessionId: 'session', target: { kind: 'compose', composerId: 'compose' }, isEnabled: () => enabled })
+  const files = ['D:\\report.txt', 'D:\\image.png'].map(nativePath => ({ nativePath }))
+  const drop = ({ isTrusted = true, composer = 'compose', disabled = false, payload = files }: { isTrusted?: boolean; composer?: string; disabled?: boolean; payload?: object[] } = {}) => {
+    let prevented = false
+    dispatch('drop', { isTrusted, dataTransfer: { files: payload }, preventDefault: () => { prevented = true },
+      target: { closest: (selector: string) => selector === '[data-attachment-drop-zone]' ? {
+        getAttribute: (name: string) => name === 'data-attachment-drop-zone' ? composer : disabled ? '' : null,
+      } : null } })
+    return prevented
+  }
+  assert.equal(drop({ isTrusted: false }), false)
+  assert.equal(drop({ composer: 'other' }), false)
+  assert.equal(drop({ payload: [] }), false)
+  assert.equal(drop({ disabled: true }), true)
+  enabled = false
+  assert.equal(drop(), true)
+  assert.deepEqual(calls, [])
+  assert.equal(events.length, 0)
+
+  enabled = true
+  assert.equal(drop({ payload: [...files, { path: 'D:\\spoofed.txt' }] }), true)
+  assert.equal(events[1]?.status, 'failed')
+  assert.match(events[1]?.error ?? '', /无法读取拖入的文件/)
+  events.length = 0
+  assert.equal(drop({ payload: Array(11).fill(files[0]) }), true)
+  assert.equal(events[1]?.status, 'failed')
+  assert.match(events[1]?.error ?? '', /10 个附件/)
+  assert.deepEqual(calls, [])
+  events.length = 0
+
+  assert.equal(drop(), true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.deepEqual(events.map(event => event.status), ['started', 'completed'])
+  assert.deepEqual(events.map(event => event.source), ['drop', 'drop'])
+  const operationId = events[0]?.operationId
+  assert.ok(operationId)
+  assert.equal(events[1]?.operationId, operationId)
+  assert.deepEqual(calls, [[INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, { sessionId: 'session', operationId, paths: files.map(file => file.nativePath) }]])
+  dispose()
+  unsubscribe()
+  assert.equal(drop(), false)
+  assert.equal(calls.length, 1)
 })
 
 test('draft-node imports reject stale revision and unknown nodes before opening a session', async () => {

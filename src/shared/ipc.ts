@@ -403,7 +403,7 @@ export interface ElectronAPI {
   cancelAttachmentImport: (input: { sessionId: string }) => Promise<IpcCommandResult>
   previewAttachment: (input: AttachmentPreviewRequest) => Promise<IpcCommandResult & { data?: AttachmentPreview }>
   bindAttachmentPaste: (input: { composerId: string; sessionId: string; target: AttachmentImportTarget; isEnabled?: () => boolean; onFolderPaste?: (pasteId: string | null) => void; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean }) => () => void
-  onAttachmentPaste: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
+  onAttachmentPaste: (callback: (event: { composerId: string; sessionId: string; operationId: string; source?: 'paste' | 'drop'; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
   login: (credentials: LoginRequest) => Promise<LoginResult>
   listRememberedAccounts: () => Promise<RememberedAccountsResult>
   getRememberedPassword: (email: string) => Promise<PasswordAvailabilityResult>

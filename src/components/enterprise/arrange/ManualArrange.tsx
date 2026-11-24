@@ -21,6 +21,7 @@ import { EmployeeFace } from '../EmployeeFace';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
+import { AttachmentDropZone } from '../attachments/AttachmentDropZone';
 import { KnowledgeSelector } from '../KnowledgeSelector';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 import type { ConnectorId } from '../../../shared/connectors';
@@ -139,13 +140,16 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
     setEditorVersion(editorVersionRef.current);
   };
 
-  const handleAttachmentsChange = (items: AttachmentView[]) => {
-    knownAttachmentIds.current = new Set(items.map(item => item.attachmentId));
+  const handleAttachmentsChange = useCallback((items: AttachmentView[]) => {
+    const retained = new Set(items.map(item => item.attachmentId));
+    if (retained.size !== knownAttachmentIds.current.size || items.some(item => !knownAttachmentIds.current.has(item.attachmentId))) setSaved(false);
+    knownAttachmentIds.current = retained;
     setAttachmentRefs(items);
-  };
+    setSteps(current => current.map(step => ({ ...step, inputRefs: step.inputRefs?.filter(ref => ref.kind !== 'attachment' || retained.has(ref.attachment.attachmentId)) })));
+  }, []);
 
-  const handlePasteStarted = (operationId: string) => {
-    if (!pasteNodeByOperation.current.has(operationId)) pasteNodeByOperation.current.set(operationId, { nodeId: activeNodeId.current, existingIds: new Set(knownAttachmentIds.current) });
+  const handlePasteStarted = (operationId: string, source: 'paste' | 'drop') => {
+    if (!pasteNodeByOperation.current.has(operationId)) pasteNodeByOperation.current.set(operationId, { nodeId: source === 'drop' ? null : activeNodeId.current, existingIds: new Set(knownAttachmentIds.current) });
   };
 
   const bindNewAttachments = (nodeId: string | null, items: AttachmentView[]) => {
@@ -320,7 +324,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
           </div>
         </div>
 
-        <aside className="ent-mn-side" aria-label={selected ? '当前步骤的配置' : '这项工作'}>
+        <AttachmentDropZone as="aside" className="ent-mn-side" aria-label={selected ? '当前步骤的配置' : '这项工作'} composerId={composerId.current} disabled={busy || speech.busy || attachmentsBusy || !attachmentSession}>
           {selected ? (
             <StepForm
               step={selected}
@@ -366,13 +370,9 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
             const picker = pasteNodeByOperation.current.get('__picker__');
             pasteNodeByOperation.current.delete('__picker__');
             if (picker && items) bindNewAttachments(picker.nodeId, items.filter(item => !picker.existingIds.has(item.attachmentId)));
-          }} onChange={items => {
-            handleAttachmentsChange(items);
-            const retained = new Set(items.map(item => item.attachmentId));
-            setSteps(current => current.map(step => ({ ...step, inputRefs: step.inputRefs?.filter(ref => ref.kind !== 'attachment' || retained.has(ref.attachment.attachmentId)) })));
-          }} onSessionChange={setAttachmentSession} onPasteEdit={onPasteEdit} />
+          }} onChange={handleAttachmentsChange} onSessionChange={setAttachmentSession} onPasteEdit={onPasteEdit} />
           {attachmentRefs.length ? <label className="ent-attachment-usage"><input type="checkbox" checked={mustUseAttachments} onChange={event => { setMustUseAttachments(event.target.checked); setSaved(false); }} />必须安排到至少一个步骤</label> : null}
-        </aside>
+        </AttachmentDropZone>
       </div>
 
       <footer className="ent-mn-composer">
@@ -400,7 +400,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
           <button
             type="button"
             className="ent-arr-second"
-            disabled={!steps.length || saved || speech.busy}
+            disabled={!steps.length || saved || speech.busy || attachmentsBusy}
             onClick={() => { setSaved(onSave(draft())); }}
           >
             <BookmarkPlus size={14} aria-hidden />

@@ -7,6 +7,7 @@ import { PromptExamples } from './PromptExamples';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer, type AttachmentComposerOperations } from '../attachments/AttachmentComposer';
+import { AttachmentDropZone } from '../attachments/AttachmentDropZone';
 import { FileMentionChips, FileMentionPicker, useFileMention } from '../attachments/FileMentionPicker';
 import { FileMentionEditor } from '../attachments/FileMentionEditor';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
@@ -84,7 +85,7 @@ export function GoalComposer({
       </div> : null}
       <div className="ent-goal-stack">
         <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
-        <div className="ent-goal">
+        <AttachmentDropZone className="ent-goal" composerId={composerId.current} disabled={busy || speech.busy || attachmentsBusy || mention.pending || !attachmentSessionId}>
           <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
           <FileMentionEditor mention={mention}
             data-composer-id={composerId.current}
@@ -131,7 +132,7 @@ export function GoalComposer({
               <ArrowUp size={17} aria-hidden />
             </button>
           </div>
-        </div>
+        </AttachmentDropZone>
       </div>
     </>
   );

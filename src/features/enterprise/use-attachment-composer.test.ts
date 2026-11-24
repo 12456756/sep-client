@@ -25,7 +25,13 @@ function mountHook(api: unknown, options: AttachmentComposerOptions) {
     },
     useRef: (initial: unknown) => { const index = cursor++; return cells[index] ??= { current: initial } },
     useEffect: effect, useLayoutEffect: effect,
-    useCallback: (callback: unknown) => callback,
+    useCallback: (callback: unknown, deps: unknown[]) => {
+      const index = cursor++
+      const previous = cells[index] as { callback: unknown; deps: unknown[] } | undefined
+      if (previous && deps.length === previous.deps.length && deps.every((dep, i) => Object.is(dep, previous.deps[i]))) return previous.callback
+      cells[index] = { callback, deps }
+      return callback
+    },
   }
   const filename = new URL('./use-attachment-composer.ts', import.meta.url)
   const output = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
@@ -69,6 +75,30 @@ test('ordinary composers still cancel their open import session on unmount', asy
   assert.equal(hook.render().session?.sessionId, 'ordinary')
   hook.unmount()
   assert.deepEqual(cancelled, ['ordinary'])
+})
+
+test('file import keeps the composer busy until the refreshed attachments are available', async () => {
+  type Event = { composerId: string; sessionId: string; operationId: string; status: 'started' | 'completed' }
+  let receive!: (event: Event) => void
+  let refresh!: (result: unknown) => void
+  const session = { sessionId: 'session-a', status: 'open', attachments: [] }
+  const retained = { session, attachments: [] } as unknown as RetainedAttachmentState
+  const hook = mountHook({
+    onAttachmentPaste: (callback: typeof receive) => { receive = callback; return () => {} },
+    listAttachments: () => new Promise(resolve => { refresh = resolve }),
+  }, { target: { kind: 'compose', composerId: 'drop' }, retainedState: retained })
+  hook.render()
+  const event = { composerId: 'drop', sessionId: session.sessionId, operationId: 'drop-a' }
+  receive({ ...event, status: 'started' })
+  assert.equal(hook.render().busy, true)
+  receive({ ...event, status: 'completed' })
+  assert.equal(hook.render().busy, true)
+  refresh({ success: true, data: [{ attachmentId: 'dropped-file' }] })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  const result = hook.render()
+  assert.equal(result.busy, false)
+  assert.equal(result.attachments[0]?.attachmentId, 'dropped-file')
+  hook.unmount()
 })
 
 test('pasted folders wait for preview and explicit selection without changing attachments on cancel', async () => {

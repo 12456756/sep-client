@@ -65,6 +65,12 @@ export class SkillRewriteSession {
       return item.result && status !== 'generating' && status !== 'failed' && status !== 'cancelled'
         ? [{ prompt: item.prompt, content: item.result.content, status }] : [];
     }).slice(-3);
+    if (round.referenceFiles) {
+      // Keep submitted files available for retries and @ selection without attaching them to the next request.
+      const mentions = this.attachment.fileMentions ??= {};
+      const mentionOnly = mentions.mentionOnly ??= new Set<string>();
+      for (const file of round.referenceFiles.attachments) mentionOnly.add(file.attachmentId);
+    }
     this.update({ activeRequestId: round.id, prompt: '', cancelError: '', rounds: [...this.state.rounds, round] });
     try {
       const result = await rewrite({ requestId: round.id, content: round.source, prompt: round.prompt, modelId: round.model, history, ...(round.referenceFiles ? { referenceFiles: round.referenceFiles } : {}) });

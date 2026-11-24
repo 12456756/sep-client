@@ -10,6 +10,7 @@ import '../../styles/conversation.css';
 import { useSpeechInput } from '../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../speech/SpeechInputActions';
 import { AttachmentComposer, type AttachmentComposerOperations } from './attachments/AttachmentComposer';
+import { AttachmentDropZone } from './attachments/AttachmentDropZone';
 import { FileMentionChips, FileMentionPicker, useFileMention, type MentionCandidate } from './attachments/FileMentionPicker';
 import { FileMentionEditor } from './attachments/FileMentionEditor';
 import { resultFileRequest } from '../workspace/ResultFileCard';
@@ -250,7 +251,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
           </p>
           {canSkip ? <button type="button" className="ent-btn sm ent-conversation-skip" disabled={queued.busy || workspace.busy || sending} onClick={() => void queued.skip()}><SkipForward size={13} aria-hidden />跳过本轮，继续对话</button> : null}
           {unstarted ? <button type="button" className="ent-btn sm" disabled={queued.busy || workspace.busy} onClick={() => void queued.resume()}>开始执行</button> : null}
-          <div className="ent-ask">
+          <AttachmentDropZone className="ent-ask" composerId={composerId} disabled={workspace.busy || sending || speech.busy || attachmentsBusy || mention.pending || !attachmentSession}>
           <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
           <FileMentionEditor mention={mention}
             data-composer-id={composerId}
@@ -301,7 +302,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
                   </button>
                 </div>
               </div>
-          </div>
+          </AttachmentDropZone>
         </div>
     </>
   );
