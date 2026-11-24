@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import yaml from 'js-yaml'
 import { UPDATE_FEEDS } from './generate-builder-config.mjs'
 import { readVersionReleaseNotes } from './generate-release-notes.mjs'
+import { CLIENT_RELEASE_NAME, createClientRelease, RELEASE_POINTER_NAMES } from './client-release-manifest.mjs'
 import { MANIFEST_NAMES, MAX_MANIFEST_BYTES, parseManifest, validateArtifactPath, validateManifestSet, verifyUpdateDirectory } from './verify-update-manifest.mjs'
 
 const MODE = 'unsigned-download-update'
@@ -145,13 +146,14 @@ export async function prepareDownloadUpdate({ source, output, channel, releaseNo
       macX64: new URL(`${version}/SEP-Client-${version}-mac-x64.dmg`, feed).href,
       windowsX64: new URL(`${version}/SEP-Client-${version}-win-x64.exe`, feed).href,
     },
-    publishLast: [...MANIFEST_NAMES],
+    publishLast: [...RELEASE_POINTER_NAMES],
     notice: 'Code signing, notarization, remote upload, installation, and release approval were not verified.',
   }
 
   await mkdir(destination)
   try {
     for (const item of rewritten) await writeFile(join(destination, item.name), item.text, { encoding: 'utf8', flag: 'wx' })
+    await writeFile(join(destination, CLIENT_RELEASE_NAME), `${JSON.stringify(createClientRelease(plan), null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
     await writeFile(join(destination, 'upload-plan.json'), `${JSON.stringify(plan, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
   } catch (error) {
     await rm(destination, { recursive: true, force: true })
@@ -171,7 +173,7 @@ export function parseArguments(args) {
 export async function main(args = process.argv.slice(2)) {
   const result = await prepareDownloadUpdate(parseArguments(args))
   console.log(`prepared ${result.channel} download-update manifests for ${result.version}`)
-  console.log(`upload ${result.plan.artifacts.length} artifacts to their version directory, then publish latest.yml and latest-mac.yml last`)
+  console.log(`upload ${result.plan.artifacts.length} artifacts to their version directory, then publish ${RELEASE_POINTER_NAMES.join(', ')} last`)
   console.log('releaseApproved=false; signatureVerified=false; no files were uploaded')
   return result
 }

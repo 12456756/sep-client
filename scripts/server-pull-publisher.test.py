@@ -47,8 +47,13 @@ class PublisherTests(unittest.TestCase):
                 name = f'{component}-1.0.0-{platform}-{digest}.zip'
                 self.files['connector-assets/' + name] = data
                 connectors.append(dict(name=name, size=len(data), sha256=digest))
-        for name in p.MANIFESTS:
-            data = b'version: 1.2.3\n'
+        catalog = dict(version='1.2.3', artifacts=[dict(platform=platform, label=label, fileName=f'SEP-Client-1.2.3-{suffix}', url=p.FEED + f'1.2.3/SEP-Client-1.2.3-{suffix}', architecture=architecture, minimumOsVersion=minimum) for platform, suffix, label, architecture, minimum in [
+            ('macos-arm64', 'mac-arm64.dmg', 'macOS · Apple 芯片', 'ARM64', 'macOS 12 或更高版本'),
+            ('macos-x64', 'mac-x64.dmg', 'macOS · Intel 芯片', 'x64', 'macOS 12 或更高版本'),
+            ('windows-x64', 'win-x64.exe', 'Windows · 64 位', 'x64', 'Windows 10 64 位或更高版本'),
+        ]])
+        for name in p.POINTERS:
+            data = json.dumps(catalog).encode() if name == 'client-release.json' else b'version: 1.2.3\n'
             self.files[name] = data
             manifests.append(dict(name=name, size=len(data), sha256=hashlib.sha256(data).hexdigest()))
             (self.root / name).write_bytes(b'version: 1.2.2\n')
@@ -74,13 +79,13 @@ class PublisherTests(unittest.TestCase):
             raise p.ReleaseError('installer unreachable')
         with self.assertRaisesRegex(p.ReleaseError, 'unreachable'):
             self.publish(precheck=fail)
-        for name in p.MANIFESTS:
+        for name in p.POINTERS:
             self.assertEqual((self.root / name).read_bytes(), b'version: 1.2.2\n')
 
     def test_safe_bundle_and_successful_idempotent_publication(self):
         self.publish()
         self.publish()
-        for name in p.MANIFESTS:
+        for name in p.POINTERS:
             self.assertEqual((self.root / name).read_bytes(), self.files[name])
             self.assertEqual((self.work / 'previous-manifests' / name).read_bytes(), b'version: 1.2.2\n')
         self.assertEqual(len(list((self.root / '1.2.3').iterdir())), 10)
@@ -92,7 +97,7 @@ class PublisherTests(unittest.TestCase):
             raise p.ReleaseError('public verification failed')
         with self.assertRaisesRegex(p.ReleaseError, 'verification failed'):
             self.publish(fail)
-        for name in p.MANIFESTS:
+        for name in p.POINTERS:
             self.assertEqual((self.root / name).read_bytes(), b'version: 1.2.2\n')
         self.publish()
 
@@ -295,7 +300,7 @@ class PublisherTests(unittest.TestCase):
                     self.fail('lock accepted')
 
     def test_public_checks_download_hashes_and_exact_manifests(self):
-        resources = {p.FEED + name: data for name, data in self.files.items() if name in p.MANIFESTS}
+        resources = {p.FEED + name: data for name, data in self.files.items() if name in p.POINTERS}
         for item in self.plan['downloads']:
             resources[p.FEED + item['url']] = self.files['artifacts/' + Path(item['url']).name]
         for item in self.plan['connectorArtifacts']:
@@ -304,9 +309,75 @@ class PublisherTests(unittest.TestCase):
             return io.BytesIO(resources[url])
         with p.extracted_bundle(self.archive, self.work, self.request) as (payload, plan):
             p.verify_public(plan, payload, fetch)
+            resources[p.FEED + 'client-release.json'] = b'old website catalog'
+            with self.assertRaisesRegex(p.ReleaseError, 'manifest mismatch'):
+                p.verify_public(plan, payload, fetch)
+            resources[p.FEED + 'client-release.json'] = self.files['client-release.json']
             resources[p.FEED + plan['downloads'][0]['url']] = b'wrong'
             with self.assertRaises(p.ReleaseError):
                 p.verify_public(plan, payload, fetch)
+
+    def test_missing_or_stale_website_catalog_rejected_before_publication(self):
+        original = self.files['client-release.json']
+        for data in [b'{}', original.replace(b'1.2.3', b'1.2.2'), original.replace(b'sep.longdaoec.com', b'bad.longdaoec.com')]:
+            self.files['client-release.json'] = data
+            entry = next(item for item in self.plan['manifests'] if item['name'] == 'client-release.json')
+            entry.update(size=len(data), sha256=hashlib.sha256(data).hexdigest())
+            self.make_archive()
+            with self.assertRaisesRegex(p.ReleaseError, 'catalog'):
+                self.publish()
+            self.assertFalse((self.root / '1.2.3').exists())
+        self.plan['manifests'] = [item for item in self.plan['manifests'] if item['name'] != 'client-release.json']
+        self.make_archive()
+        with self.assertRaisesRegex(p.ReleaseError, 'incomplete manifest'):
+            self.publish()
+
+    def test_first_website_catalog_is_removed_on_failed_publication(self):
+        (self.root / 'client-release.json').unlink()
+        def fail(*_):
+            raise p.ReleaseError('verification failed')
+        with self.assertRaises(p.ReleaseError):
+            self.publish(fail)
+        self.assertFalse((self.root / 'client-release.json').exists())
+
+    def test_third_pointer_write_failure_restores_both_ymls_and_old_catalog(self):
+        write = p.write_atomic
+        failed = False
+        def fail_once(path, data, mode=0o600):
+            nonlocal failed
+            if path == self.root / 'client-release.json' and not failed:
+                failed = True
+                raise OSError('injected third-pointer write failure')
+            return write(path, data, mode)
+        with patch.object(p, 'write_atomic', side_effect=fail_once):
+            with self.assertRaisesRegex(OSError, 'third-pointer'):
+                self.publish()
+        for name in p.POINTERS:
+            self.assertEqual((self.root / name).read_bytes(), b'version: 1.2.2\n')
+
+    def test_ssh_verification_checks_all_pointers_and_three_website_downloads(self):
+        with p.extracted_bundle(self.archive, self.work, self.request) as (payload, plan):
+            calls = []
+            def fetch(url, method='GET'):
+                calls.append((url, method))
+                response = io.BytesIO(self.files[url.removeprefix(p.FEED)] if method == 'GET' else b'')
+                name = url.split('/')[-1]
+                response.headers = {'Content-Length': str(next((item['size'] for item in plan['artifacts'] if item['name'] == name), 0))}
+                return response
+            with patch.object(p, 'open_public', side_effect=fetch):
+                p.verify_ssh_public(plan, payload)
+            self.assertEqual(len(calls), 6)
+            self.assertEqual(sum(method == 'HEAD' for _, method in calls), 3)
+            with patch.object(p, 'open_public', return_value=io.BytesIO(b'old')):
+                with self.assertRaisesRegex(p.ReleaseError, 'metadata mismatch'):
+                    p.verify_ssh_public(plan, payload)
+            def wrong_size(url, method='GET'):
+                response = fetch(url, method)
+                response.headers['Content-Length'] = '1'
+                return response
+            with patch.object(p, 'open_public', side_effect=wrong_size):
+                with self.assertRaisesRegex(p.ReleaseError, 'size mismatch'):
+                    p.precheck_website_downloads(plan, payload)
 
 
 if __name__ == '__main__':

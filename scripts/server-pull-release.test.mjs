@@ -10,6 +10,7 @@ import { test } from 'node:test'
 import { PassThrough } from 'node:stream'
 import yaml from 'js-yaml'
 import { artifactIdentity, githubRequest, main, preparePullBundle, publishByServerPull, runRemote, validateArtifactMetadata, validateDownloadUrl } from './server-pull-release.mjs'
+import { createClientRelease } from './client-release-manifest.mjs'
 
 const env = { GITHUB_RUN_ID: '1234', GITHUB_RUN_ATTEMPT: '2', GITHUB_SHA: 'a'.repeat(40), GITHUB_REPOSITORY: 'example/client' }
 
@@ -69,7 +70,8 @@ test('bundle includes only verified installers, connectors and prepared manifest
     await writeFile(join(source, manifestName), yaml.dump({ version, files }))
     await writeFile(join(prepared, manifestName), yaml.dump({ version, files: files.map(item => ({ ...item, url: `${version}/${item.url}` })), releaseNotes: '- A release note.' }))
   }
-  const plan = { schemaVersion: 1, mode: 'unsigned-download-update', version, channel: 'stable', feed: 'https://sep.longdaoec.com/sep-client/stable/', artifacts, connectorArtifacts: connectors, publishLast: ['latest.yml', 'latest-mac.yml'] }
+  const plan = { schemaVersion: 1, mode: 'unsigned-download-update', version, channel: 'stable', feed: 'https://sep.longdaoec.com/sep-client/stable/', artifacts, connectorArtifacts: connectors, publishLast: ['latest.yml', 'latest-mac.yml', 'client-release.json'] }
+  await writeFile(join(prepared, 'client-release.json'), JSON.stringify(createClientRelease(plan)))
   await writeFile(join(prepared, 'upload-plan.json'), JSON.stringify(plan))
   const result = await preparePullBundle({ source, prepared, output, env })
   assert.equal(result.version, version)
@@ -78,8 +80,12 @@ test('bundle includes only verified installers, connectors and prepared manifest
   assert.equal(result.downloads.length, 5)
   assert.equal(result.commit, env.GITHUB_SHA)
   assert.equal(result.runAttempt, '2')
+  assert.deepEqual(result.manifests.map(item => item.name), plan.publishLast)
   for (const item of result.manifests) assert.equal(createHash('sha256').update(await readFile(join(output, item.name))).digest('hex'), item.sha256)
   assert.equal((await main(['--prepare', source, prepared, `${output}-cli`], env)).version, version)
+  await writeFile(join(prepared, 'client-release.json'), JSON.stringify({ ...createClientRelease(plan), version: '1.2.2' }))
+  await assert.rejects(preparePullBundle({ source, prepared, output: `${output}-stale`, env }), /catalog/)
+  await writeFile(join(prepared, 'client-release.json'), JSON.stringify(createClientRelease(plan)))
   await writeFile(join(source, names[0]), 'tampered')
   await assert.rejects(preparePullBundle({ source, prepared, output: `${output}-bad`, env }), /size mismatch|SHA512|hash|changed/)
   await assert.rejects(readFile(join(`${output}-bad`, 'server-pull-plan.json')), { code: 'ENOENT' })
@@ -141,7 +147,7 @@ test('server publisher regression suite runs without third party dependencies', 
 test('SSH preflight can import without npm installation or third party modules', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'sep-preflight-import-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
-  for (const name of ['server-pull-release.mjs', 'upload-download-update.mjs', 'verify-connector-assets.mjs']) {
+  for (const name of ['server-pull-release.mjs', 'upload-download-update.mjs', 'verify-connector-assets.mjs', 'client-release-manifest.mjs']) {
     await writeFile(join(directory, name), await readFile(`scripts/${name}`))
   }
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(join(directory, 'server-pull-release.mjs')).href)})`], { encoding: 'utf8' })
