@@ -167,7 +167,8 @@
       "icon": "build/desktop-icon.icns",
       "signIgnore": [
         "/Contents/Resources/office/officecli-mac-(arm64|x64)$",
-        "/Contents/Resources/local-media/ffmpeg-[0-9.]+\\.tar\\.xz$"
+        "/Contents/Resources/local-media/ffmpeg-[0-9.]+\\.tar\\.xz$",
+        "/Contents/Resources/local-media/lame-[0-9.]+\\.tar\\.gz$"
       ],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "用于将您主动录制的语音在本机转换为输入文字。"

@@ -16,11 +16,13 @@ for (const [platform, arch, target] of [['win32', 1, 'win-x64'], ['darwin', 1, '
     const context = { electronPlatformName: platform, arch, appOutDir: join(root, 'out'), packager: { projectDir: root, appInfo: { productFilename: '元机AI' } } }
     const dir = join(root, 'resources', 'local-media', target)
     await mkdir(dir, { recursive: true })
-    await writeFile(join(dir, '..', 'source.json'), JSON.stringify({ version: 'test', sha256: hash('source') }))
+    const manifest = JSON.stringify({ version: 'test', sha256: hash('source'), lame: { version: 'test', sha256: hash('lame') } })
+    await writeFile(join(dir, '..', 'source.json'), manifest)
     await assert.rejects(beforeLocalMediaPack(context), /Prepare the pinned/)
     const [ffmpeg, ffprobe] = isMac ? ['ffmpeg', 'ffprobe'] : ['ffmpeg.exe', 'ffprobe.exe']
-    const config = `${isMac ? '--enable-videotoolbox' : '--enable-mediafoundation'} --disable-network`
+    const config = `${isMac ? '--enable-videotoolbox' : '--enable-mediafoundation'} --disable-network --enable-libmp3lame`
     const files = { [ffmpeg]: target, [ffprobe]: 'probe', 'ffmpeg-test.tar.xz': 'source', 'COPYING.LGPLv2.1': 'license',
+      'lame-test.tar.gz': 'lame', 'COPYING.LAME': 'lame license', 'build-local-media-lame.sh': 'lame recipe', 'source.json': manifest,
       [isMac ? 'build-local-media-mac.sh' : 'build-local-media-win.sh']: 'recipe', 'build-config.txt': config,
       SHA256SUMS: `${hash(target)}  ${ffmpeg}\n${hash('probe')}  ${ffprobe}\n` }
     for (const [file, contents] of Object.entries(files)) await writeFile(join(dir, file), contents)
@@ -35,6 +37,9 @@ for (const [platform, arch, target] of [['win32', 1, 'win-x64'], ['darwin', 1, '
     await writeFile(join(dir, 'build-config.txt'), `${config} --enable-gpl`)
     await assert.rejects(beforeLocalMediaPack(context), error => error.cause?.message === 'Unexpected FFmpeg build configuration')
     await writeFile(join(dir, 'build-config.txt'), config)
+    await writeFile(join(dir, 'lame-test.tar.gz'), 'bad archive')
+    await assert.rejects(beforeLocalMediaPack(context), error => error.cause?.message === 'LAME corresponding source checksum mismatch')
+    await writeFile(join(dir, 'lame-test.tar.gz'), 'lame')
     await writeFile(join(dir, ffprobe), 'wrong binary')
     await assert.rejects(beforeLocalMediaPack(context), error => error.cause?.message === `FFmpeg checksum mismatch: ${ffprobe}`)
   })
@@ -52,5 +57,6 @@ test('macOS app signing skips the corresponding source archive, not the Mach-O t
   const { build } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const ignored = name => build.mac.signIgnore.some(pattern => new RegExp(pattern).test(`/App.app/Contents/Resources/local-media/${name}`))
   assert.ok(ignored('ffmpeg-8.1.2.tar.xz'))
+  assert.ok(ignored('lame-4.0.tar.gz'))
   assert.ok(!ignored('ffmpeg') && !ignored('ffprobe'))
 })

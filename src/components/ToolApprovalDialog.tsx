@@ -22,28 +22,41 @@ const paidQuote = z.object({ mock: z.literal(false), quote: z.object({
 }) })
 const imageQuote = z.object({ quote: z.object({ amount: z.string().regex(/^\d+(?:\.\d+)?$/).refine(value => Number.isFinite(Number(value))), currency: z.string().min(1).max(20) }) })
 const mediaSeconds = z.number().min(0).max(86400)
+const mediaOverlay = { name: z.string().max(400), position: z.enum(['top-left', 'top-right', 'bottom-left', 'bottom-right']), size: z.number().min(0.1).max(0.5) }
 const mediaPlan = z.object({
   aspect: z.enum(['16:9', '9:16', '1:1']), resolution: z.literal([720, 1080]), durationSeconds: mediaSeconds,
   clips: z.array(z.object({ name: z.string().max(400), durationSeconds: mediaSeconds, start: mediaSeconds.optional(), end: mediaSeconds.optional(),
     crops: z.boolean(), rotation: z.literal([90, 180, 270]).optional(), volume: z.number().min(0).max(1).optional(),
-    motion: z.enum(['still', 'zoom-in', 'pan-left', 'pan-right']).optional() })).min(1).max(8),
+    motion: z.enum(['still', 'zoom-in', 'pan-left', 'pan-right']).optional(), role: z.enum(['intro', 'outro']).optional(),
+    speed: z.number().min(0.5).max(2).optional(), freeze: mediaSeconds.optional() })).min(1).max(8),
   transitions: z.array(mediaSeconds).max(7), fadeIn: mediaSeconds, fadeOut: mediaSeconds,
   music: z.object({ name: z.string().max(400), volume: z.number().min(0).max(1) }).optional(),
+  watermark: z.object({ ...mediaOverlay, opacity: z.number().min(0.1).max(1) }).optional(),
+  pip: z.object({ ...mediaOverlay, at: mediaSeconds, start: mediaSeconds, end: mediaSeconds }).optional(),
+  audio: z.object({ denoise: z.boolean(), normalize: z.boolean(), duckMusic: z.boolean() }).optional(),
 })
 function compositionApproval(input: unknown): string | undefined {
   const parsed = mediaPlan.safeParse(input)
   if (!parsed.success) return undefined
-  const { aspect, resolution, durationSeconds, clips, transitions, fadeIn, fadeOut, music } = parsed.data
+  const { aspect, resolution, durationSeconds, clips, transitions, fadeIn, fadeOut, music, watermark, pip, audio } = parsed.data
   const seconds = (n: number) => String(Number(n.toFixed(3)))
   const motion = { still: '静止', 'zoom-in': '推近', 'pan-left': '向左横移', 'pan-right': '向右横移' }
+  const position = { 'top-left': '左上', 'top-right': '右上', 'bottom-left': '左下', 'bottom-right': '右下' }
   const lines = clips.map((clip, i) => {
     const timing = clip.start !== undefined && clip.end !== undefined ? `${seconds(clip.start)}–${seconds(clip.end)} 秒` : `${seconds(clip.durationSeconds)} 秒`
-    const settings = [timing, clip.motion && motion[clip.motion], clip.crops ? '裁切' : '完整显示',
+    const settings = [timing, clip.speed && `${seconds(clip.speed)} 倍速`, clip.freeze && `静音定格 ${seconds(clip.freeze)} 秒`,
+      clip.motion && motion[clip.motion], clip.crops ? '裁切' : '完整显示',
       clip.rotation && `顺时针 ${clip.rotation}°`, clip.volume === 0 ? '无原声' : clip.volume !== undefined ? `原声 ${Math.round(clip.volume * 100)}%` : undefined]
-    return `${i + 1}. ${clip.name.slice(0, 100)}（${settings.filter(Boolean).join('，')}）${transitions[i] ? ` → 交叉淡化 ${seconds(transitions[i])} 秒` : ''}`
+    return `${i + 1}. ${clip.role === 'intro' ? '片头：' : clip.role === 'outro' ? '片尾：' : ''}${clip.name.slice(0, 100)}（${settings.filter(Boolean).join('，')}）${transitions[i] ? ` → 交叉淡化 ${seconds(transitions[i])} 秒` : ''}`
   })
   if (fadeIn || fadeOut) lines.push(`整片淡入 ${seconds(fadeIn)} 秒，淡出 ${seconds(fadeOut)} 秒`)
   if (music) lines.push(`配乐：${music.name.slice(0, 100)}（音量 ${Math.round(music.volume * 100)}%）`)
+  if (watermark) lines.push(`水印：${watermark.name.slice(0, 100)}（${position[watermark.position]}，尺寸上限 ${Math.round(watermark.size * 100)}%，不透明度 ${Math.round(watermark.opacity * 100)}%）`)
+  if (pip) lines.push(`画中画：${pip.name.slice(0, 100)}（源片 ${seconds(pip.start)}–${seconds(pip.end)} 秒，成片第 ${seconds(pip.at)} 秒开始，${position[pip.position]}，尺寸上限 ${Math.round(pip.size * 100)}%，无原声）`)
+  if (audio) {
+    const effects = [audio.denoise && '原声降噪', audio.normalize && '响度统一（目标 −16 LUFS）', audio.duckMusic && '原声活动时自动压低配乐'].filter(Boolean)
+    if (effects.length) lines.push(`声音：${effects.join('、')}`)
+  }
   return `在本机合成并保存 MP4？${aspect}，${resolution}p，预计 ${seconds(durationSeconds)} 秒。原素材不会被覆盖。\n\n${lines.join('\n')}`
 }
 const messages: Readonly<Record<string, string>> = {
@@ -117,8 +130,9 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       message = `创建并启用「${title}」？${recurrence ? '预计首次执行' : '计划执行时间'}：${formatScheduleReceiptTime(firstRunAt, timezone)}。${recurrence ? ` 重复规则：${scheduleRecurrenceLabel(recurrence)}。` : ' 仅执行一次。'}\n\n${goal}`
     }
     if (request.toolName === 'local_media_process' && input.success) {
-      const labels = { trim: '裁剪', join: '拼接', compose: '合成视频', extract_audio: '提取音频', transcode: '转码' }
-      const operation = z.enum(['trim', 'join', 'compose', 'extract_audio', 'transcode']).safeParse(input.data.operation)
+      const labels = { trim: '裁剪', join: '拼接', compose: '合成视频', extract_audio: '提取音频', transcode: '转码',
+        batch_transcode: '批量转码', frame: '提取视频帧', thumbnail_grid: '生成缩略图网格', gif: '导出 GIF' }
+      const operation = z.custom<keyof typeof labels>(value => typeof value === 'string' && Object.hasOwn(labels, value)).safeParse(input.data.operation)
       const files = z.array(z.string()).max(8).safeParse(input.data.files)
       if (operation.success && operation.data === 'compose') {
         const summary = compositionApproval(input.data.plan)
@@ -126,7 +140,11 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
         message = summary
       } else if (operation.success && files.success) {
         const names = files.data.map(name => name.slice(0, 100)).join('、')
-        message = `允许在本机${labels[operation.data]}「${names}」并保存新文件？原素材不会被覆盖。`
+        const size = operation.data === 'transcode' || operation.data === 'batch_transcode'
+          ? z.number().int().positive().max(1024 ** 3).safeParse(input.data.maxBytes).data : undefined
+        const format = operation.data === 'extract_audio' ? z.enum(['m4a', 'mp3', 'wav']).safeParse(input.data.format).data : undefined
+        const details = size ? `（每个成品上限 ${size.toLocaleString('zh-CN')} 字节）` : format ? `为 ${format.toUpperCase()}` : ''
+        message = `允许在本机${labels[operation.data]}「${names}」${details}并保存新文件？原素材不会被覆盖。`
       }
     }
     const officeCommand = input.success && request.toolName === 'mcp__officecli__officecli' ? input.data.command : null

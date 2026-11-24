@@ -15,14 +15,16 @@ async function sha256(path) {
 async function verifyLocalMedia(directory, spec, target) {
   const { recipe, configFlag, binaries } = target
   const source = `ffmpeg-${spec.version}.tar.xz`
-  const filenames = [...binaries, source, 'COPYING.LGPLv2.1', recipe, 'build-config.txt', 'SHA256SUMS']
+  const lame = `lame-${spec.lame.version}.tar.gz`
+  const filenames = [...binaries, source, lame, 'COPYING.LGPLv2.1', 'COPYING.LAME', 'source.json',
+    recipe, 'build-local-media-lame.sh', 'build-config.txt', 'SHA256SUMS']
   for (const filename of filenames) {
     const info = await lstat(join(directory, filename))
     if (!info.isFile() || !info.size) throw new Error(`Invalid FFmpeg resource: ${filename}`)
   }
   const config = await readFile(join(directory, 'build-config.txt'), 'utf8')
   const flags = config.split(/\s+/)
-  if (!flags.includes(configFlag) || !flags.includes('--disable-network') || /--enable-(gpl|nonfree|version3)\b/.test(config)) {
+  if (!flags.includes(configFlag) || !flags.includes('--disable-network') || !flags.includes('--enable-libmp3lame') || /--enable-(gpl|nonfree|version3)\b/.test(config)) {
     throw new Error('Unexpected FFmpeg build configuration')
   }
   const checksums = (await readFile(join(directory, 'SHA256SUMS'), 'utf8')).trim().split(/\r?\n/)
@@ -30,6 +32,7 @@ async function verifyLocalMedia(directory, spec, target) {
     if (!checksums.includes(`${await sha256(join(directory, filename))}  ${filename}`)) throw new Error(`FFmpeg checksum mismatch: ${filename}`)
   }
   if (await sha256(join(directory, source)) !== spec.sha256) throw new Error('FFmpeg corresponding source checksum mismatch')
+  if (await sha256(join(directory, lame)) !== spec.lame.sha256) throw new Error('LAME corresponding source checksum mismatch')
   return filenames
 }
 

@@ -11,19 +11,25 @@ sha256=$(node -p 'require("./resources/local-media/source.json").sha256')
 source="ffmpeg-$version.tar.xz"
 build=$(mktemp -d)
 trap 'case "$build" in "${TMPDIR:-/tmp}"/*) rm -rf -- "$build";; esac' EXIT
+manifest="$root/resources/local-media/source.json"
+source "$root/scripts/build-local-media-lame.sh"
+build_local_media_lame "$manifest" "$build" "${FFMPEG_BUILD_JOBS:-4}"
 cd "$build"
 curl --fail --location --retry 3 --proto '=https' "$url" --output "$source"
 printf '%s  %s\n' "$sha256" "$source" | sha256sum --check --strict
 tar -xf "$source"
 cd "ffmpeg-$version"
 ./configure --prefix=/usr --disable-autodetect --disable-network --disable-doc \
-  --disable-ffplay --disable-debug --enable-mediafoundation --extra-ldflags=-static
+  --disable-ffplay --disable-debug --enable-mediafoundation --enable-libmp3lame \
+  --extra-cflags="-I$lame_prefix/include" --extra-ldflags="-static -L$lame_prefix/lib"
 make -j"${FFMPEG_BUILD_JOBS:-4}" ffmpeg.exe ffprobe.exe
 strip ffmpeg.exe ffprobe.exe
 ./ffmpeg.exe -hide_banner -v error -f lavfi -i 'testsrc2=s=320x180:r=24:d=1' \
   -pix_fmt nv12 -c:v h264_mf -an sample.mp4
 ./ffprobe.exe -hide_banner -v error -show_entries stream=codec_name -of csv=p=0 sample.mp4 | grep -Fx h264
 cp ffmpeg.exe ffprobe.exe COPYING.LGPLv2.1 "../$source" "$root/scripts/build-local-media-win.sh" "$dest/"
+cp "$build/$lame_source" "$manifest" "$root/scripts/build-local-media-lame.sh" "$dest/"
+cp "$lame_license" "$dest/COPYING.LAME"
 ./ffmpeg.exe -buildconf > "$dest/build-config.txt" 2>&1
 cd "$dest"
 sha256sum ffmpeg.exe ffprobe.exe > SHA256SUMS

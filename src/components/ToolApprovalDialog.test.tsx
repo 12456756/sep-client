@@ -176,6 +176,34 @@ test('local composition asks before saving and shows the resolved plan in order'
   } finally { ui.cleanup() }
 })
 
+test('local batch approval names the files and displays the individual byte limit', () => {
+  const ui = mount('local_media_process', { operation: 'batch_transcode', files: ['甲.mp4', '乙.mp4'], maxBytes: 250_000 })
+  try {
+    assert.match(ui.feedback.getSnapshot()!.message, /批量转码.*甲\.mp4、乙\.mp4.*每个成品上限 250,000 字节.*原素材不会被覆盖/)
+    assert.deepEqual(ui.decisions, [])
+  } finally { ui.cleanup() }
+})
+
+test('local enhanced composition approval shows timing, overlays and audio processing', () => {
+  const ui = mount('local_media_process', { operation: 'compose', plan: {
+    aspect: '16:9', resolution: 720, durationSeconds: 3.5, transitions: [0, 0], fadeIn: 0, fadeOut: 0,
+    clips: [{ name: '片头.png', role: 'intro', crops: false, durationSeconds: 0.5 },
+      { name: '正文.mp4', crops: false, start: 0, end: 4, speed: 2, freeze: 0.5, durationSeconds: 2.5 },
+      { name: '片尾.png', role: 'outro', crops: false, durationSeconds: 0.5 }],
+    music: { name: '配乐.wav', volume: 0.4 }, watermark: { name: '标志.png', position: 'top-left', size: 0.2, opacity: 0.8 },
+    pip: { name: '小窗.mp4', position: 'bottom-right', size: 0.3, at: 0.8, start: 0, end: 0.5 },
+    audio: { denoise: true, normalize: true, duckMusic: true },
+  } })
+  try {
+    const message = ui.feedback.getSnapshot()!.message
+    assert.match(message, /片头：片头\.png[\s\S]*2 倍速，静音定格 0\.5 秒[\s\S]*片尾：片尾\.png/)
+    assert.match(message, /水印：标志\.png（左上，尺寸上限 20%，不透明度 80%）/)
+    assert.match(message, /画中画：小窗\.mp4.*成片第 0\.8 秒开始.*无原声/)
+    assert.match(message, /原声降噪、响度统一.*自动压低配乐/)
+    assert.deepEqual(ui.decisions, [])
+  } finally { ui.cleanup() }
+})
+
 test('missing deadlines retain three minutes for browser handoff and one minute for ordinary approvals', () => {
   const timestamp = Date.now() - 90_000
   const handoff = mount('mcp__playwright__browser_set_mode', { operation: 'manual-handoff' }, null, timestamp)

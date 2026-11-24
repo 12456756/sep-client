@@ -101,7 +101,8 @@ export function buildConversationTranscript(source: readonly TaskExecutionEvent[
       const entry = tools.get(`${runId}:tool:${data.toolId}`)
       const { data: progress } = localMediaProgressSchema.safeParse(data.progress)
       if (entry?.state === 'running' && progress) {
-        entry.text = { probe: '探测素材', render: '渲染视频', verify: '校验成品', save: '保存成品' }[progress.phase] +
+        entry.text = (progress.item && progress.total && progress.item <= progress.total ? `第 ${progress.item}/${progress.total} 项 · ` : '') +
+          { probe: '探测素材', render: '处理素材', verify: '校验成品', save: '保存成品' }[progress.phase] +
           (progress.phase === 'render' && progress.percent !== undefined ? ` ${progress.percent}%` : '')
       }
     } else if (type === 'tool_execution_start' || type === 'tool_execution_end') {

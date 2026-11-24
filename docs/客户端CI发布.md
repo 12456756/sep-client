@@ -18,7 +18,9 @@ Windows x64、macOS x64/arm64 构建的组件随平台产物合并，发布前�
 
 ### 本地音视频组件
 
-Windows x64、macOS Intel 与 Apple Silicon 安装包内置 FFmpeg 和 FFprobe，不要求用户安装 Python、Homebrew 或系统 FFmpeg。发布流程按 `resources/local-media/source.json` 固定源码和校验值，安装包随附对应源码、LGPL 许可证及构建脚本。macOS 使用系统 VideoToolbox 编码 H.264，在两个对应架构的 runner 上分别构建，并在签名后检查应用内可执行文件的架构、签名及媒体处理结果。
+Windows x64、macOS Intel 与 Apple Silicon 安装包内置 FFmpeg 和 FFprobe，不要求用户安装 Python、Homebrew 或系统 FFmpeg。发布流程按 `resources/local-media/source.json` 固定 FFmpeg 和 MP3 编码库 LAME 的源码及校验值，安装包随附对应源码、许可证及构建脚本。macOS 使用系统 VideoToolbox 编码 H.264，在两个架构的 runner 上分别构建，并在签名后检查应用内可执行文件的架构、签名及媒体处理结果。Windows 发布也使用随包二进制测试；两端均覆盖批量转码、体积上限、抽帧、网格、GIF 和三种音频导出。
+
+媒体专项测试还覆盖片头片尾、Logo 水印、静音画中画、变速与定格、原声降噪、响度测量、自动压低配乐，以及静音和场景候选点检测。候选点只供确认，不直接生成剪辑；降噪和压低配乐使用原声音频信号，不使用语音识别模型。
 
 本地打包 macOS 时，先在对应架构的 Mac 上运行 `bash scripts/build-local-media-mac.sh x64` 或 `bash scripts/build-local-media-mac.sh arm64`，再运行打包命令。首次验收请使用 DMG 安装后从客户端运行一次带中文路径的本地剪辑，并检查外接盘作为临时目录时的空间提示和取消清理。
 

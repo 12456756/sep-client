@@ -50,12 +50,12 @@ test('history can recover thinking from message snapshots and separate later con
 test('shows only validated progress on the matching running local media operation', () => {
   const tool = { toolId: 'encode', toolName: 'local_media_process' }
   const events = [event(1, 'tool_execution_start', tool),
-    event(2, 'tool_execution_update', { ...tool, progress: { phase: 'render', percent: 40 }, output: 'private path' }),
+    event(2, 'tool_execution_update', { ...tool, progress: { phase: 'render', percent: 40, item: 2, total: 3 }, output: 'private path' }),
     event(3, 'tool_execution_update', { ...tool, progress: { phase: 'render', percent: 300 } }),
     event(4, 'tool_execution_update', { ...tool, progress: { phase: 'save' } }, 'run-b')]
   const [live] = buildConversationTranscript(events)
   assert.equal(live.entries.length, 1)
-  assert.equal(live.entries[0].text, '渲染视频 40%')
+  assert.equal(live.entries[0].text, '第 2/3 项 · 处理素材 40%')
   assert.doesNotMatch(JSON.stringify(live), /private path/)
   const [finished] = buildConversationTranscript([...events, event(5, 'tool_execution_end', { ...tool, success: true })])
   assert.equal(finished.entries[0].text, '本地音视频处理')
