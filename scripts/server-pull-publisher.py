@@ -21,6 +21,7 @@ import zipfile
 
 FEED = 'https://sep.longdaoec.com/sep-client/stable/'
 MANIFESTS = ['latest.yml', 'latest-mac.yml']
+POINTERS = MANIFESTS + ['client-release.json']
 CANCELLED = threading.Event()
 MAX_ARCHIVE = 8 * 1024 ** 3
 
@@ -102,7 +103,7 @@ def validate_plan(plan, request):
         targets.add((match[1], match[2]))
     require(len(targets) == 9, 'duplicate connector target')
     manifests = plan.get('manifests', [])
-    require(len(manifests) == 2 and {item['name'] for item in manifests} == set(MANIFESTS), 'incomplete manifest set')
+    require(len(manifests) == 3 and {item['name'] for item in manifests} == set(POINTERS), 'incomplete manifest set')
     records = {'server-pull-plan.json': None}
     for prefix, items in [('artifacts/', artifacts), ('connector-assets/', connectors), ('', manifests)]:
         for item in items:
@@ -162,6 +163,7 @@ def extracted_bundle(archive, work, request):
                         check_active()
                         output.write(chunk)
                 verify_file(path, item)
+            validate_client_release((payload / 'client-release.json').read_bytes(), plan)
             yield payload, plan
 
 
@@ -225,8 +227,44 @@ def precheck_public(plan):
     print('All public release files reachable before manifest switch', flush=True)
 
 
+def validate_client_release(data, plan):
+    require(len(data) <= 65536, 'oversized website catalog')
+    try:
+        value = json.loads(data)
+    except (ValueError, UnicodeError):
+        raise ReleaseError('invalid website catalog JSON') from None
+    version = plan['version']
+    expected = []
+    for platform, suffix, label, architecture, minimum in [
+        ('macos-arm64', 'mac-arm64.dmg', 'macOS · Apple 芯片', 'ARM64', 'macOS 12 或更高版本'),
+        ('macos-x64', 'mac-x64.dmg', 'macOS · Intel 芯片', 'x64', 'macOS 12 或更高版本'),
+        ('windows-x64', 'win-x64.exe', 'Windows · 64 位', 'x64', 'Windows 10 64 位或更高版本'),
+    ]:
+        name = f'SEP-Client-{version}-{suffix}'
+        url = FEED + version + '/' + name
+        require(any(item['name'] == name and item['url'] == url for item in plan['artifacts']), 'website installer differs from verified plan')
+        expected.append(dict(platform=platform, label=label, fileName=name, url=url, architecture=architecture, minimumOsVersion=minimum))
+    require(value == dict(version=version, artifacts=expected), 'website catalog differs from verified plan')
+    return value
+
+
+def precheck_website_downloads(plan, payload):
+    catalog = validate_client_release((payload / 'client-release.json').read_bytes(), plan)
+    sizes = {item['name']: item['size'] for item in plan['artifacts']}
+    for item in catalog['artifacts']:
+        with open_public(item['url'], 'HEAD') as response:
+            require(response.headers.get('Content-Length') == str(sizes[item['fileName']]), 'website installer missing or size mismatch')
+
+
+def verify_ssh_public(plan, payload):
+    for name in POINTERS:
+        with open_public(FEED + name) as response:
+            require(response.read(1024 * 1024 + 1) == (payload / name).read_bytes(), 'public release metadata mismatch')
+    precheck_website_downloads(plan, payload)
+
+
 def verify_public(plan, payload, fetch=open_public):
-    for name in MANIFESTS:
+    for name in POINTERS:
         with fetch(FEED + name) as response:
             require(response.read(1024 * 1024 + 1) == (payload / name).read_bytes(), 'public manifest mismatch')
     items = [(item, item['url'], 'sha512', base64.b64decode(item['sha512']).hex()) for item in plan['downloads']]
@@ -248,7 +286,7 @@ def verify_public(plan, payload, fetch=open_public):
 
 def manifest_snapshot(root):
     result = {}
-    for name in MANIFESTS:
+    for name in POINTERS:
         path = root / name
         if path.exists() or path.is_symlink():
             regular(path)
@@ -281,7 +319,7 @@ def publish(payload, plan, root, work, verify=verify_public, precheck=precheck_p
                 write_atomic(backup / name, data)
         state = dict(identity=identity, before={name: None if data is None else base64.b64encode(data).decode() for name, data in before.items()})
         write_atomic(state_path, json.dumps(state).encode())
-    desired = {name: (payload / name).read_bytes() for name in MANIFESTS}
+    desired = {name: (payload / name).read_bytes() for name in POINTERS}
     current = manifest_snapshot(root)
     for name, data in current.items():
         require(data in (before[name], desired[name]), 'production manifest changed; refusing overwrite')
@@ -330,7 +368,7 @@ def publish(payload, plan, root, work, verify=verify_public, precheck=precheck_p
     switched = False
     try:
         switched = True
-        for name in MANIFESTS:
+        for name in POINTERS:
             check_active()
             write_atomic(root / name, desired[name], 0o644)
         print('Update manifests switched; verifying public downloads', flush=True)

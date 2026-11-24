@@ -6,6 +6,7 @@ import { copyFile, link, lstat, mkdir, readFile, writeFile } from 'node:fs/promi
 import { basename, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { shellQuote, withSshContext } from './upload-download-update.mjs'
+import { readClientRelease, RELEASE_POINTER_NAMES } from './client-release-manifest.mjs'
 
 const FEED = 'https://sep.longdaoec.com/sep-client/stable/'
 const MANIFESTS = ['latest.yml', 'latest-mac.yml']
@@ -48,7 +49,8 @@ export async function preparePullBundle({ source, prepared, output, env = proces
   const plan = JSON.parse(await readFile(join(prepared, 'upload-plan.json'), 'utf8'))
   assert(plan.schemaVersion === 1 && plan.mode === 'unsigned-download-update' && plan.channel === 'stable' && plan.feed === FEED && /^\d+\.\d+\.\d+$/.test(plan.version), 'invalid stable upload plan')
   assert.equal(plan.artifacts.length, 10)
-  assert.deepEqual(plan.publishLast, MANIFESTS)
+  assert.deepEqual(plan.publishLast, RELEASE_POINTER_NAMES)
+  await readClientRelease(prepared, plan)
   await verifyUpdateDirectory(source, { requireAllPlatforms: true })
   assert.deepEqual(await connectorArtifactPlan(source, { required: true }), plan.connectorArtifacts)
   assert.equal(plan.connectorArtifacts.length, 9)
@@ -73,7 +75,7 @@ export async function preparePullBundle({ source, prepared, output, env = proces
   }
   validateManifestSet(manifests, { requireAllPlatforms: true })
   assert.equal(downloads.length, 5, 'all five installers must appear in update manifests')
-  const manifestRecords = await Promise.all(MANIFESTS.map(name => fileRecord(join(prepared, name))))
+  const manifestRecords = await Promise.all(RELEASE_POINTER_NAMES.map(name => fileRecord(join(prepared, name))))
   const result = { schemaVersion: 1, ...identity, version: plan.version, channel: 'stable', feed: FEED, artifacts: plan.artifacts, connectorArtifacts: plan.connectorArtifacts, manifests: manifestRecords, downloads }
   await mkdir(output)
   await mkdir(join(output, 'artifacts'))
@@ -86,7 +88,7 @@ export async function preparePullBundle({ source, prepared, output, env = proces
   }
   for (const item of plan.artifacts) await transfer(join(source, item.name), join(output, 'artifacts', item.name))
   for (const item of plan.connectorArtifacts) await transfer(join(source, 'connector-assets', item.name), join(output, 'connector-assets', item.name))
-  for (const name of MANIFESTS) await copyFile(join(prepared, name), join(output, name))
+  for (const name of RELEASE_POINTER_NAMES) await copyFile(join(prepared, name), join(output, name))
   await writeFile(join(output, 'server-pull-plan.json'), `${JSON.stringify(result, null, 2)}\n`, { flag: 'wx' })
   return result
 }

@@ -1,13 +1,15 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { chmod, lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { connectorArtifactPlan } from './verify-connector-assets.mjs'
+import { readClientRelease, RELEASE_POINTER_NAMES } from './client-release-manifest.mjs'
 
 const execute = promisify(execFile)
-const MANIFESTS = ['latest.yml', 'latest-mac.yml']
+const MANIFESTS = RELEASE_POINTER_NAMES
 
 function requireValue(condition, message) {
   if (!condition) throw new Error(message)
@@ -123,6 +125,13 @@ async function upload({ source, prepared, channel, env = process.env }) {
   const planPath = resolve(prepared, 'upload-plan.json')
   const plan = JSON.parse(await readFile(planPath, 'utf8'))
   requireValue(plan.schemaVersion === 1 && plan.channel === channel && typeof plan.version === 'string', 'upload plan identity is invalid')
+  requireValue(/^\d+\.\d+\.\d+$/.test(plan.version) && plan.feed === 'https://sep.longdaoec.com/sep-client/stable/', 'upload plan feed or version is invalid')
+  requireValue(JSON.stringify(plan.publishLast) === JSON.stringify(MANIFESTS), 'incomplete release metadata set')
+  await readClientRelease(prepared, plan)
+  const { parseManifest, validateManifestSet } = await import('./verify-update-manifest.mjs')
+  const manifests = await Promise.all(['latest.yml', 'latest-mac.yml'].map(async name => ({ name, manifest: parseManifest(await readFile(join(prepared, name)), name) })))
+  validateManifestSet(manifests, { requireAllPlatforms: true })
+  requireValue(manifests.every(item => item.manifest.version === plan.version), 'release metadata versions differ')
   requireValue(Array.isArray(plan.artifacts) && plan.artifacts.length === 10, 'upload plan must contain the complete three-platform artifact set')
   const artifacts = plan.artifacts.map(item => ({ ...item, name: flatName(item.name) }))
   const connectorArtifacts = await connectorArtifactPlan(source, { required: true })
@@ -132,7 +141,11 @@ async function upload({ source, prepared, channel, env = process.env }) {
     const local = await localFile(source, item.name)
     requireValue(local.size === item.size, `local artifact size does not match upload plan: ${item.name}`)
   }
-  for (const name of MANIFESTS) await localFile(prepared, name)
+  const metadataRecords = []
+  for (const name of MANIFESTS) {
+    const file = await localFile(prepared, name)
+    metadataRecords.push({ name, sha256: createHash('sha256').update(await readFile(file.file)).digest('hex') })
+  }
 
   return withSshContext(env, async context => {
     const runId = (env.GITHUB_RUN_ID || `${Date.now()}`).replace(/[^A-Za-z0-9_.-]/g, '-')
@@ -158,20 +171,12 @@ async function upload({ source, prepared, channel, env = process.env }) {
       await ssh(context, `set -eu; ${remoteChecks.join('; ')}; mv ${shellQuote(staging)} ${shellQuote(versionRoot)}`, 'remote artifact checksum verification and version directory publish')
       for (const name of MANIFESTS) await rsync(context, (await localFile(prepared, name)).file, `${manifestStaging}/${name}`, `update manifest upload (${name})`)
       const backup = `${context.root}/.sep-client-backup-${plan.version}-${runId}`
-      const publish = [
-        'set -eu',
-        `root=${shellQuote(context.root)}`,
-        `stage=${shellQuote(manifestStaging)}`,
-        `backup=${shellQuote(backup)}`,
-        'mkdir "$backup"',
-        'restore() { status=$?; if [ "$status" -ne 0 ]; then for name in latest.yml latest-mac.yml; do rm -f -- "$root/$name"; if [ -e "$backup/$name" ]; then mv -- "$backup/$name" "$root/$name"; fi; done; fi; rm -rf -- "$stage" "$backup"; exit "$status"; }',
-        'trap restore EXIT',
-        'for name in latest.yml latest-mac.yml; do if [ -e "$root/$name" ]; then mv -- "$root/$name" "$backup/$name"; fi; done',
-        'mv -- "$stage/latest.yml" "$root/latest.yml"',
-        'mv -- "$stage/latest-mac.yml" "$root/latest-mac.yml"',
-        'trap - EXIT',
-        'rm -rf -- "$stage" "$backup"',
-      ].join('; ')
+      const worker = await readFile(fileURLToPath(new URL('./server-pull-publisher.py', import.meta.url)), 'utf8')
+      const precheck = `${worker}\nprecheck_website_downloads(json.loads(${JSON.stringify(JSON.stringify(plan))}), Path(${JSON.stringify(manifestStaging)}))\n`
+      await ssh(context, `python3 -c ${shellQuote(precheck)}`, 'public website installer precheck')
+      const verification = `${worker}\nverify_ssh_public(json.loads(${JSON.stringify(JSON.stringify(plan))}), Path(${JSON.stringify(manifestStaging)}))\n`
+      const publish = pointerPublicationScript({ root: context.root, stage: manifestStaging, backup, records: metadataRecords,
+        verifyCommand: `python3 -c ${shellQuote(verification)}` })
       await ssh(context, publish, 'update manifest publication')
       return { channel, version: plan.version, artifacts: artifacts.length, remote: `${context.host}:${versionRoot}` }
     } catch (error) {
@@ -179,6 +184,23 @@ async function upload({ source, prepared, channel, env = process.env }) {
       throw error
     }
   })
+}
+
+export function pointerPublicationScript({ root, stage, backup, records, verifyCommand }) {
+  requireValue(JSON.stringify(records.map(item => item.name)) === JSON.stringify(MANIFESTS), 'incomplete release metadata set')
+  requireValue(records.every(item => /^[a-f0-9]{64}$/.test(item.sha256)), 'invalid release metadata checksum')
+  const names = MANIFESTS.join(' ')
+  return [
+    'set -eu',
+    `root=${shellQuote(root)}`, `stage=${shellQuote(stage)}`, `backup=${shellQuote(backup)}`,
+    ...records.map(item => `printf '%s  %s\\n' ${shellQuote(item.sha256)} "$stage/${item.name}" | sha256sum -c -`),
+    'mkdir "$backup"',
+    `for name in ${names}; do test ! -L "$root/$name"; if [ -e "$root/$name" ]; then test -f "$root/$name"; cp -- "$root/$name" "$backup/$name"; fi; done`,
+    `restore() { status=$?; trap - EXIT; if [ "$status" -ne 0 ]; then failed=0; for name in ${names}; do if [ -e "$backup/$name" ]; then cp -- "$backup/$name" "$stage/.restore-$name" && mv -f -- "$stage/.restore-$name" "$root/$name" || failed=1; else rm -f -- "$root/$name" || failed=1; fi; done; if [ "$failed" -ne 0 ]; then printf '%s\\n' 'Metadata rollback failed; retained backup for inspection' >&2; exit 1; fi; fi; rm -rf -- "$stage" "$backup"; exit "$status"; }`,
+    'trap restore EXIT',
+    ...MANIFESTS.flatMap(name => [`cp -- "$stage/${name}" "$stage/.switch-${name}"`, `mv -f -- "$stage/.switch-${name}" "$root/${name}"`]),
+    verifyCommand,
+  ].join('\n')
 }
 
 async function preflight({ version, env = process.env }) {

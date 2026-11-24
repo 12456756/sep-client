@@ -4,7 +4,7 @@ import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { UpdateModel } from '../../features/update/use-update'
 import type { UpdateState } from '../../shared/ipc'
-import { UpdateDetails, UpdateNotice, UpdateRestartDetails } from './UpdateNotice'
+import { CurrentReleaseNotes, UpdateDetails, UpdateNotice, UpdateRestartDetails } from './UpdateNotice'
 import type { UpdateTaskStatus } from './update-restart'
 
 const idle: UpdateState = { status: 'idle', currentVersion: '0.1.2' }
@@ -43,6 +43,24 @@ test('available details render main versions and notes as escaped text', () => {
   assert.doesNotMatch(html, /<script>/)
   assert.match(html, /下载更新/)
   assert.doesNotMatch(html, /重启并安装/)
+})
+
+test('current version notes button precedes check and close without showing notes initially', () => {
+  const html = details(model({ ...idle, status: 'not-available', checkedAt: '2026-11-24T00:00:00Z' }))
+  assert.match(html, /aria-expanded="false"[^>]*>.*查看更新内容/)
+  assert.ok(html.indexOf('查看更新内容') < html.indexOf('>检查更新'))
+  assert.doesNotMatch(html, /本版本未提供更新内容/)
+  assert.doesNotMatch(details(model(null)), /查看更新内容/)
+})
+
+test('current version notes keep numbered headings and never execute embedded HTML', () => {
+  const html = render(React.createElement(CurrentReleaseNotes, { version: '0.5.9',
+    release: { version: '0.5.9', notes: '### 1. 本地音视频处理\n新增视频裁剪。\n\n<script>alert(1)</script>\n\n![remote](https://example.test/tracker.png)' } }))
+  assert.match(html, /0\.5\.9 更新内容/)
+  assert.match(html, /<h4>1\. 本地音视频处理<\/h4>/)
+  assert.match(html, /新增视频裁剪/)
+  assert.doesNotMatch(html, /<script|<img|src="https:/)
+  assert.match(render(React.createElement(CurrentReleaseNotes, { version: '0.5.9', release: null })), /本版本未提供更新内容/)
 })
 
 test('external downloads explain manual installation and confirm the browser opened', () => {

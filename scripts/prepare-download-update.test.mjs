@@ -69,7 +69,15 @@ test('prepares versioned root manifests and a non-approved upload plan without c
   assert.equal(plan.version, version)
   assert.deepEqual(plan.artifacts.map(item => item.name), [...names].sort((a, b) => a.localeCompare(b, 'en')))
   assert.ok(plan.artifacts.every(item => item.destination === `${version}/${item.name}` && item.size > 0 && /^[a-f0-9]{64}$/.test(item.sha256)))
-  assert.deepEqual(plan.publishLast, ['latest.yml', 'latest-mac.yml'])
+  assert.deepEqual(plan.publishLast, ['latest.yml', 'latest-mac.yml', 'client-release.json'])
+  const catalog = JSON.parse(await readFile(join(output, 'client-release.json'), 'utf8'))
+  assert.equal(catalog.version, version)
+  assert.deepEqual(catalog.artifacts.map(item => item.platform), ['macos-arm64', 'macos-x64', 'windows-x64'])
+  for (const artifact of catalog.artifacts) {
+    assert.equal(artifact.url, `https://sep.longdaoec.com/sep-client/stable/${version}/${artifact.fileName}`)
+    assert.ok(plan.artifacts.some(item => item.name === artifact.fileName && item.url === artifact.url))
+    assert.ok(artifact.minimumOsVersion && artifact.architecture && artifact.label)
+  }
   for (const name of names) await assert.rejects(readFile(join(output, name)), error => error.code === 'ENOENT')
 })
 
