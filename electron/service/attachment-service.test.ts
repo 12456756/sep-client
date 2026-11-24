@@ -243,6 +243,24 @@ test('does not preview non-image task attachments', async () => {
   const ref = { attachmentId: file.attachmentId, sha256: file.sha256 }
   await service.claimTask(session.sessionId, 'task-text', [ref])
   await assert.rejects(service.previewTaskAttachment('task-text', ref.attachmentId, ref.sha256), /ATTACHMENT_PREVIEW_UNSUPPORTED/)
+  await assert.rejects(service.readTaskDocument('task-text', ref.attachmentId, ref.sha256), { code: 'INVALID_ARGUMENT' })
+})
+
+test('does not allow document previews of PDF or XLSX task attachments', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-attachment-doc-preview-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const store = new AttachmentStore(root, undefined, async () => ({ status: 'not-required', text: '', warnings: [] }))
+  const service = new AttachmentService(store, () => ownerA)
+  for (const [format, name] of [['pdf', 'brief.pdf'], ['xlsx', 'sales.XLSX']]) {
+    const taskId = `preview-${format}`
+    const { sessionId } = await service.beginSession({ kind: 'conversation', taskId })
+    const path = join(root, name)
+    await writeFile(path, `original ${format}`)
+    const { item } = (await service.importFiles(sessionId, `pick-${format}`, [path]))[0]
+    const { attachmentId, sha256 } = item
+    await service.claimTask(sessionId, taskId, [{ attachmentId, sha256 }])
+    await assert.rejects(service.readTaskDocument(taskId, attachmentId, sha256), { code: 'INVALID_ARGUMENT' })
+  }
 })
 
 test('reuses a saved attachment in a compose session with the original name and content', async t => {

@@ -59,6 +59,23 @@ test('Excel preview has sheet names, escaped values, cached results and explicit
   assert.equal(result.sections[1].title, 'Summary')
 })
 
+test('Excel preview reads prefixed Open XML parts and keeps empty sheets, values and absolute worksheet targets', async () => {
+  const spreadsheetNs = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  const relationNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+  const bytes = zipSync({
+    'xl/workbook.xml': strToU8(`<x:workbook xmlns:x="${spreadsheetNs}" xmlns:r="${relationNs}"><x:sheets><x:sheet name="Empty" sheetId="1" r:id="rId1"/><x:sheet name="Values" sheetId="2" r:id="rId2"/></x:sheets></x:workbook>`),
+    'xl/_rels/workbook.xml.rels': strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${relationNs}/worksheet" Target="/xl/worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${relationNs}/worksheet" Target="/xl/worksheets/sheet2.xml"/></Relationships>`),
+    'docProps/app.xml': strToU8('<ap:Properties xmlns:ap="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><ap:Application>Open XML</ap:Application></ap:Properties>'),
+    'xl/worksheets/sheet1.xml': strToU8(`<x:worksheet xmlns:x="${spreadsheetNs}"><x:sheetData/></x:worksheet>`),
+    'xl/worksheets/sheet2.xml': strToU8(`<s:worksheet xmlns:s="${spreadsheetNs}"><s:sheetData><s:row r="3"><s:c r="A3" t="inlineStr"><s:is><s:t xml:space="preserve">  A &amp; &lt;x:t&gt;  </s:t></s:is></s:c><s:c r="B3"><s:f>1+1</s:f><s:v>2</s:v></s:c></s:row></s:sheetData></s:worksheet>`),
+  })
+  const result = await convertDocumentPreview('xlsx', bytes)
+  assert.ok(result.kind === 'html')
+  assert.deepEqual(result.sections.map(section => section.title), ['Empty', 'Values'])
+  assert.match(result.sections[0].html, /空工作表/)
+  assert.ok(result.sections[1].html.includes('<th>3</th><td>  A &amp; &lt;x:t&gt;  </td><td>2</td>'))
+})
+
 test('Excel preview rejects a small sparse workbook before expanding millions of empty cells', async () => {
   const book = new ExcelJS.Workbook()
   const sheet = book.addWorksheet('Sparse')

@@ -10,7 +10,9 @@ It does not change delivery validation, dependency scheduling, task status or me
 - Every open checks the file integrity. Conversion is cached in a bounded, owner-scoped memory cache by accepted content version, then cleared on logout/shutdown.
 - Office parsing runs in disposable Electron utility processes, serialized independently of task execution. A parser timeout/crash only fails the preview.
 - PDF renders one page at a time in a browser worker. CMaps and standard fonts ship locally. Office preview presents content, not original pagination or chart fidelity.
+- In conversation messages, uploaded Word documents can be previewed from the verified task snapshot. PDF and XLSX document preview remains available for task results, not uploaded attachments.
 - HTML output is sanitized and rendered in an opaque sandboxed iframe, with scripts and network access disabled. Markdown does not load external images or execute HTML. Spreadsheet formulas are not evaluated; missing cached values are labeled explicitly.
+- XLSX parsing retries recognized Open XML namespace prefixes on an in-memory copy when ExcelJS rejects the original representation. Empty worksheets remain selectable and display an empty state. The user's workbook is not rewritten.
 - `.html` files keep their source view and open by default in a separate static render mode. It preserves inline CSS and embedded PNG, JPEG and WebP. Scripts, navigation, external files and sibling assets are not loaded; the HTML file is not opened with a `file:` URL.
 - Unsupported files retain the existing copy-path action. Image/video previews keep their existing service, state and player behavior.
 

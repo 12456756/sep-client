@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { loadXlsxWorkbook } from './xlsx-workbook'
 import { unzipSync } from 'fflate'
 import { XMLParser } from 'fast-xml-parser'
 import { posix } from 'node:path'
@@ -34,17 +35,14 @@ async function word(bytes: Uint8Array): Promise<DocumentPreviewContent> {
 
 async function spreadsheet(bytes: Uint8Array): Promise<DocumentPreviewContent> {
   officeEntries(bytes, false)
-  const ExcelJS = require('exceljs') as typeof import('exceljs')
-  const book = new ExcelJS.Workbook()
-  const workbookBuffer = Buffer.alloc(bytes.byteLength)
-  workbookBuffer.set(bytes)
-  try { await book.xlsx.load(workbookBuffer as unknown as Parameters<typeof book.xlsx.load>[0]) }
-  catch (cause) { throw new DocumentPreviewError('SPREADSHEET_PARSE_FAILED', { cause }) }
+  const { workbook, formulaType } = await loadXlsxWorkbook(bytes).catch(cause => {
+    throw new DocumentPreviewError('SPREADSHEET_PARSE_FAILED', { cause })
+  })
   const sections: { title: string; html: string }[] = []
   const notices = [officeNotice]
   let missingFormula = false
   let previewCells = 0
-  const sheets = book.worksheets.filter(sheet => sheet.state === 'visible').map(sheet => {
+  const sheets = workbook.worksheets.filter(sheet => sheet.state === 'visible').map(sheet => {
     const columnCount = sheet.columnCount
     // Sparse sheets still produce a rectangular table, so budget before creating empty cells.
     previewCells += sheet.actualRowCount * columnCount
@@ -65,7 +63,7 @@ async function spreadsheet(bytes: Uint8Array): Promise<DocumentPreviewContent> {
         const cell = row.getCell(column)
         if (cell.isMerged && cell.master.address !== cell.address) { cells.push('<td></td>'); continue }
         let text = cell.text
-        if ((cell.type === ExcelJS.ValueType.Formula || cell.formula) && cell.result === undefined) {
+        if ((cell.type === formulaType || cell.formula) && cell.result === undefined) {
           text = '公式结果未缓存'; missingFormula = true
         }
         cells.push(`<td>${escape(text)}</td>`)
