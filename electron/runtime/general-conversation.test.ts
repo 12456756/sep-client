@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TaskRuntime } from './task-runtime'
@@ -15,9 +15,67 @@ import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoRuntimeSchema } from '../../src/shared/video-media'
 import { ConversationContextStore } from '../domain/conversation-context'
 import { ConversationArtifactStore } from '../data/conversation-artifact-store'
+import { ArrangementCheckpointStore } from '../data/arrangement-checkpoint-store'
+import { DocumentPreviewStore } from '../data/document-preview-store'
+import { ResultFileStore } from '../data/result-file-store'
+import { managedFileTools } from '../pi/sdk/pi-managed-file-tools'
+
+test('a desktop-style Save As produces one previewable card that survives task reload', async t => {
+  const tmp = await mkdtemp(join(tmpdir(), 'csep-external-result-'))
+  const root = await realpath(tmp)
+  t.after(() => rm(tmp, { recursive: true, force: true }))
+  const scope = { memberId: 'member', enterpriseId: 'enterprise' }
+  const appData = join(root, 'app-data')
+  const manager = new TaskManager(appData)
+  const runs = new TaskRunStore(appData)
+  const plans = new WorkPlanStore(appData)
+  const workspace = join(root, 'workspace')
+  const desktop = join(root, 'Desktop')
+  await mkdir(desktop)
+  const destination = join(desktop, 'report.txt')
+  const text = 'Saved to the desktop.'
+  const runtime = new TaskRuntime({
+    taskManager: manager, taskRunStore: runs, workPlanStore: plans,
+    resolveEmployee: subscriptionId => ({ subscriptionId, modelId: 'model', gatewayUrl: 'http://unused' }),
+    authorizeModel: async modelId => ({ subscriptionId: 'subscription', modelId, gatewayUrl: 'http://unused' }),
+    getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+    createWorker: options => ({
+      async run() {
+        const [write] = managedFileTools({ ...options.context, getAccessToken: async () => '', authorizeTool: async request => {
+          assert.equal(request.toolName, 'file_save_as')
+          return true
+        } })
+        await write.execute('save', { path: destination, content: text }, undefined, undefined, {} as never)
+        await write.execute('default', { path: 'default.txt', content: 'default result' }, undefined, undefined, {} as never)
+      }, async abort() {}, async dispose() {},
+    }),
+  })
+  try {
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('desktop output', text, workspace, 'subscription')
+    await runtime.executeTask(task.id, { conversation: true })
+    for (let attempt = 0; attempt < 200 && (await manager.getTask(task.id))?.activeRunId !== null; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    const reloaded = new TaskManager(appData)
+    await reloaded.initialize()
+    await reloaded.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const saved = await reloaded.getTask(task.id)
+    assert.equal(saved?.status, 'completed')
+    assert.deepEqual(saved?.files, [destination, join(workspace, '成果', task.id, 'default.txt')])
+    const stored = { ...saved!, workType: { state: 'resolved', kind: 'conversation' } } as const
+    const documents = new DocumentPreviewStore(appData, plans, new ArrangementCheckpointStore(appData))
+    const results = new ResultFileStore(appData, documents, async () => stored)
+    const fileId = `${task.id}-file-0`
+    assert.equal((await documents.readConversation(scope, stored, fileId))?.bytes.toString(), text)
+    assert.equal(await results.revealPath(scope, { taskId: task.id, fileId }), destination)
+    assert.equal((await results.actionFile(scope, { taskId: task.id, fileId })).verifiedBytes?.toString(), text)
+  } finally { await runtime.stopAll() }
+})
 
 for (const kind of ['general', 'employee'] as const) {
-  for (const directoryStatus of ['ready', 'retry-in-prompt'] as const) {
+  for (const directoryStatus of ['ready', 'retryable'] as const) {
     test(`${kind} chat delivers saved media independently of a ${directoryStatus} ordinary artifact directory`, async () => {
       const root = await mkdtemp(join(tmpdir(), 'sep-conversation-media-delivery-'))
       const scope = { memberId: 'member', enterpriseId: 'enterprise' }
@@ -43,7 +101,7 @@ for (const kind of ['general', 'employee'] as const) {
         // The fallback case exposes only a query tool, as when recovering an existing video.
         video: { async prepareRun() { return { names: ['video_get_job'], async execute(name) { calls.push(name); return { saveStatus: 'SAVED' } } } },
           async waitForRun() {}, async stopTask() {} },
-        media: { async prepareRun() { if (directoryStatus === 'retry-in-prompt') return undefined; return { names: ['media_generate_image'], async execute(name) {
+        media: { async prepareRun() { if (directoryStatus === 'retryable') return undefined; return { names: ['media_generate_image'], async execute(name) {
           calls.push(name)
           return { generationStatus: 'SUCCEEDED', saveStatus: 'SAVED', assets: [{ localAssetId: 'saved-output', source: 'output', status: 'SAVED' }] }
         } } }, async waitForRun() { delivered = true }, async stopTask() {} },
@@ -54,7 +112,8 @@ for (const kind of ['general', 'employee'] as const) {
             assert.equal(toolPolicy?.fileAccess, 'workspace')
             assert.equal(browserArtifactTaskId, directoryStatus === 'ready' ? taskId : undefined)
             assert.equal(browserTaskStateDir, directoryStatus === 'ready' ? runs.getTaskDir(scope, taskId) : undefined)
-            assert.match(prompt, /通过文件工具创建的普通文件/)
+            assert.deepEqual(toolPolicy?.conversationOutput, { status: directoryStatus, relativePath: `成果/${taskId}` })
+            assert.doesNotMatch(prompt, /只能使用这个固定路径|不要改用其他目录/)
             assert.match(prompt, /图片和视频工具的成果由客户端独立保存/)
             assert.match(prompt, /saveStatus="SAVED" 且有已保存成果时/)
             assert.match(prompt, /普通成果目录为空、创建失败或文件工具不可用，不影响已保存媒体成果的交付/)
@@ -158,7 +217,7 @@ test('general chat preserves selected model, permissions and history across turn
         assert.match(prompt, /本轮形成包含多项建议、对比、测算或执行步骤的方案、分析、报告、清单等成体系内容时，必须保存为文件，无需用户另行要求/)
         assert.match(prompt, /草案或信息待补充也应保存并注明/)
         assert.match(prompt, /未指定格式的文本成果默认使用 Markdown/)
-        assert.match(prompt, /先将完整内容保存到本任务成果目录，最终答复只给大致摘要和文件链接/)
+        assert.match(prompt, /先保存完整内容，最终答复只给大致摘要和实际文件位置/)
         assert.match(prompt, /简单问答、零散建议和状态反馈直接在对话中回答/)
         assert.match(prompt, /检索或工具调用本身不触发文档生成/)
         assert.match(prompt, /已有图片、视频或其他文件成果时直接交付，除非用户要求，不额外生成过程记录或说明文件/)
@@ -248,7 +307,7 @@ test('general chat preserves selected model, permissions and history across turn
   } finally { await runtime?.stopAll(); await rm(root, { recursive: true, force: true }) }
 })
 
-test('general chat asks the model to create the fixed artifact path after preparation fails and ignores scan failures', async () => {
+test('general chat passes a retryable artifact destination to the tool policy and ignores scan failures', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sep-general-artifact-fallback-'))
   const scope = { memberId: 'member', enterpriseId: 'enterprise' }
   const manager = new TaskManager(root)
@@ -260,20 +319,21 @@ test('general chat asks the model to create the fixed artifact path after prepar
     authorizeModel: async modelId => ({ subscriptionId: 'general-model', modelId, gatewayUrl: 'http://unused' }),
     getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
     conversationArtifactStore: {
-      async prepare(_workspace, taskId) { return { status: 'retry-in-prompt', relativePath: `成果/${taskId}` } },
+      async prepare(_workspace, taskId) { return { status: 'retryable', relativePath: `成果/${taskId}` } },
       async scan() { throw new Error('scan unavailable') },
     },
     createWorker: options => ({
       async run(prompt) {
         promptSeen = prompt
-        assert.ok(prompt.includes('\u8bf7\u5c1d\u8bd5'))
-        assert.ok(prompt.includes(`成果/${options.context.taskId}`))
+        assert.deepEqual(options.context.toolPolicy?.conversationOutput, { status: 'retryable', relativePath: `成果/${options.context.taskId}` })
+        assert.match(prompt, /用户明确指定位置时，传入指定路径/)
+        assert.doesNotMatch(prompt, /请尝试在工作目录下创建|只能使用这个固定路径|不要改用其他目录/)
         assert.match(prompt, /遵从用户指定的交付形式/)
         assert.match(prompt, /用户明确只需对话回复时不生成文件/)
         assert.match(prompt, /本轮形成包含多项建议、对比、测算或执行步骤的方案、分析、报告、清单等成体系内容时，必须保存为文件，无需用户另行要求/)
         assert.match(prompt, /草案或信息待补充也应保存并注明/)
         assert.match(prompt, /未指定格式的文本成果默认使用 Markdown/)
-        assert.match(prompt, /先将完整内容保存到本任务成果目录，最终答复只给大致摘要和文件链接/)
+        assert.match(prompt, /先保存完整内容，最终答复只给大致摘要和实际文件位置/)
         assert.match(prompt, /简单问答、零散建议和状态反馈直接在对话中回答/)
         assert.match(prompt, /检索或工具调用本身不触发文档生成/)
         assert.match(prompt, /已有图片、视频或其他文件成果时直接交付，除非用户要求，不额外生成过程记录或说明文件/)

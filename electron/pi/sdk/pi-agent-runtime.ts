@@ -85,6 +85,7 @@ export interface PiAgentSessionConfig {
   reportPolicyEvent?: (type: string, data: unknown) => Promise<void> | void
   /** 任务级策略；缺省表示兼容旧的普通任务审批行为。 */
   toolPolicy?: import('../../../pi-extension/guard').ToolPolicy
+  registerWrittenFile?: (path: string, external?: import('../../../src/shared/result-files').ExternalResultReceipt) => Promise<void>
   /** Planner-only escape hatch: do not advertise any Pi tools. */
   disableTools?: boolean
 }

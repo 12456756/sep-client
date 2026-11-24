@@ -167,7 +167,7 @@ export function deliveryFileIssue(error: unknown, id: string, path: string): Del
   const errno = original && typeof original === 'object' && 'code' in original ? original.code : undefined
   const code = error instanceof ResultFilePathError
     ? ({ outside: 'UNSAFE_PATH', link: 'UNSAFE_PATH', invalidPath: 'UNSAFE_PATH', notFile: 'NOT_A_FILE',
-        missing: 'ENOENT', workspaceUnavailable: 'WORKSPACE_INVALID', access: errno === 'EPERM' ? 'EPERM' : 'EACCES' } as const)[error.reason]
+        missing: 'ENOENT', changed: 'FILE_CHANGED', workspaceUnavailable: 'WORKSPACE_INVALID', access: errno === 'EPERM' ? 'EPERM' : 'EACCES' } as const)[error.reason]
     : typeof errno === 'string' ? errno : error instanceof Error ? error.message : ''
   const messages: Record<string, string> = {
     UNSAFE_PATH: '路径越界或使用了不安全的文件链接，请在共享工作区规定位置保存真实文件。',

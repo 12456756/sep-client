@@ -59,6 +59,7 @@ function cloneTask(task: Task): Task {
     ...(task.scheduledOrigin ? { scheduledOrigin: { ...task.scheduledOrigin } } : {}),
     ...(task.scheduledAdmission ? { scheduledAdmission: { ...task.scheduledAdmission } } : {}),
     ...(task.fileSaveIntents ? { fileSaveIntents: structuredClone(task.fileSaveIntents) } : {}),
+    ...(task.externalFileReceipts ? { externalFileReceipts: structuredClone(task.externalFileReceipts) } : {}),
     files: [...task.files], logs: task.logs.map(log => ({ ...log })) }
 }
 
@@ -592,21 +593,29 @@ export class TaskManager {
     this.notifyTaskUpdate(taskId)
   }
 
-  async addTaskFile(taskId: string, filePath: string, beforeSave?: (task: Readonly<Task>, path: string, index: number) => Promise<import('../../src/shared/result-files').ResultSaveIntent | undefined>): Promise<void> {
+  async addTaskFile(taskId: string, filePath: string, beforeSave?: (task: Readonly<Task>, path: string, index: number) => Promise<import('../../src/shared/result-files').ResultSaveIntent | undefined>,
+    managed?: { runId: string; signal: AbortSignal; external?: import('../../src/shared/result-files').ExternalResultReceipt }): Promise<void> {
     let changed = false
+    const generation = managed ? this.generation : undefined
     await this.commit(async nextTasks => {
       const nextTask = nextTasks.get(taskId)
       // C9：去重判断必须与写入同处一个闭包，否则并发两次同名文件都会被追加。
       if (!nextTask) return
+      if (managed && nextTask.activeRunId !== managed.runId) return
       const index = await findTaskFileIndex(nextTask.workDir, nextTask.files, filePath)
       const path = index < 0 ? filePath : nextTask.files[index]!
+      managed?.signal.throwIfAborted()
+      if (managed?.external) {
+        nextTask.externalFileReceipts = { ...nextTask.externalFileReceipts, [path]: managed.external }
+        changed = true
+      }
       const intent = await beforeSave?.(nextTask, path, index < 0 ? nextTask.files.length : index)
       if (intent) nextTask.fileSaveIntents = { ...nextTask.fileSaveIntents, [path]: intent }
       if (index >= 0) return
       nextTask.files.push(filePath)
       nextTask.logs.push({ timestamp: Date.now(), message: `生成文件: ${filePath}`, level: 'info' })
       changed = true
-    })
+    }, generation)
     if (changed) this.notifyTaskUpdate(taskId)
   }
 

@@ -62,6 +62,7 @@ interface ToolExecutionData {
   toolName?: unknown
   input?: unknown
   success?: unknown
+  usesManagedFileRegistration?: unknown
 }
 
 interface PendingFileToolState {
@@ -1230,7 +1231,7 @@ export class TaskRuntime {
       const data = event.data as ToolExecutionData
       if (typeof data.toolId === 'string' && typeof data.toolName === 'string') {
         this.events.sideEffectStarted(event.runId, data.toolId, data.toolName, event.occurredAt)
-        const filePath = isFileToolName(data.toolName) ? filePathFromInput(data.input) : null
+        const filePath = isFileToolName(data.toolName) && data.usesManagedFileRegistration !== true ? filePathFromInput(data.input) : null
         if (filePath) {
           const pending = this.pendingFileTools.get(event.runId) ?? {
             taskId: event.taskId,

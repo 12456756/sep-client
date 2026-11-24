@@ -1,9 +1,9 @@
 import { constants } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises'
 import { dirname, extname, join } from 'node:path'
 import { createEditToolDefinition, createWriteToolDefinition, defineTool } from '@earendil-works/pi-coding-agent'
-import { boundOriginal, externalEditCandidate, managedFilePath } from '../../../pi-extension/guard'
+import { boundOriginal, externalEditCandidate, managedFilePath, managedWriteTarget } from '../../../pi-extension/guard'
 import type { PiAgentSessionConfig } from './pi-agent-runtime'
 
 const textExtensions = new Set(['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml', '.html', '.css', '.svg', '.yaml', '.yml', '.js', '.ts', '.py'])
@@ -49,6 +49,16 @@ export function managedFileTools(config: PiAgentSessionConfig) {
     signal?.throwIfAborted()
     return true
   }
+  const register = async (path: string, bytes: Buffer, info: { dev: bigint; ino: bigint; birthtimeNs: bigint }) => {
+    if (!config.registerWrittenFile) return
+    if (managedFilePath(path, { ...policy, fileAccess: 'workspace' }, true)) {
+      await config.registerWrittenFile(path)
+    } else if (info.ino !== 0n) {
+      await config.registerWrittenFile(path, {
+        identity: `${info.dev}:${info.ino}:${info.birthtimeNs}`, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+      })
+    }
+  }
   const create = async (path: string, bytes: Buffer, signal: AbortSignal | undefined, external = false) => {
     signal?.throwIfAborted()
     if (!external) await mkdir(dirname(path), { recursive: true })
@@ -60,6 +70,7 @@ export function managedFileTools(config: PiAgentSessionConfig) {
       if (await realpath(path) !== path) throw new Error('Output path changed.')
       await handle.writeFile(bytes)
       created.set(path, info)
+      await register(path, bytes, info)
     } finally { await handle.close() }
   }
   const textBytes = (value: string) => {
@@ -77,9 +88,9 @@ export function managedFileTools(config: PiAgentSessionConfig) {
     }
     if (!existing) {
       await create(path, bytes, signal)
-      return
+      return path
     }
-    if (existing.bytes.equals(bytes)) return
+    if (existing.bytes.equals(bytes)) return path
     const owned = created.get(path)
     if (selected || (policy.fileAccess !== 'local' && (owned?.dev !== existing.info.dev || owned.ino !== existing.info.ino))) {
       if (policy.unattended) throw new Error('A scheduled task cannot modify a pre-existing file.')
@@ -112,10 +123,12 @@ export function managedFileTools(config: PiAgentSessionConfig) {
       await rename(temporary, path)
       staged = false
       if (owned) created.set(path, identity)
+      await register(path, bytes, identity)
     } finally {
       if (staged) await unlink(temporary).catch(() => undefined)
       committing.delete(key)
     }
+    return path
   }
   const saveNewExternal = async (input: string, value: string, signal?: AbortSignal) => {
     const external = policy.allowExternalSaveAs && externalEditCandidate(input, policy)
@@ -148,11 +161,14 @@ export function managedFileTools(config: PiAgentSessionConfig) {
   return [defineTool({
     ...baseWrite,
     async execute(_id, input, signal) {
-      const savedAs = await saveNewExternal(input.path, input.content, signal)
-      if (savedAs) return { content: [{ type: 'text', text: `File saved: ${savedAs}` }], details: undefined }
-      const file = await target(input.path, signal)
-      await write(file.input, input.content, signal, file.selected, file.existing)
-      return { content: [{ type: 'text', text: 'File saved.' }], details: undefined }
+      const requested = managedWriteTarget(input.path, policy)
+      if (!requested) throw new Error('The default conversation output folder is unavailable.')
+      let path = await saveNewExternal(requested, input.content, signal)
+      if (!path) {
+        const file = await target(requested, signal)
+        path = await write(file.input, input.content, signal, file.selected, file.existing)
+      }
+      return { content: [{ type: 'text', text: `File saved: ${path}` }], details: undefined }
     },
   }), defineTool({
     ...baseEdit,
@@ -163,7 +179,7 @@ export function managedFileTools(config: PiAgentSessionConfig) {
       const edit = createEditToolDefinition(config.workspaceDir, { operations: {
         access: async () => undefined,
         readFile: async () => existing.bytes,
-        writeFile: async (_path, content) => write(file.input, content, signal, file.selected, existing),
+        writeFile: async (_path, content) => { await write(file.input, content, signal, file.selected, existing) },
       } })
       return edit.execute(id, input, signal, onUpdate, ctx)
     },

@@ -115,6 +115,7 @@ export interface ClientTask {
   completedAt: number | null
   error: string | null
   files: string[]
+  externalFileReceipts?: Record<string, import('./result-files').ExternalResultReceipt>
   fileSaveIntents?: Record<string, ResultSaveIntent>
   logs: ClientTaskLog[]
   progress?: number

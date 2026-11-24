@@ -28,16 +28,40 @@ function write(config: PiAgentSessionConfig) {
   return (path: string, content: string, signal?: AbortSignal) => tool.execute('call', { path, content }, signal, undefined, {} as never)
 }
 
+test('bare conversation filenames default to the artifact directory, not the workspace root', async t => {
+  const { workspaceDir, config } = await fixture(t)
+  const relativePath = '成果/test-task'
+  config.toolPolicy = { ...config.toolPolicy!, conversationOutput: { status: 'retryable', relativePath } }
+  assert.equal(evaluateToolCall('write', { path: 'report.txt' }, config.toolPolicy).allowed, true)
+  await writeFile(join(workspaceDir, 'report.txt'), 'original')
+  const save = write(config)
+  const result = await save('report.txt', 'artifact')
+  const actual = join(workspaceDir, relativePath, 'report.txt')
+  assert.deepEqual(result.content, [{ type: 'text', text: `File saved: ${actual}` }])
+  assert.equal(await readFile(actual, 'utf8'), 'artifact')
+  assert.equal(await readFile(join(workspaceDir, 'report.txt'), 'utf8'), 'original')
+  await save('./explicit.txt', 'explicit')
+  assert.equal(await readFile(join(workspaceDir, 'explicit.txt'), 'utf8'), 'explicit')
+  config.toolPolicy = { ...config.toolPolicy, conversationOutput: { status: 'unsafe', relativePath } }
+  assert.equal(evaluateToolCall('write', { path: 'blocked.txt' }, config.toolPolicy).allowed, false)
+  await assert.rejects(write(config)('blocked.txt', 'data'), /output folder is unavailable/)
+  await assert.rejects(readFile(join(workspaceDir, 'blocked.txt')), { code: 'ENOENT' })
+})
+
 test('a new file at an explicit external destination requires confirmation and never falls back or overwrites', async t => {
   const { root, workspaceDir, config } = await fixture(t)
-  config.toolPolicy = { ...config.toolPolicy!, allowExternalSaveAs: true }
+  const relativePath = '成果/test-task'
+  config.toolPolicy = { ...config.toolPolicy!, allowExternalSaveAs: true, conversationOutput: { status: 'ready', relativePath } }
+  const writes: Array<Parameters<NonNullable<PiAgentSessionConfig['registerWrittenFile']>>> = []
+  config.registerWrittenFile = async (...args) => { writes.push(args) }
   const desktop = join(root, 'Desktop')
   await mkdir(desktop)
   const path = join(desktop, '未完成工作.txt')
   assert.equal(evaluateToolCall('write', { path }, config.toolPolicy).allowed, true)
   await assert.rejects(write(config)(path, 'denied'), /Save As was not confirmed/)
   await assert.rejects(readFile(path), { code: 'ENOENT' })
-  await assert.rejects(readFile(join(workspaceDir, '未完成工作.txt')), { code: 'ENOENT' })
+  await assert.rejects(readFile(join(workspaceDir, relativePath, '未完成工作.txt')), { code: 'ENOENT' })
+  assert.equal(writes.length, 0)
 
   const controller = new AbortController()
   const withApproval = (authorizeTool: PiAgentSessionConfig['authorizeTool']) => write({ ...config, authorizeTool })
@@ -49,6 +73,9 @@ test('a new file at an explicit external destination requires confirmation and n
   const result = await withApproval(async request => { confirm(request); return true })(path, 'saved')
   assert.deepEqual(result.content, [{ type: 'text', text: `File saved: ${path}` }])
   assert.equal(await readFile(path, 'utf8'), 'saved')
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0]?.[0], path)
+  assert.equal(writes[0]?.[1]?.size, Buffer.byteLength('saved'))
 
   const raced = join(desktop, 'race.txt')
   await assert.rejects(withApproval(async request => {
@@ -57,6 +84,7 @@ test('a new file at an explicit external destination requires confirmation and n
     return true
   })(raced, 'attempt to replace'), { code: 'EEXIST' })
   assert.equal(await readFile(raced, 'utf8'), 'manual content')
+  assert.equal(writes.length, 1)
   for (const policy of [{ ...config.toolPolicy, preset: 'read-only' as const }, { ...config.toolPolicy, unattended: true }, { ...config.toolPolicy, deniedPaths: [desktop] }]) {
     const denied = join(desktop, 'blocked.txt')
     assert.equal(evaluateToolCall('write', { path: denied }, policy).allowed, false)

@@ -1,4 +1,12 @@
 import { z } from 'zod'
+
+/** Main-process receipt for the exact bytes written by a managed conversation file tool. */
+export const externalResultReceiptSchema = z.object({
+  identity: z.string().regex(/^\d+:\d+:\d+$/).max(96),
+  size: z.number().int().min(0).max(128 * 1024),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict()
+export type ExternalResultReceipt = z.infer<typeof externalResultReceiptSchema>
 import { documentPreviewRequestSchema } from './document-preview'
 
 const localId = z.string().regex(/^[A-Za-z0-9_-]{1,160}$/)

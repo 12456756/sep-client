@@ -51,6 +51,7 @@ export interface PiTaskWorkerContext {
   fixedSystemPrompt?: string
   arrangementNodeId?: string
   toolPolicy?: PiAgentSessionConfig['toolPolicy']
+  registerWrittenFile?: PiAgentSessionConfig['registerWrittenFile']
   disableTools?: boolean
   /** Images injected into the first user prompt only; host-owned and already validated. */
   inputImages?: readonly { data: string; mimeType: string }[]
@@ -188,6 +189,7 @@ export class PiTaskWorker {
           return progress
         } : undefined,
         toolPolicy: this.context.toolPolicy,
+        registerWrittenFile: this.context.registerWrittenFile,
         disableTools: this.context.disableTools,
         getAccessToken: () => this.tokenManager.getValidToken(),
         authorizeTool: async request => {
@@ -266,7 +268,9 @@ export class PiTaskWorker {
         })
         return
       }
-      void this.emit(event.type, event.data)
+      const eventData = event.type === 'tool_execution_start' && this.context.registerWrittenFile && event.data && typeof event.data === 'object'
+        ? { ...event.data, usesManagedFileRegistration: true } : event.data
+      void this.emit(event.type, eventData)
       if (this.finalFailure) return
       if (event.type === 'turn_end' && !yielded) {
         const data = event.data as { toolResults?: Array<{ isError?: boolean; toolName?: string }> }

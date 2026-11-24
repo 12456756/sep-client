@@ -1,5 +1,5 @@
 import { constants, type Stats } from 'node:fs'
-import { copyFile, mkdtemp, open, lstat, realpath, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, open, lstat, realpath, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { basename, extname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -16,6 +16,7 @@ import type { MediaStorePort } from '../domain/media'
 import type { VideoStorePort } from '../domain/video-media'
 import { archiveSourceStamp } from './result-archive-store'
 import { resolveWorkspaceResult } from './workspace-result-path'
+import { resolveConversationResult } from './conversation-result-file'
 
 type VerifiedVideoStore = VideoStorePort & {
   verifiedAssetPath(scope: { enterpriseId: string; memberId: string; subscriptionId: string }, taskId: string, jobId: string, outputId: string): Promise<string>
@@ -40,7 +41,7 @@ export interface ResultFileStorePort {
 
 export interface CommittedResultSave { file: ResultFileRequest; intent: ResultSaveIntent; subscriptionId?: string }
 
-export interface ResultActionFile { path: string; name: string; version: string; temporaryOpen?: boolean; modifiedAt?: number; sourceStamp?: string; archiveVersion?: string }
+export interface ResultActionFile { path: string; name: string; version: string; temporaryOpen?: boolean; modifiedAt?: number; sourceStamp?: string; archiveVersion?: string; verifiedBytes?: Uint8Array }
 
 const actionVersion = (version: string, info: Stats) =>
   JSON.stringify([version, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs])
@@ -63,7 +64,11 @@ export async function saveResultCopy(file: ResultActionFile, destination: string
   if (extension && selectedExtension && extension.toLowerCase() !== selectedExtension.toLowerCase()) {
     throw new AppError('INVALID_ARGUMENT', { message: '请保留原文件的扩展名。' })
   }
-  try { await copyFile(file.path, selectedExtension ? destination : destination + extension, constants.COPYFILE_EXCL) }
+  const path = selectedExtension ? destination : destination + extension
+  try {
+    if (file.verifiedBytes) await writeFile(path, file.verifiedBytes, { flag: 'wx', mode: 0o600 })
+    else await copyFile(file.path, path, constants.COPYFILE_EXCL)
+  }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new AppError('INVALID_ARGUMENT', { message: '目标文件已存在，请选择其他名称。' })
     throw new AppError('INTERNAL_ERROR', { message: '无法另存文件，请检查目标目录权限和可用空间。', cause: error })
@@ -75,7 +80,11 @@ export async function createResultOpenCopy(file: ResultActionFile): Promise<{ pa
   const dispose = () => rm(folder, { recursive: true, force: true }).catch(() => undefined)
   // Use a fixed stem: an attachment display name is not a safe filesystem path.
   const path = join(folder, 'attachment' + extname(file.name).toLowerCase())
-  try { await copyFile(file.path, path, constants.COPYFILE_EXCL); return { path, dispose } }
+  try {
+    if (file.verifiedBytes) await writeFile(path, file.verifiedBytes, { flag: 'wx', mode: 0o600 })
+    else await copyFile(file.path, path, constants.COPYFILE_EXCL)
+    return { path, dispose }
+  }
   catch (error) { await dispose(); throw error }
 }
 
@@ -129,11 +138,12 @@ export class ResultFileStore implements ResultFileStorePort {
       return { path, name: `视频${extname(path)}`, format: output.mimeType.slice(output.mimeType.indexOf('/') + 1), version: `${asset.localAssetId}:${output.sha256}:${asset.relativePath}`, expected: { size: output.byteLength, sha256: output.sha256.toLowerCase() } }
     }
     if ('fileId' in input) {
-      if (task.workType.state !== 'resolved' || task.workType.kind !== 'conversation') throw new AppError('NOT_FOUND')
-      const name = task.files.find((_file, index) => `${task.id}-file-${index}` === input.fileId)
-      if (!name) throw new AppError('NOT_FOUND')
-      const file = await resolveWorkspaceResult(task.workDir ?? '', name)
-      return { path: file.path, name: basename(file.path), format: extname(file.path).slice(1).toLowerCase(), version: name }
+      const file = await resolveConversationResult(scope, task, input.fileId)
+      if (!file) throw new AppError('NOT_FOUND')
+      const expected = file.external ? file.receipt : undefined
+      return { path: file.path, name: basename(file.path), format: extname(file.path).slice(1).toLowerCase(),
+        version: expected ? JSON.stringify([file.name, expected.identity, expected.sha256]) : file.name, expected,
+        verifiedBytes: file.external ? file.bytes : undefined, temporaryOpen: file.external }
     }
     const delivery = await this.deliveries.getDelivery(scope, input.taskId, input.nodeId, input.deliverableId)
     if (!delivery || delivery.status !== 'completed') throw new AppError('NOT_FOUND')
@@ -192,7 +202,7 @@ export class ResultFileStore implements ResultFileStorePort {
       if (info.isSymbolicLink()) throw new ResultFilePathError('link')
       if (!info.isFile()) throw new ResultFilePathError('notFile')
       const version = actionVersion(file.version, info)
-      return { path: file.path, name: file.name ?? basename(file.path), version, temporaryOpen: file.temporaryOpen,
+      return { path: file.path, name: file.name ?? basename(file.path), version, temporaryOpen: file.temporaryOpen, verifiedBytes: file.verifiedBytes,
         modifiedAt: Math.max(info.mtimeMs, info.ctimeMs), sourceStamp: archiveSourceStamp(info), archiveVersion: file.expected ? file.version : version }
     } catch (error) {
       if (error instanceof AppError) throw error
@@ -205,7 +215,7 @@ export class ResultFileStore implements ResultFileStorePort {
     try {
       const file = await this.resolve(scope, input, false)
       const mime = types[file.format]
-      if (!mime) throw new AppError('INVALID_ARGUMENT', { message: '此文件格式暂不支持直接播放或显示。' })
+      if (!mime || file.verifiedBytes) throw new AppError('INVALID_ARGUMENT', { message: '此文件格式暂不支持直接播放或显示。' })
       handle = await open(file.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
       const opened = handle
       const before = await opened.stat()

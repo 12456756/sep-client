@@ -7,6 +7,7 @@ const failures = {
   notFile: ['INVALID_ARGUMENT', '产出记录未指向普通文件。'],
   invalidPath: ['INVALID_ARGUMENT', '产出文件路径无效。'],
   missing: ['NOT_FOUND', '找不到产出文件，请确认它仍保存在原位置。'],
+  changed: ['INVALID_STATE', '产出文件已被修改或替换，请在原位置查看文件。'],
   workspaceUnavailable: ['WORKSPACE_INVALID', '本次工作的目录不存在或不可用。'],
   access: ['PERMISSION_DENIED', '系统未允许访问产出文件或其目录，请检查文件夹权限。'],
 } as const satisfies Record<string, readonly [ErrorCode, string]>

@@ -17,7 +17,7 @@ export class ConversationArtifactStore implements ConversationArtifactStorePort 
       await ensureDirectory(root, ['成果', taskId], true)
       return { status: 'ready', relativePath }
     } catch (error) {
-      return { status: isUnsafePath(error) ? 'unsafe' : 'retry-in-prompt', relativePath }
+      return { status: isUnsafePath(error) ? 'unsafe' : 'retryable', relativePath }
     }
   }
 

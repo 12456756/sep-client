@@ -6,6 +6,7 @@
 import { lstatSync, realpathSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { hasSideEffects, SIDE_EFFECT_TOOLS } from '../electron/common/constants'
+import type { ConversationArtifactDirectory } from '../electron/domain/conversation-artifacts'
 
 export const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
 export const BUILTIN_TOOL_NAMES = ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash'] as const
@@ -29,6 +30,8 @@ export interface ToolPolicy {
   unattended?: boolean
   allowExternalSaveAs?: boolean
   applicationDataRoot?: string
+  /** Host-owned default for conversation outputs; this grants no additional access. */
+  conversationOutput?: ConversationArtifactDirectory
   originalFiles?: ReadonlyMap<string, { path: string; identity: string }>
   /** Canonical paths fixed by the host from this run's approved skill snapshot. */
   approvedSkillPaths?: readonly ApprovedSkillReadPath[]
@@ -87,8 +90,9 @@ export function evaluateToolCall(
 
   if (policy.fileAccess) {
     if (toolName === 'bash') return { allowed: false, requiresApproval: false, reason: 'command-disabled' }
-    const path = readString(input, ['path', 'filePath', 'file_path', 'filename', 'target'])
+    const requestedPath = readString(input, ['path', 'filePath', 'file_path', 'filename', 'target'])
       ?? (toolName === 'ls' || toolName === 'grep' || toolName === 'find' ? policy.workspaceDir : null)
+    const path = toolName === 'write' && requestedPath ? managedWriteTarget(requestedPath, policy) : requestedPath
     const writing = toolName === 'write' || toolName === 'edit'
     if (path && (writing ? policy.preset !== 'read-only' && (boundOriginal(path, policy) || managedFilePath(path, policy, true) || externalEditCandidate(path, policy)) :
       managedFilePath(path, policy) || toolName === 'read' && (isManagedReadException(path, policy) || externalFileCandidate(path, policy)))) {
@@ -143,6 +147,12 @@ function normalizedManagedPath(candidate: string, policy: ToolPolicy): string | 
 
 export function externalEditCandidate(input: string, policy: ToolPolicy): string | null {
   return policy.preset === 'read-only' ? null : externalFileCandidate(input, policy)
+}
+
+export function managedWriteTarget(input: string, policy: ToolPolicy): string | null {
+  const output = policy.conversationOutput
+  if (!output || !input || input !== input.trim() || input === '.' || input === '..' || /[/\\:]/.test(input)) return input
+  return output.status === 'unsafe' ? null : join(output.relativePath, input)
 }
 
 export function boundOriginal(input: string, policy: ToolPolicy) {

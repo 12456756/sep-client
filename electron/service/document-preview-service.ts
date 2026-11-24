@@ -62,7 +62,7 @@ export class DocumentPreviewService {
         } catch (error) {
           assert()
           if (error instanceof AppError) throw error
-          throw new AppError('NOT_FOUND', { message: '对话成果暂不可读取，请确认文件已保存、未被删除且位于工作目录内。' })
+          throw new AppError('NOT_FOUND', { message: '对话成果暂不可读取，请确认文件仍保存在原位置。' })
         }
       }
       const file = await read()

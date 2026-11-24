@@ -1,5 +1,6 @@
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { lstat, mkdtemp, mkdir, realpath, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, type TestContext } from 'node:test'
@@ -75,6 +76,28 @@ test('conversation previews read registered task files without requiring a DAG o
   assert.notEqual(second?.version, first.version)
   const relative = await f.store.readConversation(f.owner, { ...f.task, files: ['report.MD'] }, 'task-file-0')
   assert.equal(relative?.version, second?.version)
+})
+
+test('external conversation preview verifies the receipt, not the name or directory alone', async t => {
+  const { root, owner, store, task } = await conversationFixture(t)
+  const folder = await realpath(root)
+  const path = join(folder, 'external.txt')
+  const bytes = Buffer.from('approved text')
+  await writeFile(path, bytes)
+  const info = await lstat(path, { bigint: true })
+  const receipt = { size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), identity: `${info.dev}:${info.ino}:${info.birthtimeNs}` }
+  const registered = { ...task, files: [path], externalFileReceipts: { [path]: receipt } }
+  const id = 'task-file-0'
+  assert.deepEqual((await store.readConversation(owner, registered, id))?.bytes, bytes)
+  assert.equal(await store.getConversationPath(owner, registered, id), path)
+  assert.equal(await store.readConversation({ ...owner, memberId: 'foreign' }, registered, id), null)
+  await assert.rejects(store.readConversation(owner, { ...registered, externalFileReceipts: {} }, id), { reason: 'outside' })
+  await writeFile(path, 'different txt')
+  await assert.rejects(store.readConversation(owner, registered, id), { reason: 'changed' })
+  await writeFile(path, bytes)
+  await rename(path, join(folder, 'moved.txt'))
+  await writeFile(path, bytes)
+  await assert.rejects(store.getConversationPath(owner, registered, id), { reason: 'changed' })
 })
 
 test('conversation previews reject foreign owners, non-conversations, forged identities and workspace escapes', async t => {

@@ -58,7 +58,7 @@ import type { LocalMediaRuntime } from './local-media-runtime'
 
 const log = logger.child('conversation-executor')
 
-const CONVERSATION_ARTIFACT_OUTPUT_PROMPT = '上述目录要求仅适用于通过文件工具创建的普通文件，图片和视频工具的媒体成果由客户端独立保存和交付。遵从用户指定的交付形式；用户明确只需对话回复时不生成文件。用户要求文件，或本轮形成包含多项建议、对比、测算或执行步骤的方案、分析、报告、清单等成体系内容时，必须保存为文件，无需用户另行要求；草案或信息待补充也应保存并注明。未指定格式的文本成果默认使用 Markdown。先将完整内容保存到本任务成果目录，最终答复只给大致摘要和文件链接。简单问答、零散建议和状态反馈直接在对话中回答，检索或工具调用本身不触发文档生成。已有图片、视频或其他文件成果时直接交付，除非用户要求，不额外生成过程记录或说明文件。只报告实际保存成功的文件；保存失败时如实说明。'
+const CONVERSATION_ARTIFACT_OUTPUT_PROMPT = '遵从用户指定的交付形式；用户明确只需对话回复时不生成文件。用户要求文件，或本轮形成包含多项建议、对比、测算或执行步骤的方案、分析、报告、清单等成体系内容时，必须保存为文件，无需用户另行要求；草案或信息待补充也应保存并注明。未指定格式的文本成果默认使用 Markdown。先保存完整内容，最终答复只给大致摘要和实际文件位置。简单问答、零散建议和状态反馈直接在对话中回答，检索或工具调用本身不触发文档生成。已有图片、视频或其他文件成果时直接交付，除非用户要求，不额外生成过程记录或说明文件。只报告实际保存成功的文件；保存失败时如实说明，不自动换目录。'
 
 const CONVERSATION_MEDIA_DELIVERY_PROMPT = `【媒体成果交付】
 图片和视频工具的成果由客户端独立保存，并通过媒体资产提供预览和导出，不要求出现在工作目录的普通成果目录中。
@@ -258,6 +258,7 @@ export class ConversationExecutor {
       if (queued.conversation && this.options.conversationArtifacts) {
         try {
           artifactDirectory = await this.options.conversationArtifacts.prepare(workspaceDir, taskId)
+          if (toolPolicy) toolPolicy = { ...toolPolicy, conversationOutput: artifactDirectory }
           if (artifactDirectory.status !== 'ready') {
             log.warn('conversation artifact directory is unavailable', { taskId, runId, status: artifactDirectory.status })
           }
@@ -353,6 +354,10 @@ export class ConversationExecutor {
           browserArtifactTaskId,
           browserTaskStateDir: browserArtifactTaskId ? runPaths?.taskDir : undefined,
           toolPolicy,
+          registerWrittenFile: scope && queued.conversation && toolPolicy?.fileAccess ? async (path, external) => {
+            assertAttachmentScope()
+            await this.options.taskManager.addTaskFile(taskId, path, undefined, { runId, signal: mediaSignal, external })
+          } : undefined,
           employeeProfile: general ? undefined : employee.employeeProfile,
           inputImages: attachmentImages,
         },
@@ -400,10 +405,9 @@ export class ConversationExecutor {
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
       if (toolPolicy?.allowExternalSaveAs) workerPrompt += '\n\n【指定位置保存】用户明确要求将新建文本文件保存到指定路径时，使用 write 传入该路径，由客户端校验权限并在需要时发起系统另存为。以下默认成果目录规则仅在用户未指定保存路径时适用。取消或保存失败时如实说明，不自动改存其他目录。'
-      if (artifactDirectory?.status === 'ready') {
-        workerPrompt += `\n\n【本任务成果目录】请将本轮通过文件工具创建的普通文件放入工作目录下的“${artifactDirectory.relativePath}”目录。该路径已由客户端创建并验证，请直接使用；不要改用其他目录。用户引用本会话先前生成的普通文件时，使用已授权的文件工具在此目录查找并读取对应成果，不把成果当作用户上传的原件。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
-      } else if (artifactDirectory?.status === 'retry-in-prompt') {
-        workerPrompt += `\n\n【本任务成果目录】客户端未能创建普通文件的成果目录。本轮需要通过文件工具保存普通文件时，请尝试在工作目录下创建“${artifactDirectory.relativePath}”，并将普通文件放入该目录；只能使用这个固定路径，不要改用其他目录。若创建失败，继续完成可在对话中交付的工作，不要反复重试创建目录。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
+      if (artifactDirectory) {
+        workerPrompt += `\n\n【普通文件交付】write 工具只接收文件名时，客户端默认保存到本会话成果目录。用户明确指定位置时，传入指定路径，由客户端校验权限并在需要时发起系统另存为；不通过聊天确认权限。修改已有文件时使用实际路径。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
+        if (artifactDirectory.status !== 'unsafe') workerPrompt += `\n本会话成果目录相对于工作区是“${artifactDirectory.relativePath}”，可用于查找先前的普通成果，也是其他文件工具的默认交付位置，不是用户上传的原件。`
       }
       if (mediaTools?.names.length || videoTools?.names.length) workerPrompt += `\n\n${CONVERSATION_MEDIA_DELIVERY_PROMPT}`
       if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'

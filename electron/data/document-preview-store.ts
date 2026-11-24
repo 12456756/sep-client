@@ -11,6 +11,7 @@ import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
 import { AppError } from '../errors/app-error'
 import { resultFileSystemError } from '../errors/result-file-path-error'
 import { resolveWorkspaceResult } from './workspace-result-path'
+import { resolveConversationResult } from './conversation-result-file'
 
 export async function writeWordCopy(path: string, bytes: Uint8Array, format: string): Promise<void> {
   if (!isAbsolute(path)) throw new AppError('INVALID_ARGUMENT')
@@ -56,10 +57,7 @@ export class DocumentPreviewStore {
   }
 
   async getConversationPath(scope: TaskOwnerScope, task: TaskReadView, fileId: string) {
-    if (task.ownerId !== scope.memberId || task.ownerEnterpriseId !== scope.enterpriseId ||
-      task.workType.state !== 'resolved' || task.workType.kind !== 'conversation' || !task.workDir) return null
-    const path = task.files.find((_file, index) => `${task.id}-file-${index}` === fileId)
-    return path ? (await resolveWorkspaceResult(task.workDir, path)).path : null
+    return (await resolveConversationResult(scope, task, fileId))?.path ?? null
   }
 
   read(scope: TaskOwnerScope, taskId: string, file: FinalDeliveryFile, workspace: string) {
@@ -67,14 +65,11 @@ export class DocumentPreviewStore {
   }
 
   async readConversation(scope: TaskOwnerScope, task: TaskReadView, fileId: string) {
-    if (task.ownerId !== scope.memberId || task.ownerEnterpriseId !== scope.enterpriseId ||
-      task.workType.state !== 'resolved' || task.workType.kind !== 'conversation' || !task.workDir) return null
-    const path = task.files.find((_file, index) => `${task.id}-file-${index}` === fileId)
-    if (!path) return null
-    const format = extname(path).slice(1).toLowerCase()
+    const source = await resolveConversationResult(scope, task, fileId)
+    if (!source) return null
+    const format = extname(source.name).slice(1).toLowerCase()
     if (!supportsDocumentPreview(format)) return null
-    const source = await resolveWorkspaceResult(task.workDir, path)
-    const bytes = await readWorkspaceFile(source.root, relative(source.root, source.path)).catch((error: unknown) => {
+    const bytes = source.external ? source.bytes : await readWorkspaceFile(source.root, relative(source.root, source.path)).catch((error: unknown) => {
       throw resultFileSystemError(error) ?? error
     })
     return { name: basename(source.path), format, bytes, version: createHash('sha256').update(bytes).digest('hex') }

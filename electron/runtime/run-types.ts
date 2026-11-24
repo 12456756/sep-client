@@ -14,6 +14,7 @@ export interface TaskToolPolicy {
   unattended?: boolean
   allowExternalSaveAs?: boolean
   applicationDataRoot?: string
+  conversationOutput?: import('../domain/conversation-artifacts').ConversationArtifactDirectory
   originalFiles?: ReadonlyMap<string, import('../domain/attachment-input').BoundOriginalFile>
   readableDeliveryPaths?: readonly string[]
   /** Exact host-verified attachment snapshots; read-only grants only. */
