@@ -73,7 +73,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
           <PromptExamples mode="conversation" disabled={speech.busy} inputRef={input} onSelect={prompt => { setText(prompt); setEditorVersion(version => version + 1); }} />
         </div>
       ) : null}
-      <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
+      <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} confirmOnStart disabled={busy} />
       <AttachmentDropZone className="ent-chat-ask" composerId={composerId.current} disabled={busy || speech.busy || attachmentsBusy || mention.pending || !attachmentSession}>
         <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
         <FileMentionEditor mention={mention}

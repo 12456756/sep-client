@@ -12,6 +12,7 @@ import { ChatArrange } from '../../components/enterprise/arrange/ChatArrange';
 import { ManualArrange, type ManualDraft } from '../../components/enterprise/arrange/ManualArrange';
 import { Empty } from '../../components/enterprise/atoms';
 import { defaultAutoRunSettings, defaultConversationRunSettings, defaultRunSettings, type RunSettings } from '../../features/enterprise/run-settings';
+import { useConversationPermissionPreference } from '../../features/enterprise/conversation-permission-scope';
 import type { ArrangeMode, SiliconEmployee, WorkDraftStep, WorkTemplate } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
@@ -61,25 +62,33 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
 
   const activeMode = mode === 'pick' ? 'chat' : mode;
   const [runSettings, setSettings] = useState<RunSettings>(() => activeMode === 'auto'
-    ? defaultAutoRunSettings()
-    : activeMode === 'chat' ? defaultConversationRunSettings() : defaultRunSettings());
+    ? defaultAutoRunSettings() : defaultRunSettings());
+  const { preset: defaultConversationPermission } = useConversationPermissionPreference();
+  const [chatPermissions, setChatPermissions] = useState<RunSettings['permissions']>();
   const [chatEmployeeId, setChatEmployeeId] = useState(employeeId ?? GENERAL_ASSISTANT_ID);
   const { defaultModelId } = useModelPreference();
   const sceneModels = activeMode === 'chat'
     ? chatEmployees.find(employee => employee.id === chatEmployeeId)?.allowedModels ?? []
     : orchestrationModels;
   const taskModel = useTaskModel(`${mode}:${employeeId ?? ''}:${chatEmployeeId}`, sceneModels, defaultModelId);
-  const settings = { ...runSettings, modelId: planningDraftId ? runSettings.modelId || saved?.draft.planningModelId || saved?.progress?.modelId || ''
+  const settings = { ...runSettings, permissions: activeMode === 'chat' ? chatPermissions ?? defaultConversationRunSettings(defaultConversationPermission).permissions : runSettings.permissions,
+    modelId: planningDraftId ? runSettings.modelId || saved?.draft.planningModelId || saved?.progress?.modelId || ''
     : activeMode === 'manual' ? runSettings.modelId : taskModel.modelId };
   useEffect(() => {
     if (!saved || hydrated.current) return;
     hydrated.current = true;
-    setSettings({ ...runSettings, workDir: saved.draft.workspace.path ?? '', permissions: { ...saved.draft.permissions },
+    setSettings({ ...runSettings, workDir: saved.draft.workspace.path ?? '', permissions: { ...saved.draft.permissions, preset: saved.draft.permissions.preset === 'full-local' ? 'workspace-edit' : saved.draft.permissions.preset, approvalMode: 'confirm-each' },
       knowledge: saved.draft.knowledge ?? defaultAutoRunSettings().knowledge,
       modelId: saved.draft.planningModelId ?? saved.progress?.modelId ?? '' });
   }, [saved, runSettings]);
   const changeSettings = (patch: Partial<RunSettings>): void => {
     if (activeMode !== 'manual' && patch.modelId !== undefined) taskModel.select(patch.modelId);
+    if (activeMode === 'chat') {
+      const { permissions, ...other } = patch;
+      if (permissions) setChatPermissions(permissions);
+      setSettings(current => ({ ...current, ...other }));
+      return;
+    }
     setSettings(current => ({ ...current, ...patch }));
   };
   const isOrchestration = activeMode === 'auto' || activeMode === 'manual';
@@ -118,7 +127,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
     if (activeMode === 'auto') {
       setSettings(current => ({ ...current, permissions: defaultAutoRunSettings().permissions }));
     } else if (activeMode === 'chat') {
-      setSettings(current => ({ ...current, permissions: defaultConversationRunSettings().permissions }));
+      setSettings(current => ({ ...current, permissions: defaultRunSettings().permissions }));
     }
   }, [activeMode, planningDraftId]);
 
@@ -150,7 +159,8 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
       if (!preflight.success || !preflight.preflight?.canStart) {
         throw responseError({ error: preflight.error ?? (preflight.preflight?.message ? { message: preflight.preflight.message } : undefined) }, 'preflight');
       }
-      const result = await window.electronAPI.confirmAndStartArrangement({ draftId: draft.id, expectedRevision: draft.revision, idempotencyKey: crypto.randomUUID() });
+      const result = await window.electronAPI.confirmAndStartArrangement({ draftId: draft.id, expectedRevision: draft.revision, idempotencyKey: crypto.randomUUID(), ...(settings.permissions.preset === 'full-local' ? { fullFileAccess: true as const } : {}) });
+      if (settings.permissions.preset === 'full-local') changeSettings({ permissions: defaultRunSettings().permissions });
       if (!result.success || !result.execution) throw responseError(result, 'start');
       await controller?.load(draft.id);
       if (!notice.isCurrent()) return draft;

@@ -203,7 +203,7 @@ export class ConversationExecutor {
         : null
       const workspaceDir = task.workDir ?? this.options.workspaceRoot()
       let toolPolicy = withApprovedSkillReadPaths(runtimeFileToolPolicy(queued.arrangement?.permissions, workspaceDir, {
-        unattended: !!task.scheduledOrigin, applicationDataRoot: this.options.taskRunStore?.userDataDir,
+        fullFileAccess: queued.fullFileAccess, unattended: !!task.scheduledOrigin, applicationDataRoot: this.options.taskRunStore?.userDataDir,
       }), employee)
       let attachmentImages: readonly { data: string; mimeType: string }[] | undefined
       let attachmentText = ''

@@ -474,7 +474,7 @@ export interface ElectronAPI {
   validateArrangementDraft: (draftId: string) => Promise<unknown>
   preflightArrangementDraft: (input: { draftId: string; expectedRevision: number }) => Promise<ArrangementDraftPreflightResult>
   confirmArrangementDraft: (input: { draftId: string; expectedRevision: number; idempotencyKey: string }) => Promise<unknown>
-  confirmAndStartArrangement: (input: { draftId: string; expectedRevision: number; idempotencyKey: string }) => Promise<{ success: boolean; plan?: ArrangementPlanSnapshot; task?: TaskReadView; execution?: { id: string; status: 'queued' | 'running' }; error?: TaskError }>
+  confirmAndStartArrangement: (input: { draftId: string; expectedRevision: number; idempotencyKey: string; fullFileAccess?: true }) => Promise<{ success: boolean; plan?: ArrangementPlanSnapshot; task?: TaskReadView; execution?: { id: string; status: 'queued' | 'running' }; error?: TaskError }>
   planArrangementDraft: (input: PlanArrangementDraftInput) => Promise<ArrangementPlanningStartResult>
   cancelArrangementPlanning: (input: CancelArrangementPlanningInput) => Promise<ArrangementPlanningCancelResult>
   requestEmployeeAccess: (input: RequestEmployeeAccessInput) => Promise<ArrangementDraftResult>

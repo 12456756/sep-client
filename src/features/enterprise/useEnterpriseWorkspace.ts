@@ -4,7 +4,7 @@ import { needsSkillLibrary } from './skill-load-state';
 import { subscriptionAvailability } from './employee-view-model';
 import { createEmployeePageState, employeeBackgroundRoute, enterEmployeePage, readEmployeeView, saveEmployeeView, type EmployeePageState } from './employee-page-state';
 import { createSkillPageState, enterSkillPage, createSkillLeaveRegistry, type SkillPageState } from './skill-page-state';
-import { conversationDocument } from './run-settings';
+import { conversationDocument, defaultConversationRunSettings, FULL_FILE_ACCESS_CONFIRMATION } from './run-settings';
 import { resolveTaskModel } from '../../shared/model-preferences';
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
@@ -25,7 +25,7 @@ import { useFeedback } from '../../components/feedback/FeedbackProvider';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { usePlanningSession } from './auto-planning-scope';
 import { mergePlanningRecords } from './planning-records';
-import type { ArrangementDraftDocument, ClientTask, ClientTaskMessage, EmployeeAvatarSource, EmployeeStatus, Subscription } from '../../shared/types';
+import type { ArrangementDraftDocument, ArrangementPermissionPreset, ClientTask, ClientTaskMessage, EmployeeAvatarSource, EmployeeStatus, Subscription } from '../../shared/types';
 import {
   WORK_TEMPLATES,
   defaultPermissions,
@@ -158,6 +158,7 @@ interface Options {
   instances: Subscription[];
   employeeStatuses: EmployeeStatus[];
   defaultModelId: string;
+  defaultConversationPermission?: ArrangementPermissionPreset;
 }
 
 /**
@@ -260,7 +261,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
 
 }
 
-export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses, defaultModelId }: Options): EnterpriseWorkspace {
+export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses, defaultModelId, defaultConversationPermission }: Options): EnterpriseWorkspace {
   const [tasks, setTasks] = useState<ClientTask[]>([]);
   const scopeKey = JSON.stringify([userId, enterpriseId]);
   const planningController = usePlanningSession({ memberId: userId, enterpriseId });
@@ -739,21 +740,27 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     }
   }, [captureFeedback]);
 
+  const conversationStartPending = useRef(false);
   const startConversation = useCallback(async (employeeId: string, text: string, options?: ConversationOptions) => {
     const notice = captureFeedback();
     const goal = text.trim();
-    if (!goal) return false;
+    if (!goal || conversationStartPending.current) return false;
     const employee = employeeId === GENERAL_ASSISTANT_ID
       ? generalAssistant(myEmployees.filter(item => item.availability !== 'unavailable'))
       : myEmployees.find(item => item.id === employeeId);
     if (!employee) { notice.show('请选择需要使用的员工', 'warning'); return false; }
     const api = window.electronAPI;
     const title = goal.length > 40 ? `${goal.slice(0, 40)}…` : goal;
+    conversationStartPending.current = true;
     setBusy(true);
     try {
       const modelId = options?.modelId || resolveTaskModel(employee.allowedModels, defaultModelId);
       if (!modelId || !employee.allowedModels.includes(modelId)) throw new UserFeedbackError(employeeId === GENERAL_ASSISTANT_ID ? '通用助手没有可用的模型授权，请更换员工或联系平台管理员配置模型。' : '所选员工不支持当前模型，请重新选择');
-      const document = { ...conversationDocument(title, goal, employeeId, modelId, options), ...(options?.attachmentRefs?.length ? { attachmentCandidates: options.attachmentRefs.map(attachment => ({ attachment, mustUse: true })), attachmentSessionId: options.attachmentSessionId } : {}) };
+      const permissions = options?.permissions ?? defaultConversationRunSettings(defaultConversationPermission).permissions;
+      const fullFileAccess = permissions.preset === 'full-local'
+        && await feedback.confirm({ ...FULL_FILE_ACCESS_CONFIRMATION, key: 'new-conversation-full-file-access' });
+      if (!notice.isCurrent() || (permissions.preset === 'full-local' && fullFileAccess !== true)) return false;
+      const document = { ...conversationDocument(title, goal, employeeId, modelId, { ...options, permissions }), ...(options?.attachmentRefs?.length ? { attachmentCandidates: options.attachmentRefs.map(attachment => ({ attachment, mustUse: true })), attachmentSessionId: options.attachmentSessionId } : {}) };
       const created = await api.createArrangementDraft(document);
       if (!notice.isCurrent()) return false;
       if (!created.success || !created.draft) throw responseError(created, 'create');
@@ -765,7 +772,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         draft = updated.draft;
       }
       const input = { draftId: draft.id, expectedRevision: draft.revision };
-      const started = await api.confirmAndStartArrangement({ ...input, idempotencyKey: crypto.randomUUID() });
+      const started = await api.confirmAndStartArrangement({ ...input, idempotencyKey: crypto.randomUUID(), ...(fullFileAccess === true ? { fullFileAccess: true as const } : {}) });
       if (!notice.isCurrent()) return false;
       if (!started.success || !started.execution) throw responseError(started, 'start');
       if (started.task) setTasks(current => {
@@ -780,9 +787,10 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       notice.fail(cause, 'create');
       return false;
     } finally {
+      conversationStartPending.current = false;
       if (notice.isCurrent()) setBusy(false);
     }
-  }, [myEmployees, navigate, captureFeedback, deletedTaskIds, defaultModelId]);
+  }, [myEmployees, navigate, captureFeedback, deletedTaskIds, defaultModelId, defaultConversationPermission, feedback]);
 
   const arrangeWork = useCallback(async (draft: ArrangeWorkDraft): Promise<boolean> => {
     const notice = captureFeedback();
@@ -820,7 +828,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       attachmentCandidates: draft.attachmentCandidates,
       attachmentSessionId: draft.attachmentSessionId,
       workspace: { mode: 'shared', path: draft.workDir?.trim() || null },
-      permissions: { ...(draft.permissions ?? { preset: 'read-only', approvalMode: 'confirm-each' }) },
+      permissions: { ...(draft.permissions ?? { preset: 'workspace-edit', approvalMode: 'confirm-each' }) },
       lastPlanning: null,
     };
     const api = window.electronAPI;
@@ -839,7 +847,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       const preflight = await api.preflightArrangementDraft({ draftId: createdDraft.id, expectedRevision: createdDraft.revision });
       if (!notice.isCurrent()) return false;
       if (!preflight.success || !preflight.preflight?.canStart) throw responseError({ error: preflight.error ?? (preflight.preflight?.message ? { message: preflight.preflight.message } : undefined) }, 'preflight');
-      const started = await api.confirmAndStartArrangement({ draftId: createdDraft.id, expectedRevision: createdDraft.revision, idempotencyKey: crypto.randomUUID() });
+      const started = await api.confirmAndStartArrangement({ draftId: createdDraft.id, expectedRevision: createdDraft.revision, idempotencyKey: crypto.randomUUID(), ...(draft.permissions?.preset === 'full-local' ? { fullFileAccess: true as const } : {}) });
       if (!notice.isCurrent()) return false;
       if (!started.success || !started.execution) throw responseError(started, 'start');
       navigate({ name: 'work', workId: started.execution.id });

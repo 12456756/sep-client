@@ -27,6 +27,7 @@ import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterp
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import { ModelCatalogProvider } from '../components/enterprise/ModelCatalogContext';
 import { useHomeDraftOwner } from '../features/enterprise/home-draft';
+import { ConversationPermissionProvider, useConversationPermissionPreference } from '../features/enterprise/conversation-permission-scope';
 import { useEmployeePageScroll } from '../features/enterprise/use-employee-page-scroll';
 import { useSkillPageScroll } from '../features/enterprise/use-skill-page-scroll';
 import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
@@ -69,9 +70,12 @@ interface Props {
 }
 
 export function ClientAppPage(props: Props) {
-  return <MediaPreferenceScopeContext.Provider key={JSON.stringify([props.enterpriseId, props.userId])} value={{ enterpriseId: props.enterpriseId, memberId: props.userId }}>
-    <ModelPreferenceProvider scope={{ enterpriseId: props.enterpriseId, memberId: props.userId }}>
-      <ClientAppContent {...props} />
+  const scope = { enterpriseId: props.enterpriseId, memberId: props.userId };
+  return <MediaPreferenceScopeContext.Provider key={JSON.stringify([props.enterpriseId, props.userId])} value={scope}>
+    <ModelPreferenceProvider scope={scope}>
+      <ConversationPermissionProvider scope={scope}>
+        <ClientAppContent {...props} />
+      </ConversationPermissionProvider>
     </ModelPreferenceProvider>
   </MediaPreferenceScopeContext.Provider>;
 }
@@ -79,7 +83,8 @@ export function ClientAppPage(props: Props) {
 function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
   useRuntimeFeedback(userId, enterpriseId);
   const { defaultModelId } = useModelPreference();
-  const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses, defaultModelId });
+  const { preset: defaultConversationPermission } = useConversationPermissionPreference();
+  const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses, defaultModelId, defaultConversationPermission });
   const homeDraft = useHomeDraftOwner();
   const [conversationSessions] = useState(() => createConversationSessions(sessionId => {
     void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined);

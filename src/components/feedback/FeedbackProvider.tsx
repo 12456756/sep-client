@@ -1,9 +1,13 @@
 import * as Dialog from '@radix-ui/react-dialog'
 import { AlertCircle, CheckCircle2, TriangleAlert, X } from 'lucide-react'
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { FeedbackController, type FeedbackItem } from '../../shared/feedback-controller'
+import { FeedbackController, isFeedbackConfirmationBlocked, type FeedbackItem } from '../../shared/feedback-controller'
 
 const FeedbackContext = createContext<FeedbackController | null>(null)
+
+export function useOptionalFeedback(): FeedbackController | null {
+  return useContext(FeedbackContext)
+}
 
 export function useFeedback(): FeedbackController {
   const controller = useContext(FeedbackContext)
@@ -39,6 +43,7 @@ function FeedbackDialog({ controller, item }: { controller: FeedbackController; 
     if (item.tone !== 'confirm') acknowledge.current?.focus()
   }, [item.tone])
   const Icon = item.tone === 'success' ? CheckCircle2 : item.tone === 'error' ? AlertCircle : TriangleAlert
+  const confirmDisabled = isFeedbackConfirmationBlocked(item)
   return <Dialog.Root open onOpenChange={open => { if (!open) controller.dismiss(item.id) }}>
     <Dialog.Portal container={host}>
       <Dialog.Overlay className="feedback-overlay" />
@@ -65,16 +70,16 @@ function FeedbackDialog({ controller, item }: { controller: FeedbackController; 
             aria-invalid={Boolean(item.validationMessage)} aria-describedby={item.validationMessage ? 'feedback-validation' : undefined}
             onChange={event => controller.setInput(item.id, event.target.value)} /></label>}
           {item.validationMessage && <p id="feedback-validation" className="feedback-validation" role="alert">{item.validationMessage}</p>}
-          {item.checkbox && <label className="feedback-checkbox"><input type="checkbox" checked={item.checkbox.checked} disabled={item.busy}
+          {item.checkbox && <label className="feedback-checkbox"><input type="checkbox" checked={item.checkbox.checked} required={item.checkboxRequired} disabled={item.busy}
             onChange={event => controller.setChecked(item.id, event.target.checked)} />{item.checkbox.label}</label>}
         </div>
         <footer className="feedback-actions">
           {item.tone === 'confirm' ? <>
             {item.cancelPlacement !== 'corner' &&
               <button ref={cancel} type="button" disabled={item.busy} onClick={() => controller.dismiss(item.id)}>{item.cancelLabel ?? '取消'}</button>}
-            {item.alternateLabel && <button type="button" disabled={item.busy} onClick={() => void controller.accept(item.id, 'alternate')}>
+            {item.alternateLabel && <button type="button" disabled={confirmDisabled} onClick={() => void controller.accept(item.id, 'alternate')}>
               {item.activeAction === 'alternate' ? item.alternateBusyLabel : item.alternateLabel}</button>}
-            <button type="button" className="feedback-primary" disabled={item.busy} onClick={() => void controller.accept(item.id)}>{item.activeAction === 'primary' ? item.busyLabel : item.actionLabel}</button>
+            <button type="button" className="feedback-primary" disabled={confirmDisabled} onClick={() => void controller.accept(item.id)}>{item.activeAction === 'primary' ? item.busyLabel : item.actionLabel}</button>
           </> : <button ref={acknowledge} type="button" className="feedback-primary" onClick={() => controller.dismiss(item.id)}>{item.tone === 'success' ? '关闭' : '知道了'}</button>}
         </footer>
       </Dialog.Content>

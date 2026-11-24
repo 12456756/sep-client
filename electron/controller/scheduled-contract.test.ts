@@ -13,6 +13,7 @@ import type { RequestContext } from './request-context'
 const source = readFileSync(new URL('./routes/scheduled.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
 const dependencies: Record<string, unknown> = {
+  electron: { dialog: {} },
   zod: { z }, '../../../src/shared/scheduled-tasks': { scheduleInputSchema, scheduleTimeRequestSchema, createWorkScheduleSchema, editWorkScheduleSchema }, '../channels': { INVOKE_CHANNELS },
   '../../../src/shared/scheduled-creation': { scheduledCreationRequestSchema },
   '../router': { NO_INPUT: z.undefined(), route: (channel: string, schema: z.ZodType, handle: Route['handle']) => ({ channel, schema, handle }) },

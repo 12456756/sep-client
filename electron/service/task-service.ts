@@ -38,7 +38,7 @@ import type { MediaStore } from '../data/media-store'
  */
 export interface TaskExecutionPort {
   getContextUsage?(taskId: string): Promise<import('../../src/shared/context-usage').ContextUsage | null>
-  executeTask(taskId: string, options?: { conversation?: boolean; knowledge?: KnowledgeSelection }): Promise<void>
+  executeTask(taskId: string, options?: { conversation?: boolean; knowledge?: KnowledgeSelection; fullFileAccess?: boolean }): Promise<void>
   retryTask(taskId: string, options?: { conversation?: boolean; nodeId?: string; inputReply?: ArrangementInputReply }): Promise<void>
   confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void>
   continueConversation(

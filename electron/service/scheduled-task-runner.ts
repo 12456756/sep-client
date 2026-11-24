@@ -7,11 +7,12 @@ import type { ScheduledTaskStore } from '../data/scheduled-task-store'
 import type { TaskRunStore } from '../data/task-run-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { effectivePermissionPolicy, type WorkPlan } from '../domain/arrangement-plan'
-import { buildEmptyTextPlan, classifyScheduledError, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes, scheduledPathDenied, ScheduledPathDeniedError } from '../domain/scheduled-task'
+import { buildEmptyTextPlan, classifyScheduledError, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes, scheduledPathDenied, scheduledOutputNotDelivered, scheduledWorkspaceGoal, ScheduledPathDeniedError } from '../domain/scheduled-task'
 import { AppError } from '../errors/app-error'
 import { BeforeScheduledAdmissionError, type ScheduledRunnerPort } from './scheduled-dispatcher'
 import { logger } from '../common/logger'
 import type { ScheduledWorkSource } from './scheduled-work-source'
+import { publishScheduledOutputs } from '../data/scheduled-output-directory'
 
 const log = logger.child('scheduled-runner')
 const runLogFields = (run: ScheduledOccurrence) => ({
@@ -42,11 +43,13 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
     const scope = this.scope()
     const guard = () => { valid(); this.guard(scope) }
     guard()
+    if (run.input.permissions.preset === 'full-local') throw new ScheduledPathDeniedError()
     const local = run.input.mode === 'empty-text'
     const general = run.input.mode === 'general'
     const arrangement = run.plan.kind === 'arrangement' ? run.plan as ArrangementWorkPlan : null
     if (arrangement && (local || general)) throw new AppError('INVALID_STATE')
-    if (!local && !arrangement?.source && requestsRestrictedWindowsSchedulePath(run.input.permissions, run.input.goal)) {
+    const goal = scheduledWorkspaceGoal(run.input)
+    if (!local && !arrangement?.source && requestsRestrictedWindowsSchedulePath(run.input.permissions, goal)) {
       throw new ScheduledPathDeniedError()
     }
     const employeePlan = run.input.mode === 'empty-text' ? buildEmptyTextPlan(run.input) : arrangement ? null : run.plan as EmployeeWorkPlan
@@ -94,14 +97,14 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
     const directory = await this.options.storage.prepareWorkspace(run.input.workDir, run.id)
     guard()
     const primarySubscriptionId = nodes[0]!.subscriptionId
-    const task = await this.options.tasks.createTask(run.input.name, run.input.goal, directory, local || general ? null : primarySubscriptionId,
+    const task = await this.options.tasks.createTask(run.input.name, goal, directory, local || general ? null : primarySubscriptionId,
       { id: run.taskId, origin: { definitionId: run.definitionId, occurrenceId: run.id } })
     guard()
     if (task.scheduledAdmission || task.activeRunId || task.status !== 'pending') throw new AppError('INVALID_STATE')
     const inputSnapshot = template ? await this.options.source!.copyInputs(scope, template, task.id) : undefined
     guard()
     const plan: WorkPlan = { ...(template ? structuredClone(template) : {}), id: task.id, schemaVersion: template?.schemaVersion ?? 1, sourceDraftId: run.definitionId, sourceDraftRevision: run.revision,
-      owner: scope, mode: template?.mode ?? (arrangement ? 'auto' : 'manual'), title: run.input.name, goal: run.input.goal, conversation: null,
+      owner: scope, mode: template?.mode ?? (arrangement ? 'auto' : 'manual'), title: run.input.name, goal, conversation: null,
       nodes: workNodes,
       workspace: { mode: 'shared', path: directory }, permissions: template ? structuredClone(template.permissions) : effectivePermissionPolicy(run.input.permissions), confirmedInputs: template?.confirmedInputs ?? [],
       ...(inputSnapshot ? { inputSnapshot } : {}),
@@ -170,7 +173,25 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
           const state = checkpoint.state.nodes.find(item => item.nodeId === node.id)
           return state?.status === 'completed' && state.delivery?.finalFiles.length === (node.deliverables?.length ?? 0)
         })
-      return { state: delivered ? 'completed' : 'interrupted' }
+      if (!delivered) return { state: 'interrupted' }
+      if (run.input.outputDirectory && !run.stopReason) {
+        try {
+          if (!task.workDir) throw new Error('Missing scheduled workspace.')
+          await publishScheduledOutputs({ destination: run.input.outputDirectory, workspace: task.workDir,
+            taskDirectory: this.options.runs.getPaths(scope, task.id, run.id).taskDir,
+            occurrenceId: run.id, scheduledAt: run.scheduledAt,
+            files: checkpoint.state.nodes.flatMap(node => node.delivery?.finalFiles ?? []), assertCurrent: async () => {
+              this.guard(scope)
+              const current = (await this.options.storage.read(scope)).occurrences.find(item => item.id === run.id)
+              this.guard(scope)
+              if (!current || current.stopReason || current.revision !== run.revision) throw new Error('Scheduled output approval is no longer active.')
+            } })
+        } catch {
+          this.guard(scope)
+          return { state: 'failed', error: scheduledOutputNotDelivered }
+        }
+      }
+      return { state: 'completed' }
     }
     if (task.status === 'failed') {
       const blocked = checkpoint?.state.nodes[0]?.delivery?.issues.find(issue => issue.code === 'INPUT_REQUIRED')

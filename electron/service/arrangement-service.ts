@@ -1295,17 +1295,19 @@ export class ArrangementService {
     }
   }
 
-  async confirmAndStart(draftId: string, expectedRevision: number, idempotencyKey: string): Promise<{ plan: WorkPlan; execution: { id: string; status: 'queued' | 'running' } }> {
+  async confirmAndStart(draftId: string, expectedRevision: number, idempotencyKey: string, fullFileAccess?: boolean): Promise<{ plan: WorkPlan; execution: { id: string; status: 'queued' | 'running' } }> {
     const confirmed = await this.confirmDraft(draftId, expectedRevision, idempotencyKey)
     const task = await this.deps.taskManager.getTask(confirmed.plan.id)
     if (!task) throw new AppError('NOT_FOUND')
     if (task.status === TaskStatus.PENDING && task.activeRunId === null) {
+      const grant = fullFileAccess === true && confirmed.plan.permissions.preset === 'full-local'
+        && confirmed.plan.planHash === `${draftId}:${expectedRevision}:${idempotencyKey}`
       if (confirmed.plan.mode === 'conversation' && this.deps.conversationQueue) {
-        this.deps.conversationQueue.scheduleInitial(task.id)
+        this.deps.conversationQueue.scheduleInitial(task.id, grant || undefined)
         return { plan: confirmed.plan, execution: { id: task.id, status: 'queued' } }
       }
       try {
-        await (await this.deps.execution()).executeTask(task.id, { conversation: confirmed.plan.mode === 'conversation' })
+        await (await this.deps.execution()).executeTask(task.id, { conversation: confirmed.plan.mode === 'conversation', ...(grant ? { fullFileAccess: true } : {}) })
       } catch (error) {
         try { await this.deps.taskManager.recordStartFailure?.(task.id, describeError(error)) } catch { /* preserve the original start error */ }
         throw error

@@ -24,6 +24,9 @@ import { FileMentionChips, FileMentionPicker, useFileMention } from '../attachme
 import { FileMentionEditor } from '../attachments/FileMentionEditor'
 import type { AttachmentComposerOperations } from '../attachments/AttachmentComposer'
 import { AttachmentDropZone } from '../attachments/AttachmentDropZone'
+import { RunPermissionSelect } from '../arrange/RunSettingsDrawer'
+import { defaultConversationRunSettings } from '../../../features/enterprise/run-settings'
+import { useConversationPermissionPreference } from '../../../features/enterprise/conversation-permission-scope'
 
 interface Props {
   employees: SiliconEmployee[]
@@ -81,6 +84,13 @@ function LiveAssistant(props: Props & { editor: Editor }) {
 
 function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnectors, demo, busy, editor, attachment }: Props & { editor: Editor; attachment?: Attachments }) {
   const { defaultModelId } = useModelPreference()
+  const { preset: defaultPermission } = useConversationPermissionPreference()
+  const [permissionOverride, setPermissionOverride] = useState(draft.permissionPreset)
+  const permissionPreset = permissionOverride ?? defaultPermission
+  const selectPermission = (preset: NonNullable<HomeDraft['permissionPreset']>) => {
+    draft.permissionPreset = preset
+    setPermissionOverride(preset)
+  }
   const [employeeId, setEmployeeId] = useState(draft.employeeId)
   const [modelId, setModelId] = useState(draft.modelId)
   const [connectorId, setConnectorId] = useState(draft.connectorId)
@@ -130,6 +140,7 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
       const text = withComposerConnector(mention.submissionText, connectorId)
       const success = await onSubmit(employeeId, text, {
         modelId: selectedModel,
+        permissions: defaultConversationRunSettings(permissionPreset).permissions,
         attachmentSessionId: draft.attachment.session?.sessionId,
         attachmentRefs: mention.attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })),
       })
@@ -137,11 +148,13 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
         editor.update('')
         draft.connectorId = undefined
         setConnectorId(undefined)
+        draft.permissionPreset = undefined
+        setPermissionOverride(undefined)
         draft.attachment.session = null
         draft.attachment.attachments = []
         draft.attachment.fileMentions = {}
         draft.epoch++
-      } else setError('需求尚未发送成功，请查看错误提示后重试，输入内容已保留。')
+      }
     } catch (cause) { setError(cause instanceof Error ? cause.message : '需求发送失败，请重试。') }
     finally { submitLock.current = false; setSubmitting(false) }
   }
@@ -167,6 +180,7 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
         <div className="sep-home-model-control" aria-label="选择模型">
           <ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={blocked} onChange={selectModel} />
         </div>
+        {!demo && <RunPermissionSelect preset={permissionPreset} onChange={selectPermission} disabled={blocked} />}
       </div><div className="sep-home-composer-send"><SpeechInputActions speech={speech} disabled={demo || busy || submitting || Boolean(attachment?.busy)} /><button type="button" className="sep-home-send" aria-label="发送需求" disabled={blocked || mention.invalid || !editor.text.trim()} onClick={() => { void submit() }}>{submitting || attachment?.busy ? <LoaderCircle size={19} aria-hidden /> : <Send size={19} aria-hidden />}</button></div></div>
     </AttachmentDropZone>
     {error || attachment?.error ? <p role="alert" className="sep-home-composer-error">{error ?? attachment?.error}</p> : null}

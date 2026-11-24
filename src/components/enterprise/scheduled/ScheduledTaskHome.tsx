@@ -145,7 +145,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
         </div>
       </div>
     <form className="ent-sch-home-compose" onSubmit={event => { event.preventDefault(); submit() }}>
-      <div className="ent-sch-home-compose-actions"><button type="button" className="ent-btn ghost sm" onClick={onCreate}>手动设置</button></div>
+      <div className="ent-sch-home-compose-actions"><button type="button" className="ent-btn ghost sm" title="设置任务时间和产出目录" onClick={onCreate}>手动设置</button></div>
       {continuation ? <div className="ent-sch-replying"><span>补充：{continuation.interpretation?.task.title ?? continuation.request.message}</span><button type="button" aria-label="退出补充" title="退出补充" disabled={awaiting} onClick={() => { setContinuationId(null); setDraft(value => ({ ...value, goal: '', settings: { ...value.settings, modelId: '' } })) }}><X size={14} /></button></div> : null}
       <fieldset ref={composer} disabled={sending} className="ent-sch-composer">
         <label className="sr-only" htmlFor="schedule-home-goal">定时任务工作内容</label><FileMentionEditor mention={mention} id="schedule-home-goal" ref={input} {...mention.editorAria} rows={2} value={draft.goal} maxLength={16000} placeholder={continuation ? '补充缺少的信息…' : '安排一项定期完成的工作…'} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} onCompositionStart={mention.compositionStart} onCompositionEnd={event => mention.compositionEnd(event.currentTarget)} onKeyDown={event => { mention.keyDown(event); if (!event.defaultPrevented && event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); submit() } }} />

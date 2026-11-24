@@ -18,6 +18,7 @@ export interface FeedbackConfirmation {
   onConfirm?: ConfirmationAction
   alternate?: { label: string; busyLabel: string; onConfirm: ConfirmationAction }
   checkboxLabel?: string
+  checkboxRequired?: boolean
   cancelLabel?: string
   cancelPlacement?: 'corner' | 'footer'
 }
@@ -38,7 +39,12 @@ export interface FeedbackItem {
   alternateBusyLabel?: string
   activeAction?: 'primary' | 'alternate'
   checkbox?: { label: string; checked: boolean }
+  checkboxRequired?: boolean
   validationMessage?: string
+}
+
+export function isFeedbackConfirmationBlocked(item: FeedbackItem): boolean {
+  return item.busy || (item.checkboxRequired === true && item.checkbox?.checked !== true)
 }
 
 interface Entry {
@@ -84,6 +90,7 @@ export class FeedbackController {
         cancelLabel: confirmation.cancelLabel, cancelPlacement: confirmation.cancelPlacement,
         input: confirmation.input ? { ...confirmation.input } : undefined,
         alternateLabel: confirmation.alternate?.label, alternateBusyLabel: confirmation.alternate?.busyLabel,
+        checkboxRequired: confirmation.checkboxRequired,
         checkbox: confirmation.checkboxLabel ? { label: confirmation.checkboxLabel, checked: false } : undefined },
       confirmation, promise, resolve,
     })
@@ -130,7 +137,7 @@ export class FeedbackController {
 
   accept = async (id: number, action: 'primary' | 'alternate' = 'primary'): Promise<void> => {
     const entry = this.queue[0]
-    if (!entry || entry.item.id !== id || entry.item.busy || !entry.confirmation) return
+    if (!entry || entry.item.id !== id || !entry.confirmation || isFeedbackConfirmationBlocked(entry.item)) return
     if (action === 'alternate' && !entry.confirmation.alternate) return
     const run = action === 'alternate' ? entry.confirmation.alternate?.onConfirm : entry.confirmation.onConfirm
     const value = entry.item.input?.value ?? ''

@@ -317,7 +317,7 @@ export class TaskRuntime {
     }
   }
 
-  async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; signal?: AbortSignal; beforeAdmission?: () => void } = {}): Promise<void> {
+  async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; signal?: AbortSignal; beforeAdmission?: () => void; fullFileAccess?: boolean } = {}): Promise<void> {
     options.beforeAdmission?.()
     this.startLifecycleAudit()
     options.signal?.throwIfAborted()
@@ -425,7 +425,7 @@ export class TaskRuntime {
         await this.taskManager.admitTask(taskId, runId, options.beforeAdmission)
         const admittedTask = await this.taskManager.getTask(taskId)
         if (!admittedTask || admittedTask.activeRunId !== runId) return
-        this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: activePlan.goal, conversation: false, arrangement: activePlan, knowledge: taskKnowledge,
+        this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: activePlan.goal, conversation: false, arrangement: activePlan, knowledge: taskKnowledge, fullFileAccess: options.fullFileAccess,
           ...(activePlan.inputSnapshot?.attachments?.length ? { attachmentRefs: activePlan.inputSnapshot.attachments } : {}) })
         if (employee) {
           this.reportMonitorQueued({ taskId, runId, prompt: activePlan.goal, subscriptionId: primarySubscriptionId, title: task.title, modelId: employee.modelId, taskType: 'arrangement' })
@@ -458,7 +458,7 @@ export class TaskRuntime {
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
     const isConversation = arrangement?.mode === 'conversation' || options.conversation === true
-    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: isConversation, signal: options.signal, arrangement: arrangement ?? undefined,
+    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: isConversation, signal: options.signal, arrangement: arrangement ?? undefined, fullFileAccess: options.fullFileAccess,
       knowledge: taskKnowledge,
       ...(arrangement?.inputSnapshot?.attachments?.length ? { attachmentRefs: arrangement.inputSnapshot.attachments } : {}) })
     this.reportMonitorQueued({ taskId, runId, prompt: task.prompt, subscriptionId, title: task.title, modelId: employee.modelId, taskType: isConversation ? 'conversation' : 'arrangement',
@@ -1014,6 +1014,7 @@ export class TaskRuntime {
       }
       arrangement = new ArrangementExecutor({
         createModelTrace: this.createModelTrace,
+        fullFileAccess: queued.fullFileAccess,
         scope,
         taskManager: this.taskManager,
         taskRunStore: this.taskRunStore,

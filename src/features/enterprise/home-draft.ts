@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react'
 import { GENERAL_ASSISTANT_ID } from './general-assistant'
 import type { RetainedAttachmentState } from './use-attachment-composer'
 import type { ConnectorId } from '../../shared/connectors'
+import type { ArrangementPermissionPreset } from '../../shared/types'
 
 /** One mutable editor buffer belongs to one mounted authenticated workspace. */
 export interface HomeDraft {
   text: string
   employeeId: string
   modelId: string
+  permissionPreset?: ArrangementPermissionPreset
   connectorId?: ConnectorId
   composerId: string
   epoch: number

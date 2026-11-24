@@ -18,7 +18,7 @@ interface Options {
   retry(taskId: string, signal: AbortSignal): Promise<void>
   assertReplayAllowed?(owner: TaskOwnerScope, task: ClientTask): Promise<void>
   interruptCurrent?(taskId: string, runId: string): Promise<void>
-  startInitial?(taskId: string, signal: AbortSignal): Promise<void>
+  startInitial?(taskId: string, signal: AbortSignal, fullFileAccess?: boolean): Promise<void>
   onInitialFailure?(taskId: string, error: unknown, scope: TaskOwnerScope, signal: AbortSignal): Promise<void>
   onFailure?(taskId: string, entry: ConversationQueueEntry, error: unknown, scope: TaskOwnerScope, subscriptionId: string): void
 }
@@ -45,7 +45,7 @@ export class ConversationQueueService {
   }
 
   /** Own startup outside the page, while reserving the first position ahead of follow-ups. */
-  scheduleInitial(taskId: string): void {
+  scheduleInitial(taskId: string, fullFileAccess?: boolean): void {
     if (this.initialStarts.has(taskId)) return
     const scope = requireScope(this.options.scope)
     const start = this.options.startInitial
@@ -63,7 +63,7 @@ export class ConversationQueueService {
         const task = await this.options.getTask(taskId)
         if (!current() || !task || task.ownerId !== scope.memberId || task.ownerEnterpriseId !== scope.enterpriseId
           || task.status !== 'pending' || task.activeRunId || task.executionHealth === 'start-failed') return
-        await start(taskId, signal)
+        await start(taskId, signal, fullFileAccess)
       } catch (error) {
         if (!current()) return
         await this.options.onInitialFailure?.(taskId, error, scope, signal)

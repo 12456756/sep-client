@@ -30,6 +30,7 @@ const scheduleBaseSchema = z.object({
   name: z.string().trim().min(1).max(160),
   goal: z.string().trim().min(1).max(16000),
   workDir: z.string().trim().min(1).max(1024).refine(value => /^(?:[A-Za-z]:[\\/]|\/|\\\\[^\\]+\\[^\\]+)/.test(value), '请选择绝对工作目录'),
+  outputDirectory: z.object({ path: z.string().trim().min(1).max(1024), identity: z.string().max(120).optional() }).strict().optional(),
   scheduledAt: z.number().int().positive().max(8640000000000000),
   recurrence: recurrenceSchema.optional(),
   timezone: z.string().min(1).max(128).refine(value => {

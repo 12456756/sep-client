@@ -428,10 +428,10 @@ class BackendRuntime {
         const runtime = await this.getTaskRuntime()
         await runtime.interruptConversation(taskId, runId)
       },
-      startInitial: async (taskId, signal) => {
+      startInitial: async (taskId, signal, fullFileAccess) => {
         const runtime = await this.getTaskRuntime()
         signal.throwIfAborted()
-        await runtime.executeTask(taskId, { conversation: true, signal })
+        await runtime.executeTask(taskId, { conversation: true, signal, fullFileAccess })
       },
       onInitialFailure: async (taskId, error, owner, signal) => {
         signal.throwIfAborted()

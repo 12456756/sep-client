@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { occurrenceId, parseEmployeePlan, classifyScheduledError, latestScheduledOccurrence, nextWakeAt, nextScheduledAt, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes } from './scheduled-task'
+import { occurrenceId, parseEmployeePlan, classifyScheduledError, latestScheduledOccurrence, nextWakeAt, nextScheduledAt, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes, scheduledWorkspaceGoal } from './scheduled-task'
 import type { ArrangementNode } from './arrangement-plan'
 import { scheduleInputSchema } from '../../src/shared/scheduled-tasks'
 
@@ -19,6 +19,17 @@ test('Windows path preflight distinguishes explicit file access from literal tex
   }
   assert.equal(requestsRestrictedWindowsSchedulePath({ preset: 'full-local', approvalMode: 'confirm-each' }, '保存到 D:/out'), true)
   assert.equal(requestsRestrictedWindowsSchedulePath({ preset: 'full-local', approvalMode: 'auto-approve' }, '保存到 D:/out'), false)
+})
+
+test('a configured destination is recognized only in an exact output clause', () => {
+  const permissions = { preset: 'workspace-edit', approvalMode: 'confirm-each' } as const
+  const base = { permissions, outputDirectory: { path: 'D:\\客户资料\\报告成果', identity: 'verified' } } as ReturnType<typeof scheduleInputSchema.parse>
+  const outgoing = scheduledWorkspaceGoal({ ...base, goal: '生成报告，保存到 D:/客户资料/报告成果。' })
+  assert.match(outgoing, /保存到 已授权的产出目录/)
+  assert.equal(requestsRestrictedWindowsSchedulePath(permissions, outgoing), false)
+  for (const goal of ['读取 D:/客户资料/报告成果。', '保存到 D:/客户资料/报告成果/子目录。', '保存到 D:/其他目录。']) {
+    assert.equal(requestsRestrictedWindowsSchedulePath(permissions, scheduledWorkspaceGoal({ ...base, goal })), true, goal)
+  }
 })
 
 test('employee planner accepts a bounded file contract, never a replacement employee', () => {

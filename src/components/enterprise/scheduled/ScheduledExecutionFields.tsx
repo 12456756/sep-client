@@ -33,7 +33,7 @@ export function ScheduledExecutionFields({ value, employees, onChange, onChooseF
   }
   const environment = <div className="ent-sch-composer-environment">{local
     ? <button type="button" className="ent-rs-directory" title={value.settings.workDir || '选择成果目录'} onClick={() => void onChooseFolder(value.settings.workDir).then(path => { if (path) onSettings({ workDir: path }) })}><FolderOpen size={16} aria-hidden /><span>{value.settings.workDir || '选择成果目录'}</span></button>
-    : <RunSettingsDirectory settings={value.settings} onChange={onSettings} allowedPresets={['workspace-edit', 'full-local']} inheritDefaultDirectory onChooseFolder={onChooseFolder} />}</div>
+    : <RunSettingsDirectory settings={value.settings} onChange={onSettings} allowedPresets={['workspace-edit']} inheritDefaultDirectory onChooseFolder={onChooseFolder} />}</div>
   const execution = <div className="ent-sch-execution-selects">
         {!naturalLanguage ? <label className="ent-rs-compact ent-sch-mode" title="执行方式">{automatic ? <Users size={16} /> : <UserRound size={16} />}<select aria-label="任务模式" value={value.mode} onChange={event => {
           const mode = event.target.value as ScheduledTaskDraft['mode']

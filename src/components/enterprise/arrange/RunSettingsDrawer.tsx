@@ -6,8 +6,9 @@
 import { FolderOpen, ShieldCheck } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { ModelSelector } from '../ModelSelector';
-import { RUN_PERMISSIONS, type RunSettings } from '../../../features/enterprise/run-settings';
+import { FULL_FILE_ACCESS_CONFIRMATION, RUN_PERMISSIONS, type RunSettings } from '../../../features/enterprise/run-settings';
 import { formatDirectoryPath } from '../../../shared/path-display';
+import { useOptionalFeedback } from '../../feedback/FeedbackProvider';
 
 interface SharedProps {
   settings: RunSettings;
@@ -23,6 +24,28 @@ interface DirectoryProps {
   onChooseFolder: (currentPath?: string) => Promise<string | null>;
   allowedPresets?: RunSettings['permissions']['preset'][];
   inheritDefaultDirectory?: boolean;
+  confirmOnStart?: boolean;
+  disabled?: boolean;
+}
+
+type PermissionPreset = RunSettings['permissions']['preset'];
+
+export function RunPermissionSelect({ preset, onChange, allowedPresets, disabled }: {
+  preset: PermissionPreset;
+  onChange: (preset: PermissionPreset) => void;
+  allowedPresets?: PermissionPreset[];
+  disabled?: boolean;
+}) {
+  const permission = RUN_PERMISSIONS.find(item => item.id === preset);
+  return <label className="ent-rs-compact ent-rs-permission" title={permission?.hint ?? '访问权限'}>
+    <ShieldCheck size={14} aria-hidden />
+    <select aria-label="访问权限" value={preset} disabled={disabled} onChange={event => {
+      const selected = RUN_PERMISSIONS.find(item => item.id === event.target.value);
+      if (selected && (!allowedPresets || allowedPresets.includes(selected.id))) onChange(selected.id);
+    }}>
+      {RUN_PERMISSIONS.filter(item => !allowedPresets || allowedPresets.includes(item.id)).map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+    </select>
+  </label>;
 }
 
 interface Props extends SharedProps, DirectoryProps {
@@ -43,12 +66,15 @@ function directoryLabel(workDir: string): string {
  * 既占位又读不懂。这里把两者移到目录行——语义上它们和「选哪个目录」同属
  * 「这次工作在什么环境下跑」，放在一起才讲得通。
  */
-export function RunSettingsDirectory({ settings, onChange, onChooseFolder, allowedPresets, inheritDefaultDirectory = false }: DirectoryProps) {
+export function RunSettingsDirectory({ settings, onChange, onChooseFolder, allowedPresets, inheritDefaultDirectory = false, confirmOnStart, disabled }: DirectoryProps) {
   const [defaultWorkspacePath, setDefaultWorkspacePath] = useState('');
   const currentDirectory = useRef({ workDir: settings.workDir, onChange, inheritDefaultDirectory });
   currentDirectory.current = { workDir: settings.workDir, onChange, inheritDefaultDirectory };
-  const permission = RUN_PERMISSIONS.find(item => item.id === settings.permissions.preset);
-  const autoApprove = settings.permissions.approvalMode === 'auto-approve';
+  const feedback = useOptionalFeedback();
+  const choosePermission = async (preset: PermissionPreset) => {
+    if (!confirmOnStart && preset === 'full-local' && !await feedback?.confirm(FULL_FILE_ACCESS_CONFIRMATION)) return;
+    onChange({ permissions: { ...settings.permissions, preset, approvalMode: 'confirm-each' } });
+  };
 
   useEffect(() => {
     let changedDuringLoad = false;
@@ -89,29 +115,8 @@ export function RunSettingsDirectory({ settings, onChange, onChooseFolder, allow
         <span>{directoryLabel(displayPath)}</span>
       </button>
 
-      <label className="ent-rs-compact ent-rs-permission" title={permission?.hint ?? '访问权限'}>
-        <ShieldCheck size={14} aria-hidden />
-        <select
-          aria-label="访问权限"
-          value={settings.permissions.preset}
-          onChange={event => onChange({ permissions: { ...settings.permissions, preset: event.target.value as RunSettings['permissions']['preset'] } })}
-        >
-          {RUN_PERMISSIONS.filter(item => !allowedPresets || allowedPresets.includes(item.id)).map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
-        </select>
-      </label>
+      <RunPermissionSelect preset={settings.permissions.preset} onChange={preset => void choosePermission(preset)} allowedPresets={allowedPresets} disabled={disabled} />
 
-      {/* 审批开关带可见文字：原先只靠 sr-only 标签，渲染出来是个没有说明的空方框 */}
-      <label className="ent-rs-compact ent-rs-approval" title="开启后，本次工作中的工具调用不再逐次向你确认">
-        <input
-          type="checkbox"
-          checked={autoApprove}
-          onChange={event => onChange({ permissions: {
-            ...settings.permissions,
-            approvalMode: event.target.checked ? 'auto-approve' : 'confirm-each',
-          } })}
-        />
-        <span>自动放行</span>
-      </label>
     </div>
   );
 }

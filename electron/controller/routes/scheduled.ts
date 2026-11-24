@@ -1,12 +1,20 @@
 import { z } from 'zod'
+import { dialog } from 'electron'
 import { scheduleInputSchema, scheduleTimeRequestSchema, createWorkScheduleSchema, editWorkScheduleSchema } from '../../../src/shared/scheduled-tasks'
 import { scheduledCreationRequestSchema } from '../../../src/shared/scheduled-creation'
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
+import type { RequestContext } from '../request-context'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const mutation = z.object({ id, expectedRevision: z.number().int().positive() }).strict()
 const creationMutation = mutation.extend({ id: z.string().uuid() })
+const selectOutputDirectory = (ctx: RequestContext) => async (path: string) => {
+  const window = ctx.window()
+  if (!window) return null
+  const result = await dialog.showOpenDialog(window, { title: '授权定时任务的产出目录', defaultPath: path, properties: ['openDirectory'] })
+  return result.canceled ? null : result.filePaths[0] ?? null
+}
 export const scheduledRoutes = [
   route(INVOKE_CHANNELS.SCHEDULE_WORK_SOURCE, id, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.workSource(value) })),
   route(INVOKE_CHANNELS.SCHEDULE_CREATE_FROM_WORK, createWorkScheduleSchema, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.createFromWork(value) })),
@@ -16,8 +24,8 @@ export const scheduledRoutes = [
   route(INVOKE_CHANNELS.SCHEDULE_DELETE_CREATION, creationMutation, async (ctx, value) => ({ success: true, data: await ctx.scheduledCreations.deleteRecord(value.id, value.expectedRevision) })),
   route(INVOKE_CHANNELS.SCHEDULE_INTERPRET_TIME, scheduleTimeRequestSchema, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.interpretTime(value) })),
   route(INVOKE_CHANNELS.SCHEDULE_LIST, NO_INPUT, async ctx => ({ success: true, data: await ctx.scheduledTasks.list() })),
-  route(INVOKE_CHANNELS.SCHEDULE_CREATE, z.object({ requestId: id, input: scheduleInputSchema }).strict(), async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.create(value.requestId, value.input) })),
-  route(INVOKE_CHANNELS.SCHEDULE_EDIT, mutation.extend({ input: scheduleInputSchema }), async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.edit(value.id, value.expectedRevision, value.input) })),
+  route(INVOKE_CHANNELS.SCHEDULE_CREATE, z.object({ requestId: id, input: scheduleInputSchema }).strict(), async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.create(value.requestId, value.input, undefined, selectOutputDirectory(ctx)) }), { trustedMainFrame: true }),
+  route(INVOKE_CHANNELS.SCHEDULE_EDIT, mutation.extend({ input: scheduleInputSchema }), async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.edit(value.id, value.expectedRevision, value.input, undefined, selectOutputDirectory(ctx)) }), { trustedMainFrame: true }),
   route(INVOKE_CHANNELS.SCHEDULE_PLAN, mutation, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.plan(value.id, value.expectedRevision) })),
   route(INVOKE_CHANNELS.SCHEDULE_CONFIRM, mutation, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.confirm(value.id, value.expectedRevision) })),
   route(INVOKE_CHANNELS.SCHEDULE_PAUSE, mutation, async (ctx, value) => { await ctx.scheduledTasks.pause(value.id, value.expectedRevision); return { success: true } }),

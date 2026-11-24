@@ -41,6 +41,10 @@ export const scheduledPathDenied = {
   message: '当前定时任务权限不允许访问指定路径，本次不会改用其他位置交付。请使用独立工作区内的相对路径。',
 } as const
 
+export const scheduledOutputNotDelivered: ScheduledIssue = {
+  code: 'SCHEDULED_OUTPUT_NOT_DELIVERED', message: '未交付：无法向已授权的产出目录保存全部成果，原成果已保留。', action: 'blocked',
+}
+
 export class ScheduledPathDeniedError extends Error {
   constructor() { super(scheduledPathDenied.message) }
 }
@@ -49,6 +53,17 @@ export class ScheduledPathDeniedError extends Error {
 export function requestsRestrictedWindowsSchedulePath(permissions: ScheduleInput['permissions'], ...texts: string[]): boolean {
   if (permissions.preset === 'full-local' && permissions.approvalMode === 'auto-approve') return false
   return texts.some(requestsWindowsSchedulePathAccess)
+}
+
+/** Translate only an exact, configured destination in an output clause, never a read or a subpath. */
+export function scheduledWorkspaceGoal(input: ScheduleInput): string {
+  const destination = input.outputDirectory?.identity && input.outputDirectory.path
+  if (!destination) return input.goal
+  const literal = destination.split(/[\\/]/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\\\/]')
+  const output = /(?:写入|保存|存放|输出|导出|交付)(?:到|至|进|于|目录\s*[:：]?)?\s*$|\b(?:save|export|deliver|write)(?:\s+(?:the\s+)?(?:file|report|results?))?\s+(?:to|in)\s*$/i
+  const replaced = input.goal.replace(new RegExp(`["“'\u0060]?${literal}["”'\u0060]?(?=$|[\\s,，。；;！!？?、])`, 'gi'), (match: string, offset: number) =>
+    output.test(input.goal.slice(0, offset)) ? '已授权的产出目录' : match)
+  return `${replaced}\n交付文件请在工作目录内生成并提交验收。客户端负责发布到用户授权的产出目录，不要直接访问该目录。`
 }
 
 function requestsWindowsSchedulePathAccess(text: string): boolean {
@@ -111,6 +126,7 @@ export function occurrenceId(id: string, scheduledAt: number): string {
 }
 export function planInputKey(input: ScheduleInput): string {
   const values = [input.mode ?? 'employee', input.goal, input.subscriptionId, input.modelId, input.timezone]
+  if (input.outputDirectory) values.push(input.outputDirectory.path, input.outputDirectory.identity)
   return createHash('sha256').update(JSON.stringify(input.mode === 'empty-text' ? [...values, input.emptyText] : values)).digest('hex')
 }
 export function buildEmptyTextPlan(input: Extract<ScheduleInput, { mode: 'empty-text' }>): Extract<EmployeePlanResult, { status: 'ready' }> {

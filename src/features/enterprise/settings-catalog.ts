@@ -1,5 +1,5 @@
 export type SettingsPageId = 'general' | 'account' | 'voice' | 'multimedia'
-export type SettingsSectionId = 'models' | 'workspace' | 'window' | 'profile' | 'enterprise' | 'speech' | 'multimedia'
+export type SettingsSectionId = 'permissions' | 'models' | 'workspace' | 'window' | 'profile' | 'enterprise' | 'speech' | 'multimedia'
 
 interface SettingsSection {
   id: SettingsSectionId
@@ -18,6 +18,7 @@ export interface SettingsPage {
 // Navigation and global search share the same catalog as categories grow.
 const SETTINGS_PAGES: readonly SettingsPage[] = [
   { id: 'general', title: '常规', group: '个人', sections: [
+    { id: 'permissions', title: '权限', keywords: '新会话默认权限 仅可查看 工作区内修改 完全访问 本机文件' },
     { id: 'window', title: '关闭窗口', keywords: '关闭按钮 每次询问 最小化 直接退出 不再提示' },
     { id: 'models', title: '模型', keywords: '默认模型 系统默认 AI model' },
     { id: 'workspace', title: '文件与目录', keywords: '默认工作目录 自动保存生成的文件 生成文件默认目录 保存位置 文件夹 存储位置 音视频临时文件位置 缓存 workspace' },

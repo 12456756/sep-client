@@ -13,6 +13,7 @@ const creationNavigationOnly = process.argv.includes('--creation-navigation')
 const creationDeletionOnly = process.argv.includes('--creation-deletion')
 const historyLabelsOnly = process.argv.includes('--history-labels')
 const defaultWorkspaceOnly = process.argv.includes('--default-workspace')
+const outputDirectoryOnly = process.argv.includes('--output-directory')
 const fixture = `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -159,7 +160,7 @@ const screenshots = process.env.SCHEDULED_UI_OUTPUT_DIR || resolve(tmpdir(), 'se
 let browser
 try {
   browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge' })
-  if (!historyLabelsOnly && !creationDeletionOnly) await mkdir(screenshots, { recursive: true })
+  if (!historyLabelsOnly && !outputDirectoryOnly && !creationDeletionOnly) await mkdir(screenshots, { recursive: true })
   for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 620 }, { width: 1000, height: 760 }, { width: 760, height: 900 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport })
     const errors = []
@@ -246,6 +247,19 @@ try {
       await send.click()
       await page.waitForFunction(() => window.creationCalls.length === 1)
       assert.equal(await page.evaluate(() => window.creationCalls[0].workDir), 'D:/客户资料/报告成果/包含较长路径的目录/项目资料', 'A delayed default read must not replace an explicit directory')
+      assert.deepEqual(errors, [])
+      await page.close()
+      continue
+    }
+    if (outputDirectoryOnly) {
+      await page.getByRole('button', { name: '手动设置', exact: true }).click()
+      const editor = page.getByRole('dialog', { name: '新建定时任务' })
+      await editor.getByRole('button', { name: '选择产出目录', exact: true }).click()
+      const confirmation = editor.getByRole('checkbox', { name: '允许此定时任务每次将成果保存到该目录，不覆盖已有文件' })
+      assert.equal(await confirmation.isChecked(), false)
+      await confirmation.check()
+      await editor.getByRole('button', { name: '清除', exact: true }).click()
+      assert.equal(await confirmation.count(), 0)
       assert.deepEqual(errors, [])
       await page.close()
       continue

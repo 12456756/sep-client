@@ -8,11 +8,12 @@ import { responseError } from '../../shared/arrangement-feedback'
 import { mergeTaskUpdate } from './task-read-cache'
 import { runtimeKey } from '../../shared/work-activity'
 import { resolveTaskModel } from '../../shared/model-preferences'
-import { conversationDocument } from './run-settings'
+import { conversationDocument, defaultConversationRunSettings, FULL_FILE_ACCESS_CONFIRMATION } from './run-settings'
 import { GENERAL_ASSISTANT_ID } from './general-assistant'
 import type { ElectronAPI } from '../../shared/ipc'
+import type { ArrangementPermissionPreset } from '../../shared/types'
 
-function mountWorkspace(cancelTask: (id: string, reason: string) => Promise<{ success: boolean; error?: { message: string } }> = async () => ({ success: true }), api: Partial<ElectronAPI> = {}, defaultModelId = '') {
+function mountWorkspace(cancelTask: (id: string, reason: string) => Promise<{ success: boolean; error?: { message: string } }> = async () => ({ success: true }), api: Partial<ElectronAPI> = {}, defaultModelId = '', permission?: { preset: ArrangementPermissionPreset; confirm?: () => Promise<boolean> }) {
   const confirmations: unknown[] = []
   const failures: unknown[] = []
   const notices: Array<{ message: string; tone: string }> = []
@@ -28,7 +29,11 @@ function mountWorkspace(cancelTask: (id: string, reason: string) => Promise<{ su
       if (!(index in cells)) cells[index] = typeof initial === 'function' ? initial() : initial
       return [cells[index], (value: unknown) => { cells[index] = typeof value === 'function' ? value(cells[index]) : value }]
     },
-    useRef: (current: unknown) => ({ current }),
+    useRef(current: unknown) {
+      const index = cursor++
+      if (!(index in cells)) cells[index] = { current }
+      return cells[index]
+    },
     useMemo: (factory: () => unknown) => factory(),
     useCallback: (callback: unknown) => callback,
     useEffect() {},
@@ -57,12 +62,12 @@ function mountWorkspace(cancelTask: (id: string, reason: string) => Promise<{ su
       isCurrent: () => true, fail: (error: unknown) => failures.push(error),
       show: (message: string, tone: string) => notices.push({ message, tone }),
     }) }) },
-    '../../components/feedback/FeedbackProvider': { useFeedback: () => ({ confirm: async (input: unknown) => { confirmations.push(input); return false } }) },
+    '../../components/feedback/FeedbackProvider': { useFeedback: () => ({ confirm: async (input: unknown) => { confirmations.push(input); return permission?.confirm?.() ?? false } }) },
     '../../shared/arrangement-feedback': { responseError },
     '../../shared/run-response': { RunResponseBuffer: class { get() {} keys() { return [][Symbol.iterator]() } delete() {} clear() {} } },
     './placeholder': { WORK_TEMPLATES: [] },
     './general-assistant': { GENERAL_ASSISTANT_ID, generalAssistant: () => ({ id: GENERAL_ASSISTANT_ID, allowedModels: ['model-a', 'model-b'] }) },
-    './run-settings': { conversationDocument },
+    './run-settings': { conversationDocument, defaultConversationRunSettings, FULL_FILE_ACCESS_CONFIRMATION },
     '../../shared/model-preferences': { resolveTaskModel },
     './task-read-cache': { mergeTaskUpdate },
     './work-mapping': { getArrangementDisplayEvents: () => [], buildWorkItem: ({ task }: { task: { id: string; workType: unknown } }) => ({ id: task.id, workType: task.workType, kind: 'conversation', participants: [], steps: [] }) },
@@ -72,7 +77,7 @@ function mountWorkspace(cancelTask: (id: string, reason: string) => Promise<{ su
   compileFunction(compiled, ['require', 'module', 'exports', 'window'], { filename })(
     (id: string) => Reflect.get(imports, id) ?? {}, module, module.exports, { electronAPI: { cancelTask, ...api } })
   const hook = (module.exports as typeof import('./useEnterpriseWorkspace')).useEnterpriseWorkspace
-  const render = () => { cursor = 0; return hook({ userId: 'user', userName: 'User', enterpriseId: 'ent', enterpriseName: 'Enterprise', instances: [], employeeStatuses: [], defaultModelId }) }
+  const render = () => { cursor = 0; return hook({ userId: 'user', userName: 'User', enterpriseId: 'ent', enterpriseName: 'Enterprise', instances: [], employeeStatuses: [], defaultModelId, defaultConversationPermission: permission?.preset }) }
   return { render, confirmations, failures, notices }
 }
 
@@ -132,6 +137,59 @@ test('first submission enters the created conversation without a redundant rende
   assert.equal(ui.render().works[0]?.id, 'new-task')
   assert.equal(ui.render().busy, false)
   assert.deepEqual(ui.failures, [])
+})
+
+test('new conversation default is applied unless the draft explicitly overrides it', async () => {
+  const presets: string[] = []
+  const ui = mountWorkspace(undefined, {
+    async createArrangementDraft(document) {
+      presets.push(document.permissions.preset)
+      return { success: true, draft: { id: 'draft', revision: 1 } } as Awaited<ReturnType<ElectronAPI['createArrangementDraft']>>
+    },
+    async confirmAndStartArrangement(input) {
+      assert.equal(input.fullFileAccess, undefined)
+      return { success: true, execution: { id: 'work', status: 'queued' } }
+    },
+  }, '', { preset: 'read-only' })
+  assert.equal(await ui.render().startConversation(GENERAL_ASSISTANT_ID, '使用默认档位'), true)
+  assert.equal(await ui.render().startConversation(GENERAL_ASSISTANT_ID, '更改本次档位', { permissions: defaultConversationRunSettings('workspace-edit').permissions }), true)
+  assert.deepEqual(presets, ['read-only', 'workspace-edit'])
+  assert.deepEqual(ui.confirmations, [])
+})
+
+test('full access defaults require fresh confirmation before draft creation and cannot be double submitted', async () => {
+  let answer!: (accepted: boolean) => void
+  let created = 0
+  const grants: Array<true | undefined> = []
+  const ui = mountWorkspace(undefined, {
+    async createArrangementDraft(document) {
+      assert.equal(document.permissions.preset, 'full-local')
+      created++
+      return { success: true, draft: { id: 'draft', revision: 1 } } as Awaited<ReturnType<ElectronAPI['createArrangementDraft']>>
+    },
+    async confirmAndStartArrangement(input) {
+      grants.push(input.fullFileAccess)
+      return { success: true, execution: { id: 'work', status: 'queued' } }
+    },
+  }, '', { preset: 'full-local', confirm: () => new Promise(resolve => { answer = resolve }) })
+
+  const first = ui.render().startConversation(GENERAL_ASSISTANT_ID, '第一个会话')
+  assert.equal(created, 0)
+  assert.equal(await ui.render().startConversation(GENERAL_ASSISTANT_ID, '重复点击'), false)
+  assert.equal(ui.confirmations.length, 1)
+  answer(true)
+  assert.equal(await first, true)
+  assert.deepEqual(grants, [true])
+
+  const second = ui.render().startConversation(GENERAL_ASSISTANT_ID, '第二个会话')
+  assert.equal(ui.confirmations.length, 2)
+  assert.equal(created, 1)
+  answer(false)
+  assert.equal(await second, false)
+  assert.equal(created, 1)
+  assert.deepEqual(grants, [true])
+  assert.deepEqual(ui.failures, [])
+  assert.equal(ui.render().busy, false)
 })
 
 test('shows queue success only after the additional message was persisted and does not show it on overflow', async () => {

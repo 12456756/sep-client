@@ -68,6 +68,7 @@ export interface ArrangementExecutionResult {
 }
 
 export interface ArrangementExecutionOptions {
+  fullFileAccess?: boolean
   createModelTrace?: ModelTraceFactory
   scope: TaskOwnerScope | null
   taskManager: TaskManager
@@ -717,7 +718,7 @@ export class ArrangementExecutor {
         created = true
       }
       const toolPolicy = { ...withApprovedSkillReadPaths(runtimeFileToolPolicy(plan.permissions, workspaceDir, {
-        unattended: !!plan.scheduledOrigin, applicationDataRoot: this.options.taskRunStore?.userDataDir,
+        fullFileAccess: this.options.fullFileAccess, unattended: !!plan.scheduledOrigin, applicationDataRoot: this.options.taskRunStore?.userDataDir,
       }), employee)!,
         readableDeliveryPaths: dependencies.flatMap(dependency => dependency.files.flatMap(file => file.readPath ? [file.readPath] : [])),
         readableAttachmentPaths: attachmentInputs?.attachments.flatMap(item => item.readPath ? [item.readPath] : []) ?? [],

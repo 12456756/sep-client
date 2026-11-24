@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict'
 import { it } from 'node:test'
-import { FeedbackController } from './feedback-controller'
+import { FeedbackController, isFeedbackConfirmationBlocked } from './feedback-controller'
 
 it('validates prompt input, keeps it through failure and executes a silent success once', async () => {
   const feedback = new FeedbackController()
@@ -36,6 +36,40 @@ it('permission confirmations settle directly without generating a success popup'
   assert.equal(feedback.getSnapshot()?.message, 'earlier error')
   feedback.dismiss(feedback.getSnapshot()!.id)
   assert.equal(feedback.getSnapshot(), null)
+})
+
+it('requires acknowledgment for either action and disables confirmation again when unchecked', async () => {
+  const feedback = new FeedbackController()
+  const attempts: boolean[] = []
+  const run = async (_value: string, checked: boolean) => { attempts.push(checked); return { success: true } }
+  const confirm = () => feedback.confirm({ message: 'Allow access?', actionLabel: 'Allow', busyLabel: 'Allowing',
+    checkboxLabel: 'I understand the risk', checkboxRequired: true, onConfirm: run,
+    alternate: { label: 'Allow once', busyLabel: 'Allowing', onConfirm: run },
+  })
+  const permission = confirm()
+  const item = feedback.getSnapshot()!
+  assert.equal(isFeedbackConfirmationBlocked(item), true)
+  await feedback.accept(item.id)
+  await feedback.accept(item.id, 'alternate')
+  assert.equal(feedback.getSnapshot(), item)
+  assert.deepEqual(attempts, [])
+
+  feedback.setChecked(item.id, true)
+  assert.equal(isFeedbackConfirmationBlocked(feedback.getSnapshot()!), false)
+  feedback.setChecked(item.id, false)
+  assert.equal(isFeedbackConfirmationBlocked(feedback.getSnapshot()!), true)
+  await feedback.accept(item.id)
+  assert.deepEqual(attempts, [])
+  feedback.setChecked(item.id, true)
+  await feedback.accept(item.id)
+  assert.equal(await permission, true)
+  assert.deepEqual(attempts, [true])
+
+  const next = confirm()
+  const nextItem = feedback.getSnapshot()!
+  assert.equal(isFeedbackConfirmationBlocked(nextItem), true)
+  feedback.dismiss(nextItem.id)
+  assert.equal(await next, false)
 })
 
 it('deduplicates, queues and ignores a stale close', () => {

@@ -45,6 +45,8 @@ export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, m
   const [timing, setTiming] = useState(() => initialTiming(original?.input))
   const [settings, setSettings] = useState<RunSettings>(() => ({ ...defaultRunSettings(), workDir: original?.input.workDir ?? prefill?.settings.workDir ?? '', modelId: original?.input.modelId ?? prefill?.settings.modelId ?? '', permissions: original?.input.permissions ?? prefill?.settings.permissions ?? { preset: 'workspace-edit', approvalMode: 'confirm-each' } }))
   const [error, setError] = useState<string | null>(null)
+  const [outputDirectory, setOutputDirectory] = useState(original?.input.outputDirectory?.path ?? '')
+  const [outputConfirmed, setOutputConfirmed] = useState(false)
   const employee = workspace.myEmployees.find(item => item.id === employeeId)
   const available = workspace.myEmployees.filter(item => item.assignedToMe && !['unavailable', 'needs-auth'].includes(item.availability))
   const local = mode === 'empty-text', general = mode === 'general'
@@ -60,10 +62,12 @@ export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, m
     if (!local && !general && (!available.some(item => item.id === employeeId) || !employee?.allowedModels.includes(settings.modelId))) { setError('请选择可用的员工及其允许使用的模型。'); return }
     if (local && naming === 'fixed' && !emptyTextFilenameSchema.safeParse(filename).success) { setError('请输入有效的 .txt 文件名，不含目录。'); return }
     const { scheduledAt, recurrence } = configuration
-    const base = { mode, name, workDir: settings.workDir, scheduledAt, timezone: timing.timezone, recurrence }
+    if (outputDirectory && !outputConfirmed) { setError('请确认本任务的产出目录授权。'); return }
+    const base = { mode, name, workDir: settings.workDir, scheduledAt, timezone: timing.timezone, recurrence,
+      ...(outputDirectory ? { outputDirectory: { path: outputDirectory } } : {}) }
     const input = scheduleInputSchema.safeParse(local
       ? { ...base, goal: '创建 0 字节的空白 .txt 文件', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' }, emptyText: naming === 'fixed' ? { naming, filename } : { naming } }
-      : { ...base, goal, permissions: settings.permissions, modelId: settings.modelId, ...(general ? {} : { subscriptionId: employeeId }) })
+      : { ...base, goal, permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' }, modelId: settings.modelId, ...(general ? {} : { subscriptionId: employeeId }) })
     if (!input.success) { setError('请检查标题、工作目录、执行设置和时间。'); return }
     submitting.current = true
     try {
@@ -86,7 +90,9 @@ export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, m
       {local && <div className="ent-sch-repeat"><div className="ent-sch-time-row"><label htmlFor="scheduled-filename-mode">文件命名</label><select id="scheduled-filename-mode" value={naming} onChange={event => setNaming(event.target.value as typeof naming)}><option value="scheduled">计划时间（yyyyMMdd-HHmm.txt）</option><option value="started">启动时间（yyyyMMdd-HHmm.txt）</option><option value="fixed">固定文件名</option></select></div>
         {naming === 'fixed' && <div className="ent-sch-time-row"><label htmlFor="scheduled-filename">文件名</label><input id="scheduled-filename" required value={filename} maxLength={160} onChange={event => setFilename(event.target.value)} /></div>}</div>}
       {!local && (general ? !generalModels.length : !available.length) ? <p className="ent-sch-modal-error" role="status">{general ? '当前没有已授权的模型。' : '当前没有可用员工，请先检查员工授权。'}</p> : null}
-      {!local && settings.permissions.approvalMode === 'auto-approve' ? <p className="ent-sch-permission-warning">工具操作将按所选权限自动放行。{settings.permissions.preset === 'full-local' ? '完整本地权限可访问工作目录以外的文件。' : ''}</p> : null}
+      <div className="ent-sch-time-row"><span>产出目录</span><button type="button" className="ent-btn" onClick={() => void workspace.chooseFolder(outputDirectory || settings.workDir).then(path => { if (path) { setOutputDirectory(path); setOutputConfirmed(false) } }, () => setError('无法选择产出目录。'))}>{outputDirectory || '选择产出目录'}</button>
+        {outputDirectory && <button type="button" className="ent-btn" onClick={() => { setOutputDirectory(''); setOutputConfirmed(false) }}>清除</button>}</div>
+      {outputDirectory && <label><input type="checkbox" checked={outputConfirmed} onChange={event => setOutputConfirmed(event.target.checked)} /> 允许此定时任务每次将成果保存到该目录，不覆盖已有文件</label>}
       <ScheduledTimeSettings value={timing} onChange={setTiming} employeeId={employeeId} modelId={settings.modelId} model={model} manualCron={local || general} onParsingChange={onParsingChange} />
     </fieldset>
     {error || model.error ? <p className="ent-sch-modal-error" role="alert">{error || model.error}</p> : null}</div>

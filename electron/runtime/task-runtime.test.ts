@@ -795,7 +795,7 @@ describe('conversation task lifecycle', () => {
 
 // Public surface regression coverage.
 const PUBLIC_SIGNATURES = [
-  'async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import(\'../../src/shared/knowledge-selection\').KnowledgeSelection; signal?: AbortSignal; beforeAdmission?: () => void } = {}): Promise<void> {',
+  'async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import(\'../../src/shared/knowledge-selection\').KnowledgeSelection; signal?: AbortSignal; beforeAdmission?: () => void; fullFileAccess?: boolean } = {}): Promise<void> {',
   'async continueConversation(',
   'async getContextUsage(taskId: string)',
   'hasConversationRun(taskId: string): boolean {',

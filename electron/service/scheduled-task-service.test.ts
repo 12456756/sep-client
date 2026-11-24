@@ -7,6 +7,9 @@ import type { ScheduledServiceOptions } from './scheduled-task-service'
 import { BeforeScheduledAdmissionError, type ScheduledRunnerPort } from './scheduled-dispatcher'
 import { setLogSink, type LogRecord } from '../common/logger'
 import { toEnvelope } from '../errors/error-mapper'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const input: ScheduleInput = { name: 'Report', goal: 'Produce report', subscriptionId: 'sub', modelId: 'model', workDir: 'D:/reports', scheduledAt: 2000, timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
 const plan: EmployeeWorkPlan = { status: 'ready', objective: 'Report', instruction: 'Produce report', expectedOutput: 'File', deliverables: [{ id: 'file', name: 'Report', format: 'md', path: 'report.md', contentOutline: ['Summary'], acceptanceCriteria: ['Sources'] }] }
@@ -102,6 +105,20 @@ function harness(overrides: Partial<ScheduledRunnerPort> = {}, serviceOverrides:
   })
   return { service, get data() { return data }, get starts() { return starts }, get plans() { return plans }, advance(value: number) { now = value } }
 }
+test('only the native selection can authorize a scheduled output directory', async t => {
+  const first = await realpath(await mkdtemp(join(tmpdir(), 'csep-output-auth-')))
+  const other = await realpath(await mkdtemp(join(tmpdir(), 'csep-output-other-')))
+  const h = harness()
+  t.after(async () => { h.service.stop(); await Promise.all([rm(first, { recursive: true, force: true }), rm(other, { recursive: true, force: true })]) })
+  const raw = { ...input, outputDirectory: { path: first, identity: 'caller-supplied' } }
+  await assert.rejects(h.service.create('never', raw), { code: 'INVALID_ARGUMENT' })
+  await assert.rejects(h.service.create('mismatch', raw, undefined, async () => other), { code: 'INVALID_ARGUMENT' })
+  assert.equal(h.data.definitions.length, 0)
+  const created = await h.service.create('chosen', raw, undefined, async path => { assert.equal(path, first); return path })
+  assert.equal(created.input.outputDirectory?.path, first)
+  assert.notEqual(created.input.outputDirectory?.identity, raw.outputDirectory.identity)
+})
+
 test('create, plan, confirm, repeated scans and restart do not duplicate a scheduled launch', async () => {
   const h = harness()
   const created = await h.service.create('request-a', input)
