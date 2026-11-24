@@ -1,15 +1,18 @@
 import { lstatSync, realpathSync } from 'node:fs'
-import { dirname, extname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { evaluateToolCall, isUnrestrictedToolPolicy, type ToolPolicy } from '../../../pi-extension/guard'
+import { approvalFileName, type ToolApprovalSummary } from '../../../src/shared/tool-approval'
 
-export const OFFICE_TOOL_NAME = 'mcp__officecli__officecli'
+export { OFFICE_TOOL_NAME } from '../../../src/shared/tool-approval'
 export const OFFICE_EXPORT_DOC = 'export-doc'
 export const OFFICE_IMPORT_DOC = 'import-doc'
+type OfficeApprovalSummary = Extract<ToolApprovalSummary, { kind: 'office' }>
 export interface OfficeDecision {
   allowed: boolean
   requiresApproval: boolean
   args: string[]
   lockPaths: string[]
+  summary?: OfficeApprovalSummary
   reason?: string
 }
 const reads = new Set(['get', 'query', 'validate', 'raw', 'view', 'dump'])
@@ -72,7 +75,14 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
     const write = edits.has(verb)
     let requiresApproval = false
     const lockPaths: string[] = []
+    const writePaths = new Set<string>()
     const unrestricted = isUnrestrictedToolPolicy(policy)
+    function approvalSummary(operation: OfficeApprovalSummary['operation']): OfficeApprovalSummary | undefined {
+      const targets = [...writePaths]
+      const files = targets.slice(0, 3).map(path => approvalFileName.safeParse(basename(path)))
+      const names = files.flatMap(result => result.success ? [result.data] : [])
+      return names.length ? { kind: 'office', operation, files: names, additionalFiles: targets.length > names.length } : undefined
+    }
     function file(value: string, writing: boolean): string {
       if (!value || /^(?:[a-z][a-z\d+.-]*:\/\/|\\\\)/i.test(value)) throw new Error('Local file paths are required.')
       const absolute = resolve(policy.workspaceDir, value)
@@ -92,6 +102,7 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
         requiresApproval ||= decision.requiresApproval
       }
       lockPaths.push(actual)
+      if (writing) writePaths.add(actual)
       return actual
     }
     if (legacyWord) {
@@ -115,7 +126,8 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
       }
       try { lstatSync(resolve(policy.workspaceDir, args[2])); throw new Error('The destination already exists; choose a new path.') }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-      return { allowed: true, requiresApproval: importing || requiresApproval, args: [verb, source, destination], lockPaths }
+      return { allowed: true, requiresApproval: importing || requiresApproval, args: [verb, source, destination], lockPaths,
+        summary: approvalSummary(importing ? 'import-doc' : 'export-doc') }
     }
     function prop(key: string, value: unknown): string {
       if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') throw new Error('Invalid property value.')
@@ -173,7 +185,8 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
     if (verb === 'view' && !['text', 'outline', 'stats', 'issues', 'annotated', 'html'].includes(args[positionals[0]])) throw new Error('Unsupported view mode.')
     if (verb === 'import' && positionals[1] !== undefined) args[positionals[1]] = file(args[positionals[1]], false)
     if (verb === 'batch' && !hasCommands) throw new Error('Use an inline --commands batch so all operations can be checked.')
-    return { allowed: true, requiresApproval, args, lockPaths: [...new Set(lockPaths)] }
+    return { allowed: true, requiresApproval, args, lockPaths: [...new Set(lockPaths)],
+      summary: requiresApproval ? approvalSummary(verb === 'batch' ? 'batch' : write && verb !== 'create' ? 'edit' : 'write') : undefined }
   } catch (error) {
     return { allowed: false, requiresApproval: false, args: [], lockPaths: [],
       reason: error instanceof Error ? error.message : 'Invalid Office command.' }

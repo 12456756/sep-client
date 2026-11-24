@@ -74,6 +74,22 @@ function context(root: string) {
 }
 
 describe('PiTaskWorker', () => {
+  it('forwards validated approval details with the originating run identity', async () => {
+    const approval = { toolName: 'mcp__playwright__browser_navigate', input: {}, registeredTool: true,
+      summary: { kind: 'browser-navigate', origin: 'https://example.test' } } as const
+    const worker = new PiTaskWorker({
+      context: context(await makeDirectory()),
+      runtime: { async createSession(config) { assert.equal(await config.authorizeTool(approval), true); return new FakeSession() } },
+      createTokenManager: () => new FakeTokenManager(), getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onEvent() {},
+      onApprovalRequest: async request => {
+        assert.deepEqual(request, { ...approval, taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a' })
+        return true
+      },
+    })
+    try { await worker.run('text prompt') }
+    finally { await worker.dispose() }
+  })
+
   it('passes the authorized model vision capability to the SDK session', async () => {
     const configs: PiAgentSessionConfig[] = []
     const worker = new PiTaskWorker({

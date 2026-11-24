@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -203,29 +203,41 @@ describe('built-in Office runtime', () => {
     }
   })
   it('checks Office commands before unrestricted MCP bypass and asks approval for edits only', async () => {
-    let approved = 0
+    const approvals: Array<Parameters<PiAgentSessionConfig['authorizeTool']>[0]> = []
+    let active = true
     const config: PiAgentSessionConfig = { runId: 'test', modelId: 'm', gatewayUrl: '', workspaceDir: process.cwd(),
-      agentDir: '', sessionDir: '', getAccessToken: async () => '', authorizeTool: async () => { approved++; return false },
+      agentDir: '', sessionDir: '', getAccessToken: async () => '', authorizeTool: async request => { approvals.push(request); return false },
       toolPolicy: { preset: 'workspace-edit', allowedTools: ['read', 'write'], allowedPaths: [process.cwd()],
         deniedPaths: [], workspaceDir: process.cwd(), commandPolicy: 'disabled', approvalMode: 'confirm-each' } }
     const runtime = { builtinOffice: true as const, tools: [], permissions: new Map([[OFFICE_TOOL_NAME, 'confirm-each' as const]]), dispose: async () => {} }
     const handlers: Array<(event: ToolCallEvent) => Promise<ToolCallEventResult>> = []
     const api = { on: (name: string, handler: unknown) => {
       if (name === 'tool_call') handlers.push(handler as typeof handlers[number])
-    }, registerTool: () => {}, getActiveTools: () => [OFFICE_TOOL_NAME] } as unknown as ExtensionAPI
+    }, registerTool: () => {}, getActiveTools: () => active ? [OFFICE_TOOL_NAME] : [] } as unknown as ExtensionAPI
     for (const extension of buildExtensions(config, runtime)) await extension(api)
     const invoke = (command: string[]) => handlers[0]({ type: 'tool_call', toolCallId: 'test', toolName: OFFICE_TOOL_NAME, input: { command } })
     assert.equal((await invoke(['get', 'a.docx'])).block, false)
-    assert.equal(approved, 0)
+    assert.equal(approvals.length, 0)
     assert.equal((await invoke(['create', 'a.docx'])).block, true)
-    assert.equal(approved, 1)
+    assert.deepEqual(approvals.at(-1), { toolName: OFFICE_TOOL_NAME, input: {}, registeredTool: true,
+      summary: { kind: 'office', operation: 'write', files: ['a.docx'], additionalFiles: false } })
+    assert.equal((await invoke(['batch', 'private/work-copy.xlsx', '--commands', JSON.stringify([
+      { command: 'set', path: '/Sheet1/A1', props: { value: 'PRIVATE_CELL' } },
+    ])])).block, true)
+    assert.deepEqual(approvals.at(-1), { toolName: OFFICE_TOOL_NAME, input: {}, registeredTool: true,
+      summary: { kind: 'office', operation: 'batch', files: ['work-copy.xlsx'], additionalFiles: false } })
+    assert.equal((await invoke(['view', 'a.docx', 'html', '--out', 'private/render.html'])).block, true)
+    assert.deepEqual(approvals.at(-1)?.summary, { kind: 'office', operation: 'write', files: ['render.html'], additionalFiles: false })
     assert.equal((await invoke(['export-doc', 'a.docx', 'a.doc'])).block, true)
-    assert.equal(approved, 2)
+    assert.deepEqual(approvals.at(-1)?.summary, { kind: 'office', operation: 'export-doc', files: ['a.doc'], additionalFiles: false })
     config.toolPolicy = { ...config.toolPolicy!, preset: 'full-local', approvalMode: 'auto-approve' }
     assert.equal((await invoke(['create', 'a.docx'])).block, false)
     assert.equal((await invoke(['import-doc', 'a.doc', 'a-working.docx'])).block, true)
-    assert.equal(approved, 3)
+    assert.deepEqual(approvals.at(-1)?.summary, { kind: 'office', operation: 'import-doc', files: ['a-working.docx'], additionalFiles: false })
     assert.equal((await invoke(['install'])).block, true)
+    active = false
+    assert.equal((await invoke(['import-doc', 'a.doc', 'a-working.docx'])).block, true)
+    assert.equal(approvals.length, 5)
   })
 
   it('creates, edits, saves and reopens real docx/xlsx/pptx through MCP', { timeout: 120_000 }, async t => {
@@ -237,10 +249,14 @@ describe('built-in Office runtime', () => {
     assert.ok(common.office, common.unavailable.join('; '))
     const root = await realpath(await mkdtemp(join(tmpdir(), 'sep-office-real-')))
     const base = await createMcpRuntime([], root)
-    const attached = await attachOfficeRuntime(base, common, { runId: 'office-test', modelId: 'm', gatewayUrl: '',
-      workspaceDir: root, agentDir: root, sessionDir: root, getAccessToken: async () => '', authorizeTool: async () => true,
+    let allow = false
+    const requests: Array<Parameters<PiAgentSessionConfig['authorizeTool']>[0]> = []
+    const config: PiAgentSessionConfig = { runId: 'office-test', modelId: 'm', gatewayUrl: '',
+      workspaceDir: root, agentDir: root, sessionDir: root, getAccessToken: async () => '',
+      authorizeTool: async request => { requests.push(request); return allow },
       toolPolicy: { preset: 'workspace-edit', allowedTools: ['read', 'write', 'edit'], allowedPaths: [root],
-        deniedPaths: [], workspaceDir: root, commandPolicy: 'disabled', approvalMode: 'auto-approve' } })
+        deniedPaths: [], workspaceDir: root, commandPolicy: 'disabled', approvalMode: 'confirm-each' } }
+    const attached = await attachOfficeRuntime(base, common, config)
     t.after(async () => { await attached.runtime.dispose(); await rm(root, { recursive: true, force: true }) })
     assert.equal(attached.enabled, true)
     const tool = attached.runtime.tools.find(tool => tool.name === OFFICE_TOOL_NAME)!
@@ -265,6 +281,30 @@ describe('built-in Office runtime', () => {
       assert.deepEqual((await readFile(path)).subarray(0, 2), Buffer.from('PK'))
       await call(['validate', path, '--json'])
     }
+    const original = join(root, 'report.xlsx')
+    const copy = join(root, 'report-copy.xlsx')
+    const initial = await readFile(original)
+    await copyFile(original, copy)
+    const handlers: Array<(event: ToolCallEvent) => Promise<ToolCallEventResult>> = []
+    const api = { on: (name: string, handler: unknown) => {
+      if (name === 'tool_call') handlers.push(handler as typeof handlers[number])
+    }, registerTool: () => {}, getActiveTools: () => [OFFICE_TOOL_NAME] } as unknown as ExtensionAPI
+    for (const extension of buildExtensions(config, attached.runtime)) await extension(api)
+    const edit = async (path: string, value: string) => {
+      const command = ['set', path, '/Sheet1/A1', '--prop', `value=${value}`]
+      const guard = await handlers[0]({ type: 'tool_call', toolName: OFFICE_TOOL_NAME, toolCallId: 'approval', input: { command } })
+      if (!guard.block) await call(command)
+      return guard.block
+    }
+    assert.equal(await edit(original, 'Denied edit'), true)
+    assert.deepEqual(requests.at(-1)?.summary, { kind: 'office', operation: 'edit', files: ['report.xlsx'], additionalFiles: false })
+    assert.deepEqual(await readFile(original), initial)
+    allow = true
+    assert.equal(await edit(copy, 'Approved copy edit'), false)
+    assert.deepEqual(requests.at(-1)?.summary, { kind: 'office', operation: 'edit', files: ['report-copy.xlsx'], additionalFiles: false })
+    await call(['save', copy]); await call(['close', copy])
+    assert.match(await call(['view', copy, 'text']), /Approved copy edit/)
+    assert.deepEqual(await readFile(original), initial)
     const denied = await tool.execute('denied', { command: ['create', '../outside.docx'] }, undefined)
     assert.equal(denied.details.isError, true)
     await attached.runtime.dispose()

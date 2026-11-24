@@ -62,7 +62,7 @@ import { safeApiDiagnostic } from '../../common/platform/api-diagnostic'
 import type { McpRuntime } from './pi-mcp-client'
 import { BROWSER_MODE_TOOL, createHostMcpRuntime } from './pi-browser-runtime'
 import { BROWSER_EXTRACT, BROWSER_SAVE_ASSETS, BROWSER_SCROLL, browserSaveAssetsInput } from './pi-browser-page-tools'
-import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
+import { browserApprovalSummary, loadHostMcpServers, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
 import { buildMediaExecutionPrompt } from './media-execution-prompts'
 import { GatewayRetryWait } from './gateway-retry-wait'
@@ -844,6 +844,11 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
         await config.reportPolicyEvent?.('unknown_tool_blocked', { toolName, reason: 'Media tool is not enabled for this run.' })
         return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
       }
+      const registeredMcp = mcp.permissions.has(toolName)
+      if ((registeredMcp || toolName === OFFICE_TOOL_NAME && mcp.builtinOffice) && !pi.getActiveTools().includes(toolName)) {
+        await config.reportPolicyEvent?.('unknown_tool_blocked', { toolName, reason: 'Tool is not active for this run.' })
+        return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
+      }
       if (toolName === OFFICE_TOOL_NAME && mcp.builtinOffice) {
         const decision = evaluateOfficeCommand(event.input, officeTaskPolicy(config))
         if (!decision.allowed) {
@@ -851,7 +856,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
           return { block: true, reason: decision.reason ?? 'Office command denied.' }
         }
         if (!decision.requiresApproval) return { block: false }
-        const approved = await config.authorizeTool({ toolName, input: redactValue({ command: decision.args }) })
+        const approved = await config.authorizeTool({ toolName, input: {}, registeredTool: true, summary: decision.summary })
         return { block: !approved, ...(approved ? {} : { reason: 'User denied Office document modification.' }) }
       }
       if (toolName === BROWSER_MODE_TOOL && mcp.builtinBrowser && pi.getActiveTools().includes(toolName)) {
@@ -873,7 +878,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
           return { block: true, reason: 'Browser asset saving is not available for this input or run.' }
         }
         // Asset publication always requires explicit consent, including in full-local auto mode.
-        const approved = await config.authorizeTool({ toolName, input: { folder: parsed.data.folder, count: parsed.data.refs.length } })
+        const approved = await config.authorizeTool({ toolName, input: {}, registeredTool: true, summary: { kind: 'browser-save-assets' } })
         return approved ? { block: false } : { block: true, reason: 'Browser asset saving was not approved.' }
       }
       if (toolPolicy && isUnrestrictedToolPolicy(toolPolicy)) {
@@ -900,14 +905,16 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
       }
       if (READ_ONLY_TOOLS.has(toolName)) return { block: false }
       if (mcp.permissions.get(toolName) === 'auto-approve') return { block: false }
-      if (!requiresToolApproval(toolName) && !mcp.permissions.has(toolName)) {
+      if ((!requiresToolApproval(toolName) && !registeredMcp) || !pi.getActiveTools().includes(toolName)) {
         await config.reportPolicyEvent?.('unknown_tool_blocked', {
           toolName,
           reason: 'Unknown tools are denied by default.',
         })
         return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
       }
-      const approved = await config.authorizeTool({ toolName, input: redactValue(event.input) })
+      const summary = registeredMcp ? browserApprovalSummary(toolName, event.input) : undefined
+      const approved = await config.authorizeTool({ toolName, input: summary ? {} : redactValue(event.input),
+        ...(registeredMcp ? { registeredTool: true } : {}), ...(summary ? { summary } : {}) })
       return approved
         ? { block: false }
         : { block: true, reason: `User denied execution of high-risk tool: ${toolName}` }

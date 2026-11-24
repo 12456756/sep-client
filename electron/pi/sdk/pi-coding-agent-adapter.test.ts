@@ -507,6 +507,25 @@ describe('browser instructions in real provider requests', () => {
 })
 
 describe('built-in browser handoff with the real Pi SDK', () => {
+  it('sends only a validated browser summary for registered operations', async t => {
+    if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+      t.skip('Requires default browser configuration.'); return
+    }
+    const cases = [
+      { name: 'mcp__playwright__browser_navigate', input: { url: 'https://user:secret@example.test:8443/path?private=secret#section' },
+        summary: { kind: 'browser-navigate', origin: 'https://example.test:8443' } },
+      { name: 'mcp__playwright__browser_snapshot', input: { filename: 'private.md' },
+        summary: { kind: 'browser-snapshot', savesFile: true } },
+    ] as const
+    for (const { name, input, summary } of cases) {
+      const approvals: Array<Parameters<PiAgentSessionConfig['authorizeTool']>[0]> = []
+      const { bodies } = await mediaSession({ mcpServers: undefined, disableSkills: true,
+        authorizeTool: async request => { approvals.push(request); return false } }, { name, input })
+      assert.deepEqual(approvals, [{ toolName: name, input: {}, registeredTool: true, summary }])
+      assert.match(messageText(bodies[1].messages.find(message => message.role === 'tool')!.content), /User denied/)
+    }
+  })
+
   const browserBinding = { browserArtifactTaskId: 'task', browserTaskStateDir: 'task' }
   const saveCall = { name: BROWSER_SAVE_ASSETS, input: { folder: 'media', refs: ['fb582074-ddc4-4e4b-8a39-8072dcb1dc8b'] } }
 

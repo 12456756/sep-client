@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import { compileFunction } from 'node:vm'
 import ts from 'typescript'
 import { FeedbackController } from '../shared/feedback-controller'
-import { toolApprovalTimeoutMs } from '../shared/tool-approval'
+import { OFFICE_TOOL_NAME, toolApprovalTimeoutMs } from '../shared/tool-approval'
 import { CREATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-creation'
 import type { ToolApprovalDialog } from './ToolApprovalDialog'
 
@@ -16,7 +16,8 @@ const compiled = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOp
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText
 
-function mount(toolName: string, input: unknown, expiresAt: number | null = Date.now() + toolApprovalTimeoutMs({ toolName, input }), timestamp?: number) {
+function mount(toolName: string, input: unknown, expiresAt: number | null = Date.now() + toolApprovalTimeoutMs({ toolName, input }), timestamp?: number,
+  details?: Pick<NonNullable<Props['request']>, 'registeredTool' | 'summary'>) {
   const feedback = new FeedbackController()
   const decisions: boolean[] = []
   const refs: unknown[] = []
@@ -33,12 +34,58 @@ function mount(toolName: string, input: unknown, expiresAt: number | null = Date
       return require(id)
     }, module, module.exports, { setTimeout, clearTimeout })
   const Component = (module.exports as { ToolApprovalDialog: typeof ToolApprovalDialog }).ToolApprovalDialog
-  const props: Props = { request: { requestId: 'request', toolName, input, expiresAt: expiresAt ?? undefined, timestamp },
+  const props: Props = { request: { requestId: 'request', toolName, input, expiresAt: expiresAt ?? undefined, timestamp, ...details },
     onApprove: () => decisions.push(true), onDeny: () => decisions.push(false) }
   Component(props)
   let cleanup = effect()
   return { feedback, decisions, replay() { cleanup?.(); cleanup = effect() }, cleanup() { cleanup?.(); feedback.clear() } }
 }
+
+test('registered Office edits show only the validated write targets and still require consent', async () => {
+  const ui = mount(OFFICE_TOOL_NAME, { command: ['batch', 'private/source.xlsx', '--commands', 'PRIVATE_CELL_VALUE'] }, undefined, undefined,
+    { registeredTool: true, summary: { kind: 'office', operation: 'batch', files: ['销售汇总-副本.xlsx'], additionalFiles: false } })
+  try {
+    const dialog = ui.feedback.getSnapshot()!
+    assert.match(dialog.message, /批量修改.*销售汇总-副本\.xlsx.*写入/)
+    assert.doesNotMatch(dialog.message, /未知工具|PRIVATE_CELL_VALUE|private|原附件不会修改/)
+    assert.deepEqual(ui.decisions, [])
+    await ui.feedback.accept(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(ui.decisions, [true])
+  } finally { ui.cleanup() }
+})
+
+test('registered tools with no usable summary keep an ordinary confirmation', async () => {
+  const cases: Array<[string, string, NonNullable<Props['request']>['summary']]> = [
+    [OFFICE_TOOL_NAME, '允许本次使用 OfficeCLI？', undefined],
+    [OFFICE_TOOL_NAME, '允许本次使用 OfficeCLI？', { kind: 'office', operation: 'edit', files: ['C:\\private\\test.xlsx'], additionalFiles: false }],
+    ['mcp__erp__sync', '允许本次使用 mcp__erp__sync？', { kind: 'browser-save-assets' }],
+    ['mcp__playwright__browser_snapshot', '允许读取当前网页内容？', undefined],
+  ]
+  for (const [name, message, summary] of cases) {
+    const ui = mount(name, {}, undefined, undefined, { registeredTool: true, summary })
+    try {
+      const dialog = ui.feedback.getSnapshot()!
+      assert.equal(dialog.message, message)
+      assert.deepEqual(ui.decisions, [])
+      ui.feedback.dismiss(dialog.id)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.deepEqual(ui.decisions, [false])
+    } finally { ui.cleanup() }
+  }
+})
+
+test('a browser summary is bound to the tool and contains only an origin', () => {
+  const name = 'mcp__playwright__browser_navigate'
+  for (const [origin, message] of [
+    ['https://example.test:8443', '允许打开网页？目标站点：https://example.test:8443'],
+    ['https://user:secret@example.test/path?key=secret', '允许打开指定网页？'],
+  ]) {
+    const ui = mount(name, {}, undefined, undefined, { registeredTool: true, summary: { kind: 'browser-navigate', origin } })
+    try { assert.equal(ui.feedback.getSnapshot()?.message, message) }
+    finally { ui.cleanup() }
+  }
+})
 
 test('scheduled tasks require explicit confirmation showing the task and first execution time', async () => {
   const ui = mount(CREATE_SCHEDULED_TASK_TOOL, { title: '日报', goal: '汇总昨天的销售数据', timezone: 'Asia/Shanghai',

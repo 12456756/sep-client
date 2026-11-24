@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import { approvalBrowserOrigin, type ToolApprovalSummary } from '../../../src/shared/tool-approval'
 import type { McpServerConfig } from './pi-agent-runtime'
 import { loadMcpServers } from './pi-mcp-config'
 
@@ -39,6 +40,18 @@ const BROWSER_TOOLS = [
   'browser_press_key', 'browser_tabs', 'browser_wait_for',
   'browser_handle_dialog', 'browser_close',
 ] as const
+
+export function browserApprovalSummary(toolName: string, input: unknown): ToolApprovalSummary | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined
+  switch (toolName) {
+    case 'mcp__playwright__browser_navigate':
+      return { kind: 'browser-navigate', origin: approvalBrowserOrigin('url' in input ? input.url : undefined) }
+    case 'mcp__playwright__browser_click':
+      return { kind: 'browser-click' }
+    case 'mcp__playwright__browser_snapshot':
+      return { kind: 'browser-snapshot', savesFile: 'filename' in input && typeof input.filename === 'string' }
+  }
+}
 
 /** A spawned Node-mode Electron must execute real files, not paths inside asar. */
 export function unpackedCliPath(path: string): string {

@@ -197,6 +197,8 @@ export class PiTaskWorker {
             subscriptionId: this.context.subscriptionId,
             toolName: request.toolName,
             input: request.input,
+            ...(request.registeredTool ? { registeredTool: request.registeredTool } : {}),
+            ...(request.summary ? { summary: request.summary } : {}),
           })
         },
         reportPolicyEvent: (type, data) => this.emit(type, data),

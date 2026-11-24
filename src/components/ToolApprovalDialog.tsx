@@ -1,16 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { z } from 'zod'
 import { useFeedback } from './feedback/FeedbackProvider'
-import { isBrowserHandoffRequest, isMediaResubmissionRequest, toolApprovalTimeoutMs } from '../shared/tool-approval'
+import { approvalBrowserOrigin, isBrowserHandoffRequest, isMediaResubmissionRequest, OFFICE_TOOL_NAME, toolApprovalSummarySchema, toolApprovalTimeoutMs } from '../shared/tool-approval'
+import type { ToolAuthorizationRequest } from '../shared/types'
 import { conversationScheduleApprovalSchema, CREATE_SCHEDULED_TASK_TOOL, formatScheduleReceiptTime } from '../shared/scheduled-creation'
 
-interface ToolApprovalRequest {
-  requestId?: string
-  toolName: string
-  input: unknown
-  timestamp?: number
-  expiresAt?: number
-}
+type ToolApprovalRequest = Pick<ToolAuthorizationRequest, 'toolName' | 'input' | 'registeredTool' | 'summary' | 'expiresAt'>
+  & Partial<Pick<ToolAuthorizationRequest, 'requestId' | 'timestamp'>>
 interface Props {
   request: ToolApprovalRequest | null
   onApprove: () => void
@@ -60,6 +56,9 @@ function compositionApproval(input: unknown): string | undefined {
   return `在本机合成并保存 MP4？${aspect}，${resolution}p，预计 ${seconds(durationSeconds)} 秒。原素材不会被覆盖。\n\n${lines.join('\n')}`
 }
 const messages: Readonly<Record<string, string>> = {
+  mcp__playwright__browser_navigate: '允许打开指定网页？',
+  mcp__playwright__browser_snapshot: '允许读取当前网页内容？',
+  mcp__playwright__browser_click: '允许点击网页元素？此操作可能触发网页提交或其他操作。',
   mcp__playwright__browser_set_mode: '允许切换浏览器显示模式？',
   mcp__playwright__browser_scroll: '允许滚动当前网页？',
   mcp__playwright__browser_extract: '允许提取当前网页的可见内容？',
@@ -72,6 +71,39 @@ const messages: Readonly<Record<string, string>> = {
   video_generate: '允许员工按已确认的要求生成视频？',
   video_from_image: '允许员工上传所选参考图或生成视频？',
   local_media_process: '允许在本机处理所选素材并保存新文件？原素材不会被覆盖。',
+}
+
+function approvalSummaryMessage(request: ToolApprovalRequest): string | undefined {
+  if (request.registeredTool !== true) return undefined
+  const parsed = toolApprovalSummarySchema.safeParse(request.summary)
+  if (!parsed.success) return undefined
+  const summary = parsed.data
+  switch (summary.kind) {
+    case 'office': {
+      if (request.toolName !== OFFICE_TOOL_NAME) return undefined
+      const files = summary.files.map(name => `「${name}」`).join('、') + (summary.additionalFiles ? '等文件' : '')
+      if (summary.operation === 'import-doc') return `允许用本机 Microsoft Word 打开旧版 Word 文件并创建编辑副本 ${files}？仅在信任文件来源时允许。原文件不会被覆盖。`
+      if (summary.operation === 'export-doc') return `允许用本机 Microsoft Word 生成 Word 97–2003 文件 ${files}？原文件不会被覆盖。`
+      if (summary.operation === 'write') return `允许 OfficeCLI 写入 ${files}？如果目标文件已存在，原有内容可能被覆盖。`
+      return `允许 OfficeCLI ${summary.operation === 'batch' ? '批量修改' : '修改'} ${files}？更改将写入所列目标。`
+    }
+    case 'browser-navigate':
+      if (request.toolName === 'mcp__playwright__browser_navigate') {
+        return summary.origin ? `允许打开网页？目标站点：${summary.origin}` : messages[request.toolName]
+      }
+      break
+    case 'browser-snapshot':
+      if (request.toolName === 'mcp__playwright__browser_snapshot') {
+        return summary.savesFile ? '允许读取当前网页内容并将快照保存为文件？' : messages[request.toolName]
+      }
+      break
+    case 'browser-click':
+      if (request.toolName === 'mcp__playwright__browser_click') return messages[request.toolName]
+      break
+    case 'browser-save-assets':
+      if (request.toolName === 'mcp__playwright__browser_save_assets') return messages[request.toolName]
+      break
+  }
 }
 
 function scheduleRecurrenceLabel(expression: string): string {
@@ -125,9 +157,20 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       settle(true)
       return
     }
-    let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
+    const toolName = request.toolName
+    const name = toolName === OFFICE_TOOL_NAME ? 'OfficeCLI' : /^[\w.-]{1,128}$/.test(toolName) ? toolName : undefined
+    let message = Object.hasOwn(messages, toolName) ? messages[toolName] : request.registeredTool === true
+      ? name ? `允许本次使用 ${name}？` : '允许本次使用该工具？'
+      : `员工请求执行未知工具“${toolName}”，风险无法确认，建议拒绝。是否仍允许？`
+    if (request.toolName === 'mcp__playwright__browser_navigate' && input.success) {
+      const destination = approvalBrowserOrigin(input.data.url)
+      if (destination) message = `允许打开网页？目标站点：${destination}`
+    }
     if (request.toolName === 'mcp__playwright__browser_set_mode' && input.success && input.data.profile === 'persistent') {
       message = '允许在本对话中保留浏览器资料和网站登录状态？'
+    }
+    if (request.toolName === 'mcp__playwright__browser_snapshot' && input.success && typeof input.data.filename === 'string') {
+      message = '允许读取当前网页内容并将快照保存为文件？'
     }
     const scheduling = request.toolName === CREATE_SCHEDULED_TASK_TOOL
     if (scheduling) {
@@ -156,9 +199,10 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
         message = `允许在本机${labels[operation.data]}「${names}」${details}并保存新文件？原素材不会被覆盖。`
       }
     }
-    const officeCommand = input.success && request.toolName === 'mcp__officecli__officecli' ? input.data.command : null
+    const officeCommand = input.success && request.toolName === OFFICE_TOOL_NAME ? input.data.command : null
     if (Array.isArray(officeCommand) && officeCommand[0] === 'import-doc') message = '允许用本机 Microsoft Word 打开这个旧版 Word 文件并创建编辑副本？仅在信任文件来源时允许。原文件不会被覆盖。'
     if (Array.isArray(officeCommand) && officeCommand[0] === 'export-doc') message = '允许用本机 Microsoft Word 生成一个新的 Word 97–2003 文件？原文件不会被覆盖。'
+    message = approvalSummaryMessage(request) ?? message
     if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。员工将在原页面继续操作。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
     if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
     if (resubmission) message = isVideo

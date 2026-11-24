@@ -698,6 +698,8 @@ export interface ToolAuthorizationRequest {
   subscriptionId: string
   toolName: string
   input: unknown
+  registeredTool?: true
+  summary?: import('./tool-approval').ToolApprovalSummary
   timestamp: number
   expiresAt?: number
 }
