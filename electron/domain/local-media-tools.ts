@@ -62,6 +62,7 @@ export const localMediaOperation = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('list') }).strict(),
   z.object({ operation: z.literal('probe'), attachmentId: id }).strict(),
   z.object({ operation: z.literal('analyze'), attachmentId: id, mode: z.enum(localMediaAnalysisModes).optional() }).strict(),
+  z.object({ operation: z.literal('subtitle'), attachmentId: id }).strict(),
   z.object({ operation: z.literal('trim'), attachmentId: id, start: timestamp, end: timestamp }).strict(),
   z.object({ operation: z.literal('join'), attachmentIds: z.array(id).min(2).max(localMediaMaxClips) }).strict(),
   composeOperation,

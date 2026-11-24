@@ -204,6 +204,14 @@ test('local enhanced composition approval shows timing, overlays and audio proce
   } finally { ui.cleanup() }
 })
 
+test('local subtitle approval names the source, the SRT and the local-only processing', () => {
+  const ui = mount('local_media_process', { operation: 'subtitle', files: ['录音.mp4'] })
+  try {
+    assert.match(ui.feedback.getSnapshot()!.message, /在本机识别.*录音\.mp4.*保存 SRT 字幕.*不会上传素材或改动原文件/)
+    assert.deepEqual(ui.decisions, [])
+  } finally { ui.cleanup() }
+})
+
 test('missing deadlines retain three minutes for browser handoff and one minute for ordinary approvals', () => {
   const timestamp = Date.now() - 90_000
   const handoff = mount('mcp__playwright__browser_set_mode', { operation: 'manual-handoff' }, null, timestamp)

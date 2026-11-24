@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { speechAudioSchema, speechResultSchema } from '../../src/shared/speech-contracts'
 import { prepareSpeechPcm, signalRms, type SpeechResampler } from '../../src/shared/speech-audio'
 import { SPEECH_MODEL_ASSETS } from '../data/speech-assets'
+import { timedSpeechResultSchema } from '../domain/timed-speech'
 
 interface Stream { acceptWaveform(input: { sampleRate: number; samples: Float32Array }): void }
 interface Recognizer { createStream(): Stream; decode(stream: Stream): void; getResult(stream: Stream): unknown }
@@ -14,7 +15,7 @@ interface ParentPort { on(event: 'message', callback: (event: { data: unknown })
 
 const parent = (process as NodeJS.Process & { parentPort: ParentPort }).parentPort
 const require = createRequire(import.meta.url)
-const requestSchema = z.object({ modelDir: z.string().min(1), ...speechAudioSchema.shape }).strict().superRefine((value, ctx) => {
+const requestSchema = z.object({ modelDir: z.string().min(1), timed: z.literal(true).optional(), ...speechAudioSchema.shape }).strict().superRefine((value, ctx) => {
   const parsed = speechAudioSchema.safeParse({ recordingId: value.recordingId, sampleRate: value.sampleRate, samples: value.samples })
   if (!parsed.success) ctx.addIssue({ code: 'custom', message: 'Invalid audio input' })
 })
@@ -53,6 +54,7 @@ parent.on('message', ({ data }) => {
     let code = 'RECOGNITION_FAILED'
     try {
       let text = ''
+      let timing = { tokens: [] as string[], timestamps: [] as number[] }
       const silent = signalRms(input.samples) < 0.0001
       if (!silent) {
         code = 'MODEL_UNAVAILABLE'
@@ -63,9 +65,18 @@ parent.on('message', ({ data }) => {
         const stream = recognizer.createStream()
         stream.acceptWaveform({ sampleRate: 16000, samples })
         recognizer.decode(stream)
-        text = z.object({ text: z.string() }).parse(recognizer.getResult(stream)).text
+        const result = recognizer.getResult(stream)
+        if (input.timed) {
+          const parsedTiming = timedSpeechResultSchema.parse({ ...z.object({ text: z.string(), tokens: z.unknown(), timestamps: z.unknown() }).parse(result),
+            recordingId: input.recordingId, silent })
+          text = parsedTiming.text
+          timing = { tokens: parsedTiming.tokens, timestamps: parsedTiming.timestamps }
+          if (text.trim() && !timing.tokens.length) throw new Error('Missing speech timing')
+        } else text = z.object({ text: z.string() }).parse(result).text
       }
-      parent.postMessage({ type: 'result', result: speechResultSchema.parse({ recordingId: input.recordingId, text, silent }) })
+      const result = { recordingId: input.recordingId, text, silent }
+      parent.postMessage(input.timed ? { type: 'timed-result', result: timedSpeechResultSchema.parse({ ...result, ...timing }) }
+        : { type: 'result', result: speechResultSchema.parse(result) })
     } catch { parent.postMessage({ type: 'error', recordingId: input.recordingId, code }) }
     finally { busy = false }
   })()

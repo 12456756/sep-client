@@ -5,6 +5,7 @@ const batch = { item: z.number().int().min(1).max(8).optional(), total: z.number
 export const localMediaProgressSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('probe'), ...batch }),
   z.object({ phase: z.literal('render'), percent: z.number().int().min(0).max(99).optional(), ...batch }),
+  z.object({ phase: z.literal('subtitle'), percent: z.number().int().min(0).max(99), ...batch }),
   z.object({ phase: z.literal('verify'), ...batch }),
   z.object({ phase: z.literal('save'), ...batch }),
 ])

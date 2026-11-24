@@ -131,13 +131,15 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     }
     if (request.toolName === 'local_media_process' && input.success) {
       const labels = { trim: '裁剪', join: '拼接', compose: '合成视频', extract_audio: '提取音频', transcode: '转码',
-        batch_transcode: '批量转码', frame: '提取视频帧', thumbnail_grid: '生成缩略图网格', gif: '导出 GIF' }
+        batch_transcode: '批量转码', frame: '提取视频帧', thumbnail_grid: '生成缩略图网格', gif: '导出 GIF', subtitle: '识别字幕' }
       const operation = z.custom<keyof typeof labels>(value => typeof value === 'string' && Object.hasOwn(labels, value)).safeParse(input.data.operation)
       const files = z.array(z.string()).max(8).safeParse(input.data.files)
       if (operation.success && operation.data === 'compose') {
         const summary = compositionApproval(input.data.plan)
         if (!summary) { settle(false); return }
         message = summary
+      } else if (operation.success && operation.data === 'subtitle' && files.success && files.data.length === 1) {
+        message = `允许在本机识别「${files.data[0].slice(0, 100)}」的语音并保存 SRT 字幕？不会上传素材或改动原文件。`
       } else if (operation.success && files.success) {
         const names = files.data.map(name => name.slice(0, 100)).join('、')
         const size = operation.data === 'transcode' || operation.data === 'batch_transcode'

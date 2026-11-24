@@ -13,6 +13,34 @@ const audio = (id: string) => ({ recordingId: id, sampleRate: 16000, samples: ne
 const result = (id: string) => ({ type: 'result', result: { recordingId: id, text: 'text', silent: false } })
 
 describe('isolated speech inference runtime', () => {
+  it('keeps the timed protocol separate and kills only the cancelled subtitle worker', async () => {
+    const voice = new Worker(), subtitle = new Worker()
+    const runtime = new SpeechRuntime({ createWorker: () => voice, modelDir: 'model' })
+    const caption = new SpeechRuntime({ createWorker: () => subtitle, modelDir: 'model' })
+    const input = runtime.recognize(audio('voice'))
+    const controller = new AbortController()
+    const pending = caption.recognizeTimed(audio('caption'), controller.signal)
+    assert.equal((subtitle.messages[0] as { timed?: boolean }).timed, true)
+    assert.equal((voice.messages[0] as { timed?: boolean }).timed, undefined)
+    controller.abort()
+    await assert.rejects(pending, /已取消/)
+    assert.ok(subtitle.killed)
+    assert.ok(!voice.killed)
+    voice.emit('message', result('voice'))
+    await input
+    runtime.stop()
+  })
+  it('accepts aligned timed tokens and rejects missing, reversed or out-of-range timestamps', async () => {
+    for (const [timestamps, shouldPass] of [[[0.02, 0.08], true], [[0.02], false], [[0.08, 0.02], false], [[0.02, 0.2], false]] as const) {
+      const worker = new Worker()
+      const runtime = new SpeechRuntime({ createWorker: () => worker, modelDir: 'model' })
+      const pending = runtime.recognizeTimed(audio('timed'), new AbortController().signal)
+      worker.emit('message', { type: 'timed-result', result: { recordingId: 'timed', text: '你好', tokens: ['你', '好'], timestamps, silent: false } })
+      if (shouldPass) assert.deepEqual((await pending).timestamps, timestamps)
+      else { await assert.rejects(pending, /异常/); assert.ok(worker.killed) }
+      runtime.stop()
+    }
+  })
   it('reuses one worker and validates matching bounded responses', async () => {
     const worker = new Worker()
     let spawns = 0

@@ -10,6 +10,8 @@ import { localMediaOperation, type LocalMediaOperation, type LocalMediaTool } fr
 import { compositionFilters, compositionFps, compositionInputLimits, compositionInputs, compositionLoudness, resolveComposition } from './local-media-composition'
 import { localMediaCandidates, measuredLoudness } from './local-media-analysis'
 import { exportPlan, lowerVideoBitrate, verifyExport } from './local-media-export'
+import { generateSubtitles, subtitleMaxSeconds, subtitleOutputLimit, subtitleSampleRate } from './local-media-subtitles'
+import type { SubtitleRecognizer } from '../domain/timed-speech'
 import { logger } from '../common/logger'
 import { attachmentAudioVideoType } from '../../src/shared/attachment-media-formats'
 
@@ -100,7 +102,8 @@ export function localMediaInput(input: ResolvedAttachmentInput): boolean {
 export class LocalMediaRuntime {
   private busy = false
 
-  constructor(private readonly binDir: string, private readonly prepareTemp: () => Promise<string>) {}
+  constructor(private readonly binDir: string, private readonly prepareTemp: () => Promise<string>,
+    private readonly createSubtitleRecognizer?: () => Promise<SubtitleRecognizer>) {}
 
   bind(options: BindOptions): LocalMediaTool {
     const enabled = new Map(options.attachments.filter(localMediaInput).map(input => [input.attachmentId, input]))
@@ -147,8 +150,10 @@ export class LocalMediaRuntime {
       }[mismatch.role])
     }
     if (!batch && op.operation !== 'compose' && op.operation !== 'probe' && originals.some(item => !!imageDemuxer(item))) {
+      if (op.operation === 'subtitle') throw new Error('生成字幕需要包含语音的音频或视频附件。')
       throw new Error(op.operation === 'analyze' ? '静音和场景检测需要音频或视频素材。' : '图片请使用合成功能，先指定每张图的显示时长。')
     }
+    if (op.operation === 'subtitle' && !this.createSubtitleRecognizer) throw new Error('本地字幕组件未就绪，请检查客户端安装资源。')
     if (op.operation === 'trim' && op.end <= op.start) throw new Error('结束时间必须大于开始时间。')
     if (!await this.hasExecutables()) throw new Error(missingComponentMessage)
     ctx.assertActive(signal)
@@ -183,7 +188,6 @@ export class LocalMediaRuntime {
   private async runSingle(op: SingleOperation, originals: readonly ResolvedAttachmentInput[], signal: AbortSignal, ctx: BindOptions,
     onProgress: Parameters<LocalMediaTool['execute']>[2]): Promise<unknown> {
     let work: string | undefined
-    let partial: string | undefined
     let writingTo: 'scratch' | 'output' = 'scratch'
     try {
       onProgress?.({ phase: 'probe' })
@@ -223,6 +227,7 @@ export class LocalMediaRuntime {
         name: originals[index].displayName, duration: probes[index].format.duration }))) : undefined
       const duration = composition ? composition.summary.durationSeconds
         : probes.reduce((sum, item) => sum + item.format.duration!, 0)
+      if (op.operation === 'subtitle' && duration > subtitleMaxSeconds) throw new Error('暂不支持为超过 60 分钟的素材生成字幕，请先分段。')
       if (duration > 3600) throw new Error('暂不支持总时长超过 60 分钟的音视频处理。')
       if (op.operation === 'analyze') {
         const mode = op.mode ?? 'both'
@@ -240,9 +245,11 @@ export class LocalMediaRuntime {
         ctx.assertActive(signal)
         return { durationSeconds: duration, silenceAnalyzed: !!audio, scenesAnalyzed: !!video, ...collector.result() }
       }
+      const subtitle = op.operation === 'subtitle'
+      if (subtitle && !media[0].audio) throw new Error('素材没有可识别字幕的音轨。')
       if (op.operation === 'trim' && op.end > duration + 0.05) throw new Error('结束时间超过素材时长。')
       const audio = op.operation === 'extract_audio' || (op.operation === 'trim' && !media[0].video)
-      if (!composition && (audio ? !media[0].audio : media.some(item => !item.video))) {
+      if (!subtitle && !composition && (audio ? !media[0].audio : media.some(item => !item.video))) {
         throw new Error(audio ? '素材没有可处理的音轨。' : '素材没有可处理的视频画面。')
       }
       const isJoin = op.operation === 'join'
@@ -274,13 +281,36 @@ export class LocalMediaRuntime {
       if (!await ctx.checkArtifact()) throw new Error('成果目录不可用。')
       const output = await realpath(ctx.artifactPath)
       await rmdir(await mkdtemp(join(output, '.csep-write-')))
-      const totalInTemp = maxBytes + (isJoin ? inputBytes : 0)
+      const pcmLimit = Math.ceil(duration + 1) * subtitleSampleRate * 2
+      const totalInTemp = subtitle ? pcmLimit + subtitleOutputLimit : maxBytes + (isJoin ? inputBytes : 0)
       const [scratchSpace, resultSpace, sameVolume] = await Promise.all([statfs(temp, { bigint: true }), statfs(output, { bigint: true }), sameMediaVolume(temp, output)])
       assertLocalMediaDiskSpace(sameVolume, scratchSpace.bavail * scratchSpace.bsize, resultSpace.bavail * resultSpace.bsize,
-        totalInTemp, exportSpec?.maxBytes ?? maxBytes)
+        totalInTemp, subtitle ? subtitleOutputLimit : exportSpec?.maxBytes ?? maxBytes)
       ctx.assertActive(signal)
       writingTo = 'scratch'
       work = await mkdtemp(join(temp, 'csep-media-'))
+      if (subtitle) {
+        const pcm = join(work, 'speech.pcm')
+        onProgress?.({ phase: 'render' })
+        await this.run('ffmpeg', ['-nostdin', '-n', '-xerror', '-filter_threads', '2', ...inputOptions, '-threads', '2', '-i', paths[0],
+          '-map', `0:${media[0].audio!.index}`, '-vn', '-sn', '-dn', '-af', `aresample=${subtitleSampleRate}:async=1:first_pts=0`,
+          '-ac', '1', '-c:a', 'pcm_s16le', '-t', String(duration), '-fs', String(pcmLimit), '-f', 's16le', pcm], signal, 5 * 60_000, work)
+        ctx.assertActive(signal)
+        onProgress?.({ phase: 'subtitle', percent: 0 })
+        const result = await generateSubtitles(pcm, duration, this.createSubtitleRecognizer!, signal, percent => {
+          ctx.assertActive(signal)
+          onProgress?.({ phase: 'subtitle', percent })
+        })
+        ctx.assertActive(signal)
+        const target = join(work, 'result.srt')
+        await writeFile(target, result.srt, { flag: 'wx', encoding: 'utf8' })
+        onProgress?.({ phase: 'verify' })
+        const bytes = (await lstat(target)).size
+        if (bytes !== Buffer.byteLength(result.srt)) throw new Error('字幕文件校验未通过。')
+        writingTo = 'output'
+        const file = await this.publish(target, 'subtitle', 'srt', output, ctx, signal, onProgress)
+        return { file, durationSeconds: duration, bytes, cueCount: result.cueCount, reviewRequired: true }
+      }
       const extension = exportSpec?.extension ?? (audio ? 'm4a' : 'mp4')
       const target = join(work, `result.${extension}`)
       let args: string[]
@@ -347,29 +377,40 @@ export class LocalMediaRuntime {
         signal, 5 * 60_000, work, { logLevel: 'info', returnStderr: true })) : undefined
       ctx.assertActive(signal)
       writingTo = 'output'
-      if (!await ctx.checkArtifact() || await realpath(ctx.artifactPath) !== output) throw new Error('成果目录已不可用。')
-      const filename = `${op.operation}-${randomUUID().slice(0, 12)}.${extension}`
-      onProgress?.({ phase: 'save' })
-      ctx.assertActive(signal)
-      partial = join(output, `${filename}.partial`)
-      await copyFile(target, partial, constants.COPYFILE_EXCL)
-      ctx.assertActive(signal)
-      const published = join(output, filename)
-      await link(partial, published)
-      try { ctx.assertActive(signal) } catch (error) { await unlink(published).catch(() => undefined); throw error }
-      return { file: `${ctx.artifactRelativePath}/${filename}`, durationSeconds: verifiedDuration, bytes: size,
+      const file = await this.publish(target, op.operation, extension, output, ctx, signal, onProgress)
+      return { file, durationSeconds: verifiedDuration, bytes: size,
         ...(loudness && { loudness: { targetLufs: -16, ...loudness } }) }
     } catch (error) {
       if (signal.aborted) throw new Error('音视频处理已取消。')
       throw new Error(mediaError(error, writingTo))
     } finally {
       try {
-        if (partial) await unlink(partial).catch(() => undefined)
         // FFmpeg receives an explicit work directory; remove only the private directory created for this run.
         if (work && basename(work).startsWith('csep-media-') && await realpath(work).catch(() => '') === work) {
           await rm(work, { recursive: true, force: true })
         }
       } catch { log.warn('local media scratch cleanup failed') }
+    }
+  }
+
+  private async publish(target: string, operation: string, extension: string, output: string, ctx: BindOptions, signal: AbortSignal,
+    onProgress: Parameters<LocalMediaTool['execute']>[2]): Promise<string> {
+    if (!await ctx.checkArtifact() || await realpath(ctx.artifactPath) !== output) throw new Error('成果目录已不可用。')
+    const filename = `${operation}-${randomUUID().slice(0, 12)}.${extension}`
+    onProgress?.({ phase: 'save' })
+    ctx.assertActive(signal)
+    const partial = join(output, `${filename}.partial`)
+    let copied = false
+    try {
+      await copyFile(target, partial, constants.COPYFILE_EXCL)
+      copied = true
+      ctx.assertActive(signal)
+      const published = join(output, filename)
+      await link(partial, published)
+      try { ctx.assertActive(signal) } catch (error) { await unlink(published).catch(() => undefined); throw error }
+      return `${ctx.artifactRelativePath}/${filename}`
+    } finally {
+      if (copied) await unlink(partial).catch(() => log.warn('local media partial output cleanup failed'))
     }
   }
 

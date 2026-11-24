@@ -856,7 +856,7 @@ class BackendRuntime {
     const mediaTarget = localMediaTarget(process.platform, process.arch)
     const localMedia = mediaTarget ? await import('../runtime/local-media-runtime').then(({ LocalMediaRuntime }) =>
       new LocalMediaRuntime(app.isPackaged ? join(process.resourcesPath, 'local-media') : process.env.SEP_LOCAL_MEDIA_DEV_DIR ?? join(app.getAppPath(), 'resources', 'local-media', mediaTarget),
-        () => this.localMediaSettings.prepare())) : undefined
+        () => this.localMediaSettings.prepare(), async () => (await import('./create-speech-runtime')).createSpeechRuntime())) : undefined
     const runtime = new TaskRuntime({
       localMedia,
       connectorBinding: owner => this.connectors.binding(owner),

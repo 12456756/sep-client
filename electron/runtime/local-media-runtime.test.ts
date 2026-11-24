@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -10,12 +10,15 @@ import { localMediaOperation } from '../domain/local-media-tools'
 import type { LocalMediaProgress } from '../../src/shared/local-media-progress'
 import { exportPlan, verifyExport } from './local-media-export'
 import { localMediaCandidates } from './local-media-analysis'
+import { ConversationArtifactStore } from '../data/conversation-artifact-store'
 
 test('local media only accepts attachment references and the fixed operation parameters', () => {
   assert.ok(!localMediaOperation.safeParse({ operation: 'trim', attachmentId: 'x', start: 0, end: 1, argv: [] }).success)
   assert.ok(!localMediaOperation.safeParse({ operation: 'transcode', attachmentId: 'C:/clip.mp4' }).success)
   assert.ok(localMediaOperation.safeParse({ operation: 'join', attachmentIds: ['a', 'b'] }).success)
   assert.ok(localMediaOperation.safeParse({ operation: 'batch_transcode', attachmentIds: ['a'], maxBytes: 100_000 }).success)
+  assert.ok(localMediaOperation.safeParse({ operation: 'subtitle', attachmentId: 'a' }).success)
+  assert.ok(!localMediaOperation.safeParse({ operation: 'subtitle', attachmentId: 'a', output: 'custom.srt' }).success)
   assert.ok(!localMediaOperation.safeParse({ operation: 'batch_transcode', attachmentIds: Array(9).fill('a') }).success)
   assert.ok(!localMediaOperation.safeParse({ operation: 'transcode', attachmentId: 'x', maxBytes: 1.5 }).success)
   assert.ok(!localMediaOperation.safeParse({ operation: 'extract_audio', attachmentId: 'x', format: 'flac' }).success)
@@ -65,6 +68,78 @@ test('a file within its byte limit is still rejected if truncated, silent or mis
 const bin = process.env.SEP_LOCAL_MEDIA_DEV_DIR
 const skipNative = !bin || !localMediaTarget(process.platform, process.arch)
 const ffmpegName = localMediaExecutable('ffmpeg')
+
+test('native subtitle export preserves a delayed audio timeline, overlaps windows and publishes only completed SRTs', { skip: skipNative }, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'csep-media-test-')))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const scratch = join(root, '临时 文件')
+  await mkdir(scratch)
+  const store = new ConversationArtifactStore()
+  const artifact = await store.prepare(root, 'subtitle-test')
+  assert.equal(artifact.status, 'ready')
+  const source = join(root, '延时语音.mp4')
+  const blank = join(root, '无语音.wav')
+  const silentVideo = join(root, '无声视频.mp4')
+  const ffmpeg = (...args: string[]) => execFileSync(join(bin!, ffmpegName), ['-v', 'error', '-nostdin', ...args])
+  ffmpeg('-f', 'lavfi', '-i', 'color=s=160x90:r=10:d=25', '-itsoffset', '2', '-f', 'lavfi', '-i', 'sine=duration=22',
+    ...localMediaH264Args('300k'), '-c:a', 'aac', source)
+  ffmpeg('-i', source, '-an', '-c:v', 'copy', silentVideo)
+  ffmpeg('-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', '1', blank)
+  const attachments = await Promise.all([source, blank, silentVideo].map(async (path, i) => ({ attachmentId: `sub${i}`, sha256: '0'.repeat(64),
+    mediaType: i === 1 ? 'audio/wav' : 'video/mp4', displayName: path.split(/[/\\]/).pop()!, readPath: path,
+    byteLength: (await lstat(path)).size, extractionStatus: 'not-required' })))
+  let allow = false
+  let opened = 0
+  let stopped = 0
+  let calls = 0
+  const abort = new AbortController()
+  let cancelOnInference = false
+  const host = new LocalMediaRuntime(bin!, async () => scratch, async () => {
+    opened++
+    calls = 0
+    return {
+      async recognizeTimed({ recordingId, samples, sampleRate }, signal) {
+        calls++
+        if (cancelOnInference) { abort.abort(); signal.throwIfAborted() }
+        assert.equal(sampleRate, 16000)
+        if (calls === 1) {
+          assert.equal(samples[16000], 0, 'audio keeps the leading video-only interval')
+          assert.ok(samples.subarray(3 * sampleRate, 4 * sampleRate).some(value => Math.abs(value) > 0.01))
+        }
+        const tokens = calls === 1 ? ['开', '始', '。', '衔', '接'] : ['衔', '接', '。']
+        const timestamps = calls === 1 ? [2.4, 2.6, 8, 19.8, 20.2] : [0.8, 1.2, 4.9]
+        return { recordingId, silent: false, text: tokens.join(''), tokens, timestamps }
+      },
+      stop() { stopped++ },
+    }
+  }).bind({ attachments, resolveAttachment: async item => item, assertActive: signal => signal?.throwIfAborted(),
+    checkArtifact: async () => (await store.prepare(root, 'subtitle-test')).status === 'ready', runSignal: new AbortController().signal,
+    artifactPath: join(root, artifact.relativePath), artifactRelativePath: artifact.relativePath, authorize: async () => allow })
+  const request = { operation: 'subtitle', attachmentId: 'sub0' }
+  await assert.rejects(host.execute(request), /未授权/)
+  assert.equal(opened, 0)
+  allow = true
+  await assert.rejects(host.execute({ ...request, attachmentId: 'sub1' }), /未识别到/)
+  await assert.rejects(host.execute({ ...request, attachmentId: 'sub2' }), /没有可识别字幕的音轨/)
+  assert.equal(opened, 0)
+  const progress: LocalMediaProgress[] = []
+  const result = await host.execute(request, undefined, value => progress.push(value)) as { file: string; cueCount: number; reviewRequired: boolean; bytes: number }
+  assert.equal(result.cueCount, 2)
+  assert.equal(result.reviewRequired, true)
+  assert.deepEqual(await store.scan(root, 'subtitle-test'), [result.file])
+  const srt = await readFile(join(root, result.file), 'utf8')
+  assert.equal(Buffer.byteLength(srt), result.bytes)
+  assert.equal(srt, '1\r\n00:00:02,400 --> 00:00:03,100\r\n开始。\r\n\r\n2\r\n00:00:19,800 --> 00:00:20,550\r\n衔接。\r\n\r\n')
+  assert.equal(calls, 2)
+  assert.equal(stopped, 1)
+  assert.ok(progress.some(item => item.phase === 'subtitle' && item.percent === 99))
+  cancelOnInference = true
+  await assert.rejects(host.execute(request, abort.signal), /已取消/)
+  assert.equal(stopped, 2)
+  assert.deepEqual(await store.scan(root, 'subtitle-test'), [result.file])
+  assert.deepEqual(await readdir(scratch), [])
+  assert.deepEqual(await readdir(join(root, artifact.relativePath)), [result.file.split('/').at(-1)])
+})
 
 test('local media picks the packaged architecture, executable names and native H.264 encoder', () => {
   assert.equal(localMediaTarget('win32', 'x64'), 'win-x64')
