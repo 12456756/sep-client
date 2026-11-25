@@ -107,6 +107,10 @@ export function isScheduledCreationWorking(stage: ScheduledCreation['stage']): b
   return stage === 'parsing' || stage === 'planning' || stage === 'enabling'
 }
 
+export function isScheduledCreationFinished(stage: ScheduledCreation['stage']): boolean {
+  return stage === 'completed' || stage === 'cancelled'
+}
+
 export interface ScheduledCreationInterpreterInput {
   fromConversation?: true
   subscriptionId: string

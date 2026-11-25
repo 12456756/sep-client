@@ -104,18 +104,39 @@ test('deleting completed creation progress preserves scheduling and prevents rep
   } finally { h.stop() }
 })
 
-test('deleting failed progress cannot be undone by replaying or revising the old request', async () => {
+test('failed progress requires cancellation before deletion and cannot be restored by a replay', async () => {
   const h = harness()
   try {
     h.setInterpret(async () => { throw Error('interpretation failed') })
     const failed = await h.creation.submit(request)
     assert.equal(failed.stage, 'failed')
-    const deleted = await h.creation.deleteRecord(failed.id, failed.revision)
+    await assert.rejects(h.creation.deleteRecord(failed.id, failed.revision), { code: 'INVALID_STATE' })
+    const cancelled = await h.creation.cancel(failed.id, failed.revision)
+    const deleted = await h.creation.deleteRecord(cancelled.id, cancelled.revision)
     assert.deepEqual(await h.make().submit(request), deleted)
     await assert.rejects(h.creation.submit({ ...request, message: 'A new instruction', expectedRevision: deleted.revision }), { code: 'INVALID_STATE' })
     assert.equal(h.interpretations, 1)
     assert.deepEqual(h.data.definitions, [])
   } finally { h.stop() }
+})
+
+test('creation progress awaiting input or adjustment cannot be deleted before cancellation', async () => {
+  const outcomes: ScheduleInterpretation[] = [
+    { ...interpretation, status: 'needs_input', questions: [{ field: 'schedule', question: 'What time?' }] },
+    { ...interpretation, status: 'blocked', reasons: [{ code: 'UNSUPPORTED_SCHEDULE', message: 'Choose a supported schedule.' }] },
+  ]
+  for (const outcome of outcomes) {
+    const h = harness()
+    try {
+      h.setInterpret(async () => outcome)
+      const record = await h.creation.submit(request)
+      assert.equal(record.stage, outcome.status)
+      await assert.rejects(h.creation.deleteRecord(record.id, record.revision), { code: 'INVALID_STATE' })
+      assert.deepEqual(h.data.creations, [record])
+      const cancelled = await h.creation.cancel(record.id, record.revision)
+      assert.equal((await h.creation.deleteRecord(cancelled.id, cancelled.revision)).deleted, true)
+    } finally { h.stop() }
+  }
 })
 
 test('a conversation schedule is not saved or enabled before approval, and a replay returns the same receipt', async () => {

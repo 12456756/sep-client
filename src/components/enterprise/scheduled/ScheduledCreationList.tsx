@@ -1,6 +1,6 @@
 import { useId } from 'react'
 import { ArrowRight, LoaderCircle, RotateCcw, Trash2, X } from 'lucide-react'
-import { isScheduledCreationWorking, type ScheduledCreation } from '../../../shared/scheduled-creation'
+import { isScheduledCreationFinished, isScheduledCreationWorking, type ScheduledCreation } from '../../../shared/scheduled-creation'
 import type { ScheduledTasksModel } from '../../../features/enterprise/use-scheduled-tasks'
 import { useFeedback } from '../../feedback/FeedbackProvider'
 
@@ -40,11 +40,12 @@ export function ScheduledCreationList({ model, onResume, onOpen }: {
     {creations.map(creation => {
       const uncertain = pending.find(item => item.request.requestId === creation.id)
       const working = isScheduledCreationWorking(creation.stage)
-      const terminal = creation.stage === 'completed' || creation.stage === 'cancelled'
+      const terminal = isScheduledCreationFinished(creation.stage)
       const cancelling = model.cancellingCreations?.includes(creation.id)
       const deleteHint = cancelling ? '正在取消创建，暂时无法删除。'
         : working ? '创建中暂不可删除，可等待完成或取消创建。'
-          : uncertain?.sending ? '请求提交中，暂时无法删除。' : null
+          : uncertain?.sending ? '请求提交中，暂时无法删除。'
+            : !terminal ? '创建尚未结束，暂不可删除。' : null
       const deleteHintId = deleteHint ? `${deleteHintPrefix}-${creation.id}` : undefined
       return <article className="ent-sch-creation" key={creation.id} aria-label={`创建任务：${creation.interpretation?.task.title ?? creation.request.message}`}>
         <header><strong>{creation.interpretation?.task.title ?? '定时工作'}</strong><span className={`ent-sch-status ${creation.stage}`} role="status">{working ? <LoaderCircle className="ent-sch-spin" size={13} aria-hidden /> : null}{LABELS[creation.stage]}</span></header>

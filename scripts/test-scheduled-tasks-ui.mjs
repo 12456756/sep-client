@@ -170,11 +170,31 @@ try {
       await page.getByRole('button', { name: '新建任务', exact: true }).first().waitFor()
       await page.evaluate(async () => {
         const request = { requestId: '11111111-1111-4111-8111-111111111111', message: '每天生成一份报告', modelId: 'test-model', workDir: 'D:/reports', timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
-        await window.electronAPI.submitScheduledCreation(request)
+        const { data: completed } = await window.electronAPI.submitScheduledCreation(request)
+        const message = '每日金价日报需要调整'
+        window.testData.creations.push({ ...completed, id: '33333333-3333-4333-8333-333333333333', fromConversation: true,
+          stage: 'blocked', request: { ...completed.request, message }, messages: [{ role: 'user', content: message }],
+          definitionId: null, definitionInput: null,
+          interpretation: { ...completed.interpretation, status: 'blocked', reasons: [{ code: 'MODEL_NOT_ALLOWED', message: '未获定时模型授权。' }] } })
         void window.electronAPI.submitScheduledCreation({ ...request, requestId: '22222222-2222-4222-8222-222222222222', message: '保持规划：每天整理资料' })
         window.scheduleNavigate({ name: 'scheduled', view: 'creations' })
       })
       const dialog = page.getByRole('dialog').filter({ hasText: '已创建的定时任务和执行记录不受影响' })
+      const blocked = page.getByRole('article').filter({ hasText: '每日金价日报需要调整' })
+      await blocked.getByRole('status').filter({ hasText: '需要调整' }).waitFor()
+      const blockedRemove = blocked.getByRole('button', { name: '删除记录', exact: true })
+      const blockedHint = blocked.getByText('创建尚未结束，暂不可删除。', { exact: true })
+      await blockedHint.waitFor()
+      assert.equal(await blockedRemove.isDisabled(), true)
+      assert.equal(await blockedRemove.getAttribute('aria-describedby'), await blockedHint.getAttribute('id'))
+      await blockedRemove.evaluate(button => button.click())
+      assert.equal(await dialog.count(), 0)
+      await blocked.getByRole('button', { name: '取消创建', exact: true }).click()
+      await blockedHint.waitFor({ state: 'detached' })
+      assert.equal(await blockedRemove.isEnabled(), true)
+      await blockedRemove.click()
+      await dialog.getByRole('button', { name: '删除', exact: true }).click()
+      await blocked.waitFor({ state: 'detached' })
       const active = page.getByRole('article', { name: '创建任务：自然语言报告' }).filter({ hasText: '保持规划：每天整理资料' })
       const activeRemove = active.getByRole('button', { name: '删除记录', exact: true })
       const hint = active.getByText('创建中暂不可删除，可等待完成或取消创建。', { exact: true })
@@ -206,7 +226,7 @@ try {
       await empty.waitFor()
       await page.evaluate(() => window.switchScope('reopen'))
       await empty.waitFor()
-      const task = page.getByRole('region', { name: '进行中的定时任务' }).getByRole('button', { name: /自然语言报告/ })
+      const task = page.getByRole('region', { name: '进行中的定时任务' }).getByRole('button', { name: /^自然语言报告/ })
       await task.click()
       await page.getByRole('tab', { name: '执行记录', exact: true }).waitFor()
       assert.deepEqual(errors, [])

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { isScheduledCreationWorking, scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput, type ConversationScheduleReceipt } from '../../src/shared/scheduled-creation'
+import { isScheduledCreationFinished, isScheduledCreationWorking, scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput, type ConversationScheduleReceipt } from '../../src/shared/scheduled-creation'
 import type { ScheduleInput } from '../../src/shared/scheduled-tasks'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { TaskOwnerScope } from '../data/scope-path'
@@ -311,7 +311,10 @@ export class ScheduledCreationService {
       if (!item) throw new AppError('NOT_FOUND')
       if (item.deleted) return item
       if (item.revision !== revision) throw new AppError('DRAFT_REVISION_CONFLICT')
-      if (isScheduledCreationWorking(item.stage) || (item.stage !== 'cancelled' && this.operations.has(this.key(scope, id)))) {
+      if (!isScheduledCreationFinished(item.stage)) {
+        throw new AppError('INVALID_STATE', { message: '创建尚未结束，请在创建完成或取消后删除记录。' })
+      }
+      if (item.stage !== 'cancelled' && this.operations.has(this.key(scope, id))) {
         throw new AppError('INVALID_STATE', { message: '创建正在处理中，请等操作完成后再删除记录。' })
       }
       // Keep the request identity so a delayed retry cannot create or enable work again.
