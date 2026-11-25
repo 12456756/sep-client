@@ -1,6 +1,6 @@
 {
   "name": "longsilicon",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "description": "元机AI客户端",
   "type": "module",
   "main": "out/main/index.js",
