@@ -110,16 +110,18 @@ function KnowledgeUploads({ client, kbId, replacement, onUploaded, onCloseReplac
       {busy ? <button className="ent-btn" onClick={() => { stopped.current = true; client.cancelGroup(group) }}>停止上传</button> : replacement ? <button className="ent-btn" onClick={onCloseReplacement}>返回上传</button> : null}
     </div></div>
     {queue.length ? <p className="kb-caption">停止请求不代表平台停止处理。结果未确认时，使用下方重试按钮可复用原操作标识。</p> : null}
-    {queue.map(item => <div key={item.id} className="kb-upload-item"><div><strong>{item.file.name}</strong><span>{({ queued: '等待上传', uploading: '正在上传或等待平台响应', accepted: '已接收，等待平台处理', failed: '上传结果未确认或失败', cancelled: '已停止，请刷新确认是否接收' })[item.status]}</span><KnowledgeErrorNotice error={item.error} /></div>
+    {queue.map(item => {
+      const conflict = item.error instanceof KnowledgeClientError && [409, 412, 428].includes(item.error.detail.statusCode ?? 0)
+      return <div key={item.id} className="kb-upload-item"><div><strong>{item.file.name}</strong><span>{({ queued: '等待上传', uploading: '正在上传或等待平台响应', accepted: '已接收，等待平台处理', failed: '上传结果未确认或失败', cancelled: '已停止，请刷新确认是否接收' })[item.status]}</span><KnowledgeErrorNotice error={item.error} />
+        {conflict ? <p className="kb-caption">{replacement ? '文档状态已变化。重新提交会按最新版本信息发起一次新替换。' : '原上传请求发生冲突。重新提交会发起一次新上传。'}</p> : null}</div>
       {(item.status === 'failed' || item.status === 'cancelled') ? <button className="ent-btn sm" disabled={busy} onClick={() => {
-        const conflict = item.error instanceof KnowledgeClientError && [409, 412, 428].includes(item.error.detail.statusCode ?? 0)
         if (conflict) {
-          if (!window.confirm('文档状态已变化。确认重新获取当前版本信息，并将此文件作为新操作提交？')) return
           item.key = crypto.randomUUID(); item.etag = undefined
           update(item.id, { key: item.key, etag: undefined })
         }
         void upload([item])
-      }}>重试上传</button> : null}</div>)}
+      }}>{conflict ? replacement ? '按最新版本重新提交' : '重新提交上传' : '重试上传'}</button> : null}</div>
+    })}
   </div>
 }
 
