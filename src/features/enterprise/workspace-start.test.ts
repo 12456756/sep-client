@@ -157,7 +157,29 @@ test('new conversation default is applied unless the draft explicitly overrides 
   assert.deepEqual(ui.confirmations, [])
 })
 
-test('full access defaults require fresh confirmation before draft creation and cannot be double submitted', async () => {
+test('a saved full access default skips the send prompt but does not override a lower draft permission', async () => {
+  const presets: ArrangementPermissionPreset[] = []
+  const grants: Array<true | undefined> = []
+  const ui = mountWorkspace(undefined, {
+    async createArrangementDraft(document) {
+      presets.push(document.permissions.preset)
+      return { success: true, draft: { id: 'draft', revision: 1 } } as Awaited<ReturnType<ElectronAPI['createArrangementDraft']>>
+    },
+    async confirmAndStartArrangement(input) {
+      grants.push(input.fullFileAccess)
+      return { success: true, execution: { id: 'work', status: 'queued' } }
+    },
+  }, '', { preset: 'full-local' })
+
+  assert.equal(await ui.render().startConversation(GENERAL_ASSISTANT_ID, '首页使用默认档位'), true)
+  assert.equal(await ui.render().startConversation(GENERAL_ASSISTANT_ID, '对话使用默认档位', { permissions: defaultConversationRunSettings('full-local').permissions }), true)
+  assert.equal(await ui.render().startConversation(GENERAL_ASSISTANT_ID, '本次仅查看', { permissions: defaultConversationRunSettings('read-only').permissions }), true)
+  assert.deepEqual(presets, ['full-local', 'full-local', 'read-only'])
+  assert.deepEqual(grants, [true, true, undefined])
+  assert.deepEqual(ui.confirmations, [])
+})
+
+test('temporary full access requires fresh confirmation before each draft and cannot be double submitted', async () => {
   let answer!: (accepted: boolean) => void
   let created = 0
   const grants: Array<true | undefined> = []
@@ -171,17 +193,18 @@ test('full access defaults require fresh confirmation before draft creation and 
       grants.push(input.fullFileAccess)
       return { success: true, execution: { id: 'work', status: 'queued' } }
     },
-  }, '', { preset: 'full-local', confirm: () => new Promise(resolve => { answer = resolve }) })
+  }, '', { preset: 'workspace-edit', confirm: () => new Promise(resolve => { answer = resolve }) })
+  const options = { permissions: defaultConversationRunSettings('full-local').permissions }
 
-  const first = ui.render().startConversation(GENERAL_ASSISTANT_ID, '第一个会话')
+  const first = ui.render().startConversation(GENERAL_ASSISTANT_ID, '第一个会话', options)
   assert.equal(created, 0)
-  assert.equal(await ui.render().startConversation(GENERAL_ASSISTANT_ID, '重复点击'), false)
-  assert.equal(ui.confirmations.length, 1)
+  assert.equal(await ui.render().startConversation(GENERAL_ASSISTANT_ID, '重复点击', options), false)
+  assert.deepEqual(ui.confirmations, [{ ...FULL_FILE_ACCESS_CONFIRMATION, key: 'new-conversation-full-file-access' }])
   answer(true)
   assert.equal(await first, true)
   assert.deepEqual(grants, [true])
 
-  const second = ui.render().startConversation(GENERAL_ASSISTANT_ID, '第二个会话')
+  const second = ui.render().startConversation(GENERAL_ASSISTANT_ID, '第二个会话', options)
   assert.equal(ui.confirmations.length, 2)
   assert.equal(created, 1)
   answer(false)

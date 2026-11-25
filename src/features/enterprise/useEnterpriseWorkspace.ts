@@ -757,9 +757,10 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       const modelId = options?.modelId || resolveTaskModel(employee.allowedModels, defaultModelId);
       if (!modelId || !employee.allowedModels.includes(modelId)) throw new UserFeedbackError(employeeId === GENERAL_ASSISTANT_ID ? '通用助手没有可用的模型授权，请更换员工或联系平台管理员配置模型。' : '所选员工不支持当前模型，请重新选择');
       const permissions = options?.permissions ?? defaultConversationRunSettings(defaultConversationPermission).permissions;
-      const fullFileAccess = permissions.preset === 'full-local'
-        && await feedback.confirm({ ...FULL_FILE_ACCESS_CONFIRMATION, key: 'new-conversation-full-file-access' });
-      if (!notice.isCurrent() || (permissions.preset === 'full-local' && fullFileAccess !== true)) return false;
+      const fullFileAccess = permissions.preset === 'full-local';
+      if (fullFileAccess && defaultConversationPermission !== 'full-local'
+        && !await feedback.confirm({ ...FULL_FILE_ACCESS_CONFIRMATION, key: 'new-conversation-full-file-access' })) return false;
+      if (!notice.isCurrent()) return false;
       const document = { ...conversationDocument(title, goal, employeeId, modelId, { ...options, permissions }), ...(options?.attachmentRefs?.length ? { attachmentCandidates: options.attachmentRefs.map(attachment => ({ attachment, mustUse: true })), attachmentSessionId: options.attachmentSessionId } : {}) };
       const created = await api.createArrangementDraft(document);
       if (!notice.isCurrent()) return false;
@@ -772,7 +773,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         draft = updated.draft;
       }
       const input = { draftId: draft.id, expectedRevision: draft.revision };
-      const started = await api.confirmAndStartArrangement({ ...input, idempotencyKey: crypto.randomUUID(), ...(fullFileAccess === true ? { fullFileAccess: true as const } : {}) });
+      const started = await api.confirmAndStartArrangement({ ...input, idempotencyKey: crypto.randomUUID(), ...(fullFileAccess ? { fullFileAccess: true as const } : {}) });
       if (!notice.isCurrent()) return false;
       if (!started.success || !started.execution) throw responseError(started, 'start');
       if (started.task) setTasks(current => {

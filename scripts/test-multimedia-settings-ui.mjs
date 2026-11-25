@@ -28,6 +28,7 @@ try {
     import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;
     await import('/index.css');await import('/styles/enterprise.css');
     const React=(await import('${reactUrl}')).default;const {createRoot}=(await import('${domUrl}')).default;
+    const {FeedbackProvider}=await import('/components/feedback/FeedbackProvider.tsx');
     const {ProfileSettingsDialog}=await import('/components/enterprise/ProfileSettingsDialog.tsx');
     const {sepRuntimeV3Fixture}=await import('/shared/fixtures/sep-media-runtime-v3.ts');
     const {videoRuntimeSchema}=await import('/shared/video-media.ts');
@@ -45,7 +46,7 @@ try {
       },
       getDefaultWorkspaceDirectory:async()=>({success:true,data:null})
     };
-    createRoot(document.getElementById('root')).render(React.createElement('div',{className:'ent-shell'},React.createElement(ProfileSettingsDialog,{profile:null,userName:'测试用户',canManage:false,uploading:null,error:null,sidebarCollapsed:false,onToggleSidebar:()=>{},onUploadAvatar:async()=>{},onUploadLogo:async()=>{},onRefresh:async()=>{},onClose:()=>{},models:[]})));
+    createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider,null,React.createElement('div',{className:'ent-shell'},React.createElement(ProfileSettingsDialog,{profile:null,userName:'测试用户',canManage:false,uploading:null,error:null,sidebarCollapsed:false,onToggleSidebar:()=>{},onUploadAvatar:async()=>{},onUploadLogo:async()=>{},onRefresh:async()=>{},onClose:()=>{},models:[]}))));
     </script></body></html>`
   if (serve) {
     log('Multimedia settings preview (fixture data): ' + origin + '/__multimedia-test')
