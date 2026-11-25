@@ -6,4 +6,5 @@ module.exports = async context => {
   await (await import('./office-assets.mjs')).afterOfficePack(context)
   await (await import('./local-media-assets.mjs')).afterLocalMediaPack(context)
   await (await import('./bash-runtime-packaging.mjs')).afterBashRuntimePack(context)
+  await (await import('./python-runtime-packaging.mjs')).afterPythonRuntimePack(context)
 }

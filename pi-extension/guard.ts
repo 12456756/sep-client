@@ -39,6 +39,8 @@ export interface ToolPolicy {
   readableDeliveryPaths?: readonly string[]
   /** Exact host-verified attachment snapshot files; read-only only. */
   readableAttachmentPaths?: readonly string[]
+  /** Display names keyed by canonical attachment snapshot path; metadata only. */
+  attachmentNamesByPath?: ReadonlyMap<string, string>
 }
 
 export type RegisteredToolPermissions = ReadonlyMap<string, 'confirm-each' | 'auto-approve'>

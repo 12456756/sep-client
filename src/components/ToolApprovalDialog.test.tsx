@@ -7,6 +7,7 @@ import ts from 'typescript'
 import { FeedbackController } from '../shared/feedback-controller'
 import { OFFICE_TOOL_NAME, removeResolvedBrowserHandoff, toolApprovalTimeoutMs } from '../shared/tool-approval'
 import { CREATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-creation'
+import { RUN_PYTHON_TOOL } from '../shared/python-tool'
 import type { ToolApprovalDialog } from './ToolApprovalDialog'
 
 type Props = Parameters<typeof ToolApprovalDialog>[0]
@@ -40,6 +41,18 @@ function mount(toolName: string, input: unknown, expiresAt: number | null = Date
   let cleanup = effect()
   return { feedback, decisions, replay() { cleanup?.(); cleanup = effect() }, cleanup() { cleanup?.(); feedback.clear() } }
 }
+
+test('Python asks for specific consent and shows its purpose without showing source', () => {
+  const ui = mount(RUN_PYTHON_TOOL, { purpose: '汇总 CSV', code: 'PRIVATE_SOURCE' })
+  try {
+    const dialog = ui.feedback.getSnapshot()
+    assert.equal(dialog?.tone, 'confirm')
+    assert.match(dialog?.message ?? '', /文件访问仍遵循本次任务权限/)
+    assert.match(dialog?.message ?? '', /汇总 CSV/)
+    assert.doesNotMatch(dialog?.message ?? '', /PRIVATE_SOURCE/)
+    assert.deepEqual(ui.decisions, [])
+  } finally { ui.cleanup() }
+})
 
 test('browser snapshots describe reading or saving without skipping approval', () => {
   for (const [input, message] of [

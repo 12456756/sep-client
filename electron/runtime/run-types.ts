@@ -19,6 +19,8 @@ export interface TaskToolPolicy {
   readableDeliveryPaths?: readonly string[]
   /** Exact host-verified attachment snapshots; read-only grants only. */
   readableAttachmentPaths?: readonly string[]
+  /** Display names keyed by canonical attachment snapshot path; metadata only. */
+  attachmentNamesByPath?: ReadonlyMap<string, string>
 }
 
 export interface EmployeeRuntimeConfig {

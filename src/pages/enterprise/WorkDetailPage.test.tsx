@@ -33,6 +33,8 @@ import * as workProcess from '../../features/enterprise/work-process';
 import * as vocabulary from '../../features/enterprise/vocabulary';
 import * as generalAssistant from '../../features/enterprise/general-assistant';
 import * as workSkillModel from '../../features/enterprise/work-skills';
+import { InlineFileApproval, InlineFileApprovals, isInlineFileApproval } from '../../components/enterprise/InlineFileApproval';
+import { ORIGINAL_DOCUMENT_REPLACE_TOOL } from '../../shared/python-tool';
 
 const cardFilename = fileURLToPath(new URL('../../components/workspace/ResultFileCard.tsx', import.meta.url));
 const cardSource = ts.transpileModule(readFileSync(cardFilename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
@@ -99,6 +101,23 @@ const work: WorkItem = {
   sharedContext: { goal: '制作商品图片', confirmedInputs: [], previousResults: [], userNotes: [] },
   stopReason: null, workDir: null,
 };
+
+it('shows the document and backup location before allowing an original replacement', () => {
+  const toolName = ORIGINAL_DOCUMENT_REPLACE_TOOL;
+  const input = { path: 'C:/docs/report.docx', backup: 'C:/docs/csep-backup.docx', purpose: '修订标题', beforeBytes: 100, afterBytes: 120 };
+  const request = { taskId: work.id, requestId: 'file-approval', runId: 'run', subscriptionId: 'sub', timestamp: 1, toolName, input };
+  assert.equal(isInlineFileApproval(toolName), true);
+  const render = (value: unknown) => renderToStaticMarkup(<InlineFileApprovals.Provider value={{ requests: [{ ...request, input: value }], resolve() {} }}>
+    <InlineFileApproval taskId={work.id} />
+  </InlineFileApprovals.Provider>);
+  const html = render(input);
+  assert.match(html, /替换本地原件/);
+  assert.match(html, /修订标题/);
+  assert.match(html, /C:\/docs\/csep-backup\.docx/);
+  assert.match(html, /备份并替换/);
+  assert.doesNotMatch(html, /查看改动|disabled/);
+  assert.match(render({ path: input.path }), /disabled/);
+});
 
 it('renders archived compact skill labels while leaving current-library loading disabled', () => {
   const skillFilename = fileURLToPath(new URL('../../components/enterprise/WorkSkills.tsx', import.meta.url));

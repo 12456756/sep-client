@@ -1,0 +1,14 @@
+{
+  "python": {
+    "version": "3.15.2",
+    "archive": "python-3.15.2-wasi_sdk-33.zip",
+    "size": 15528008,
+    "sha256": "b8a63559c56760bbdc310dedb74fd69d10bcbafae26b705bea0ad353ad256888"
+  },
+  "wasmtimeVersion": "51.0.0",
+  "targets": {
+    "win32-x64": { "asset": "x86_64-windows.zip", "executable": "wasmtime.exe", "size": 12560257, "sha256": "d2f5853a1cded9b1256b45cd57686b6855e69049ef07fd4ad78feb78dfa3aada" },
+    "darwin-arm64": { "asset": "aarch64-macos.tar.xz", "executable": "wasmtime", "size": 8958064, "sha256": "61dd882b44bcf854b301518781f407b9f6db4c6bd157a55f8f44b1f1357f93dc" },
+    "darwin-x64": { "asset": "x86_64-macos.tar.xz", "executable": "wasmtime", "size": 10150932, "sha256": "51767ef35ea3c2653205c09892f174b75e507cf8ffccfcba00ed557832f0e72d" }
+  }
+}

@@ -2,12 +2,14 @@ import type { PiAssistantMessage as AssistantMessage, PiAssistantMessageEvent as
 import type { ModelTraceRecorder } from '../../domain/model-trace'
 import { isSensitiveModelTraceKey, redactModelTraceText } from '../../common/redact'
 import { logger } from '../../common/logger'
+import { RUN_PYTHON_TOOL } from '../../../src/shared/python-tool'
 
 const roles: Record<string, string> = { system: '系统消息', developer: '开发者消息', user: '用户消息', assistant: '助手消息', tool: '工具返回' }
 export function readableTraceValue(value: unknown): string {
   if (typeof value === 'string') return redactModelTraceText(value)
   return JSON.stringify(value, function (this: Record<string, unknown>, key, item: unknown) {
     if (isSensitiveModelTraceKey(key)) return '[redacted]'
+    if (key === 'arguments' && this.name === RUN_PYTHON_TOOL) return '[Python source omitted]'
     if (key === 'data' && typeof item === 'string' && (this.type === 'image' || this.type === 'reasoning.encrypted' || typeof this.mimeType === 'string')) return `[binary data omitted: ${item.length} characters]`
     return typeof item === 'string' ? redactModelTraceText(item) : item
   }, 2) ?? String(value)
@@ -17,10 +19,16 @@ export function modelPayloadText(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return readableTraceValue(payload)
   const { messages, tools, ...settings } = payload as Record<string, unknown>
   const sections = [`请求配置\n${readableTraceValue(settings)}`]
+  const pythonCalls = new Set<string>()
   if (Array.isArray(messages)) for (const [index, item] of messages.entries()) {
     if (!item || typeof item !== 'object') continue
     const { content, role, ...metadata } = item as Record<string, unknown>
-    const body = Array.isArray(content) ? content.map(part => part?.type === 'text' ? readableTraceValue(part.text) : readableTraceValue(part)).join('\n\n') : readableTraceValue(content)
+    if (Array.isArray(metadata.tool_calls)) for (const call of metadata.tool_calls) {
+      if (call?.function?.name === RUN_PYTHON_TOOL && typeof call.id === 'string') pythonCalls.add(call.id)
+    }
+    const body = role === 'tool' && typeof metadata.tool_call_id === 'string' && pythonCalls.has(metadata.tool_call_id)
+      ? '[Python output omitted]'
+      : Array.isArray(content) ? content.map(part => part?.type === 'text' ? readableTraceValue(part.text) : readableTraceValue(part)).join('\n\n') : readableTraceValue(content)
     sections.push(`消息 ${index + 1} · ${roles[String(role)] ?? String(role)}\n${readableTraceValue(metadata)}\n\n${body}`)
   }
   if (Array.isArray(tools)) sections.push(`工具定义（${tools.length} 项）\n${readableTraceValue(tools)}`)
@@ -67,7 +75,8 @@ export async function* traceModelStream(
         if (event.type === 'text_delta' && timings.firstTextMs === undefined) { timings.firstTextMs = elapsed; changed = true }
         if (event.type === 'thinking_delta' && timings.firstThinkingMs === undefined) { timings.firstThinkingMs = elapsed; changed = true }
         const part = parts.get(event.contentIndex) ?? { kind: event.type === 'text_delta' ? 'output' : event.type === 'thinking_delta' ? 'thinking' : 'tool', text: '', writtenAt: 0 }
-        part.text += event.delta
+        const call = event.type === 'toolcall_delta' ? event.partial.content[event.contentIndex] : undefined
+        part.text += event.type !== 'toolcall_delta' || (call?.type === 'toolCall' && call.name && call.name !== RUN_PYTHON_TOOL) ? event.delta : ''
         parts.set(event.contentIndex, part)
         if (Date.now() - part.writtenAt >= 1000) flush(event.contentIndex)
       } else if (event.type === 'text_end' || event.type === 'thinking_end') {

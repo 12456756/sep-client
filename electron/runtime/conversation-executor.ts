@@ -22,7 +22,7 @@ import { createDefaultSharedPiSession, type PiTaskWorkerOptions } from '../pi/sd
 import { ConversationRecoveryError } from './conversation-recovery-error'
 import { withApprovedSkillReadPaths } from './run-skill-policy'
 import { evaluateToolCall } from '../../pi-extension/guard'
-import { runtimeFileToolPolicy, runtimeOriginalFiles } from './file-tool-policy'
+import { runtimeAttachmentReadScope, runtimeFileToolPolicy, runtimeOriginalFiles } from './file-tool-policy'
 import { prepareConversationAttachments } from './conversation-attachments'
 import { runSkillDisplay } from '../common/run-skill-display'
 import { LEGACY_WORD_MIME } from '../common/legacy-word-format'
@@ -252,9 +252,10 @@ export class ConversationExecutor {
           }).allowed),
         }) : undefined
       const historicalAttachments = attachmentContext?.history ?? []
-      const originals = runtimeOriginalFiles(toolPolicy, [...resolvedAttachments, ...historicalAttachments])
-      if (toolPolicy && (resolvedAttachments.length || historicalAttachments.length)) toolPolicy = { ...toolPolicy,
-        readableAttachmentPaths: [...resolvedAttachments, ...historicalAttachments].flatMap(item => item.readPath ? [item.readPath] : []), originalFiles: originals.bindings }
+      const readableAttachments = [...resolvedAttachments, ...historicalAttachments]
+      const originals = runtimeOriginalFiles(toolPolicy, readableAttachments)
+      if (toolPolicy && readableAttachments.length) toolPolicy = { ...toolPolicy,
+        ...runtimeAttachmentReadScope(readableAttachments), originalFiles: originals.bindings }
       if (queued.conversation && this.options.conversationArtifacts) {
         try {
           artifactDirectory = await this.options.conversationArtifacts.prepare(workspaceDir, taskId)

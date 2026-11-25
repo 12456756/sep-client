@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PiCodingAgentAdapter, normalizeEvent, normalizeGatewayPayload, sessionToolOptions, classifyToolFailure, buildGatewayRequestLogFields, buildGatewayThinkingLogFields } from './pi-coding-agent-adapter'
@@ -17,6 +17,7 @@ import { BROWSER_MODE_TOOL } from './pi-browser-runtime'
 import { BROWSER_EXTRACT, BROWSER_SAVE_ASSETS, BROWSER_SCROLL } from './pi-browser-page-tools'
 import { createPlaywrightMcpServer, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
 import type { ModelTraceEntry } from '../../domain/model-trace'
+import { RUN_PYTHON_TOOL } from '../../../src/shared/python-tool'
 
 const readOnlyPolicy = {
   allowedTools: ['read', 'grep', 'find', 'ls'],
@@ -39,6 +40,19 @@ describe('thinking event projection', () => {
 })
 
 describe('task tool policy session options', () => {
+  it('advertises staged Python independently of file access', () => {
+    const local = { ...readOnlyPolicy, fileAccess: 'local' as const, allowedTools: ['read', 'write', RUN_PYTHON_TOOL] }
+    const tools = (policy: PiAgentSessionConfig['toolPolicy'], available = true, disabled = false) =>
+      sessionToolOptions(policy, disabled, [], [], [], false, false, false, available).tools ?? []
+    assert.ok(tools(local).includes(RUN_PYTHON_TOOL))
+    for (const policy of [undefined, { ...local, preset: 'read-only' as const }, { ...local, fileAccess: 'workspace' as const },
+      { ...local, unattended: true }, { ...local, allowedPaths: ['reports'] }, { ...local, deniedPaths: ['secrets'] }]) {
+      assert.ok(tools(policy).includes(RUN_PYTHON_TOOL))
+    }
+    assert.ok(!tools(local, false).includes(RUN_PYTHON_TOOL))
+    assert.ok(!tools(local, true, true).includes(RUN_PYTHON_TOOL))
+  })
+
   it('advertises policy tools without the removed web search', () => {
     assert.deepEqual(sessionToolOptions(readOnlyPolicy), {
       tools: ['read', 'grep', 'find', 'ls', 'get_current_time'],
@@ -328,7 +342,7 @@ async function mediaSession(
   continueSession?: (session: Awaited<ReturnType<PiCodingAgentAdapter['createSession']>>) => Promise<void>,
   includeImage = false,
 ) {
-  const root = await mkdtemp(join(tmpdir(), 'sep-pi-media-'))
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'sep-pi-media-'))
   await prepare?.(root)
   const bodies: Array<{ messages: Array<{ role: string; content: string | unknown[] | null }>; tools?: Array<{ function: { name: string; description: string; parameters: Record<string, unknown> } }> }> = []
   const executions: Array<{ name: MediaToolName; input: unknown; signal?: AbortSignal }> = []
@@ -369,6 +383,7 @@ async function mediaSession(
       workspaceDir: root, agentDir: join(root, 'agent'), sessionDir: join(root, 'sessions'), mcpServers: [],
       systemPrompt: literalPrompt, mediaTools: host, getAccessToken: async () => 'test-token',
       authorizeTool: async () => { approvals++; return false }, ...overrides,
+      ...(overrides.toolPolicy ? { toolPolicy: { ...overrides.toolPolicy, workspaceDir: root } } : {}),
     })
     await session.prompt('Run the requested operation.', includeImage ? {
       images: [{ type: 'image', data: 'aW1hZ2UtZGF0YQ==', mimeType: 'image/png' }],
@@ -383,6 +398,82 @@ async function mediaSession(
     restoreLog()
   }
 }
+
+describe('bundled Python through the real Pi SDK', () => {
+  it('uses one approval per call and creates the HTML result only after approval', { skip: !process.env.SEP_PYTHON_DEV_RESOURCES }, async () => {
+    const directory = '\u62a5\u544a'
+    const purpose = 'Summarize the CSV by department'
+    const code = `import csv, html, os
+from pathlib import Path
+assert not os.environ.get('PATH')
+totals = {}
+with Path('inputs', 'input.csv').open(encoding='utf-8', newline='') as source:
+    for row in csv.DictReader(source):
+        totals[row['team']] = totals.get(row['team'], 0) + int(row['amount'])
+Path('outputs', 'report.html').write_text('<!doctype html><meta charset="utf-8">' + ''.join(f'<p>{html.escape(team)}: {total}</p>' for team, total in totals.items()), encoding='utf-8')
+print('Report written')`
+    const requests: unknown[] = []
+    let artifact = ''
+    let root = ''
+    const { bodies } = await mediaSession({
+      toolPolicy: { ...readOnlyPolicy, preset: 'workspace-edit', fileAccess: 'workspace', allowedTools: ['read', 'write'], allowedPaths: [directory] },
+      authorizeTool: async request => {
+        requests.push(request)
+        await assert.rejects(readFile(join(root, directory, 'report.html')), { code: 'ENOENT' })
+        return requests.length === 2
+      },
+    }, Array.from({ length: 2 }, () => ({ name: RUN_PYTHON_TOOL, input: { purpose, code,
+      inputs: [{ name: 'input.csv', path: `${directory}/input.csv` }], output: { name: 'report.html', path: `${directory}/report.html` } } })), undefined,
+    async workspace => {
+      root = workspace
+      await mkdir(join(workspace, directory))
+      await writeFile(join(workspace, directory, 'input.csv'), 'team,amount\n\u7814\u53d1,3\n\u7814\u53d1,4\n')
+    }, async () => { artifact = await readFile(join(root, directory, 'report.html'), 'utf8').catch(() => '') })
+    assert.ok(bodies[0].tools?.some(tool => tool.function.name === RUN_PYTHON_TOOL))
+    assert.deepEqual(requests, Array.from({ length: 2 }, () => ({ toolName: RUN_PYTHON_TOOL, input: { purpose, timeoutSeconds: 60 } })))
+    assert.match(JSON.stringify(bodies[1].messages.at(-1)), /execution was not approved/)
+    assert.match(JSON.stringify(bodies[2].messages.at(-1)), /Report written/)
+    assert.match(artifact, /<p>\u7814\u53d1: 7<\/p>/)
+  })
+
+  it('lets read-only tasks compute and import permitted files, but never save or import denied files', { skip: !process.env.SEP_PYTHON_DEV_RESOURCES }, async () => {
+    const options = { purpose: 'Read a text file', code: "from pathlib import Path; print(Path('inputs/a.txt').read_text())" }
+    let root = ''
+    const { bodies } = await mediaSession({
+      toolPolicy: { ...readOnlyPolicy, preset: 'read-only', fileAccess: 'workspace', deniedPaths: ['private.txt'] },
+      authorizeTool: async () => true,
+    }, [
+      { name: RUN_PYTHON_TOOL, input: { ...options, inputs: [{ name: 'a.txt', path: 'public.txt' }] } },
+      { name: RUN_PYTHON_TOOL, input: { ...options, inputs: [{ name: 'a.txt', path: 'private.txt' }] } },
+      { name: RUN_PYTHON_TOOL, input: { ...options, output: { name: 'leak.txt', path: 'leak.txt' } } },
+    ], undefined, async workspace => {
+      root = workspace
+      await writeFile(join(workspace, 'public.txt'), 'permitted input result')
+      await writeFile(join(workspace, 'private.txt'), 'private file contents')
+    }, async () => assert.rejects(readFile(join(root, 'leak.txt')), { code: 'ENOENT' }))
+    const tool = bodies[0].tools!.find(tool => tool.function.name === RUN_PYTHON_TOOL)
+    assert.ok(tool)
+    assert.doesNotMatch(JSON.stringify(tool.function.parameters), /"output"/)
+    assert.match(JSON.stringify(bodies[1].messages.at(-1)), /permitted input result/)
+    assert.match(JSON.stringify(bodies[2].messages.at(-1)), /denied by task policy/)
+    assert.doesNotMatch(JSON.stringify(bodies), /private file contents/)
+  })
+
+  it('enforces write exclusions even when Python has local file access', { skip: !process.env.SEP_PYTHON_DEV_RESOURCES }, async () => {
+    let root = ''
+    const { bodies } = await mediaSession({
+      toolPolicy: { ...readOnlyPolicy, preset: 'workspace-edit', fileAccess: 'local', allowedTools: ['read', 'write'], deniedPaths: ['protected.txt'] },
+      authorizeTool: async () => true,
+    }, { name: RUN_PYTHON_TOOL, input: {
+      purpose: 'Generate text', code: "from pathlib import Path; Path('outputs/result.txt').write_text('new content')",
+      output: { name: 'result.txt', path: 'protected.txt' },
+    } }, undefined, async workspace => {
+      root = workspace
+      await writeFile(join(root, 'protected.txt'), 'original content')
+    }, async () => assert.equal(await readFile(join(root, 'protected.txt'), 'utf8'), 'original content'))
+    assert.match(JSON.stringify(bodies[1].messages.at(-1)), /File access denied by task policy/)
+  })
+})
 
 describe('conversation attachments through the real Pi SDK', () => {
   it('advertises only the scoped reader and returns the selected document to the model', async () => {

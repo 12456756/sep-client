@@ -14,8 +14,9 @@
  * 下次启动无法判定副作用是否已发生。所以只允许有一个定义点。
  */
 import { CREATE_SCHEDULED_TASK_TOOL } from '../../src/shared/scheduled-creation'
+import { RUN_PYTHON_TOOL } from '../../src/shared/python-tool'
 
-export const SIDE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['bash', 'write', 'edit', CREATE_SCHEDULED_TASK_TOOL])
+export const SIDE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['bash', 'write', 'edit', CREATE_SCHEDULED_TASK_TOOL, RUN_PYTHON_TOOL])
 
 /** 保守的副作用分类。MCP 执行权限另由实际注册工具白名单决定。 */
 export function hasSideEffects(toolName: string): boolean {

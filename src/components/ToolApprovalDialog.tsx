@@ -4,6 +4,7 @@ import { useFeedback } from './feedback/FeedbackProvider'
 import { approvalBrowserOrigin, isBrowserHandoffRequest, isDetectedBrowserHandoff, isMediaResubmissionRequest, OFFICE_TOOL_NAME, toolApprovalSummarySchema, toolApprovalTimeoutMs } from '../shared/tool-approval'
 import type { ToolAuthorizationRequest } from '../shared/types'
 import { conversationScheduleApprovalSchema, CREATE_SCHEDULED_TASK_TOOL, formatScheduleReceiptTime } from '../shared/scheduled-creation'
+import { RUN_PYTHON_TOOL } from '../shared/python-tool'
 
 type ToolApprovalRequest = Pick<ToolAuthorizationRequest, 'toolName' | 'input' | 'registeredTool' | 'summary' | 'expiresAt'>
   & Partial<Pick<ToolAuthorizationRequest, 'requestId' | 'timestamp'>>
@@ -57,6 +58,7 @@ function compositionApproval(input: unknown): string | undefined {
 }
 const messages: Readonly<Record<string, string>> = {
   bash: '允许员工在本机执行命令？此操作可能修改文件或访问系统资源。',
+  [RUN_PYTHON_TOOL]: '允许运行本次生成的 Python 代码？文件访问仍遵循本次任务权限。',
   write: '允许员工创建或覆盖文件？覆盖后原有内容可能无法恢复。',
   edit: '允许员工修改文件内容？',
   media_generate_image: '允许员工生成图片？本次操作可能产生费用。',
@@ -172,6 +174,9 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     let message = Object.hasOwn(messages, toolName) ? messages[toolName] : request.registeredTool === true
       ? name ? `允许本次使用 ${name}？` : '允许本次使用该工具？'
       : `员工请求执行未知工具“${toolName}”，风险无法确认，建议拒绝。是否仍允许？`
+    if (request.toolName === RUN_PYTHON_TOOL && input.success && typeof input.data.purpose === 'string') {
+      message += `\n\n用途：${input.data.purpose.slice(0, 240)}`
+    }
     if (request.toolName === 'mcp__playwright__browser_navigate' && input.success) {
       const destination = approvalBrowserOrigin(input.data.url)
       if (destination) message = `允许打开网页？目标站点：${destination}`

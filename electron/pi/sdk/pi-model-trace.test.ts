@@ -34,6 +34,25 @@ it('redacts structured credential keys without losing token usage diagnostics', 
   assert.match(result, /"max_tokens": 4096/)
   assert.match(result, /"totalTokens": 42/)
 })
+
+it('omits Python source and output from model diagnostics', async () => {
+  const call = { type: 'toolCall' as const, id: 'py-call', name: 'run_python', arguments: { code: 'PRIVATE_SOURCE' } }
+  const assistant = { ...message(''), content: [call], stopReason: 'toolUse' as const }
+  const text = modelPayloadText({ messages: [
+    { role: 'assistant', tool_calls: [{ id: call.id, function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] },
+    { role: 'tool', tool_call_id: call.id, content: 'PRIVATE_OUTPUT' },
+  ] })
+  assert.doesNotMatch(text, /PRIVATE_/)
+  const saved: ModelTraceEntry[] = []
+  async function* source(): AsyncGenerator<AssistantMessageEvent> {
+    yield { type: 'toolcall_delta', contentIndex: 0, partial: assistant, delta: 'PRIVATE_SOURCE' }
+    yield { type: 'toolcall_end', contentIndex: 0, partial: assistant, toolCall: call }
+    yield { type: 'done', reason: 'toolUse', message: assistant }
+  }
+  for await (const event of traceModelStream(source(), async entry => { saved.push(entry) }, async () => {})) void event
+  assert.doesNotMatch(JSON.stringify(saved), /PRIVATE_/)
+  assert.match(JSON.stringify(saved), /run_python/)
+})
 it('does not wait for disk writes before forwarding stream events and records complete snapshots', async () => {
   const saved: ModelTraceEntry[] = []
   let complete = false

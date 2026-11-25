@@ -1,5 +1,5 @@
 import { withApprovedSkillReadPaths } from './run-skill-policy'
-import { runtimeFileToolPolicy, runtimeOriginalFiles } from './file-tool-policy'
+import { runtimeAttachmentReadScope, runtimeFileToolPolicy, runtimeOriginalFiles } from './file-tool-policy'
 import { runSkillDisplay } from '../common/run-skill-display'
 /**
  * 编排式任务的节点执行器。
@@ -721,7 +721,7 @@ export class ArrangementExecutor {
         fullFileAccess: this.options.fullFileAccess, unattended: !!plan.scheduledOrigin, applicationDataRoot: this.options.taskRunStore?.userDataDir,
       }), employee)!,
         readableDeliveryPaths: dependencies.flatMap(dependency => dependency.files.flatMap(file => file.readPath ? [file.readPath] : [])),
-        readableAttachmentPaths: attachmentInputs?.attachments.flatMap(item => item.readPath ? [item.readPath] : []) ?? [],
+        ...runtimeAttachmentReadScope(attachmentInputs?.attachments ?? []),
         originalFiles: undefined as ReturnType<typeof runtimeOriginalFiles>['bindings'] | undefined }
       const originals = runtimeOriginalFiles(toolPolicy, attachmentInputs?.attachments ?? [])
       toolPolicy.originalFiles = originals.bindings

@@ -32,6 +32,7 @@ import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import { runtimeFeedback, runtimeFailureEvent, sanitizeRuntimeErrorEvent } from '../errors/runtime-feedback'
 import { runtimeFailureNoticeSchema } from '../../src/shared/runtime-feedback'
+import { ORIGINAL_DOCUMENT_REPLACE_TOOL } from '../../src/shared/python-tool'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { ArrangementExecutor, type ArrangementExecutionOptions } from './arrangement-executor'
@@ -222,7 +223,7 @@ export class TaskRuntime {
           data: {
             requestId: request.requestId,
             toolName: request.toolName,
-            input: ['file_edit_once', 'file_select_original', 'file_save_as'].includes(request.toolName) ? undefined : request.input,
+            input: ['file_edit_once', 'file_select_original', 'file_save_as', ORIGINAL_DOCUMENT_REPLACE_TOOL].includes(request.toolName) ? undefined : request.input,
           },
         })
         options.onApprovalRequest(request)

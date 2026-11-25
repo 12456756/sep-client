@@ -81,6 +81,9 @@ import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
 import { managedFileTools } from './pi-managed-file-tools'
 import { managedReadTools } from './pi-managed-read-tools'
+import { RUN_PYTHON_TOOL } from '../../../src/shared/python-tool'
+import { bundledPythonExecutable } from '../../runtime/python-runtime'
+import { pythonTool, pythonToolAllowed, pythonToolSummary } from './pi-python-tool'
 import { modelPayloadText, readableTraceValue, traceModelStream } from './pi-model-trace'
 import { fetchWithModelDiagnostics } from './model-transport-diagnostics'
 import { guardGatewayResponse } from './gateway-response'
@@ -472,13 +475,14 @@ export function sessionToolOptions(
   attachmentsEnabled = false,
   localMediaEnabled = false,
   conversationScheduleEnabled = false,
+  pythonEnabled = false,
 ): { tools?: string[]; noTools?: 'all' } {
   if (disableTools) return { noTools: 'all' }
   const allowedTools = toolPolicy && isUnrestrictedToolPolicy(toolPolicy)
     ? [...BUILTIN_TOOL_NAMES]
     : toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
   return { tools: [...new Set([
-    ...allowedTools.filter(name => name !== LOCAL_MEDIA_TOOL && name !== CREATE_SCHEDULED_TASK_TOOL && (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
+    ...allowedTools.filter(name => name !== RUN_PYTHON_TOOL && name !== LOCAL_MEDIA_TOOL && name !== CREATE_SCHEDULED_TASK_TOOL && (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
       (!name.startsWith('media_') || registeredMediaNames.includes(name as MediaToolName)) &&
       (!name.startsWith('video_') || registeredVideoNames.includes(name as VideoToolName))),
     ...(!toolPolicy || allowedTools.length > 0 ? [CURRENT_TIME_TOOL_NAME] : []),
@@ -488,6 +492,7 @@ export function sessionToolOptions(
     ...(attachmentsEnabled ? [CONVERSATION_ATTACHMENT_TOOL] : []),
     ...(localMediaEnabled ? [LOCAL_MEDIA_TOOL] : []),
     ...(conversationScheduleEnabled ? [CREATE_SCHEDULED_TASK_TOOL] : []),
+    ...(pythonEnabled && pythonToolAllowed({ disableTools }) ? [RUN_PYTHON_TOOL] : []),
   ])] }
 }
 
@@ -665,6 +670,20 @@ export function normalizeGatewayPayload(payload: unknown): unknown {
   }
 }
 
+function projectSessionEvent(raw: Record<string, unknown>): unknown {
+  const { message, toolResults } = raw
+  const projectMessage = (value: unknown) => {
+    if (!value || typeof value !== 'object') return value
+    const entry = value as Record<string, unknown>
+    if (entry.role === 'toolResult' && entry.toolName === RUN_PYTHON_TOOL) return { ...entry, content: [], details: undefined }
+    if (entry.role !== 'assistant' || !Array.isArray(entry.content)) return value
+    return { ...entry, content: entry.content.map(part => part?.type === 'toolCall' && part.name === RUN_PYTHON_TOOL
+      ? { ...part, arguments: pythonToolSummary(part.arguments) } : part) }
+  }
+  return redactValue({ ...raw, ...(message ? { message: projectMessage(message) } : {}),
+    ...(Array.isArray(toolResults) ? { toolResults: toolResults.map(projectMessage) } : {}) })
+}
+
 export function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
   const raw = event as unknown as Record<string, unknown>
   switch (event.type) {
@@ -679,7 +698,7 @@ export function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
         data: {
           toolId: raw.toolCallId,
           toolName: raw.toolName,
-          input: redactValue(raw.args),
+          input: raw.toolName === RUN_PYTHON_TOOL ? pythonToolSummary(raw.args) : redactValue(raw.args),
         },
       }
     case 'tool_execution_update': {
@@ -695,7 +714,7 @@ export function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
           toolId: raw.toolCallId,
           toolName: raw.toolName,
           success: raw.isError !== true,
-          error: raw.isError === true ? redactValue(raw.result) : undefined,
+          error: raw.isError === true ? raw.toolName === RUN_PYTHON_TOOL ? 'Python execution failed.' : redactValue(raw.result) : undefined,
           // Tag the failure reason for worker to classify it properly
           failureReason: raw.isError === true ? classifyToolFailure(raw.toolName, raw.result) : undefined,
         },
@@ -733,13 +752,13 @@ export function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
     case 'message_end':
     case 'compaction_start':
     case 'compaction_end':
-      return { type: event.type, data: redactValue(raw) }
+      return { type: event.type, data: projectSessionEvent(raw) }
     default:
       return null
   }
 }
 
-export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): ExtensionFactory[] {
+export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime, pythonExecutable?: string): ExtensionFactory[] {
   const systemPromptTransform: ExtensionFactory = pi => {
     if (config.transformSystemPrompt) {
       pi.on('before_agent_start', event => ({ systemPrompt: config.transformSystemPrompt!(event.systemPrompt) }))
@@ -755,6 +774,11 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
     if (conversationAttachmentsEnabled(config) && config.conversationAttachments) pi.registerTool(conversationAttachmentTool(config.conversationAttachments))
     if (!config.disableTools && config.localMedia) pi.registerTool(localMediaTool(config.localMedia))
     if (!config.disableTools && config.conversationSchedule) pi.registerTool(conversationScheduleToolDefinition(config.conversationSchedule))
+    if (pythonExecutable && pythonToolAllowed(config)) pi.registerTool(pythonTool(config, pythonExecutable))
+    pi.on('tool_result', event => {
+      const details: unknown = event.details
+      if (event.toolName === RUN_PYTHON_TOOL && details && typeof details === 'object' && 'isError' in details && details.isError === true) return { isError: true }
+    })
   }
   const mediaNames = registeredMediaNames(config)
   const videoNames = registeredVideoNames(config)
@@ -815,6 +839,11 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (toolName === RUN_PYTHON_TOOL) {
+        // The sandbox tool validates file declarations and uses the normal host file policies.
+        return pythonExecutable && pythonToolAllowed(config) && pi.getActiveTools().includes(toolName)
+          ? { block: false } : { block: true, reason: 'Python is not available for this run.' }
+      }
       if (toolName === CREATE_SCHEDULED_TASK_TOOL) {
         return !config.disableTools && config.conversationSchedule && pi.getActiveTools().includes(toolName)
           ? { block: false } : { block: true, reason: 'Scheduled creation is not available in this run.' }
@@ -1331,10 +1360,11 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       const browserPrompt = mcp.tools.some(tool => tool.name === 'mcp__playwright__browser_snapshot')
         ? ['浏览器使用规则：', ...PLAYWRIGHT_GUIDELINES, ...(mcp.builtinBrowser ? PLAYWRIGHT_HANDOFF_GUIDELINES : [])].join('\n')
         : undefined
+      const pythonExecutable = pythonToolAllowed(config) ? bundledPythonExecutable() : undefined
       const resourceLoader = new DefaultResourceLoader({
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
-        extensionFactories: buildExtensions(config, mcp),
+        extensionFactories: buildExtensions(config, mcp, pythonExecutable),
         ...(config.disableSkills && !commonPaths.length
           ? { noSkills: true, skillsOverride: () => ({ skills: [], diagnostics: [] }) }
           : employeeSkillLoaderOptions(
@@ -1384,7 +1414,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         resourceLoader,
         sessionManager,
         // Advertise only the task policy's tools so the model cannot select denied tools.
-        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config), conversationAttachmentsEnabled(config), !!config.localMedia, !!config.conversationSchedule),
+        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config), conversationAttachmentsEnabled(config), !!config.localMedia, !!config.conversationSchedule, !!pythonExecutable),
         // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
         settingsManager,
       })
