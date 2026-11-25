@@ -98,7 +98,7 @@ export class FeedbackController {
     return promise
   }
 
-  ask = (input: { message: string; actionLabel: string; key?: string; signal?: AbortSignal }): Promise<boolean> => {
+  ask = (input: { message: string; actionLabel: string; key?: string; signal?: AbortSignal; alternate?: FeedbackConfirmation['alternate'] }): Promise<boolean> => {
     const { signal, ...confirmation } = input
     const promise = this.confirm({ ...confirmation, busyLabel: input.actionLabel })
     const entry = this.queue.find(item => item.promise === promise)

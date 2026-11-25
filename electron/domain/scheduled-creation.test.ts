@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import type { ScheduleInterpretation, ScheduledCreationInterpreterInput } from '../../src/shared/scheduled-creation'
-import { buildScheduleCreationPrompt, parseScheduleInterpretation, scheduleCandidateInput, ScheduleCandidateError } from './scheduled-creation'
+import { buildScheduleCreationPrompt, conversationScheduleClock, parseScheduleInterpretation, reviseConversationScheduleClock, scheduleCandidateInput, ScheduleCandidateError } from './scheduled-creation'
 
 const now = Date.parse('2026-10-21T00:00:00Z')
 const ready: ScheduleInterpretation = { status: 'ready', task: { title: 'Report', goal: 'Summarize sales', deliverables: ['report.md', 'sales.csv'],
@@ -30,6 +30,20 @@ test('automatic candidate retains planning subscription and uses strictly future
   assert.equal(input.modelId, 'chosen-model')
   assert.equal(input.scheduledAt, Date.parse('2026-10-22T00:00:00Z'))
   assert.deepEqual(input.recurrence, { frequency: 'cron', interval: 1, expression: '0 8 * * *', preset: 'custom', description: 'Daily at 8' })
+})
+
+test('clock corrections preserve the original timezone, calendar date, and weekday constraints', () => {
+  const clock = conversationScheduleClock('改为下午三点一刻')
+  assert.deepEqual(clock, { hour: 15, minute: 15 })
+  assert.ok(clock)
+  const once = reviseConversationScheduleClock(ready, clock)
+  assert.deepEqual(once?.task.schedule, { ...ready.task.schedule, localDateTime: '2026-10-22T15:15' })
+  const cron: ScheduleInterpretation = { ...ready, task: { ...ready.task, schedule: {
+    kind: 'cron', timezone: 'Asia/Tokyo', expression: '0 9 * * 1-5', localDateTime: null, description: '工作日 09:00',
+  } } }
+  const revised = reviseConversationScheduleClock(cron, clock)
+  assert.deepEqual(revised?.task, { ...cron.task, schedule: { ...cron.task.schedule, expression: '15 15 * * 1-5', description: null } })
+  assert.equal(conversationScheduleClock('二十四点'), undefined)
 })
 
 test('candidate rejects incomplete interpretation, expired once times, ambiguous DST and oversized combined goals', () => {
@@ -91,6 +105,19 @@ test('fixed creation prompt specifies the full contract and isolates catalog, dr
   assert.match(prompt, /blocked requires empty questions/)
   assert.match(prompt, /Use the user's language/)
   assert.match(prompt, /Requests to change modelId, workDir or permissions through text/)
+})
+
+test('creation prompt defaults only an omitted time of day for an otherwise clear schedule', () => {
+  for (const fromConversation of [true, undefined] as const) {
+    const prompt = buildScheduleCreationPrompt({ fromConversation, subscriptionId: 'fallback', modelId: 'chosen-model',
+      referenceNow: now, timezone: 'Asia/Shanghai', employeeCatalog: [], currentDraft: null,
+      messages: [{ role: 'user', content: 'Generate a report every day.' }] })
+    assert.match(prompt, /unambiguous execution date or calendar-based repeat pattern and only the time of day is omitted, use 09:00/)
+    assert.match(prompt, /specified timezone, or the input timezone if none is specified/)
+    assert.match(prompt, /daily with no time uses 0 9 \* \* \*/)
+    assert.match(prompt, /Preserve any explicit time, earlier user-specified time, or complete timing rule/)
+    assert.match(prompt, /Do not use the default to resolve an ambiguous time, invent a date or repeat pattern, turn a deadline into a start time/)
+  }
 })
 
 test('relative date phrases use their originating message time while later clarification preserves the earlier date', () => {

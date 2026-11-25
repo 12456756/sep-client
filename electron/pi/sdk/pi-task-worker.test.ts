@@ -225,9 +225,26 @@ describe('PiTaskWorker', () => {
     assert.equal(conversationScheduleToolInput.safeParse({ request: '每天早上八点发邮件' }).success, false)
   })
 
+  it('keeps a valid schedule clarification but does not discard blocking reasons or upgrade a draft', () => {
+    const task = { title: '验收文件', goal: '生成验收文件', deliverables: ['验收.md'], execution: { mode: 'auto', subscriptionId: null },
+      schedule: { kind: 'once', timezone: 'Asia/Shanghai', localDateTime: null, expression: null, description: null } }
+    const questions = [{ field: 'schedule', question: '请确认执行日期。' }]
+    const reasons = [{ code: 'MISSING_INFORMATION', message: '未指定执行日期。' }]
+    const input = { action: 'new', candidate: { status: 'needs_input', task, questions, reasons } }
+    assert.deepEqual(conversationScheduleToolInput.parse(input), { ...input, candidate: { ...input.candidate, reasons: [] } })
+    for (const invalid of [
+      { ...input.candidate, questions: [] },
+      { ...input.candidate, status: 'ready' },
+      { ...input.candidate, reasons: [...reasons, { code: 'UNSUPPORTED_SCHEDULE', message: '日程不受支持。' }] },
+    ]) assert.equal(conversationScheduleToolInput.safeParse({ ...input, candidate: invalid }).success, false)
+  })
+
   it('advertises scheduled creation only in eligible sessions and hands its receipt off without a second model request', async () => {
     const root = await makeDirectory()
     const prompt = '每天早上八点生成销售简报'
+    const proposal = { action: 'new', candidate: { status: 'ready', task: { title: '销售简报', goal: '生成销售简报', deliverables: ['简报.md'],
+      execution: { mode: 'auto', subscriptionId: null }, schedule: { kind: 'cron', timezone: 'Asia/Shanghai', localDateTime: null,
+        expression: '0 8 * * *', description: null } }, questions: [], reasons: [] } } as const
     let nextAction: 'reply' | 'schedule' = 'reply'
     const requests: Array<{ tools?: Array<{ function: { name: string; parameters?: unknown } }> }> = []
     let submissions = 0
@@ -239,7 +256,7 @@ describe('PiTaskWorker', () => {
       if (nextAction === 'schedule') {
         nextAction = 'reply'
         writeChunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'schedule-1', type: 'function',
-          function: { name: CREATE_SCHEDULED_TASK_TOOL, arguments: '{}' } }] })
+          function: { name: CREATE_SCHEDULED_TASK_TOOL, arguments: JSON.stringify(proposal) } }] })
         writeChunk(response, {}, 'tool_calls')
       } else writeChunk(response, { role: 'assistant', content: 'Normal answer' }, 'stop')
       response.end('data: [DONE]\n\n')
@@ -249,8 +266,9 @@ describe('PiTaskWorker', () => {
     assert.ok(address && typeof address !== 'string')
     const create = (enabled: boolean) => new PiTaskWorker({
       context: { ...context(root), runId: `schedule-${enabled}`, gatewayUrl: `http://127.0.0.1:${address.port}/v1`,
-        conversationSchedule: enabled ? async () => {
+        conversationSchedule: enabled ? async (_signal, input) => {
           submissions++
+          assert.deepEqual(input, proposal)
           return { status: 'created', id: 'schedule-id', title: '销售简报', nextRunAt: 100, timezone: 'Asia/Shanghai' }
         } : undefined },
       runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
@@ -264,7 +282,10 @@ describe('PiTaskWorker', () => {
       assert.equal(requests.length, 1)
       assert.equal(submissions, 0)
       const scheduleTool = requests[0].tools?.find(tool => tool.function.name === CREATE_SCHEDULED_TASK_TOOL)
-      assert.deepEqual(scheduleTool?.function.parameters, { type: 'object', properties: {}, additionalProperties: false })
+      const parameters = scheduleTool?.function.parameters as { type: string; properties: Record<string, unknown>; additionalProperties: boolean }
+      assert.equal(parameters.type, 'object')
+      assert.deepEqual(Object.keys(parameters.properties), ['action', 'candidate'])
+      assert.equal(parameters.additionalProperties, false)
       await planned.run('Run a previously scheduled job')
       assert.equal(requests.length, 2)
       assert.ok(!requests[1].tools?.some(tool => tool.function.name === CREATE_SCHEDULED_TASK_TOOL))
@@ -284,13 +305,13 @@ describe('PiTaskWorker', () => {
     const shared = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession() } })
     const root = await makeDirectory()
     const base = { ...context(root), getAccessToken: async () => 'fake', authorizeTool: async () => false }
-    const bind = (message: string): NonNullable<PiAgentSessionConfig['conversationSchedule']> => async () => ({ status: 'needs_input', message })
+    const bind = (message: string): NonNullable<PiAgentSessionConfig['conversationSchedule']> => async (_signal, input) => ({ status: 'needs_input', message: `${message}${input?.action ?? ''}` })
     try {
       const session = await shared.open({ ...base, conversationSchedule: bind('first') })
       const call = configs[0].conversationSchedule!
       assert.deepEqual(await call(), { status: 'needs_input', message: 'first' })
       assert.equal(await shared.open({ ...base, conversationSchedule: bind('second') }), session)
-      assert.deepEqual(await call(), { status: 'needs_input', message: 'second' })
+      assert.deepEqual(await call(undefined, { action: 'resume' }), { status: 'needs_input', message: 'secondresume' })
       await shared.open(base)
       await shared.open({ ...base, conversationSchedule: bind('new session') })
       await assert.rejects(call(), /not available/)

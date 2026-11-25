@@ -50,8 +50,8 @@ import { withTimeout } from '../common/with-timeout'
 import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
-import { bindConversationSchedule, type SubmitConversationSchedule } from './conversation-schedule'
-import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL } from '../../src/shared/scheduled-creation'
+import { bindConversationSchedule, conversationScheduleContext, conversationScheduleDrafts, conversationScheduleReceipt, isConversationScheduleTimeReply, precedingConversationUser, type SubmitConversationSchedule } from './conversation-schedule'
+import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL, REVISE_CONVERSATION_SCHEDULE_TIME } from '../../src/shared/scheduled-creation'
 import { redactValue } from '../common/redact'
 import { LOCAL_MEDIA_TOOL } from '../domain/local-media-tools'
 import type { LocalMediaRuntime } from './local-media-runtime'
@@ -76,7 +76,7 @@ export interface ConversationExecutorOptions {
   authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   authorizeModel?: ((modelId: string, preferredSubscriptionId?: string) => Promise<EmployeeRuntimeConfig | null>) | undefined
   workspaceRoot: () => string
-  approvals: Pick<ToolApprovals, 'request'>
+  approvals: Pick<ToolApprovals, 'request' | 'requestDecision'>
   events: Pick<EventPipeline, 'drain' | 'enqueue' | 'forgetRun' | 'pendingSideEffects' | 'takeResponse'>
   workers: Pick<WorkerRegistry, 'forget' | 'isCurrent' | 'register'>
   enqueue: (queued: QueuedRun) => void
@@ -311,18 +311,36 @@ export class ConversationExecutor {
       const describeSkillRead = runSkillDisplay(general ? undefined : employee.runtimeSnapshot)
       let scheduleReceiptReady = false
       const submitSchedule = this.options.submitConversationSchedule
-      const conversationSchedule = submitSchedule && scope && task.workDir && queued.conversation && !task.scheduledOrigin &&
+      const runStore = this.options.taskRunStore
+      const workDir = task.workDir
+      const canSchedule = submitSchedule && scope && workDir && queued.conversation && !task.scheduledOrigin &&
         (!queued.arrangement || queued.arrangement.mode === 'conversation') && toolPolicy?.preset !== 'read-only'
+      const clockReply = !queued.attachmentRefs?.length && isConversationScheduleTimeReply(queued.prompt)
+      const messages = canSchedule && runStore && queued.messageId ? await this.conversationStore(scope, taskId).listMessages() : []
+      const previousUser = precedingConversationUser(taskId, runId, messages)
+      const previousWasClock = !!previousUser && !previousUser.attachmentRefs?.length && isConversationScheduleTimeReply(previousUser.content)
+      const scheduleTimeline = canSchedule && runStore ? async (previousRunId: string) => {
+        const previousRun = await runStore.get(scope, taskId, previousRunId)
+        return previousRun?.outcome === 'completed' ? runStore.events.getTimeline(scope, taskId, previousRunId) : []
+      } : undefined
+      const previousSchedule = scheduleTimeline && previousUser && (clockReply || previousWasClock)
+        ? await conversationScheduleReceipt(previousUser, scheduleTimeline) : undefined
+      const draft = clockReply && previousSchedule?.status === 'needs_input' ? previousSchedule.draft : undefined
+      const conversationSchedule = canSchedule
         ? bindConversationSchedule({
           submit: submitSchedule, taskId, messageId: queued.messageId ? `message:${queued.messageId}` : 'initial', userMessage: queued.prompt,
-          receivedAt: queued.messageReceivedAt ?? (queued.messageId ? startedAt : task.createdAt), modelId: employee.modelId, workDir: task.workDir, signal: mediaSignal,
+          receivedAt: queued.messageReceivedAt ?? (queued.messageId ? startedAt : task.createdAt), modelId: employee.modelId, workDir, signal: mediaSignal, draft,
+          resumeDrafts: scheduleTimeline ? () => conversationScheduleDrafts(taskId, runId, messages, scheduleTimeline) : undefined,
           isCurrent: () => {
             const current = this.options.taskManager.getCurrentUserScope()
-            return !!active && this.options.workers.isCurrent(active) && scope.enterpriseId === current?.enterpriseId && scope.memberId === current.memberId
+            return !!active && active.control === 'none' && this.options.workers.isCurrent(active) && scope.enterpriseId === current?.enterpriseId && scope.memberId === current.memberId
           },
-          approve: input => this.options.approvals.request({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: CREATE_SCHEDULED_TASK_TOOL,
-            input: redactValue({ title: input.name, goal: input.goal, timezone: input.timezone, firstRunAt: input.scheduledAt,
-              recurrence: input.recurrence?.frequency === 'cron' ? input.recurrence.expression : null }) }),
+          approve: async input => {
+            const decision = await this.options.approvals.requestDecision({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: CREATE_SCHEDULED_TASK_TOOL,
+              input: redactValue({ title: input.name, goal: input.goal, timezone: input.timezone, firstRunAt: input.scheduledAt,
+                recurrence: input.recurrence?.frequency === 'cron' ? input.recurrence.expression : null }) })
+            return decision.approved || (decision.reason === REVISE_CONVERSATION_SCHEDULE_TIME ? 'revise_time' : false)
+          },
           receipt: async receipt => {
             await this.options.events.enqueue({ taskId, runId, subscriptionId: queued.subscriptionId, sequence: 0,
               type: CONVERSATION_SCHEDULE_EVENT, occurredAt: Date.now(), data: receipt })
@@ -405,6 +423,7 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
+      if (!draft && previousWasClock && previousSchedule) workerPrompt += conversationScheduleContext(previousSchedule)
       if (toolPolicy?.allowExternalSaveAs) workerPrompt += '\n\n【指定位置保存】用户明确要求将新建文本文件保存到指定路径时，使用 write 传入该路径，由客户端校验权限并在需要时发起系统另存为。以下默认成果目录规则仅在用户未指定保存路径时适用。取消或保存失败时如实说明，不自动改存其他目录。'
       if (artifactDirectory) {
         workerPrompt += `\n\n【普通文件交付】write 工具只接收文件名时，客户端默认保存到本会话成果目录。用户明确指定位置时，传入指定路径，由客户端校验权限并在需要时发起系统另存为；不通过聊天确认权限。修改已有文件时使用实际路径。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
@@ -447,7 +466,8 @@ export class ConversationExecutor {
         return
       }
       diagnosticPhase = 'model-execution'
-      await worker.run(workerPrompt)
+      if (draft && conversationSchedule) await conversationSchedule()
+      else await worker.run(workerPrompt)
       await waitForMedia()
       diagnosticPhase = 'run-persistence'
       await this.options.events.drain(taskId)

@@ -359,7 +359,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       sessionDir: this.options.getSessionDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'sessions'),
       additionalSkillPaths: this.options.additionalSkillPaths ? [...this.options.additionalSkillPaths] : undefined,
       transformSystemPrompt: systemRules ? () => systemRules : scheduledDelivery
-        ? prompt => `${transformArrangementPlannerSystemPrompt(prompt)}\n\n【定时编排补充协议】交付项还可使用以下两个字段。${scheduledDeliveryPlanningRules}`
+        ? prompt => `${transformArrangementPlannerSystemPrompt(prompt)}\n\n【定时编排补充协议】\n${scheduledDeliveryPlanningRules}`
         : transformArrangementPlannerSystemPrompt,
       toolPolicy: {
         ...PLANNER_POLICY,

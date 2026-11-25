@@ -50,7 +50,7 @@ async function conversationFixture() {
     taskManager: base.manager, taskRunStore: base.runs,
     getRefreshToken: () => 'fixture-token', onAuthenticationRequired() {},
     authorizeEmployee: async () => employee, workspaceRoot: () => base.directory,
-    approvals: { request: async () => false }, events, workers,
+    approvals: { request: async () => false, requestDecision: async () => ({ approved: false, reason: 'test' }) }, events, workers,
     enqueue() {}, requestPump() { pumped++ },
     createWorker: () => ({
       async run() { completion = workers.active(base.task.id)?.completion },

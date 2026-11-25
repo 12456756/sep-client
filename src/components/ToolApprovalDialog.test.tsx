@@ -20,7 +20,7 @@ const compiled = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOp
 function mount(toolName: string, input: unknown, expiresAt: number | null = Date.now() + toolApprovalTimeoutMs({ toolName, input }), timestamp?: number,
   details?: Pick<NonNullable<Props['request']>, 'registeredTool' | 'summary'>) {
   const feedback = new FeedbackController()
-  const decisions: boolean[] = []
+  const decisions: Array<boolean | 'revise_time'> = []
   const refs: unknown[] = []
   let cursor = 0
   let effect: () => void | (() => void) = () => undefined
@@ -36,7 +36,7 @@ function mount(toolName: string, input: unknown, expiresAt: number | null = Date
     }, module, module.exports, { setTimeout, clearTimeout })
   const Component = (module.exports as { ToolApprovalDialog: typeof ToolApprovalDialog }).ToolApprovalDialog
   const props: Props = { request: { requestId: 'request', toolName, input, expiresAt: expiresAt ?? undefined, timestamp, ...details },
-    onApprove: () => decisions.push(true), onDeny: () => decisions.push(false) }
+    onApprove: () => decisions.push(true), onDeny: () => decisions.push(false), onReviseScheduleTime: () => decisions.push('revise_time') }
   Component(props)
   let cleanup = effect()
   return { feedback, decisions, replay() { cleanup?.(); cleanup = effect() }, cleanup() { cleanup?.(); feedback.clear() } }
@@ -155,6 +155,22 @@ test('scheduled tasks require explicit confirmation showing the task and first e
     await new Promise<void>(resolve => setImmediate(resolve))
     assert.deepEqual(ui.decisions, [true])
   } finally { ui.cleanup() }
+})
+
+test('requesting a different schedule time uses only the alternate action', async () => {
+  const input = { title: '日报', goal: '生成金价日报', timezone: 'Asia/Shanghai',
+    firstRunAt: Date.parse('2026-11-25T01:00:00Z'), recurrence: '0 9 * * *' }
+  const ui = mount(CREATE_SCHEDULED_TASK_TOOL, input)
+  const expired = mount(CREATE_SCHEDULED_TASK_TOOL, input, Date.now() - 1)
+  try {
+    const dialog = ui.feedback.getSnapshot()!
+    assert.equal(dialog.alternateLabel, '修改时间')
+    await ui.feedback.accept(dialog.id, 'alternate')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(ui.decisions, ['revise_time'])
+    assert.equal(expired.feedback.getSnapshot(), null)
+    assert.deepEqual(expired.decisions, [false])
+  } finally { ui.cleanup(); expired.cleanup() }
 })
 
 test('the schedule approval describes an all-wildcard cron as every minute', () => {

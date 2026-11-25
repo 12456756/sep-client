@@ -6,7 +6,8 @@ import { syncBuiltinESMExports } from 'node:module'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { ScheduleInterpretation, ScheduledCreationRequest } from '../../src/shared/scheduled-creation'
+import { CONVERSATION_SCHEDULE_EVENT, REVISE_CONVERSATION_SCHEDULE_TIME, conversationScheduleReceiptSchema,
+  type ScheduleInterpretation, type ScheduledCreationRequest } from '../../src/shared/scheduled-creation'
 import type { ArrangementWorkPlan, EmployeeWorkPlan } from '../../src/shared/scheduled-tasks'
 import { localDateTime } from '../../src/shared/zoned-time'
 import { ScheduledTaskStore } from '../data/scheduled-task-store'
@@ -27,18 +28,25 @@ import { AppError } from '../errors/app-error'
 import { emptyTextFilenameSchema, type ScheduleInput } from '../../src/shared/scheduled-tasks'
 import { occurrenceId } from '../domain/scheduled-task'
 import { createScheduledEmptyText } from '../data/arrangement-delivery-files'
+import { conversationScheduleToolDefinition } from '../pi/sdk/pi-conversation-schedule'
 
-for (const mode of ['general', 'empty-text'] as const) {
-  test(`manual scheduled ${mode} confirms, runs, records delivery, and does not replay on restart`, { timeout: 30000 }, async t => {
+for (const scenario of ['general', 'empty-text', 'workspace-file'] as const) {
+  const workspaceFile = scenario === 'workspace-file'
+  const mode = scenario === 'empty-text' ? 'empty-text' : 'general'
+  test(workspaceFile ? 'scheduled workspace files reuse one relative name across three distinct daily occurrences'
+    : `manual scheduled ${mode} confirms, runs, records delivery, and does not replay on restart`, { timeout: 30000 }, async t => {
     const root = await mkdtemp(join(tmpdir(), `sep-${mode}-`))
     const shutdown: Array<() => Promise<void>> = []
     t.after(async () => {
       for (const stop of shutdown) await stop()
       await rm(root, { recursive: true, force: true })
     })
-    let now = Date.UTC(2026, 10, 20, 2, 30)
+    let now = Date.UTC(2026, 10, 20, workspaceFile ? 1 : 2, workspaceFile ? 59 : 30)
     const scheduledAt = now + 60000
     const next = scheduledAt + 86400000
+    const filename = workspaceFile ? '定时验收.md' : 'report.txt'
+    const content = workspaceFile ? '通用助手定时执行成功' : ''
+    const workspaceGoal = `在工作目录生成 ${filename}，内容为“${content}”。`
     let calls = 0, planningCalls = 0, authorizeCalls = 0, revoked = false
     let failNodeAuthorization = false, boundAuthorizationCalls = 0
     const grant = async (model: string, expected?: string): Promise<EmployeeRuntimeConfig> => {
@@ -68,8 +76,18 @@ for (const mode of ['general', 'empty-text'] as const) {
           assert.equal(options.context.disableTools, true)
           assert.match(options.context.fixedSystemPrompt ?? '', /通用助手/)
           assert.doesNotMatch(options.context.fixedSystemPrompt ?? '', /员工资料：|判断职责/)
-          const file = { ...employeePlan.deliverables[0]!, contentPolicy: 'empty', contentOutline: ['No content'], acceptanceCriteria: ['Exactly zero bytes'] }
-          await options.onResponseSettled?.({ text: JSON.stringify({ ...employeePlan, deliverables: [file] }), stopReason: 'stop' })
+          const prompt = options.context.fixedSystemPrompt ?? ''
+          if (workspaceFile) {
+            assert.ok(prompt.includes(workspaceGoal))
+            assert.match(prompt, /默认指本次运行的独立工作目录，也是交付清单相对路径的基准/)
+            assert.match(prompt, /不要为默认目录追问或阻塞/)
+            assert.match(prompt, /没有授权时明确指出需要配置，不能静默改存/)
+          }
+          const base = employeePlan.deliverables[0]!
+          const file = workspaceFile ? { ...base, path: filename, format: 'md', contentOutline: [content], acceptanceCriteria: ['正文与要求一致'] }
+            : { ...base, contentPolicy: 'empty', contentOutline: ['No content'], acceptanceCriteria: ['Exactly zero bytes'] }
+          const instruction = workspaceFile ? workspaceGoal : employeePlan.instruction
+          await options.onResponseSettled?.({ text: JSON.stringify({ ...employeePlan, instruction, deliverables: [file] }), stopReason: 'stop' })
         }, async abort() {}, async dispose() {} }),
       })
       const runtime = new TaskRuntime({ taskManager: tasks, taskRunStore: runs, workPlanStore: workPlans, arrangementCheckpointStore: checkpoints,
@@ -84,8 +102,9 @@ for (const mode of ['general', 'empty-text'] as const) {
           assert.doesNotMatch(options.context.fixedSystemPrompt ?? '', /员工资料：/)
           assert.equal(options.context.mediaTools, undefined)
           assert.equal(options.context.videoTools, undefined)
-          await writeFile(join(options.context.workspaceDir, 'report.txt'), Buffer.alloc(0), { flag: 'wx' })
-          await options.onResponseSettled?.({ text: JSON.stringify({ nodeId: 'employee-work', summary: 'Report delivered', finalDeliverables: [{ id: 'report', path: 'report.txt' }] }), stopReason: 'stop' })
+          if (workspaceFile) assert.match(options.context.fixedSystemPrompt ?? '', /定时验收\.md/)
+          await writeFile(join(options.context.workspaceDir, filename), content, { flag: 'wx' })
+          assert.equal(await options.onResponseSettled?.({ text: JSON.stringify({ nodeId: 'employee-work', summary: 'Report delivered', finalDeliverables: [{ id: 'report', path: filename }] }), stopReason: 'stop' }), undefined)
         }, async abort() {}, async dispose() {} }),
       })
       const runner = new ScheduledTaskRunner({ scope: owner, tasks, workPlans, metadata, checkpoints, runs, storage, authorize: forbidden, authorizeModel: grant, now: () => now,
@@ -97,16 +116,15 @@ for (const mode of ['general', 'empty-text'] as const) {
       return { storage, tasks, workPlans, metadata, checkpoints, runs, schedules, runtime, imagePrepare, imageWait }
     }
     const backend = await makeBackend()
-    const common = { name: mode, goal: 'Create a file', workDir: root, timezone: 'Asia/Shanghai', scheduledAt,
-      recurrence: { frequency: 'daily', interval: 1 }, permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } } as const
+    const recurrence: NonNullable<ScheduleInput['recurrence']> = workspaceFile
+      ? { frequency: 'cron', interval: 1, expression: '0 10,11,12 * * *', preset: 'custom' } : { frequency: 'daily', interval: 1 }
+    const common = { name: mode, goal: workspaceFile ? workspaceGoal : 'Create a file', workDir: root, timezone: 'Asia/Shanghai', scheduledAt, recurrence,
+      permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } } as const
     const input: ScheduleInput = mode === 'general' ? { ...common, mode, modelId } : { ...common, mode, emptyText: { naming: 'scheduled' } }
     const definition = await backend.schedules.create(randomUUID(), input)
     await assert.rejects(backend.schedules.confirm(definition.id, definition.revision))
     const planned = await backend.schedules.plan(definition.id, definition.revision)
     await backend.schedules.confirm(planned.id, planned.revision)
-    now = scheduledAt
-    await backend.schedules.scan()
-    const occurrence = (await backend.schedules.list()).occurrences[0]!
     const waitForTerminalWork = async (instance: typeof backend, taskId: string) => {
       const deadline = Date.now() + 10000
       while (Date.now() < deadline) {
@@ -116,13 +134,39 @@ for (const mode of ['general', 'empty-text'] as const) {
       }
       assert.fail(`Timed out waiting for work ${taskId}`)
     }
+    if (workspaceFile) {
+      const directories = new Set<string>()
+      for (const offset of [0, 1, 2]) {
+        now = scheduledAt + offset * 3600000
+        await backend.schedules.scan()
+        const occurrence = (await backend.schedules.list()).occurrences.find(item => item.scheduledAt === now)!
+        assert.ok(occurrence)
+        const task = await waitForTerminalWork(backend, occurrence.taskId)
+        await backend.schedules.scan()
+        assert.equal((await backend.schedules.list()).occurrences.find(item => item.id === occurrence.id)?.status, 'completed')
+        assert.ok(task.workDir)
+        assert.equal(dirname(task.workDir), await fs.realpath(root))
+        directories.add(task.workDir)
+        assert.equal(await readFile(join(task.workDir, filename), 'utf8'), content)
+        const delivery = (await backend.checkpoints.get(scope, task.id))?.state.nodes[0]?.delivery
+        assert.deepEqual(delivery?.finalFiles.map(file => file.path), [filename])
+        assert.equal(delivery?.validationAttempts, 1)
+      }
+      assert.equal(directories.size, 3)
+      assert.equal(calls, 3)
+      assert.equal(planningCalls, 1)
+      await assert.rejects(readFile(join(root, filename)), { code: 'ENOENT' })
+      return
+    }
+    now = scheduledAt
+    await backend.schedules.scan()
+    const occurrence = (await backend.schedules.list()).occurrences[0]!
     const task = await waitForTerminalWork(backend, occurrence.taskId)
     await backend.schedules.scan()
     assert.equal((await backend.schedules.list()).occurrences[0]!.status, 'completed', JSON.stringify(task))
     assert.equal(task.subscriptionId, null)
     assert.deepEqual((await backend.metadata.load(scope, task.id))?.participantSubscriptionIds, [])
-    const filename = mode === 'empty-text' ? '20261120-1031.txt' : 'report.txt'
-    const bytes = await readFile(join(task.workDir!, filename))
+    const bytes = await readFile(join(task.workDir!, mode === 'empty-text' ? '20261120-1031.txt' : filename))
     assert.equal(bytes.length, 0)
     assert.equal(backend.imagePrepare.mock.callCount(), 0)
     assert.equal(backend.imageWait.mock.callCount(), 0)
@@ -232,6 +276,203 @@ const catalog = [
   { subscriptionId: 'analyst', name: 'Analyst', position: 'Research analyst', description: 'Research and verify findings', functionalCategory: 'research', allowedModels: [modelId] },
   { subscriptionId: 'writer', name: 'Writer', position: 'Report writer', description: 'Write reports from evidence', functionalCategory: 'reporting', allowedModels: [modelId] },
 ]
+
+for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-reply', 'contextual-retry', 'contextual-elapsed', 'contextual-ambiguous'] as const) {
+  test(`conversation time continuation (${scenario}) preserves one draft and requires approval`, { timeout: 15000 }, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'csep-conversation-schedule-'))
+    const contextual = scenario.startsWith('contextual-')
+    const now = Date.parse(contextual ? `2026-11-25T06:${scenario === 'contextual-elapsed' ? '41' : '36'}:00Z` : '2026-11-25T00:00:00Z')
+    const storage = new ScheduledTaskStore(root), runs = new TaskRunStore(root)
+    const tasks = new TaskManager(root, null, undefined, runs)
+    const owner = { currentScope: () => tasks.getCurrentUserScope() }
+    const forbidden = () => assert.fail('Scheduled work must not run in the creation test')
+    const authorize = async (subscriptionId: string) => ({ subscriptionId, modelId, gatewayUrl: 'http://gateway.invalid' })
+    const schedules = new ScheduledTaskService({ repository: storage, scope: owner, employee: authorize, planner: async () => employeePlan,
+      runner: { prepare: forbidden, launch: forbidden, inspect: forbidden, cancel: forbidden }, now: () => now })
+    const title = contextual ? '定时验收' : '金价日报'
+    const original = contextual ? '请 Analyst 在北京时间 14:34 执行一次：在工作目录生成 定时验收.md，内容为“通用助手定时执行成功”'
+      : '每天生成金价日报，保存到 report.txt，并注明数据时间和来源。'
+    const taskSpec: ScheduleInterpretation['task'] = { title, goal: original, deliverables: ['report.txt，注明数据时间和来源'],
+      execution: { mode: 'employee', subscriptionId: 'analyst' },
+      schedule: { kind: 'cron', timezone: 'Asia/Shanghai', localDateTime: null, expression: '0 9 * * *', description: '每天 09:00' } }
+    const contextualTask: ScheduleInterpretation['task'] = { title, goal: '在当前工作目录生成定时验收.md，内容为“通用助手定时执行成功”。',
+      deliverables: ['定时验收.md，正文为通用助手定时执行成功'], execution: { mode: 'employee', subscriptionId: 'analyst' },
+      schedule: { kind: 'once', timezone: 'Asia/Shanghai', localDateTime: '2026-11-25T14:40', expression: null, description: null } }
+    const otherRequest = '请在北京时间 15:34 执行一次：在工作目录生成 另一份验收.md。'
+    let interpretations = 0
+    const creations = new ScheduledCreationService({ repository: storage, scope: owner, schedules,
+      catalog: async () => catalog, authorize, now: () => now, validateWorkspace: async dir => { await storage.validateWorkspace(dir) },
+      interpret: async input => {
+        interpretations++
+        assert.equal(contextual, false, 'A structured proposal should not be interpreted again')
+        if (scenario === 'clarify' && interpretations === 2) {
+          assert.deepEqual(input.messages.map(item => item.content), [original, '每天早上 10 点'])
+          assert.equal(input.currentDraft?.task.goal, original)
+          return { status: 'ready', task: { ...taskSpec, title: 'Other task', goal: 'Other goal', deliverables: ['other.txt'],
+            execution: { mode: 'auto', subscriptionId: null }, schedule: { ...taskSpec.schedule, timezone: 'UTC' } }, questions: [], reasons: [] }
+        }
+        assert.equal(interpretations, 1, 'An existing calendar needs only a clock update')
+        assert.deepEqual(input.messages.map(item => item.content), [original])
+        return scenario === 'clarify'
+          ? { status: 'needs_input', task: { ...taskSpec, schedule: { ...taskSpec.schedule, expression: null } },
+            questions: [{ field: 'schedule', question: '请补充时间。' }], reasons: [] }
+          : { status: 'ready', task: taskSpec, questions: [], reasons: [] }
+      } })
+    const workerPrompts: string[] = [], submissions: ScheduledCreationRequest[] = [], approvals: import('../../src/shared/types').ToolAuthorizationRequest[] = []
+    const employee = { subscriptionId: 'analyst', modelId, gatewayUrl: 'http://gateway.invalid' }
+    const runtime = new TaskRuntime({ taskManager: tasks, taskRunStore: runs,
+      resolveEmployee: id => id === employee.subscriptionId ? employee : null, authorizeEmployee: authorize,
+      getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest(request) { approvals.push(request) },
+      submitConversationSchedule: async (request, review) => { submissions.push(request); return creations.submitConversation(request, review) },
+      createWorker: options => ({ async run(prompt) {
+        workerPrompts.push(prompt)
+        const userText = prompt.split('\n', 1)[0]
+        const file = join(options.context.sessionDir, 'fixture.jsonl')
+        await fs.mkdir(options.context.sessionDir, { recursive: true })
+        await writeFile(file, '{}\n', 'utf8')
+        await options.onSessionCreated?.({ sessionId: 'fixture', sessionFile: file })
+        if (contextual) {
+          const tool = conversationScheduleToolDefinition(options.context.conversationSchedule!)
+          if (workerPrompts.length === 1 || userText === otherRequest) {
+            const task = userText === otherRequest ? { ...contextualTask, title: '另一份验收', goal: '生成另一份验收.md', deliverables: ['另一份验收.md'] } : contextualTask
+            await tool.execute('first', { action: 'new', candidate: { status: 'needs_input', task: { ...task,
+              schedule: { ...task.schedule, localDateTime: null } }, questions: [{ field: 'schedule', question: '请确认执行日期。' }],
+              reasons: [{ code: 'MISSING_INFORMATION', message: '已指定北京时间和执行时刻，但未指定执行日期。' }] } }, undefined, undefined, {} as never)
+          } else if ((scenario !== 'contextual-retry' && userText === '今天的14:40') || userText === '创建定时任务') {
+            await tool.execute('resume', { action: 'resume', candidate: { status: 'ready', task: contextualTask, questions: [], reasons: [] } }, undefined, undefined, {} as never)
+          }
+        } else if (workerPrompts.length === 1) assert.ok(await options.context.conversationSchedule?.())
+      }, async abort() {}, async dispose() {} }),
+    })
+    t.after(async () => { creations.stop(); schedules.stop(); await runtime.stopAll(); await rm(root, { recursive: true, force: true }) })
+    await tasks.initialize(); await tasks.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const chat = await tasks.createTask(title, original, root, 'analyst')
+    const wait = async (predicate: () => boolean, label: string) => {
+      const deadline = Date.now() + 4500
+      while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+      assert.ok(predicate(), label)
+    }
+    const idle = () => wait(() => !runtime.hasConversationRun(chat.id), 'conversation should settle')
+    const reply = (prompt: string) => runtime.continueConversation(chat.id, prompt, { messageId: randomUUID() })
+    const receipt = async () => {
+      const history = (await runs.list(scope, chat.id)).sort((a, b) => a.startedAt - b.startedAt)
+      const timeline = await runs.events.getTimeline(scope, chat.id, history.at(-1)!.id)
+      return conversationScheduleReceiptSchema.parse(timeline.filter(event => event.type === CONVERSATION_SCHEDULE_EVENT).at(-1)?.data)
+    }
+    await runtime.executeTask(chat.id, { conversation: true })
+    if (scenario !== 'clarify' && !contextual) {
+      await wait(() => approvals.length === 1, 'original approval should open')
+      assert.equal((approvals[0]!.input as { recurrence: string }).recurrence, '0 9 * * *')
+      assert.equal(runtime.respondToApproval({ requestId: approvals[0]!.requestId, approved: false, reason: REVISE_CONVERSATION_SCHEDULE_TIME }), true)
+    }
+    await idle()
+    const awaiting = await receipt()
+    assert.ok(awaiting.status === 'needs_input' && awaiting.draft)
+    if (contextual) {
+      const initial = (await storage.read(scope)).creations?.find(item => item.id === awaiting.draft!.id)
+      assert.equal(initial?.interpretation?.status, 'needs_input')
+      assert.deepEqual(initial?.interpretation?.reasons, [])
+      assert.equal(awaiting.message, '请确认执行日期。')
+      assert.deepEqual(approvals, [])
+    }
+    assert.deepEqual((await storage.read(scope)).definitions, [])
+    if (contextual) {
+      if (scenario === 'contextual-ambiguous') {
+        await reply(otherRequest); await idle()
+        const before = await storage.read(scope)
+        assert.equal(before.creations?.length, 2)
+        await reply('创建定时任务'); await idle()
+        const result = await receipt()
+        assert.equal(result.status, 'blocked')
+        assert.match(result.message, /多份待补充/)
+        await storage.update(scope, data => { data.creations!.find(item => item.id === awaiting.draft!.id)!.revision++ })
+        const edited = await storage.read(scope)
+        await reply('创建定时任务'); await idle()
+        assert.equal((await receipt()).status, 'blocked', 'A stale revision must not silently select the other draft')
+        assert.deepEqual(await storage.read(scope), edited)
+        assert.deepEqual(approvals, [])
+        return
+      }
+      await reply('今天的14:40')
+      if (scenario === 'contextual-elapsed') {
+        await idle()
+        const result = await receipt()
+        assert.equal(result.status, 'needs_input')
+        assert.equal(result.draft?.id, awaiting.draft.id)
+        assert.match(result.message, /执行时间已过/)
+        assert.deepEqual(approvals, [])
+        assert.deepEqual((await storage.read(scope)).definitions, [])
+        return
+      }
+      if (scenario === 'contextual-retry') {
+        await idle()
+        await reply('你创建定时任务了吗'); await idle()
+        assert.equal(approvals.length, 0, 'A status question must not request approval')
+        assert.equal(submissions.length, 1)
+        await reply('创建定时任务')
+      }
+      await wait(() => approvals.length === 1, 'the assembled task should reach approval')
+      const firstRunAt = Date.parse('2026-11-25T06:40:00Z')
+      assert.deepEqual(approvals[0]!.input, { title, goal: `${contextualTask.goal}\n\nDeliverables:\n- ${contextualTask.deliverables[0]}`,
+        timezone: 'Asia/Shanghai', firstRunAt, recurrence: null })
+      const pending = await storage.read(scope)
+      assert.equal(pending.creations?.length, 1)
+      assert.equal(pending.creations?.[0]?.id, awaiting.draft.id)
+      assert.deepEqual(pending.definitions, [])
+      assert.equal(runtime.respondToApproval({ requestId: approvals[0]!.requestId, approved: true }), true)
+      await idle()
+      assert.equal((await receipt()).status, 'created')
+      const snapshot = await storage.read(scope)
+      assert.equal(snapshot.definitions.length, 1)
+      assert.equal(snapshot.definitions[0]?.enabled, true)
+      assert.equal(snapshot.definitions[0]?.nextRunAt, firstRunAt)
+      assert.equal(snapshot.definitions[0]?.input.workDir, root)
+      assert.equal(interpretations, 0)
+      await reply('创建定时任务'); await idle()
+      assert.equal((await receipt()).status, 'blocked', 'An enabled draft cannot be resumed or duplicated')
+      assert.equal(approvals.length, 1)
+      assert.deepEqual((await storage.read(scope)).definitions, snapshot.definitions)
+      return
+    }
+    if (scenario === 'interrupt') {
+      await reply('先说说什么是金衡盎司。'); await idle()
+      await reply('每天早上 10 点'); await idle()
+      assert.equal(submissions.length, 1)
+      assert.equal(workerPrompts.length, 3)
+      assert.deepEqual((await storage.read(scope)).definitions, [])
+      return
+    }
+    await reply('每天早上 10 点')
+    const approvalCount = scenario === 'clarify' ? 1 : 2
+    await wait(() => approvals.length === approvalCount, 'revised approval should open')
+    assert.equal(workerPrompts.length, 1, 'the general model did not have to select the tool again')
+    assert.equal(submissions[1]!.requestId, awaiting.draft.id)
+    assert.equal(submissions[1]!.expectedRevision, awaiting.draft.revision)
+    assert.deepEqual(approvals.at(-1)!.input, { title, goal: `${original}\n\nDeliverables:\n- ${taskSpec.deliverables[0]}`,
+      timezone: 'Asia/Shanghai', recurrence: '0 10 * * *', firstRunAt: now + 7200000 })
+    assert.deepEqual((await storage.read(scope)).definitions, [])
+    assert.equal(runtime.respondToApproval({ requestId: approvals.at(-1)!.requestId, approved: scenario !== 'deny' }), true)
+    await idle()
+    const snapshot = await storage.read(scope)
+    assert.equal(snapshot.creations?.length, 1)
+    if (scenario === 'deny') {
+      assert.equal((await receipt()).status, 'cancelled')
+      assert.deepEqual(snapshot.definitions, [])
+    } else {
+      assert.equal((await receipt()).status, 'created')
+      assert.equal(snapshot.definitions.length, 1)
+      assert.equal(snapshot.definitions[0]!.enabled, true)
+      assert.equal(snapshot.definitions[0]!.nextRunAt, now + 7200000)
+      await reply('几点执行？'); await idle()
+      assert.match(workerPrompts.at(-1)!, /已启用，首次执行时间：.*10:00/)
+    }
+    const replay = await creations.submitConversation(submissions[1]!, { signal: new AbortController().signal, receivedAt: now, approve: forbidden })
+    assert.equal(replay.status, scenario === 'deny' ? 'cancelled' : 'created')
+    await assert.rejects(creations.submitConversation({ ...submissions[1]!, message: '上午十一点' },
+      { signal: new AbortController().signal, receivedAt: now, approve: forbidden }), (error: unknown) => error instanceof AppError && error.code === 'DRAFT_REVISION_CONFLICT')
+    assert.deepEqual((await storage.read(scope)).definitions, snapshot.definitions)
+  })
+}
 
 for (const mode of ['employee', 'auto'] as const) {
   test(`scheduled creation closes the local loop through actual delivery and restart-safe replay: ${mode}`, { timeout: 30000 }, async t => {

@@ -20,7 +20,7 @@ const log = logger.child('run-approvals')
 
 interface PendingApproval {
   request: ToolAuthorizationRequest
-  resolve: (approved: boolean) => void
+  resolve: (decision: { approved: boolean; reason: string }) => void
   timer: NodeJS.Timeout
   stopVerification?: () => void
 }
@@ -43,8 +43,12 @@ export class ToolApprovals {
     this.onResolved = options.onResolved
   }
 
-  request(input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>, detection?: BrowserHandoffDetection): Promise<boolean> {
-    if (isDetectedBrowserHandoff(input) !== !!detection || detection?.signal.aborted) return Promise.resolve(false)
+  async request(input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>, detection?: BrowserHandoffDetection): Promise<boolean> {
+    return (await this.requestDecision(input, detection)).approved
+  }
+
+  requestDecision(input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>, detection?: BrowserHandoffDetection): Promise<{ approved: boolean; reason: string }> {
+    if (isDetectedBrowserHandoff(input) !== !!detection || detection?.signal.aborted) return Promise.resolve({ approved: false, reason: 'invalid_request' })
     const timeoutMs = this.timeoutMs ?? toolApprovalTimeoutMs(input)
     const timestamp = Date.now()
     const request: ToolAuthorizationRequest = {
@@ -141,7 +145,7 @@ export class ToolApprovals {
     this.pending.delete(requestId)
     clearTimeout(pending.timer)
     pending.stopVerification?.()
-    pending.resolve(approved)
+    pending.resolve({ approved, reason })
     void Promise.resolve(this.onResolved?.(pending.request, approved, reason)).catch(() => undefined)
     return true
   }

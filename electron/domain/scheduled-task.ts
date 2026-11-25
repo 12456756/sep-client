@@ -83,7 +83,14 @@ function requestsWindowsSchedulePathAccess(text: string): boolean {
   return false
 }
 
-export const scheduledDeliveryPlanningRules = '定时交付物默认使用固定相对路径。只有明确要求按 yyyyMMdd-HHmm 命名时，path 的文件名主体才填 yyyyMMdd-HHmm，并设置 scheduledFilenameTime：以原计划时间命名填 scheduled（未指定时默认），明确以实际启动时间命名填 started。只有用户明确要求空白 .txt 文件时才设置 contentPolicy="empty"，表示必须恰好为 0 字节；其他交付物省略该字段。无需员工自行计算交付文件名。'
+export const scheduledDeliveryPlanningRules = [
+  '定时任务的「工作目录」「当前目录」默认指本次运行的独立工作目录，也是交付清单相对路径的基准。客户端在每次启动时分配目录，规划时不需要知道实际路径。',
+  '例如「在工作目录生成 验收.md」的交付路径是「验收.md」。不要把「工作目录」解释为多次运行共用的父目录，不要推断用户禁止独立工作目录，也不要为默认目录追问或阻塞。保留用户明确要求的相对子目录。',
+  '只有用户明确要求其他保存位置时，才区分外部交付：执行仍在独立工作目录内，客户端负责将已验收文件发布到已授权的产出目录。没有授权时明确指出需要配置，不能静默改存或让执行器直接写外部目录。',
+  '定时交付物默认使用固定相对路径。「文件名你自己定」表示规划时选一个合适的固定名称；每次运行使用独立目录，重复运行不是擅自改名或添加时间戳的理由。',
+  '只有明确要求按 yyyyMMdd-HHmm 命名时，path 的文件名主体才填 yyyyMMdd-HHmm，并设置 scheduledFilenameTime：以原计划时间命名填 scheduled（未指定时默认），明确以实际启动时间命名填 started。',
+  '只有用户明确要求空白 .txt 文件时才设置 contentPolicy="empty"，表示必须恰好为 0 字节；其他交付物省略该字段。无需员工自行计算交付文件名。',
+].join('\n')
 
 export function resolveScheduledDeliveryNodes(nodes: readonly ArrangementNode[], times: { scheduledAt: number; startedAt: number; timezone: string }, legacy: boolean): ArrangementNode[] {
   const formatter = new Intl.DateTimeFormat('en', { timeZone: times.timezone, calendar: 'gregory', numberingSystem: 'latn',
@@ -281,7 +288,7 @@ export function buildEmployeePlanningPrompt(input: ScheduleInput, employee: unkn
 ${general ? '不指定员工，不加载员工技能，不拆多员工节点。' : '只根据指定员工的 name、position、functionalCategory、description 判断职责，不得选择其他员工，不拆多员工节点。'}
 ${general ? '缺少执行必需输入' : '需求超出职责或缺少执行必需输入'}时返回 {"status":"blocked","reasons":["具体原因"]}，不得编造资料或承诺未来有权限。
 否则返回严格 JSON：{"status":"ready","objective":"工作目标","instruction":"完整执行指令","expectedOutput":"最终成果","deliverables":[{"id":"report","name":"报告","format":"docx","path":"report.docx","contentOutline":["章节要求"],"acceptanceCriteria":["验收要求"]}]}。
-必须实际生成可用文件，不得仅提供聊天正文。文件路径相对于每次独立成果目录，不得包含绝对路径或 ..。交付物 ID、路径不得重复。
+必须实际生成可用文件，不得仅提供聊天正文。交付路径必须相对于本次运行的独立工作目录，不得包含绝对路径或 ..。交付物 ID、路径不得重复。
 ${scheduledDeliveryPlanningRules}
 优先使用用户要求的格式，未指定时根据目标选择适用格式。不得要求每次执行重新规划。运行时将提供原计划执行时间、时区、实际启动时间；当日、上周等相对时间必须以原计划执行时间和时区为准，在 instruction 中明确时间计算规则。
 ${general ? '不得依赖员工技能、扩大权限或绕过审批。' : 'instruction 必须要求读取员工当前装配的相关 SKILL.md 并按其执行；不得绑定技能版本、扩大职责或绕过审批。'}不明确的非必要信息可以说明合理假设，必要输入缺失则阻塞。

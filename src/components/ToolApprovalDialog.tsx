@@ -12,6 +12,7 @@ interface Props {
   request: ToolApprovalRequest | null
   onApprove: () => void
   onDeny: () => void
+  onReviseScheduleTime?: () => void
 }
 
 const paidQuote = z.object({ mock: z.literal(false), quote: z.object({
@@ -130,7 +131,7 @@ function scheduleRecurrenceLabel(expression: string): string {
 }
 
 /** The main process owns the deadline; queueing never restarts its approval budget. */
-export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
+export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseScheduleTime }: Props) {
   const feedback = useFeedback()
   const lifetime = useRef<{ request: ToolApprovalRequest; token: object } | null>(null)
   const resolved = useRef<ToolApprovalRequest | null>(null)
@@ -144,11 +145,15 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     const deadline = request.expiresAt ?? (request.timestamp ?? Date.now()) + toolApprovalTimeoutMs(request)
     const remaining = deadline - Date.now()
     let settled = false
+    let reviseScheduleTime = false
     const settle = (accepted: boolean) => {
       if (settled || !active) return
       settled = true
       resolved.current = request
-      if (accepted && !approval.signal.aborted && Date.now() < deadline && revision === feedback.getRevision()) onApprove()
+      if (accepted && !approval.signal.aborted && Date.now() < deadline && revision === feedback.getRevision()) {
+        if (reviseScheduleTime && onReviseScheduleTime) onReviseScheduleTime()
+        else onApprove()
+      }
       else onDeny()
     }
     const quote = paidQuote.safeParse(request.input)
@@ -239,6 +244,10 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       key: `approval:${request.requestId ?? request.timestamp ?? deadline}`,
       message: isVideo && quote.success ? `${message} 本次报价 ¥${quote.data.quote.amount}。` : message,
       actionLabel: scheduling ? '创建并启用' : browserHandoff ? '已完成，继续' : resubmission ? '仍然生成' : isVideo && quote.success ? '同意并生成' : '允许',
+      ...(scheduling && onReviseScheduleTime ? { alternate: { label: '修改时间', busyLabel: '修改时间', onConfirm: async () => {
+        reviseScheduleTime = true
+        return { success: true }
+      } } } : {}),
       signal: approval.signal,
     }).then(settle)
     return () => {
@@ -255,6 +264,6 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
         }
       })
     }
-  }, [request, feedback, onApprove, onDeny])
+  }, [request, feedback, onApprove, onDeny, onReviseScheduleTime])
   return null
 }

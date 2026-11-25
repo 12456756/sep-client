@@ -134,9 +134,9 @@ export class SharedPiSession {
     if (!config.conversationSchedule) return config
     const binding = { submit: config.conversationSchedule }
     this.scheduleBinding = binding
-    return { ...config, conversationSchedule: async signal => {
+    return { ...config, conversationSchedule: async (signal, input) => {
       if (this.scheduleBinding !== binding) throw new Error('Scheduled creation is not available in this turn.')
-      return binding.submit(signal)
+      return binding.submit(signal, input)
     } }
   }
 

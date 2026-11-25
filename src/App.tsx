@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoginPage } from './pages/LoginPage';
 import { ClientAppPage } from './pages/ClientAppPage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
+import { REVISE_CONVERSATION_SCHEDULE_TIME } from './shared/scheduled-creation';
 import { InlineFileApprovals, isInlineFileApproval } from './components/enterprise/InlineFileApproval';
 import type { RememberedAccount, ToolAuthorizationRequest } from './shared/types';
 import { useWorkspaceEmployees } from './features/enterprise/use-workspace-employees';
@@ -76,8 +77,8 @@ function AppContent() {
     setToolApprovalRequests(current => removeResolvedBrowserHandoff(current, event).filter(item =>
       !isInlineFileApproval(item.toolName) || !(event.data && typeof event.data === 'object' && 'requestId' in event.data && event.data.requestId === item.requestId)));
   }), []);
-  const resolveApproval = useCallback((requestId: string, approved: boolean) => {
-    window.electronAPI.sendToolApprovalResponse({ requestId, approved, ...(approved ? {} : { reason: 'User denied or request expired' }) });
+  const resolveApproval = useCallback((requestId: string, approved: boolean, reason?: string) => {
+    window.electronAPI.sendToolApprovalResponse({ requestId, approved, ...(approved ? {} : { reason: reason ?? 'User denied or request expired' }) });
     setToolApprovalRequests(current => current.filter(item => item.requestId !== requestId));
   }, []);
 
@@ -139,8 +140,9 @@ function AppContent() {
   </>;
 }
 
-function Approval({ request, onResolve }: { request: ToolAuthorizationRequest; onResolve: (id: string, approved: boolean) => void }) {
+function Approval({ request, onResolve }: { request: ToolAuthorizationRequest; onResolve: (id: string, approved: boolean, reason?: string) => void }) {
   const approve = useCallback(() => onResolve(request.requestId, true), [request.requestId, onResolve]);
   const deny = useCallback(() => onResolve(request.requestId, false), [request.requestId, onResolve]);
-  return <ToolApprovalDialog request={request} onApprove={approve} onDeny={deny} />;
+  const reviseScheduleTime = useCallback(() => onResolve(request.requestId, false, REVISE_CONVERSATION_SCHEDULE_TIME), [request.requestId, onResolve]);
+  return <ToolApprovalDialog request={request} onApprove={approve} onDeny={deny} onReviseScheduleTime={reviseScheduleTime} />;
 }
