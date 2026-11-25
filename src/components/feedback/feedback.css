@@ -6,7 +6,7 @@
 .feedback-corner-close ~ .feedback-copy > :is(.feedback-title, .feedback-sr-only + .feedback-description) { padding-inline-end: 20px; }
 .feedback-corner-close:hover:not(:disabled) { background: color-mix(in srgb, currentColor 10%, transparent); }
 .feedback-corner-close:disabled { opacity: .55; cursor: wait; }
-.feedback-dialog .feedback-corner-close:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+.feedback-dialog .feedback-corner-close:focus-visible { outline: 2px solid currentColor !important; outline-offset: 1px; box-shadow: none !important; }
 .feedback-description { margin: 0; font-size: var(--ent-fs-body); line-height: 1.7; white-space: pre-line; }
 dialog[data-feedback-host]::backdrop { background: transparent !important; }
 .feedback-field { display: grid; gap: 8px; margin-top: 16px; }
@@ -27,13 +27,15 @@ dialog[data-feedback-host]::backdrop { background: transparent !important; }
 .feedback-actions .feedback-primary:hover:not(:disabled) { background: #9e2e2e; }
 .feedback-actions button:disabled { opacity: .55; cursor: wait; }
 .feedback-dialog:has(.feedback-checkbox input:required:enabled:not(:checked)) .feedback-actions button:disabled { cursor: not-allowed; }
-.feedback-actions button:focus-visible { outline: 2px solid #b53636; outline-offset: 3px; }
+/* Keep dialog focus indicators above the global workspace focus styles. */
+.feedback-actions button:focus-visible { outline: 2px solid var(--feedback-action-focus, #b53636) !important; outline-offset: 3px; box-shadow: none !important; }
 .feedback-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 :root[data-theme='dark'] .feedback-dialog, .dark .feedback-dialog { background: #252525; border-color: #454545; color: #f1f1f1; }
 :root[data-theme='dark'] .feedback-actions button:not(.feedback-primary), .dark .feedback-actions button:not(.feedback-primary) { background: #303030; border-color: #555; }
 :root[data-theme='dark'] .feedback-error .feedback-status, .dark .feedback-error .feedback-status { color: #ff8585; }
 :root[data-theme='dark'] .feedback-success .feedback-status, .dark .feedback-success .feedback-status { color: #6dce9a; }
 :root:has(.ent-shell.dark) .feedback-dialog { background: #252525; border-color: #454545; color: #f1f1f1; }
+:root[data-theme='dark'] .feedback-dialog, .dark .feedback-dialog, :root:has(.ent-shell.dark) .feedback-dialog { --feedback-action-focus: #ff8585; }
 :root:has(.ent-shell.dark) .feedback-actions button:not(.feedback-primary) { background: #303030; border-color: #555; }
 :root:has(.ent-shell.dark) .feedback-error .feedback-status { color: #ff8585; }
 :root:has(.ent-shell.dark) .feedback-success .feedback-status { color: #6dce9a; }
