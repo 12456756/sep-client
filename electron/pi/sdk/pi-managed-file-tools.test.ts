@@ -150,6 +150,27 @@ test('a bound original skips the picker but does not skip change approval or acc
   await assert.rejects(save('@original/attachment', 'stale identity'), /original changed/)
 })
 
+for (const operation of ['write', 'edit'] as const) {
+  test(`full local ${operation} of a bound original skips approval but still checks file identity`, async t => {
+    const { root, config } = await fixture(t)
+    const path = join(root, 'selected.md')
+    await writeFile(path, 'before')
+    const binding = (await selectedAttachmentOriginal(path))!
+    const alias = '@original/attachment'
+    const [writeTool, editTool] = managedFileTools({
+      ...config, toolPolicy: { ...config.toolPolicy!, fileAccess: 'local', originalFiles: new Map([[alias, binding]]) },
+      authorizeTool: async () => assert.fail('full local file edits do not require separate approval'),
+    })
+    const change = (oldText: string, newText: string) => operation === 'write'
+      ? writeTool.execute('call', { path: alias, content: newText }, undefined, undefined, {} as never)
+      : editTool.execute('call', { path: alias, edits: [{ oldText, newText }] }, undefined, undefined, {} as never)
+    await change('before', 'after')
+    assert.equal(await readFile(path, 'utf8'), 'after')
+    await assert.rejects(change('after', 'unsafe replacement'), /original changed/)
+    assert.equal(await readFile(path, 'utf8'), 'after')
+  })
+}
+
 test('managed recursive search omits protected matches', async t => {
   const { workspaceDir, config } = await fixture(t)
   await writeFile(join(workspaceDir, '.env'), 'test-token hidden')

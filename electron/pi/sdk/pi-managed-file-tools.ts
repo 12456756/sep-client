@@ -92,7 +92,7 @@ export function managedFileTools(config: PiAgentSessionConfig) {
     }
     if (existing.bytes.equals(bytes)) return path
     const owned = created.get(path)
-    if (selected || (policy.fileAccess !== 'local' && (owned?.dev !== existing.info.dev || owned.ino !== existing.info.ino))) {
+    if (policy.fileAccess !== 'local' && (selected || owned?.dev !== existing.info.dev || owned.ino !== existing.info.ino)) {
       if (policy.unattended) throw new Error('A scheduled task cannot modify a pre-existing file.')
       const approved = await config.authorizeTool({ toolName: 'file_edit_once', input: { path, before: text.decode(existing.bytes), after: value } })
       if (!approved) throw new Error('File change was not approved.')

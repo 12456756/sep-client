@@ -4,9 +4,10 @@ import type { ResolvedAttachmentInput } from '../domain/attachment-input'
 
 export function runtimeOriginalFiles(policy: TaskToolPolicy | undefined, attachments: readonly ResolvedAttachmentInput[]) {
   const editable = !policy || policy.preset === 'read-only' || policy.unattended ? [] : attachments.filter(item => item.originalFile)
+  const approval = policy?.fileAccess === 'local' ? '本次已获完全访问授权，无需另行确认。' : '每次实际改动仍需用户批准。'
   return {
     bindings: new Map(editable.map(item => [`@original/${item.attachmentId}`, item.originalFile!])),
-    prompt: editable.length ? `\n\n【附件原件】仅在用户明确要求修改原件时，使用下列标识作为 edit 或 write 的 path。每次实际改动仍需用户批准；附件快照本身不可修改。\n${JSON.stringify(editable.map(item => ({ name: item.displayName, path: `@original/${item.attachmentId}` })))}` : '',
+    prompt: editable.length ? `\n\n【附件原件】仅在用户明确要求修改原件时，使用下列标识作为 edit 或 write 的 path。${approval}附件快照本身不可修改。\n${JSON.stringify(editable.map(item => ({ name: item.displayName, path: `@original/${item.attachmentId}` })))}` : '',
   }
 }
 

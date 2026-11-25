@@ -22,7 +22,7 @@ export const DEFAULT_CONVERSATION_PERMISSION: ArrangementPermissionPreset = 'wor
 
 export const FULL_FILE_ACCESS_CONFIRMATION: FeedbackConfirmation = {
   title: '确认允许完全访问？',
-  message: '仅本次运行可以读取和修改工作区外的本机文件。若员工请求运行内置 Python，客户端会另行确认。',
+  message: '仅本次运行可以读取和修改本机文件（含附件原件），修改时不再逐次确认。若员工请求运行内置 Python，客户端会另行确认。',
   checkboxLabel: '我了解风险', checkboxRequired: true, actionLabel: '允许完全访问', busyLabel: '确认中',
 };
 
