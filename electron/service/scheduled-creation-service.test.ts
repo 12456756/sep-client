@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import type { ScheduledSnapshot, EmployeeWorkPlan } from '../../src/shared/scheduled-tasks'
-import type { ScheduledCreationInterpreterInput, ScheduledCreationRequest, ScheduleInterpretation } from '../../src/shared/scheduled-creation'
+import { scheduleInterpretationSchema, scheduledCreationSchema, type ScheduledCreationInterpreterInput, type ScheduledCreationRequest, type ScheduleInterpretation } from '../../src/shared/scheduled-creation'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import { WriteChain } from '../data/write-chain'
 import { ScheduledTaskService } from './scheduled-task-service'
@@ -121,17 +121,22 @@ test('an invented assignee or collaboration quotation does not enable work', asy
   }
 })
 
-test('a parsed local action never persists the interpreter subscription or model', async () => {
+test('blank file creation uses the general assistant; legacy interpretations are read-only', async () => {
   const h = harness()
   try {
-    h.setInterpret(async () => ({ ...interpretation, task: { ...interpretation.task, goal: 'Create one empty file', deliverables: ['record.txt'], execution: { mode: 'empty-text', subscriptionId: null, emptyText: { naming: 'fixed', filename: 'record.txt' } } } }))
+    h.setInterpret(async () => ({ ...interpretation, task: { ...interpretation.task, goal: 'Create one empty file', deliverables: ['record.txt'], execution: { mode: 'general', subscriptionId: null } } }))
     const result = await h.creation.submit({ ...request, message: 'Create an empty record.txt daily at nine' })
     assert.equal(result.stage, 'completed')
     const input = h.data.definitions[0].input
-    assert.equal(input.mode, 'empty-text')
+    assert.equal(input.mode, 'general')
+    assert.match(input.goal, /Create one empty file[\s\S]*record\.txt/)
     assert.equal(input.subscriptionId, undefined)
-    assert.equal(input.modelId, undefined)
-    assert.equal(h.plans, 0)
+    assert.equal(input.modelId, 'model')
+    assert.equal(h.plans, 1)
+    const legacy = { ...result.interpretation, task: { ...result.interpretation!.task,
+      execution: { mode: 'empty-text', subscriptionId: null, emptyText: { naming: 'fixed', filename: 'record.txt' } } } }
+    assert.equal(scheduleInterpretationSchema.safeParse(legacy).success, false)
+    assert.equal(scheduledCreationSchema.parse({ ...result, interpretation: legacy }).interpretation?.task.execution.mode, 'empty-text')
   } finally { h.stop() }
 })
 

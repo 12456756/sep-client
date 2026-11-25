@@ -949,6 +949,7 @@ class BackendRuntime {
       arrangementDiagnostics: this.arrangementDiagnostics,
       conversationMedia: this.conversationMedia,
       submitConversationSchedule: (request, review) => this.scheduledCreations.submitConversation(request, review),
+      scheduledTaskManagement: this.scheduledTasks,
       attachmentInputs: this.attachments,
     })
     log.info('task runtime loaded')

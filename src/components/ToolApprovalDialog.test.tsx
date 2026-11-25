@@ -7,6 +7,7 @@ import ts from 'typescript'
 import { FeedbackController } from '../shared/feedback-controller'
 import { OFFICE_TOOL_NAME, removeResolvedBrowserHandoff, toolApprovalTimeoutMs } from '../shared/tool-approval'
 import { CREATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-creation'
+import { DELETE_SCHEDULED_TASK_TOOL, UPDATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-management'
 import { RUN_PYTHON_TOOL } from '../shared/python-tool'
 import type { ToolApprovalDialog } from './ToolApprovalDialog'
 
@@ -51,6 +52,45 @@ test('Python asks for specific consent and shows its purpose without showing sou
     assert.match(dialog?.message ?? '', /汇总 CSV/)
     assert.doesNotMatch(dialog?.message ?? '', /PRIVATE_SOURCE/)
     assert.deepEqual(ui.decisions, [])
+  } finally { ui.cleanup() }
+})
+
+test('schedule approvals show the exact time change or deletion consequences before committing', async () => {
+  const target = { id: 'schedule-id', title: '每日验收', timezone: 'Asia/Shanghai', enabled: true, nextRunAt: Date.parse('2026-11-25T04:00:00Z') }
+  const edit = mount(UPDATE_SCHEDULED_TASK_TOOL, { ...target, newTime: { firstRunAt: Date.parse('2026-11-25T07:40:00Z'),
+    recurrence: { frequency: 'cron', interval: 1, preset: 'custom', expression: '40,43,45 15 * * *' } } })
+  const remove = mount(DELETE_SCHEDULED_TASK_TOOL, target)
+  try {
+    const change = edit.feedback.getSnapshot()!
+    const deletion = remove.feedback.getSnapshot()!
+    assert.match(change.message, /修改定时任务「每日验收」/)
+    assert.match(change.message, /12:00/)
+    assert.match(change.message, /15:40/)
+    assert.match(deletion.message, /保留历史执行记录和产出文件/)
+    assert.equal(change.actionLabel, '保存修改')
+    assert.equal(deletion.actionLabel, '删除')
+    assert.deepEqual(edit.decisions, [])
+    assert.deepEqual(remove.decisions, [])
+    await edit.feedback.accept(change.id)
+    remove.feedback.dismiss(deletion.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(edit.decisions, [true])
+    assert.deepEqual(remove.decisions, [false])
+  } finally { edit.cleanup(); remove.cleanup() }
+})
+
+test('a content-only schedule change shows the full replacement before approval', async () => {
+  const newGoal = `生成 Markdown 报告。\n${'完整要求。'.repeat(1800)}\n保留原来的数据来源。`
+  const ui = mount(UPDATE_SCHEDULED_TASK_TOOL, { id: 'schedule-id', title: '每日验收', timezone: 'Asia/Shanghai', enabled: true, nextRunAt: null, newGoal })
+  try {
+    const dialog = ui.feedback.getSnapshot()!
+    assert.match(dialog.message, /重新生成执行计划/)
+    assert.ok(dialog.message.endsWith(newGoal))
+    assert.equal(dialog.actionLabel, '保存修改')
+    assert.deepEqual(ui.decisions, [])
+    await ui.feedback.accept(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(ui.decisions, [true])
   } finally { ui.cleanup() }
 })
 

@@ -71,8 +71,10 @@ test('new editor defaults to the general assistant, hides the picker for orchest
       input: { mode: 'empty-text', name: 'Existing task', goal: 'Create an empty file', workDir: 'C:/work', scheduledAt, timezone: 'UTC',
         emptyText: { naming: 'fixed', filename: 'existing.txt' }, permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } },
     } }))
-    assert.match(existing, /<option value="empty-text" selected="">/)
-    assert.match(existing, /id="scheduled-filename"[^>]*value="existing\.txt"/)
+    assert.doesNotMatch(existing, /value="empty-text"|scheduled-filename-mode/)
+    assert.match(existing, /title="通用助手" aria-label="执行员工"/)
+    assert.match(existing, /id="scheduled-goal"[^>]*>[^<]*existing\.txt/)
+    assert.match(existing, /空白文本本地动作已停用/)
   } finally {
     hooks.deregister()
     if (previous) Object.defineProperty(globalThis, 'React', previous)

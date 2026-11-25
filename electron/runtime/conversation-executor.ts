@@ -51,8 +51,10 @@ import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, typ
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
 import { bindConversationSchedule, conversationScheduleContext, conversationScheduleDrafts, conversationScheduleReceipt, isConversationScheduleTimeReply, precedingConversationUser, type SubmitConversationSchedule } from './conversation-schedule'
+import { bindConversationScheduleManagement } from './conversation-schedule-management'
+import type { ScheduledTaskService } from '../service/scheduled-task-service'
 import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL, REVISE_CONVERSATION_SCHEDULE_TIME } from '../../src/shared/scheduled-creation'
-import { redactValue } from '../common/redact'
+import { redactText, redactValue } from '../common/redact'
 import { LOCAL_MEDIA_TOOL } from '../domain/local-media-tools'
 import type { LocalMediaRuntime } from './local-media-runtime'
 
@@ -99,6 +101,7 @@ export interface ConversationExecutorOptions {
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   submitConversationSchedule?: SubmitConversationSchedule
+  scheduledTaskManagement?: Pick<ScheduledTaskService, 'list' | 'updateConversationSchedule' | 'pause'>
 }
 
 export class ConversationExecutor {
@@ -313,33 +316,50 @@ export class ConversationExecutor {
       const submitSchedule = this.options.submitConversationSchedule
       const runStore = this.options.taskRunStore
       const workDir = task.workDir
-      const canSchedule = submitSchedule && scope && workDir && queued.conversation && !task.scheduledOrigin &&
+      const canManageSchedules = scope && queued.conversation && !task.scheduledOrigin &&
         (!queued.arrangement || queued.arrangement.mode === 'conversation') && toolPolicy?.preset !== 'read-only'
+      const canSchedule = canManageSchedules && submitSchedule && workDir
       const clockReply = !queued.attachmentRefs?.length && isConversationScheduleTimeReply(queued.prompt)
-      const messages = canSchedule && runStore && queued.messageId ? await this.conversationStore(scope, taskId).listMessages() : []
+      const management = this.options.scheduledTaskManagement
+      const messages = canManageSchedules && (canSchedule || management) && runStore && queued.messageId ? await this.conversationStore(scope, taskId).listMessages() : []
       const previousUser = precedingConversationUser(taskId, runId, messages)
       const previousWasClock = !!previousUser && !previousUser.attachmentRefs?.length && isConversationScheduleTimeReply(previousUser.content)
-      const scheduleTimeline = canSchedule && runStore ? async (previousRunId: string) => {
+      const scheduleTimeline = canManageSchedules && runStore ? async (previousRunId: string) => {
         const previousRun = await runStore.get(scope, taskId, previousRunId)
         return previousRun?.outcome === 'completed' ? runStore.events.getTimeline(scope, taskId, previousRunId) : []
       } : undefined
       const previousSchedule = scheduleTimeline && previousUser && (clockReply || previousWasClock)
         ? await conversationScheduleReceipt(previousUser, scheduleTimeline) : undefined
       const draft = clockReply && previousSchedule?.status === 'needs_input' ? previousSchedule.draft : undefined
+      const isCurrentScheduleTurn = () => {
+        const current = this.options.taskManager.getCurrentUserScope()
+        return !!active && active.control === 'none' && this.options.workers.isCurrent(active) && !!scope && scope.enterpriseId === current?.enterpriseId && scope.memberId === current.memberId
+      }
+      const conversationScheduleManagement = canManageSchedules && management ? bindConversationScheduleManagement({
+        service: management, signal: mediaSignal, isCurrent: isCurrentScheduleTurn,
+        conversationIds: async () => {
+          if (!scheduleTimeline) return new Set<string>()
+          const users = messages.filter(message => message.taskId === taskId && message.role === 'user')
+          const current = users.findIndex(message => message.runId === runId)
+          const receipts = await Promise.all(users.slice(0, current < 0 ? undefined : current).slice(-20).map(message => conversationScheduleReceipt(message, scheduleTimeline)))
+          return new Set(receipts.flatMap(receipt => receipt?.status === 'created' ? [receipt.id] : []))
+        },
+        approve: async (toolName, input) => (await this.options.approvals.requestDecision({ taskId, runId, subscriptionId: queued.subscriptionId,
+          toolName, registeredTool: true, input: { ...input, title: redactText(input.title),
+            ...(input.newTitle === undefined ? {} : { newTitle: redactText(input.newTitle) }),
+            ...(input.newGoal === undefined ? {} : { newGoal: redactText(input.newGoal, Infinity) }) } })).approved,
+      }) : undefined
       const conversationSchedule = canSchedule
         ? bindConversationSchedule({
           submit: submitSchedule, taskId, messageId: queued.messageId ? `message:${queued.messageId}` : 'initial', userMessage: queued.prompt,
           parserSubscriptionId: employee.subscriptionId,
           receivedAt: queued.messageReceivedAt ?? (queued.messageId ? startedAt : task.createdAt), modelId: employee.modelId, workDir, signal: mediaSignal, draft,
           resumeDrafts: scheduleTimeline ? () => conversationScheduleDrafts(taskId, runId, messages, scheduleTimeline) : undefined,
-          isCurrent: () => {
-            const current = this.options.taskManager.getCurrentUserScope()
-            return !!active && active.control === 'none' && this.options.workers.isCurrent(active) && scope.enterpriseId === current?.enterpriseId && scope.memberId === current.memberId
-          },
+          isCurrent: isCurrentScheduleTurn,
           approve: async input => {
             const decision = await this.options.approvals.requestDecision({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: CREATE_SCHEDULED_TASK_TOOL,
               input: redactValue({ title: input.name, goal: input.goal, timezone: input.timezone, firstRunAt: input.scheduledAt,
-                executor: input.mode === 'empty-text' ? '本地动作：创建空白文本（不使用模型）' : input.mode === 'general' ? '通用助手' : input.mode === 'auto' ? '多员工编排' : `指定员工：${input.subscriptionId}`,
+                executor: input.mode === 'general' ? '通用助手' : input.mode === 'auto' ? '多员工编排' : `指定员工：${input.subscriptionId}`,
                 recurrence: input.recurrence?.frequency === 'cron' ? input.recurrence.expression : null }) })
             return decision.approved || (decision.reason === REVISE_CONVERSATION_SCHEDULE_TIME ? 'revise_time' : false)
           },
@@ -371,6 +391,7 @@ export class ConversationExecutor {
           modelTrace: modelEvidence?.record,
           conversationAttachments: attachmentContext?.reader,
           conversationSchedule,
+          conversationScheduleManagement,
           localMedia,
           browserArtifactTaskId,
           browserTaskStateDir: browserArtifactTaskId ? runPaths?.taskDir : undefined,

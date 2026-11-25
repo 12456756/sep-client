@@ -1,10 +1,9 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ScheduledTaskStore } from './scheduled-task-store'
-import { createScheduledEmptyText } from './arrangement-delivery-files'
 import type { ScheduledDefinition } from '../../src/shared/scheduled-tasks'
 
 test('pause metadata survives persistence while legacy definitions remain readable', async () => {
@@ -56,14 +55,11 @@ test('workspace must already exist, be writable and never follow a replaced exec
   } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
-test('uses the real spelling of a Windows execution directory for empty-text runs', { skip: process.platform !== 'win32' }, async t => {
+test('uses the real spelling of a Windows scheduled execution directory', { skip: process.platform !== 'win32' }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'sep-scheduled-case-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
   const actual = join(dir, 'Scheduled-Run')
   await mkdir(actual)
   const workspace = await new ScheduledTaskStore(dir).prepareWorkspace(dir, 'run')
   assert.equal(workspace, await realpath(actual))
-  await createScheduledEmptyText(workspace, 'run', 'empty.txt', () => undefined)
-  assert.equal((await readFile(join(actual, 'empty.txt'))).length, 0)
-  await assert.rejects(createScheduledEmptyText(workspace, 'other', 'empty.txt', () => undefined), { code: 'WORKSPACE_INVALID' })
 })

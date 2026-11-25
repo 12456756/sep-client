@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { isScheduledCreationFinished, isScheduledCreationWorking, scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput, type ConversationScheduleDraft, type ConversationScheduleReceipt, type ScheduleInterpretation } from '../../src/shared/scheduled-creation'
-import type { ScheduleInput } from '../../src/shared/scheduled-tasks'
+import { retiredScheduledExecutionMessage, type ModelScheduledInput } from '../../src/shared/scheduled-tasks'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { occurrenceId, requestsRestrictedWindowsSchedulePath, scheduledPathDenied, scheduledWorkspaceErrorMessage } from '../domain/scheduled-task'
@@ -15,7 +15,7 @@ import type { AttachmentService } from './attachment-service'
 
 interface ConversationCreationReview {
   signal: AbortSignal
-  approve(input: ScheduleInput): Promise<boolean | 'revise_time'>
+  approve(input: ModelScheduledInput): Promise<boolean | 'revise_time'>
   receivedAt: number
   candidate?: ScheduleInterpretation
   resumeDrafts?: ConversationScheduleDraft[]
@@ -170,6 +170,8 @@ export class ScheduledCreationService {
       log.info('scheduled creation progress saved', { creationId: record.id, scheduledTaskId: record.definitionId, stage: record.stage, revision: record.revision })
     }
     try {
+      const stored = scheduleInterpretationSchema.safeParse(record.interpretation)
+      const previousDraft = stored.success ? stored.data : null
       const catalog = z.array(employeeSchema).max(1000).parse(await withTimeout(this.options.catalog(), 30000, 'scheduled-creation-catalog'))
       guard()
       const planningEmployee = catalog.find(item => (!input.parserSubscriptionId || item.subscriptionId === input.parserSubscriptionId) && item.allowedModels.includes(input.modelId))
@@ -178,9 +180,9 @@ export class ScheduledCreationService {
       guard()
       await this.validateWorkspace(input.workDir, 'scheduled-creation-workspace')
       guard()
-      if (record.parsedSubmissionKey !== submissionKey || !record.interpretation) {
+      if (record.parsedSubmissionKey !== submissionKey || !previousDraft) {
         await change(item => { item.stage = 'parsing'; item.error = null })
-        const previous = clock ? record.interpretation : null
+        const previous = clock ? previousDraft : null
         let parsed = proposal ?? (previous && clock ? reviseConversationScheduleClock(previous, clock) : undefined)
         if (!parsed) {
           const timeout = setTimeout(() => controller.abort(), 45000)
@@ -188,7 +190,7 @@ export class ScheduledCreationService {
             const result = await withTimeout(this.options.interpret({ subscriptionId: planningEmployee.subscriptionId, modelId: input.modelId,
               ...(review ? { fromConversation: true } : {}),
               referenceNow: record.referenceNow, timezone: input.timezone, employeeCatalog: catalog,
-              currentDraft: record.interpretation, messages: record.messages }, signal), 45000, 'scheduled-creation-interpretation')
+              currentDraft: previousDraft, messages: record.messages }, signal), 45000, 'scheduled-creation-interpretation')
             guard()
             parsed = scheduleInterpretationSchema.parse(result)
           } finally { clearTimeout(timeout) }
@@ -209,7 +211,7 @@ export class ScheduledCreationService {
         await change(item => { item.interpretation = candidate; item.parsedSubmissionKey = submissionKey; item.stage = candidate.status === 'ready' ? 'planning' : candidate.status })
         if (candidate.status !== 'ready') return record
       }
-      const candidate = record.interpretation!
+      const candidate = scheduleInterpretationSchema.parse(record.interpretation)
       if (candidate.status === 'ready' && requestsRestrictedWindowsSchedulePath(input.permissions,
         ...(review ? record.messages.map(message => message.content) : [input.message]), candidate.task.goal ?? '', ...candidate.task.deliverables)) {
         await change(item => {
@@ -238,7 +240,7 @@ export class ScheduledCreationService {
         })
         return record
       }
-      let configured: ScheduleInput
+      let configured: ModelScheduledInput
       try { configured = scheduleCandidateInput(candidate, { ...input, subscriptionId: selected.subscriptionId }, this.now()) }
       catch (error) {
         if (!(error instanceof ScheduleCandidateError)) throw error
@@ -256,7 +258,11 @@ export class ScheduledCreationService {
       if (definition && record.definitionInput && JSON.stringify(definition.input) !== JSON.stringify(record.definitionInput)) throw new AppError('DRAFT_REVISION_CONFLICT')
       // Keep the original calendar anchor on replay; recomputing it changes the create request.
       const sameSubmission = record.definitionInput && record.definitionSubmissionKey === submissionKey
-      if (sameSubmission && definition) configured = record.definitionInput!
+      if (sameSubmission && definition) {
+        const savedInput = record.definitionInput!
+        if (savedInput.mode === 'empty-text') throw new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage })
+        configured = savedInput
+      }
       if (configured.recurrence?.frequency === 'cron' && configured.scheduledAt <= this.now() && !definition) {
         configured = { ...configured, scheduledAt: cronPreview(configured.recurrence.expression, configured.timezone, this.now(), 1)[0]! }
       }
@@ -300,7 +306,7 @@ export class ScheduledCreationService {
         return record
       }
       guard()
-      const nodes = configured.mode === 'empty-text' || configured.mode === 'general' ? [] : definition.plan?.kind === 'arrangement' ? definition.plan.nodes : [{ subscriptionId: configured.subscriptionId, modelId: configured.modelId }]
+      const nodes = configured.mode === 'general' ? [] : definition.plan?.kind === 'arrangement' ? definition.plan.nodes : [{ subscriptionId: configured.subscriptionId, modelId: configured.modelId }]
       for (const node of nodes) {
         await withTimeout(this.options.authorize(node.subscriptionId, node.modelId), 30000, 'scheduled-creation-final-authorization')
         guard()

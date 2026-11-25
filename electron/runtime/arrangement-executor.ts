@@ -12,9 +12,10 @@ import { randomUUID } from 'node:crypto'
 import { cleanupRun } from './run-cleanup'
 import { WriteChain } from '../data/write-chain'
 import { recoverArrangementSession } from '../data/arrangement-session-recovery'
-import { createScheduledEmptyText, resolveDeliveryFiles, validateDeliveryFiles } from '../data/arrangement-delivery-files'
+import { resolveDeliveryFiles } from '../data/arrangement-delivery-files'
 import { DeliveryExecutionError, deliveryPlanIssues, parseRecordedDeliverySubmission, type DeliveryIssue, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
-import { scheduledCreateOnlyRule, scheduledFileConflict, scheduledSkillUnavailable, ScheduledPathDeniedError, scheduledWorkspaceErrorMessage } from '../domain/scheduled-task'
+import { scheduledCreateOnlyRule, scheduledFileConflict, scheduledSkillUnavailable, ScheduledPathDeniedError } from '../domain/scheduled-task'
+import { retiredScheduledExecutionMessage } from '../../src/shared/scheduled-tasks'
 import { assertScheduledPathAvailable } from '../data/scheduled-output-directory'
 import { ArrangementDeliveryValidation, buildArrangementDeliveryCorrection, resolveArrangementNodeFailure } from './arrangement-delivery-validation'
 import type { TaskExecutionEvent, ArrangementEmployeeReplacement } from '../../src/shared/types'
@@ -249,6 +250,7 @@ export class ArrangementExecutor {
   }
 
   async execute(plan: WorkPlan, taskId: string, arrangementRunId: string, requestedState?: ArrangementExecutionState): Promise<ArrangementExecutionResult> {
+    if (plan.scheduledOrigin?.execution === 'empty-text') throw new DeliveryExecutionError(retiredScheduledExecutionMessage)
     plan = structuredClone(plan)
     this.taskId = taskId
     this.abortRequested = false
@@ -501,9 +503,8 @@ export class ArrangementExecutor {
     saveReplacement: (replacement: ArrangementEmployeeReplacement) => Promise<void>,
   ): Promise<NodeExecutionResult> {
     const nodeRunId = randomUUID()
-    const local = plan.scheduledOrigin?.execution === 'empty-text'
-    const trace = local ? undefined : this.options.createModelTrace?.({ taskId, runId: nodeRunId, title: plan.goal, phase: `节点：${node.title}` })
-    const modelEvidence = this.options.arrangementDiagnostics && !local ? trackModelFailureEvidence(trace) : undefined
+    const trace = this.options.createModelTrace?.({ taskId, runId: nodeRunId, title: plan.goal, phase: `节点：${node.title}` })
+    const modelEvidence = this.options.arrangementDiagnostics ? trackModelFailureEvidence(trace) : undefined
     const modelTrace = modelEvidence?.record ?? trace
     const workspaceDir = plan.workspace.path ?? this.options.workspaceRoot
     const paths = this.options.scope && this.options.taskRunStore
@@ -611,46 +612,6 @@ export class ArrangementExecutor {
           }
         }
 
-      }
-      if (local) {
-        const file = node.deliverables?.[0]
-        if (!this.options.scope || !this.options.taskRunStore || !paths || !file || node.deliverables?.length !== 1
-          || file.contentPolicy !== 'empty' || file.format !== 'txt' || file.artifact) throw new DeliveryExecutionError('本地空白文本交付配置无效。')
-        await this.options.taskRunStore.create(this.options.scope, { taskId, runId: nodeRunId, subscriptionId: node.subscriptionId,
-          modelId: node.modelId, runtimeKey: 'builtin:empty-text', workspaceDir, prompt: node.instruction, arrangementNodeId: node.id })
-        created = true
-        startedAt = new Date().toISOString()
-        await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_node_started', arrangementRunId, nodeId: node.id,
-          nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt, data: { ...metadata(), prompt: node.instruction, status: 'RUNNING' } })
-        try {
-          await createScheduledEmptyText(workspaceDir, plan.scheduledOrigin!.occurrenceId, file.path, checkControl)
-        } catch (error) {
-          checkControl()
-          const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : ''
-          const workspaceMessage = scheduledWorkspaceErrorMessage(code)
-          const issue: DeliveryIssue = { code: code === 'EEXIST' ? 'FILE_ALREADY_EXISTS' : workspaceMessage ? code : 'LOCAL_FILE_CREATION_FAILED',
-            path: file.path, deliverableId: file.id, message: code === 'EEXIST' ? '同名文件已存在，未覆盖。'
-              : workspaceMessage ?? '无法创建空白文本，请检查成果目录、权限和磁盘状态。' }
-          await saveDelivery({ ...delivery, issues: [issue], firstIssue: issue, correctionStopped: true })
-          throw new DeliveryExecutionError(issue.message)
-        }
-        checkControl()
-        const summary = '已创建并验收 0 字节文本文件。'
-        const result = await validateDeliveryFiles(workspaceDir, node, { nodeId: node.id, summary,
-          finalDeliverables: [{ id: file.id, path: file.path }] }, nodeRunId, signal, { taskDirectory: paths.taskDir })
-        checkControl()
-        delivery = { validationAttempts: 1, issues: result.ok ? [] : result.issues, finalFiles: result.ok ? result.files : [],
-          ...(result.ok ? { summary } : { firstIssue: result.issues[0], correctionStopped: true }) }
-        await saveDelivery(delivery)
-        await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_delivery_checked', arrangementRunId, nodeId: node.id, nodeRunId,
-          subscriptionId: node.subscriptionId, data: { validationAttempts: 1, accepted: result.ok, issues: delivery.issues } })
-        if (!result.ok) throw new DeliveryExecutionError(result.issues[0]?.message ?? '验收未通过')
-        output = summary
-        checkControl()
-        await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
-        return { ok: true, nodeId: node.id, output, completion: { type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id,
-          nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
-          data: { ...metadata(), output, finalDeliverables: delivery.finalFiles, status: 'COMPLETED', completedAt: new Date().toISOString() } } }
       }
       const recovery = this.options.scope && this.options.taskRunStore
         ? await recoverArrangementSession(this.options.taskRunStore, this.options.scope, taskId, node, checkpoint, workspaceDir)

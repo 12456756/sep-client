@@ -33,6 +33,7 @@ export function scheduledHomeGroups(definitions: ScheduledDefinition[], occurren
 type ScheduledTaskAction = 'edit' | 'pause' | 'resume' | 'history' | 'reschedule' | 'archive'
 
 export function canResumeSchedule(definition: ScheduledDefinition, seenTime: boolean, now = Date.now()): boolean {
+  if (definition.input.mode === 'empty-text') return false
   const frequency = definition.input.recurrence?.frequency ?? 'once'
   return Boolean(definition.plan && (frequency !== 'once' || (!seenTime && definition.input.scheduledAt > now)))
 }
@@ -48,7 +49,7 @@ export function scheduledTaskActions(definition: ScheduledDefinition, runs: read
     ? [{ id: 'history' }, { id: 'reschedule', disabledReason: editReason }]
     : [{ id: 'edit', disabledReason: editReason }]
   if (definition.enabled) actions.push({ id: 'pause', disabledReason: busyReason })
-  else if (definition.pausedAt != null) {
+  else if (definition.pausedAt != null && definition.input.mode !== 'empty-text') {
     const seenTime = runs.some(run => run.scheduledAt === definition.input.scheduledAt)
     actions.push({ id: 'resume', disabledReason: editReason ?? (canResumeSchedule(definition, seenTime, now) ? undefined
       : definition.plan ? '请先将任务改为未来的执行时间。' : '请先生成并确认工作计划。') })

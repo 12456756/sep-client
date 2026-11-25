@@ -67,6 +67,7 @@ export interface PiAgentSessionConfig {
   videoTools?: import('../../domain/video-tools').VideoHostTools
   conversationAttachments?: import('../../domain/attachment-input').ConversationAttachmentReader
   conversationSchedule?: import('./pi-conversation-schedule').ConversationScheduleTool
+  conversationScheduleManagement?: import('../../../src/shared/scheduled-management').ConversationScheduleManagement
   localMedia?: import('../../domain/local-media-tools').LocalMediaTool
   /** Host-only conversation ID, bound after validating the conversation result directory. */
   browserArtifactTaskId?: string

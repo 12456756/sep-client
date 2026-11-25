@@ -115,6 +115,7 @@ export interface TaskRuntimeOptions {
   arrangementDiagnostics?: import('../service/arrangement-diagnostic-service').WorkFailureCapture
   conversationMedia?: ConversationMediaPort
   submitConversationSchedule?: ConversationExecutorOptions['submitConversationSchedule']
+  scheduledTaskManagement?: ConversationExecutorOptions['scheduledTaskManagement']
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   findEmployeeReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
@@ -269,6 +270,7 @@ export class TaskRuntime {
       video: options.conversationVideo ?? this.video,
       conversationMedia: options.conversationMedia,
       submitConversationSchedule: options.submitConversationSchedule,
+      scheduledTaskManagement: options.scheduledTaskManagement,
       workDiagnostics: this.arrangementDiagnostics,
       createModelTrace: this.createModelTrace,
       knowledgeSearch: this.knowledgeSearch,
@@ -336,6 +338,7 @@ export class TaskRuntime {
       throw new Error('Terminal tasks cannot be executed.')
     }
     const arrangement = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
+    if (arrangement?.scheduledOrigin?.execution === 'empty-text') throw new AppError('INVALID_STATE')
     if (arrangement?.scheduledOrigin?.execution && (task.scheduledOrigin?.occurrenceId !== arrangement.scheduledOrigin.occurrenceId
       || task.scheduledOrigin.definitionId !== arrangement.scheduledOrigin.definitionId || !options.beforeAdmission)) throw new AppError('INVALID_STATE')
     const taskKnowledge = arrangement?.mode === 'conversation'
@@ -369,13 +372,12 @@ export class TaskRuntime {
           (checkpoint?.state.status === 'completed' ? activePlan.nodes[0] : undefined)
         let primarySubscriptionId = primaryNode?.subscriptionId ?? task.subscriptionId
         if (!primarySubscriptionId) throw new Error('Select a silicon employee before executing the task.')
-        const local = arrangement.scheduledOrigin?.execution === 'empty-text'
         const general = arrangement.scheduledOrigin?.execution === 'general'
-        let employee = local ? null : general ? await this.authorizeScheduledModel(primaryNode?.modelId ?? '', primarySubscriptionId) : arrangement.scheduledOrigin
+        let employee = general ? await this.authorizeScheduledModel(primaryNode?.modelId ?? '', primarySubscriptionId) : arrangement.scheduledOrigin
           ? await this.authorizeScheduledEmployee(primarySubscriptionId, primaryNode?.modelId ?? '')
           : await this.authorizeEmployee(primarySubscriptionId)
         check()
-        if (!employee && primaryNode && !local && !general) {
+        if (!employee && primaryNode && !general) {
           const search = await this.findEmployeeReplacement?.({ taskId,
             planningId: randomUUID(), taskGoal: activePlan.goal, node: primaryNode, signal: controller.signal,
           })
@@ -420,7 +422,7 @@ export class TaskRuntime {
             }
           }
         }
-        if (!employee && !local) throw new AppError('INVALID_STATE')
+        if (!employee) throw new AppError('INVALID_STATE')
         check()
         if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
         const runId = randomUUID()

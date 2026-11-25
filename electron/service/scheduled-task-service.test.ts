@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import type { ArrangementWorkPlan, ScheduledSnapshot, ScheduleInput, EmployeeWorkPlan } from '../../src/shared/scheduled-tasks'
 import { ScheduledTaskService } from './scheduled-task-service'
-import type { ScheduledRepository } from '../data/scheduled-task-store'
+import { ScheduledTaskStore, type ScheduledRepository } from '../data/scheduled-task-store'
 import type { ScheduledServiceOptions } from './scheduled-task-service'
 import { BeforeScheduledAdmissionError, type ScheduledRunnerPort } from './scheduled-dispatcher'
 import { setLogSink, type LogRecord } from '../common/logger'
@@ -10,11 +10,59 @@ import { toEnvelope } from '../errors/error-mapper'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { bindConversationScheduleManagement } from '../runtime/conversation-schedule-management'
+import { DELETE_SCHEDULED_TASK_TOOL, UPDATE_SCHEDULED_TASK_TOOL, type ScheduleManagementApproval } from '../../src/shared/scheduled-management'
 
 const input: ScheduleInput = { name: 'Report', goal: 'Produce report', subscriptionId: 'sub', modelId: 'model', workDir: 'D:/reports', scheduledAt: 2000, timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
 const plan: EmployeeWorkPlan = { status: 'ready', objective: 'Report', instruction: 'Produce report', expectedOutput: 'File', deliverables: [{ id: 'file', name: 'Report', format: 'md', path: 'report.md', contentOutline: ['Summary'], acceptanceCriteria: ['Sources'] }] }
 
 const timeRequest = { requestId: 'de60b42c-7871-4ff3-a618-aebf2e51c94a', subscriptionId: 'sub', modelId: 'model', timezone: 'UTC', description: 'Every day at 9' }
+
+test('retires stored local schedules without discarding records or blocking ordinary schedules', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-retired-schedule-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const scope = { memberId: 'm', enterpriseId: 'e' }
+  const store = new ScheduledTaskStore(root)
+  const { subscriptionId: _subscription, modelId: _model, ...base } = input
+  const legacy: ScheduleInput = { ...base, workDir: root, mode: 'empty-text', emptyText: { naming: 'fixed', filename: 'empty.txt' },
+    permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
+  const admitted: string[] = []
+  const h = harness({ async prepare(run) { admitted.push(run.definitionId) } }, { repository: store })
+  t.after(() => h.service.stop())
+  const normal = await h.service.create('normal', { ...input, workDir: root })
+  const planned = await h.service.plan(normal.id, normal.revision)
+  await h.service.confirm(planned.id, planned.revision)
+  await store.update(scope, data => {
+    data.definitions.push({ id: 'legacy', revision: 1, enabled: true, deleted: false, nextRunAt: 3000,
+      input: legacy, plan, planInputKey: null, createdAt: 1000, updatedAt: 1000 })
+    const run = { definitionId: 'legacy', revision: 1, scheduledAt: 1500, input: legacy, plan,
+      firstEligibleAt: 1500, startDeadline: 4000, startedAt: null, finishedAt: null, nextRetryAt: null, error: null, attempts: [], stopReason: null }
+    data.occurrences.push({ ...run, id: 'old-pending', taskId: 'old-pending-task', status: 'pending' },
+      { ...run, id: 'old-complete', taskId: 'old-complete-task', scheduledAt: 1200, startedAt: 1200, finishedAt: 1300, status: 'completed' })
+  })
+  await assert.rejects(h.service.create('legacy-new', legacy), { code: 'INVALID_ARGUMENT' })
+  await assert.rejects(h.service.edit('legacy', 1, legacy), { code: 'INVALID_ARGUMENT' })
+  await assert.rejects(h.service.plan('legacy', 1), { code: 'INVALID_STATE' })
+  await assert.rejects(h.service.confirm('legacy', 1), { code: 'INVALID_STATE' })
+  h.advance(2000)
+  await h.service.scan()
+  const snapshot = await store.read(scope)
+  const retired = snapshot.definitions.find(item => item.id === 'legacy')!
+  assert.equal(retired.enabled, false)
+  assert.equal(retired.nextRunAt, null)
+  assert.deepEqual(retired.input, legacy)
+  assert.equal(snapshot.occurrences.find(run => run.id === 'old-complete')?.status, 'completed')
+  assert.equal(snapshot.occurrences.find(run => run.id === 'old-pending')?.status, 'cancelled')
+  assert.equal(snapshot.occurrences.find(run => run.id === 'old-pending')?.error?.code, 'SCHEDULED_EXECUTION_RETIRED')
+  assert.deepEqual(admitted, [normal.id])
+  h.advance(3000)
+  await h.service.scan()
+  assert.equal((await store.read(scope)).occurrences.filter(run => run.definitionId === 'legacy').length, 2)
+  const updated = await h.service.edit(retired.id, retired.revision, { ...base, mode: 'general', modelId: 'model', workDir: root, scheduledAt: 4000 })
+  assert.equal(updated.id, retired.id)
+  assert.equal(updated.input.mode, 'general')
+  assert.equal(updated.enabled, false)
+})
 
 test('stopping during scheduler recovery cannot restart its timer', async () => {
   let release!: (data: ScheduledSnapshot) => void
@@ -117,6 +165,148 @@ test('only the native selection can authorize a scheduled output directory', asy
   const created = await h.service.create('chosen', raw, undefined, async path => { assert.equal(path, first); return path })
   assert.equal(created.input.outputDirectory?.path, first)
   assert.notEqual(created.input.outputDirectory?.identity, raw.outputDirectory.identity)
+})
+
+test('conversation rescheduling updates the original task atomically without changing what it runs', async t => {
+  const h = harness()
+  t.after(() => h.service.stop())
+  const created = await h.service.create('reschedule', input)
+  const planned = await h.service.plan(created.id, created.revision)
+  const active = await h.service.confirm(planned.id, planned.revision)
+  const now = Date.parse('2026-11-25T07:41:00Z')
+  const expression = '40,43,45 15 * * *'
+  h.advance(now)
+  let approval: ScheduleManagementApproval | undefined
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal, now: () => now,
+    isCurrent: () => true, conversationIds: async () => new Set([active.id]),
+    approve: async (tool, value) => { assert.equal(tool, UPDATE_SCHEDULED_TASK_TOOL); approval = value; assert.deepEqual(h.data.definitions, [active]); return true } })
+  const receipt = await manage({ tool: UPDATE_SCHEDULED_TASK_TOOL, input: { target: { fromConversation: true }, time: { kind: 'cron', expression } } })
+  const scheduledAt = Date.parse('2026-11-25T07:43:00Z')
+  const recurrence = { frequency: 'cron', interval: 1, expression, preset: 'custom' }
+  assert.deepEqual(approval?.newTime, { firstRunAt: scheduledAt, recurrence })
+  assert.deepEqual(receipt, { status: 'updated', id: active.id, title: input.name, enabled: true, nextRunAt: scheduledAt,
+    timezone: input.timezone, recurrence })
+  assert.deepEqual(h.data.definitions, [{ ...active, revision: active.revision + 1, updatedAt: now, nextRunAt: scheduledAt,
+    input: { ...active.input, scheduledAt, recurrence } }])
+  assert.equal(h.plans, 1)
+  assert.equal(h.starts, 0)
+})
+
+test('conversation task mutations require a unique target and approval bound to its revision and turn', async t => {
+  const h = harness()
+  t.after(() => h.service.stop())
+  const first = await h.service.create('first-match', input)
+  const other = await h.service.create('other-match', input)
+  let current = true, approvals = 0
+  let confirm: () => Promise<boolean> = async () => false
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal, now: () => 1000,
+    isCurrent: () => current, conversationIds: async () => new Set(), approve: async () => { approvals++; return confirm() } })
+  assert.equal((await manage({ tool: DELETE_SCHEDULED_TASK_TOOL, input: { target: { title: input.name } } })).status, 'needs_input')
+  assert.equal((await manage({ tool: DELETE_SCHEDULED_TASK_TOOL, input: { target: { fromConversation: true } } })).status, 'needs_input')
+  assert.equal(approvals, 0)
+
+  const deletion = { tool: DELETE_SCHEDULED_TASK_TOOL, input: { target: { id: first.id } } } as const
+  assert.equal((await manage(deletion)).status, 'cancelled')
+  assert.deepEqual(h.data.definitions, [first, other])
+  confirm = async () => { await h.service.pause(first.id, first.revision); return true }
+  assert.equal((await manage(deletion)).status, 'failed')
+  assert.equal(h.data.definitions[0].deleted, false)
+
+  confirm = async () => { current = false; return true }
+  await assert.rejects(manage(deletion), { code: 'AUTH_REQUIRED' })
+  assert.equal(h.data.definitions[0].deleted, false)
+  current = true
+  confirm = async () => true
+  assert.equal((await manage(deletion)).status, 'deleted')
+  assert.equal(h.data.definitions[0].deleted, true)
+  assert.deepEqual(h.data.definitions[1], other)
+})
+
+test('a content edit re-plans only after consent and the next occurrence uses the replacement plan', async t => {
+  const goal = 'Produce the report as summary.md and include its sources'
+  const replacement = { ...plan, instruction: goal, deliverables: [{ ...plan.deliverables[0]!, path: 'summary.md' }] }
+  let calls = 0, approved = false, blocked = false
+  const h = harness({}, { planner: async value => {
+    calls++
+    if (value.goal === input.goal) return plan
+    assert.equal(value.goal, goal)
+    assert.equal(value.workDir, input.workDir)
+    return blocked ? { status: 'blocked', reasons: ['Model cannot plan this edit'] } : replacement
+  } })
+  t.after(() => h.service.stop())
+  const draft = await h.service.create('edit-content', input)
+  const planned = await h.service.plan(draft.id, draft.revision)
+  const active = await h.service.confirm(planned.id, planned.revision)
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal,
+    isCurrent: () => true, conversationIds: async () => new Set([active.id]), approve: async (_tool, value) => {
+      assert.equal(value.newGoal, goal)
+      assert.deepEqual(h.data.definitions, [active])
+      return approved
+    } })
+  const request = { tool: UPDATE_SCHEDULED_TASK_TOOL, input: { target: { id: active.id }, goal } } as const
+  assert.equal((await manage(request)).status, 'cancelled')
+  assert.equal(calls, 1)
+  approved = true; blocked = true
+  const failure = await manage(request)
+  assert.equal(failure.status, 'failed')
+  assert.match(failure.message, /原任务未修改/)
+  assert.deepEqual(h.data.definitions, [active])
+  assert.equal(calls, 2)
+  blocked = false
+  assert.equal((await manage(request)).status, 'updated')
+  const revised = h.data.definitions[0]!
+  assert.equal(revised.id, active.id)
+  assert.equal(revised.enabled, active.enabled)
+  assert.equal(revised.nextRunAt, active.nextRunAt)
+  assert.deepEqual(revised.input, { ...active.input, goal })
+  assert.notEqual(revised.planInputKey, active.planInputKey)
+  assert.deepEqual(revised.plan, replacement)
+  assert.equal(h.starts, 0)
+  h.advance(input.scheduledAt)
+  await h.service.scan()
+  assert.equal(h.data.occurrences[0]?.input.goal, goal)
+  assert.deepEqual(h.data.occurrences[0]?.plan, replacement)
+})
+
+test('a paused task stays paused and a cancelled re-plan cannot write the revised goal', async t => {
+  let finish!: () => void
+  const h = harness({}, { planner: async (value, _employee, signal) => value.goal === input.goal ? plan : new Promise(resolve => {
+    finish = () => { assert.equal(signal.aborted, true); resolve(plan) }
+  }) })
+  t.after(() => h.service.stop())
+  const draft = await h.service.create('cancel-edit-content', input)
+  const planned = await h.service.plan(draft.id, draft.revision)
+  const active = await h.service.confirm(planned.id, planned.revision)
+  await h.service.pause(active.id, active.revision)
+  const paused = h.data.definitions[0]!
+  const controller = new AbortController()
+  const pending = h.service.updateConversationSchedule(paused.id, paused.revision, { goal: 'A different report' }, () => {}, controller.signal)
+  const rejected = assert.rejects(pending, { code: 'PLANNING_FAILED' })
+  for (let i = 0; !finish && i < 20; i++) await new Promise(resolve => setImmediate(resolve))
+  assert.ok(finish)
+  controller.abort()
+  finish()
+  await rejected
+  assert.deepEqual(h.data.definitions, [paused])
+  assert.equal(h.starts, 0)
+})
+
+test('conversation update and delete refuse active occurrences and a time that elapsed during approval', async t => {
+  const h = harness()
+  t.after(() => h.service.stop())
+  const created = await h.service.create('running-schedule', input)
+  const planned = await h.service.plan(created.id, created.revision)
+  const enabled = await h.service.confirm(planned.id, planned.revision)
+  const change = { title: 'Revised schedule', timing: { scheduledAt: 1500, recurrence: { frequency: 'once', interval: 1 } } } as const
+  h.advance(1500)
+  await assert.rejects(h.service.updateConversationSchedule(enabled.id, enabled.revision, change, () => {}), { code: 'INVALID_ARGUMENT' })
+  h.advance(2000)
+  await h.service.scan()
+  const snapshot = await h.service.list()
+  assert.equal(snapshot.occurrences.length, 1)
+  await assert.rejects(h.service.updateConversationSchedule(enabled.id, enabled.revision, { title: change.title }, () => {}), { code: 'INVALID_STATE' })
+  await assert.rejects(h.service.pause(enabled.id, enabled.revision, true, () => {}), { code: 'INVALID_STATE' })
+  assert.deepEqual(await h.service.list(), snapshot)
 })
 
 test('create, plan, confirm, repeated scans and restart do not duplicate a scheduled launch', async () => {

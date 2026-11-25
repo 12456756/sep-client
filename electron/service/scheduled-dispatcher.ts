@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { ScheduledIssue, ScheduledOccurrence, ScheduledRunStatus } from '../../src/shared/scheduled-tasks'
+import { retiredScheduledExecutionMessage } from '../../src/shared/scheduled-tasks'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { classifyScheduledError } from '../domain/scheduled-task'
@@ -73,6 +74,10 @@ export class ScheduledDispatcher {
     data = await this.repository.read(scope)
     for (const run of data.occurrences.filter(item => ['pending', 'waiting_retry', 'waiting_auth', 'blocked'].includes(item.status))) {
       guard()
+      if (run.input.mode === 'empty-text') {
+        await this.finish(scope, run.id, 'cancelled', { code: 'SCHEDULED_EXECUTION_RETIRED', message: retiredScheduledExecutionMessage, action: 'blocked' })
+        continue
+      }
       if (this.now() >= run.startDeadline) { await this.finish(scope, run.id, 'failed', { code: 'START_DEADLINE_EXCEEDED', message: '等待启动已超时，本次没有重新执行。', action: 'blocked' }); continue }
       if (['waiting_auth', 'blocked'].includes(run.status) || (run.nextRetryAt !== null && run.nextRetryAt > this.now())) continue
       // One scheduled execution at a time; uncertain work keeps only its resource reservation.

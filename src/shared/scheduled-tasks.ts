@@ -20,7 +20,8 @@ export const scheduleTimeResultSchema = z.union([
 export type ScheduleTimeRequest = z.infer<typeof scheduleTimeRequestSchema>
 export type ScheduleTimeResult = z.infer<typeof scheduleTimeResultSchema>
 
-export const emptyTextFilenameSchema = z.string().trim().max(160)
+// Legacy file-action configuration is kept so stored snapshots remain readable.
+const emptyTextFilenameSchema = z.string().trim().max(160)
   .refine(value => /^[^<>:"/\\|?*]+\.txt$/i.test(value)
     && [...value].every(character => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
     && !/^(?:CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])\s*(?:\.|$)/i.test(value), '请输入有效的 .txt 文件名，不含目录')
@@ -58,6 +59,7 @@ export const scheduleInputSchema = z.union([
 })
 export type ScheduleInput = z.infer<typeof scheduleInputSchema>
 export type ModelScheduledInput = Exclude<ScheduleInput, { mode: 'empty-text' }>
+export const retiredScheduledExecutionMessage = '空白文本本地动作已停用。请编辑任务，选择执行方式和模型后重新启用。'
 const sourceId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const sourceHash = z.string().regex(/^[a-f0-9]{64}$/)
 export const scheduledWorkSourceSchema = z.object({ taskId: sourceId, templateId: sourceId, planHash: sourceHash, requestKey: sourceHash }).strict()

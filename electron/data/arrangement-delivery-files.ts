@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { lstat, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises'
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { mkdir, open, realpath, rm, writeFile } from 'node:fs/promises'
+import { basename, join, relative, resolve, sep } from 'node:path'
 import { unzipSync } from 'fflate'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { PDFDocument } from 'pdf-lib'
@@ -10,8 +10,6 @@ import { isSafeDeliveryPath, type ArrangementNode } from '../domain/arrangement-
 import { finalDeliveryFileSchema, type DeliveryIssue, type DeliverySubmission, type FinalDeliveryFile } from '../domain/arrangement-delivery'
 import { resolveArrangementMediaFile, restoreArrangementMediaSnapshot } from './arrangement-media-files'
 import { publishDeliverySnapshot } from './delivery-snapshot-recovery'
-import { emptyTextFilenameSchema } from '../../src/shared/scheduled-tasks'
-import { AppError } from '../errors/app-error'
 import { ResultFilePathError } from '../errors/result-file-path-error'
 import { resolveUnlinkedChild, resolveWorkspaceResult } from './workspace-result-path'
 
@@ -224,19 +222,6 @@ export async function validateDeliveryFiles(workspace: string, node: Arrangement
     } catch (error) { signal?.throwIfAborted(); issues.push(deliveryFileIssue(error, expected.id, expected.path)) }
   }
   return issues.length ? { ok: false, issues } : { ok: true, files }
-}
-
-export async function createScheduledEmptyText(workspace: string, occurrenceId: string, filename: string, checkControl: () => void): Promise<void> {
-  const directoryName = basename(workspace)
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(occurrenceId) || !isAbsolute(workspace) || workspace !== resolve(workspace)
-    || relative(`scheduled-${occurrenceId}`, directoryName) !== '' || !emptyTextFilenameSchema.safeParse(filename).success
-    || filename !== filename.trim() || !isSafeDeliveryPath(filename)) throw new AppError('WORKSPACE_INVALID')
-  const info = await lstat(workspace)
-  if (!info.isDirectory() || info.isSymbolicLink() || await realpath(workspace) !== workspace) throw new AppError('WORKSPACE_INVALID')
-  checkControl()
-  // Exclusive open also rejects a pre-existing symlink or hard link; never truncate a file.
-  const handle = await open(join(workspace, filename), 'wx', 0o600)
-  await handle.close()
 }
 
 export async function resolveDeliveryFiles(workspace: string, files: readonly FinalDeliveryFile[], signal?: AbortSignal, options: DeliveryFileOptions = {}): Promise<ResolvedDeliveryFiles> {

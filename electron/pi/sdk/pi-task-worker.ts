@@ -44,6 +44,7 @@ export interface PiTaskWorkerContext {
   videoTools?: PiAgentSessionConfig['videoTools']
   conversationAttachments?: PiAgentSessionConfig['conversationAttachments']
   conversationSchedule?: PiAgentSessionConfig['conversationSchedule']
+  conversationScheduleManagement?: PiAgentSessionConfig['conversationScheduleManagement']
   localMedia?: PiAgentSessionConfig['localMedia']
   browserArtifactTaskId?: PiAgentSessionConfig['browserArtifactTaskId']
   browserTaskStateDir?: PiAgentSessionConfig['browserTaskStateDir']
@@ -175,6 +176,7 @@ export class PiTaskWorker {
         videoTools: this.context.videoTools,
         conversationAttachments: this.context.conversationAttachments,
         conversationSchedule: this.context.conversationSchedule,
+        conversationScheduleManagement: this.context.conversationScheduleManagement,
         localMedia: this.context.localMedia,
         browserArtifactTaskId: this.context.browserArtifactTaskId,
         browserTaskStateDir: this.context.browserTaskStateDir,

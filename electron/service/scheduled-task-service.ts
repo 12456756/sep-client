@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ArrangementWorkPlan, EmployeePlanResult, ScheduleInput, ScheduledDefinition, ScheduledOccurrence, ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
-import { scheduleInputSchema, scheduleTimeRequestSchema, scheduleTimeResultSchema, type ScheduleTimeRequest, type ScheduleTimeResult } from '../../src/shared/scheduled-tasks'
-import { buildEmptyTextPlan, occurrenceId, planInputKey, employeePlanResultSchema, scheduledPlanResultSchema, dueScheduleWindow, nextScheduledAt, scheduledWorkspaceGoal } from '../domain/scheduled-task'
+import { retiredScheduledExecutionMessage, scheduleInputSchema, scheduleTimeRequestSchema, scheduleTimeResultSchema, type ScheduleTimeRequest, type ScheduleTimeResult } from '../../src/shared/scheduled-tasks'
+import { occurrenceId, planInputKey, employeePlanResultSchema, scheduledPlanResultSchema, dueScheduleWindow, nextScheduledAt, requestsRestrictedWindowsSchedulePath, scheduledPathDenied, scheduledWorkspaceGoal } from '../domain/scheduled-task'
 import type { ModelScheduledInput } from '../../src/shared/scheduled-tasks'
 import { AppError } from '../errors/app-error'
 import { inspectScheduledOutputDirectory } from '../data/scheduled-output-directory'
@@ -111,6 +111,7 @@ export class ScheduledTaskService {
     const scope = this.scope()
     const generation = this.generation
     const parsed = scheduleInputSchema.parse(raw)
+    if (parsed.mode === 'empty-text') throw new AppError('INVALID_ARGUMENT', { message: retiredScheduledExecutionMessage })
     if (parsed.outputDirectory && creation) throw new AppError('INVALID_ARGUMENT')
     const outputDirectory = await this.authorizeOutput(parsed, select)
     const input: ScheduleInput = { ...parsed, ...(outputDirectory ? { outputDirectory } : {}), recurrence: parsed.recurrence ?? { frequency: 'once', interval: 1 } }
@@ -146,6 +147,7 @@ export class ScheduledTaskService {
     const scope = this.scope()
     const generation = this.generation
     const parsed = scheduleInputSchema.parse(raw)
+    if (parsed.mode === 'empty-text') throw new AppError('INVALID_ARGUMENT', { message: retiredScheduledExecutionMessage })
     if (parsed.outputDirectory && creation) throw new AppError('INVALID_ARGUMENT')
     const outputDirectory = await this.authorizeOutput(parsed, select)
     const input = { ...parsed, ...(outputDirectory ? { outputDirectory } : {}) }
@@ -173,58 +175,66 @@ export class ScheduledTaskService {
     const snapshot = this.definition(await this.options.repository.read(scope), id, revision)
     if (snapshot.enabled) throw new AppError('INVALID_STATE')
     if (snapshot.plan && snapshot.planInputKey === planInputKey(snapshot.input)) return snapshot
+    return this.withPlanning(id, signal, async planningSignal => {
+      const plan = await this.generatePlan(snapshot.input, scope, generation, planningSignal)
+      return this.options.repository.update(scope, data => {
+        this.assertScope(scope, generation)
+        planningSignal.throwIfAborted()
+        const item = this.definition(data, id, revision)
+        if (item.enabled) throw new AppError('INVALID_STATE')
+        Object.assign(item, { plan, planInputKey: planInputKey(item.input), revision: item.revision + 1, updatedAt: this.now() })
+        return item
+      })
+    })
+  }
+  private async withPlanning<T>(id: string, signal: AbortSignal | undefined, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    signal?.throwIfAborted()
     this.planning.get(id)?.abort()
     const controller = new AbortController()
     const abort = () => controller.abort()
-    if (signal?.aborted) controller.abort()
-    else signal?.addEventListener('abort', abort, { once: true })
+    signal?.addEventListener('abort', abort, { once: true })
     this.planning.set(id, controller)
     const timeout = setTimeout(() => controller.abort(), 120000)
     try {
-      controller.signal.throwIfAborted()
-      let result: ScheduledDefinition['plan'] | { status: 'blocked'; reasons: string[] }
-      const executionFields = snapshot.input.outputDirectory ? { goal: scheduledWorkspaceGoal(snapshot.input), outputDirectory: undefined } : {}
-      if (snapshot.input.mode === 'empty-text') {
-        result = buildEmptyTextPlan(snapshot.input)
-      } else if (snapshot.input.mode === 'general') {
-        if (!this.options.authorizeModel) throw new AppError('INVALID_STATE')
-        const grant = await withTimeout(this.options.authorizeModel(snapshot.input.modelId), 60000, 'scheduled-model-authorization')
-        this.assertScope(scope, generation)
-        result = employeePlanResultSchema.parse(await withTimeout(this.options.planner({ ...snapshot.input, ...executionFields }, null, controller.signal, grant.subscriptionId), 120000, 'scheduled-general-planning'))
-      } else if (snapshot.input.mode === 'auto') {
-        if (!this.options.arrangementPlanner) throw new AppError('INVALID_STATE', { message: 'Multi-employee planning is unavailable' })
-        await withTimeout(this.options.employee(snapshot.input.subscriptionId, snapshot.input.modelId), 60000, 'arrangement-planning-authorization')
-        this.assertScope(scope, generation)
-        const generated = await withTimeout(this.options.arrangementPlanner({ ...snapshot.input, ...executionFields }, controller.signal), 120000, 'scheduled-arrangement-planning')
-        result = scheduledPlanResultSchema.parse(generated) as ArrangementWorkPlan | { status: 'blocked'; reasons: string[] }
-        if (result && 'kind' in result && result.kind === 'arrangement') {
-          if (result.source) throw new AppError('INVALID_ARGUMENT')
-          for (const node of result.nodes) {
-            await withTimeout(this.options.employee(node.subscriptionId, node.modelId), 60000, 'scheduled-node-authorization')
-            this.assertScope(scope, generation)
-          }
-        }
-      } else {
-        const employee = await withTimeout(this.options.employee(snapshot.input.subscriptionId, snapshot.input.modelId), 60000, 'employee-planning-authorization')
-        this.assertScope(scope, generation)
-        result = employeePlanResultSchema.parse(await withTimeout(this.options.planner({ ...snapshot.input, ...executionFields }, employee, controller.signal), 120000, 'employee-planning'))
-      }
-      controller.signal.throwIfAborted()
-      this.assertScope(scope, generation)
-      if (result.status === 'blocked') throw new AppError('INVALID_ARGUMENT', { message: result.reasons.join('；') })
-      return await this.options.repository.update(scope, data => {
-        this.assertScope(scope, generation)
-        controller.signal.throwIfAborted()
-        const item = this.definition(data, id, revision)
-        if (item.enabled) throw new AppError('INVALID_STATE')
-        Object.assign(item, { plan: result, planInputKey: planInputKey(item.input), revision: item.revision + 1, updatedAt: this.now() })
-        return item
-      })
+      return await operation(controller.signal)
     } finally {
       signal?.removeEventListener('abort', abort)
       clearTimeout(timeout)
       if (this.planning.get(id) === controller) this.planning.delete(id)
     }
+  }
+  private async generatePlan(raw: ScheduleInput, scope: TaskOwnerScope, generation: number, signal: AbortSignal): Promise<NonNullable<ScheduledDefinition['plan']>> {
+    const check = () => { this.assertScope(scope, generation); signal.throwIfAborted() }
+    check()
+    const input = raw.outputDirectory ? { ...raw, goal: scheduledWorkspaceGoal(raw), outputDirectory: undefined } : raw
+    let result: NonNullable<ScheduledDefinition['plan']> | { status: 'blocked'; reasons: string[] }
+    if (input.mode === 'empty-text') throw new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage })
+    if (input.mode === 'general') {
+      if (!this.options.authorizeModel) throw new AppError('INVALID_STATE')
+      const grant = await withTimeout(this.options.authorizeModel(input.modelId), 60000, 'scheduled-model-authorization')
+      check()
+      result = employeePlanResultSchema.parse(await withTimeout(this.options.planner(input, null, signal, grant.subscriptionId), 120000, 'scheduled-general-planning'))
+    } else if (input.mode === 'auto') {
+      if (!this.options.arrangementPlanner) throw new AppError('INVALID_STATE', { message: 'Multi-employee planning is unavailable' })
+      await withTimeout(this.options.employee(input.subscriptionId, input.modelId), 60000, 'arrangement-planning-authorization')
+      check()
+      result = scheduledPlanResultSchema.parse(await withTimeout(this.options.arrangementPlanner(input, signal), 120000, 'scheduled-arrangement-planning'))
+      check()
+      if ('kind' in result && result.kind === 'arrangement') {
+        if (result.source) throw new AppError('INVALID_ARGUMENT')
+        for (const node of result.nodes) {
+          await withTimeout(this.options.employee(node.subscriptionId, node.modelId), 60000, 'scheduled-node-authorization')
+          check()
+        }
+      }
+    } else {
+      const employee = await withTimeout(this.options.employee(input.subscriptionId, input.modelId), 60000, 'employee-planning-authorization')
+      check()
+      result = employeePlanResultSchema.parse(await withTimeout(this.options.planner(input, employee, signal), 120000, 'employee-planning'))
+    }
+    check()
+    if (result.status === 'blocked') throw new AppError('INVALID_ARGUMENT', { message: result.reasons.join('；') })
+    return result
   }
   async confirm(id: string, revision: number): Promise<ScheduledDefinition> {
     return this.enable(id, revision)
@@ -306,6 +316,7 @@ export class ScheduledTaskService {
     const snapshot = this.definition(await this.options.repository.read(scope), id, revision)
     this.assertScope(scope, generation)
     creation?.guard?.()
+    if (snapshot.input.mode === 'empty-text') throw new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage })
     if (snapshot.plan && snapshot.input.mode === 'general') {
       if (!this.options.authorizeModel) throw new AppError('MODEL_NOT_ALLOWED')
       await withTimeout(this.options.authorizeModel(snapshot.input.modelId), 60000, 'scheduled-enable-model-authorization')
@@ -340,10 +351,68 @@ export class ScheduledTaskService {
     log.info('scheduled definition enabled', { scheduledTaskId: id, revision: result.revision, nextRunAt: result.nextRunAt })
     return result
   }
-  async pause(id: string, revision: number, remove = false): Promise<void> {
+  async updateConversationSchedule(id: string, revision: number, changes: { title?: string; goal?: string; timing?: { scheduledAt: number; recurrence: NonNullable<ScheduleInput['recurrence']> } }, guard: () => void, signal?: AbortSignal): Promise<ScheduledDefinition> {
+    const scope = this.scope(), generation = this.generation
+    const check = (data: ScheduledSnapshot) => {
+      this.assertScope(scope, generation)
+      guard()
+      const item = this.definition(data, id, revision)
+      if (item.input.mode === 'empty-text') throw new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage })
+      if (data.occurrences.some(run => run.definitionId === id && !TERMINAL_SCHEDULE_STATUSES.has(run.status))) {
+        throw new AppError('INVALID_STATE', { message: '请先处理或停止当前执行，再修改任务。' })
+      }
+      if (changes.timing && (changes.timing.scheduledAt <= this.now() || data.occurrences.some(run => run.definitionId === id && run.scheduledAt === changes.timing?.scheduledAt))) {
+        throw new AppError('INVALID_ARGUMENT', { message: '请选择尚未执行过的未来时间。' })
+      }
+      return item
+    }
+    const revisedInput = (item: ScheduledDefinition) => scheduleInputSchema.parse({ ...item.input,
+      name: changes.title ?? item.input.name, goal: changes.goal ?? item.input.goal, ...changes.timing })
+    const commit = (data: ScheduledSnapshot, plan?: NonNullable<ScheduledDefinition['plan']>) => {
+      const item = check(data)
+      const input = revisedInput(item)
+      if (plan) Object.assign(item, { plan, planInputKey: planInputKey(input) })
+      Object.assign(item, { input, revision: item.revision + 1, updatedAt: this.now() })
+      if (changes.timing) item.nextRunAt = item.enabled ? input.scheduledAt : null
+      return item
+    }
+    let result: ScheduledDefinition
+    if (changes.goal !== undefined) {
+      const snapshot = check(await this.options.repository.read(scope))
+      if (snapshot.plan?.kind === 'arrangement' && snapshot.plan.source) {
+        throw new AppError('INVALID_STATE', { message: '此类型的定时任务不能通过会话修改工作内容。' })
+      }
+      const input = revisedInput(snapshot)
+      if (requestsRestrictedWindowsSchedulePath(input.permissions, scheduledWorkspaceGoal(input))) {
+        throw new AppError('INVALID_ARGUMENT', { message: scheduledPathDenied.message })
+      }
+      result = await this.withPlanning(id, signal, async planningSignal => {
+        let plan: NonNullable<ScheduledDefinition['plan']>
+        try { plan = await this.generatePlan(input, scope, generation, planningSignal) }
+        catch (error) {
+          if (error instanceof AppError && error.code === 'AUTH_REQUIRED') throw error
+          throw new AppError('PLANNING_FAILED', { message: '未能生成新的执行计划，原任务未修改。', cause: error })
+        }
+        // The scheduler never sees the new goal paired with an old or missing plan.
+        return this.options.repository.update(scope, data => {
+          planningSignal.throwIfAborted()
+          return commit(data, plan)
+        })
+      })
+    } else {
+      result = await this.options.repository.update(scope, data => commit(data))
+    }
+    this.planning.get(id)?.abort()
+    this.timer.request()
+    log.info('scheduled definition updated from conversation', { scheduledTaskId: id, revision: result.revision })
+    return result
+  }
+  async pause(id: string, revision: number, remove = false, guard?: () => void): Promise<void> {
     const scope = this.scope()
+    const generation = this.generation
     await this.options.repository.update(scope, data => {
-      this.assertScope(scope)
+      this.assertScope(scope, generation)
+      guard?.()
       const item = this.definition(data, id, revision)
       if (remove && data.occurrences.some(run => run.definitionId === id && !TERMINAL_SCHEDULE_STATUSES.has(run.status))) throw new AppError('INVALID_STATE', { message: '请先停止并核查当前执行，再删除任务。' })
       item.pausedAt = remove ? null : item.enabled ? this.now() : item.pausedAt ?? null
@@ -391,9 +460,16 @@ export class ScheduledTaskService {
       this.assertScope(scope, generation)
       const before = await this.options.repository.read(scope)
       const dueLogs: { level: 'info' | 'warn'; message: string; fields: Record<string, unknown> }[] = []
-      if (before.definitions.some(item => item.enabled && !item.deleted && item.nextRunAt !== null && item.nextRunAt <= this.now())) await this.options.repository.update(scope, data => {
+      if (before.definitions.some(item => item.enabled && !item.deleted && (item.input.mode === 'empty-text' || (item.nextRunAt !== null && item.nextRunAt <= this.now())))) await this.options.repository.update(scope, data => {
         this.assertScope(scope, generation)
         for (const item of data.definitions) {
+          if (item.input.mode === 'empty-text') {
+            if (item.enabled && !item.deleted) {
+              const now = this.now()
+              Object.assign(item, { enabled: false, nextRunAt: null, pausedAt: now, revision: item.revision + 1, updatedAt: now })
+            }
+            continue
+          }
           if (!item.enabled || item.deleted || item.nextRunAt === null || item.nextRunAt > this.now() || !item.plan) continue
           const recurrence = item.input.recurrence ?? { frequency: 'once' as const, interval: 1 }
           const { points: missedSchedulePoints, following, consolidated } = dueScheduleWindow(item.nextRunAt, this.now(), recurrence, item.input.timezone, item.input.scheduledAt)

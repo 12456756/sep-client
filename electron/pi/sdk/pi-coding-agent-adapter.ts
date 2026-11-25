@@ -74,8 +74,9 @@ import { CONVERSATION_ATTACHMENT_TOOL, conversationAttachmentTool, omitDuplicate
 import { LOCAL_MEDIA_TOOL } from '../../domain/local-media-tools'
 import { localMediaTool } from './pi-local-media'
 import { localMediaProgressSchema } from '../../../src/shared/local-media-progress'
-import { conversationScheduleToolDefinition } from './pi-conversation-schedule'
+import { conversationScheduleManagementTools, conversationScheduleToolDefinition } from './pi-conversation-schedule'
 import { CREATE_SCHEDULED_TASK_TOOL } from '../../../src/shared/scheduled-creation'
+import { SCHEDULE_MANAGEMENT_TOOLS } from '../../../src/shared/scheduled-management'
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
@@ -466,6 +467,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
 }
 const OPENAI_COMPLETIONS_API_MODULE = '@earendil-works/pi-ai/api/openai-completions'
 const HAN_CHARACTER = /\p{Script=Han}/u
+const scheduleManagementNames: ReadonlySet<string> = new Set(SCHEDULE_MANAGEMENT_TOOLS)
 
 export function sessionToolOptions(
   toolPolicy: PiAgentSessionConfig['toolPolicy'],
@@ -477,13 +479,14 @@ export function sessionToolOptions(
   localMediaEnabled = false,
   conversationScheduleEnabled = false,
   pythonEnabled = false,
+  scheduleManagementEnabled = false,
 ): { tools?: string[]; noTools?: 'all' } {
   if (disableTools) return { noTools: 'all' }
   const allowedTools = toolPolicy && isUnrestrictedToolPolicy(toolPolicy)
     ? [...BUILTIN_TOOL_NAMES]
     : toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
   return { tools: [...new Set([
-    ...allowedTools.filter(name => name !== RUN_PYTHON_TOOL && name !== LOCAL_MEDIA_TOOL && name !== CREATE_SCHEDULED_TASK_TOOL && (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
+    ...allowedTools.filter(name => name !== RUN_PYTHON_TOOL && name !== LOCAL_MEDIA_TOOL && name !== CREATE_SCHEDULED_TASK_TOOL && !scheduleManagementNames.has(name) && (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
       (!name.startsWith('media_') || registeredMediaNames.includes(name as MediaToolName)) &&
       (!name.startsWith('video_') || registeredVideoNames.includes(name as VideoToolName))),
     ...(!toolPolicy || allowedTools.length > 0 ? [CURRENT_TIME_TOOL_NAME] : []),
@@ -493,6 +496,7 @@ export function sessionToolOptions(
     ...(attachmentsEnabled ? [CONVERSATION_ATTACHMENT_TOOL] : []),
     ...(localMediaEnabled ? [LOCAL_MEDIA_TOOL] : []),
     ...(conversationScheduleEnabled ? [CREATE_SCHEDULED_TASK_TOOL] : []),
+    ...(scheduleManagementEnabled && toolPolicy?.preset !== 'read-only' ? SCHEDULE_MANAGEMENT_TOOLS : []),
     ...(pythonEnabled && pythonToolAllowed({ disableTools }) ? [RUN_PYTHON_TOOL] : []),
   ])] }
 }
@@ -776,6 +780,9 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime, p
     if (conversationAttachmentsEnabled(config) && config.conversationAttachments) pi.registerTool(conversationAttachmentTool(config.conversationAttachments))
     if (!config.disableTools && config.localMedia) pi.registerTool(localMediaTool(config.localMedia))
     if (!config.disableTools && config.conversationSchedule) pi.registerTool(conversationScheduleToolDefinition(config.conversationSchedule))
+    if (!config.disableTools && config.toolPolicy?.preset !== 'read-only' && config.conversationScheduleManagement) {
+      for (const tool of conversationScheduleManagementTools(config.conversationScheduleManagement)) pi.registerTool(tool)
+    }
     if (pythonExecutable && pythonToolAllowed(config)) pi.registerTool(pythonTool(config, pythonExecutable))
     pi.on('tool_result', event => {
       const details: unknown = event.details
@@ -849,6 +856,11 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime, p
       if (toolName === CREATE_SCHEDULED_TASK_TOOL) {
         return !config.disableTools && config.conversationSchedule && pi.getActiveTools().includes(toolName)
           ? { block: false } : { block: true, reason: 'Scheduled creation is not available in this run.' }
+      }
+      if (scheduleManagementNames.has(toolName)) {
+        // The turn-bound host asks for approval using the resolved task and exact change, not the raw model input.
+        return !config.disableTools && config.toolPolicy?.preset !== 'read-only' && config.conversationScheduleManagement && pi.getActiveTools().includes(toolName)
+          ? { block: false } : { block: true, reason: 'Scheduled task management is not available in this run.' }
       }
       if (toolName === LOCAL_MEDIA_TOOL) {
         return !config.disableTools && config.localMedia && pi.getActiveTools().includes(toolName)
@@ -1439,7 +1451,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         resourceLoader,
         sessionManager,
         // Advertise only the task policy's tools so the model cannot select denied tools.
-        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config), conversationAttachmentsEnabled(config), !!config.localMedia, !!config.conversationSchedule, !!pythonExecutable),
+        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config), conversationAttachmentsEnabled(config), !!config.localMedia, !!config.conversationSchedule, !!pythonExecutable, !!config.conversationScheduleManagement),
         // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
         settingsManager,
       })

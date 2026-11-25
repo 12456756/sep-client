@@ -21,7 +21,6 @@ const scheduleInterpretationFields = z.object({
       z.object({ mode: z.literal('employee'), subscriptionId: subscriptionIdSchema.nullable() }).strict(),
       z.object({ mode: z.literal('auto'), subscriptionId: subscriptionIdSchema.nullable(), collaborationRequest: z.string().trim().min(1).max(2000).optional() }).strict(),
       z.object({ mode: z.literal('general'), subscriptionId: z.null() }).strict(),
-      z.object({ mode: z.literal('empty-text'), subscriptionId: z.null(), emptyText: emptyTextActionSchema }).strict(),
     ]),
     schedule: z.object({
       kind: z.enum(['once', 'cron']).nullable(), timezone: timezoneSchema,
@@ -67,6 +66,11 @@ export const scheduleInterpretationSchema = scheduleInterpretationFields.superRe
   } else issue(['task', 'schedule', 'kind'], 'Choose once or cron.')
 })
 export type ScheduleInterpretation = z.infer<typeof scheduleInterpretationSchema>
+// Older creation receipts can reference the retired action, but new proposals cannot.
+const interpretationTask = scheduleInterpretationFields.shape.task
+const storedScheduleInterpretation = z.union([scheduleInterpretationSchema, scheduleInterpretationFields.extend({
+  task: interpretationTask.extend({ execution: z.object({ mode: z.literal('empty-text'), subscriptionId: z.null(), emptyText: emptyTextActionSchema }).strict() }),
+})])
 
 const creationRequestFields = {
   parserSubscriptionId: subscriptionIdSchema.optional(),
@@ -118,7 +122,7 @@ export const scheduledCreationSchema = z.object({
   request: z.object(creationRequestFields).strict(), submissionKey: submissionKeySchema,
   parsedSubmissionKey: submissionKeySchema.nullable(), definitionSubmissionKey: submissionKeySchema.nullable(),
   referenceNow: timestampSchema, messages: z.array(messageSchema).min(1).max(20),
-  interpretation: scheduleInterpretationSchema.nullable(), definitionId: z.string().trim().min(1).max(128).nullable(),
+  interpretation: storedScheduleInterpretation.nullable(), definitionId: z.string().trim().min(1).max(128).nullable(),
   definitionInput: scheduleInputSchema.nullable(), error: z.string().trim().min(1).max(4000).nullable(),
   createdAt: timestampSchema, updatedAt: timestampSchema,
 }).strict()

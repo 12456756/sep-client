@@ -146,13 +146,6 @@ export function planInputKey(input: ScheduleInput): string {
   if (input.outputDirectory) values.push(input.outputDirectory.path, input.outputDirectory.identity)
   return createHash('sha256').update(JSON.stringify(input.mode === 'empty-text' ? [...values, input.emptyText] : values)).digest('hex')
 }
-export function buildEmptyTextPlan(input: Extract<ScheduleInput, { mode: 'empty-text' }>): Extract<EmployeePlanResult, { status: 'ready' }> {
-  const action = input.emptyText
-  const path = action.naming === 'fixed' ? action.filename : 'yyyyMMdd-HHmm.txt'
-  return employeePlanSchema.parse({ status: 'ready', objective: '创建空白文本文件', instruction: '在本次独立成果目录中创建一个 0 字节的 .txt 文件；不得覆盖已有文件。',
-    expectedOutput: '1 个 0 字节的 .txt 文件', deliverables: [{ id: 'empty-text', name: '空白文本文件', format: 'txt', path,
-      ...(action.naming !== 'fixed' ? { scheduledFilenameTime: action.naming } : {}), contentPolicy: 'empty', contentOutline: ['不写入任何内容'], acceptanceCriteria: ['恰好 0 字节'] }] })
-}
 type ZonedParts = { year: number; month: number; day: number; hour: number; minute: number; second: number }
 function zonedParts(timestamp: number, timezone: string): ZonedParts {
   const values = new Intl.DateTimeFormat('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(timestamp)

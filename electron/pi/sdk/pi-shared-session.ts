@@ -16,6 +16,7 @@ export class SharedPiSession {
   private connectorRevision: string | undefined
   private localMediaBinding?: { host: NonNullable<PiAgentSessionConfig['localMedia']> }
   private scheduleBinding?: { submit: NonNullable<PiAgentSessionConfig['conversationSchedule']> }
+  private scheduleManagementBinding?: { manage: NonNullable<PiAgentSessionConfig['conversationScheduleManagement']> }
   private approvalBinding?: { authorize: PiAgentSessionConfig['authorizeTool'] }
   private browserArtifactTaskId?: string
   private browserTaskStateDir?: string
@@ -41,9 +42,10 @@ export class SharedPiSession {
       this.browserOwner.resume()
       if (this.session && this.browserPolicyKey !== this.browserPolicy(config)) await this.disposeCurrent()
       // Tools close over the current run's file grants and created-file identities.
-      if (this.session && !this.managedFileTools && !config.toolPolicy?.fileAccess && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision && !!this.localMediaBinding === !!config.localMedia && !!this.scheduleBinding === !!config.conversationSchedule && this.browserArtifactTaskId === config.browserArtifactTaskId && this.browserTaskStateDir === config.browserTaskStateDir) {
+      if (this.session && !this.managedFileTools && !config.toolPolicy?.fileAccess && this.modelId === config.modelId && this.vision === (config.vision ?? null) && this.connectorRevision === config.connectorBinding?.revision && !!this.localMediaBinding === !!config.localMedia && !!this.scheduleBinding === !!config.conversationSchedule && !!this.scheduleManagementBinding === !!config.conversationScheduleManagement && this.browserArtifactTaskId === config.browserArtifactTaskId && this.browserTaskStateDir === config.browserTaskStateDir) {
         if (this.localMediaBinding && config.localMedia) this.localMediaBinding.host = config.localMedia
         if (this.scheduleBinding && config.conversationSchedule) this.scheduleBinding.submit = config.conversationSchedule
+        if (this.scheduleManagementBinding && config.conversationScheduleManagement) this.scheduleManagementBinding.manage = config.conversationScheduleManagement
         if (this.approvalBinding) this.approvalBinding.authorize = config.authorizeTool
         return this.session
       }
@@ -119,8 +121,8 @@ export class SharedPiSession {
     this.browserTaskStateDir = config.browserTaskStateDir
     const binding = { authorize: config.authorizeTool }
     this.approvalBinding = binding
-    return this.bindLocalMedia(this.bindConversationSchedule({ ...config, authorizeTool: (request, detection) =>
-      this.approvalBinding === binding ? binding.authorize(request, detection) : Promise.resolve(false) }))
+    return this.bindLocalMedia(this.bindConversationSchedule(this.bindScheduleManagement({ ...config, authorizeTool: (request, detection) =>
+      this.approvalBinding === binding ? binding.authorize(request, detection) : Promise.resolve(false) })))
   }
 
   private browserPolicy(config: PiAgentSessionConfig): string | undefined {
@@ -150,11 +152,22 @@ export class SharedPiSession {
     } } }
   }
 
+  private bindScheduleManagement(config: PiAgentSessionConfig): PiAgentSessionConfig {
+    if (!config.conversationScheduleManagement) return config
+    const binding = { manage: config.conversationScheduleManagement }
+    this.scheduleManagementBinding = binding
+    return { ...config, conversationScheduleManagement: async (request, signal) => {
+      if (this.scheduleManagementBinding !== binding) throw new Error('Scheduled task management is not available in this turn.')
+      return binding.manage(request, signal)
+    } }
+  }
+
   private async disposeCurrent(): Promise<void> {
     const session = this.session
     this.session = null
     this.localMediaBinding = undefined
     this.scheduleBinding = undefined
+    this.scheduleManagementBinding = undefined
     this.approvalBinding = undefined
     this.browserArtifactTaskId = undefined
     this.browserTaskStateDir = undefined

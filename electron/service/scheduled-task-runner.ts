@@ -1,4 +1,5 @@
 import type { ArrangementWorkPlan, EmployeeWorkPlan, ScheduledOccurrence, ScheduledIssue } from '../../src/shared/scheduled-tasks'
+import { retiredScheduledExecutionMessage } from '../../src/shared/scheduled-tasks'
 import type { TaskManager } from '../runtime/task-manager'
 import type { WorkPlanStore } from '../data/work-plan-store'
 import type { TaskMetadataStore } from '../data/task-metadata-store'
@@ -7,7 +8,7 @@ import type { ScheduledTaskStore } from '../data/scheduled-task-store'
 import type { TaskRunStore } from '../data/task-run-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { effectivePermissionPolicy, type WorkPlan } from '../domain/arrangement-plan'
-import { buildEmptyTextPlan, classifyScheduledError, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes, scheduledPathDenied, scheduledSkillUnavailable, scheduledOutputNotDelivered, scheduledWorkspaceGoal, ScheduledPathDeniedError } from '../domain/scheduled-task'
+import { classifyScheduledError, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes, scheduledPathDenied, scheduledSkillUnavailable, scheduledOutputNotDelivered, scheduledWorkspaceGoal, ScheduledPathDeniedError } from '../domain/scheduled-task'
 import { AppError } from '../errors/app-error'
 import { BeforeScheduledAdmissionError, type ScheduledRunnerPort } from './scheduled-dispatcher'
 import { logger } from '../common/logger'
@@ -44,23 +45,20 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
     const guard = () => { valid(); this.guard(scope) }
     guard()
     if (run.input.permissions.preset === 'full-local') throw new ScheduledPathDeniedError()
-    const local = run.input.mode === 'empty-text'
+    if (run.input.mode === 'empty-text') throw new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage })
     const general = run.input.mode === 'general'
     const arrangement = run.plan.kind === 'arrangement' ? run.plan as ArrangementWorkPlan : null
-    if (arrangement && (local || general)) throw new AppError('INVALID_STATE')
+    if (arrangement && general) throw new AppError('INVALID_STATE')
     const goal = scheduledWorkspaceGoal(run.input)
-    if (!local && !arrangement?.source && requestsRestrictedWindowsSchedulePath(run.input.permissions, goal)) {
+    if (!arrangement?.source && requestsRestrictedWindowsSchedulePath(run.input.permissions, goal)) {
       throw new ScheduledPathDeniedError()
     }
-    const employeePlan = run.input.mode === 'empty-text' ? buildEmptyTextPlan(run.input) : arrangement ? null : run.plan as EmployeeWorkPlan
+    const employeePlan = arrangement ? null : run.plan as EmployeeWorkPlan
     const template = arrangement?.source ? await this.options.source?.load(scope, arrangement.source) : null
     guard()
     if (arrangement?.source && !template) throw new AppError('PERSISTENCE_ERROR')
     let identity: { subscriptionId: string; modelId: string }
-    if (run.input.mode === 'empty-text') {
-      // Run records need a label, but the task has no subscription and no model grant.
-      identity = { subscriptionId: 'builtin:empty-text', modelId: 'local' }
-    } else if (run.input.mode === 'general') {
+    if (run.input.mode === 'general') {
       if (!this.options.authorizeModel) throw new AppError('INVALID_STATE')
       const grant = await this.options.authorizeModel(run.input.modelId)
       guard()
@@ -73,7 +71,7 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
       ...runLogFields(run),
       nodeCount: nodes.length, mode: run.input.mode ?? 'employee',
     })
-    for (const [index, node] of (local || general ? [] : nodes).entries()) {
+    for (const [index, node] of (general ? [] : nodes).entries()) {
       log.info('========== [SCHEDULED TASK] EMPLOYEE AUTHORIZATION CHECK ==========', {
         ...runLogFields(run),
         nodeIndex: index + 1, nodeCount: nodes.length, subscriptionId: node.subscriptionId, modelId: node.modelId,
@@ -93,13 +91,13 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
       : [{ id: 'employee-work', ...identity,
         title: run.input.name, objective: employeePlan!.objective, instruction: employeePlan!.instruction + context, expectedOutput: employeePlan!.expectedOutput,
         deliverables: employeePlan!.deliverables, dependsOn: [], skillIds: [], requiresUserConfirmation: false }],
-    { scheduledAt: run.scheduledAt, startedAt, timezone: run.input.timezone }, !template && !local)
+    { scheduledAt: run.scheduledAt, startedAt, timezone: run.input.timezone }, !template)
     const directory = await this.options.storage.prepareWorkspace(run.input.workDir, run.id)
     await checkScheduledOutputPaths(directory, workNodes.flatMap(node => (node.deliverables ?? []).map(file => file.path)),
       run.input.outputDirectory, run.id, run.scheduledAt, guard)
     guard()
     const primarySubscriptionId = nodes[0]!.subscriptionId
-    const task = await this.options.tasks.createTask(run.input.name, goal, directory, local || general ? null : primarySubscriptionId,
+    const task = await this.options.tasks.createTask(run.input.name, goal, directory, general ? null : primarySubscriptionId,
       { id: run.taskId, origin: { definitionId: run.definitionId, occurrenceId: run.id } })
     guard()
     if (task.scheduledAdmission || task.activeRunId || task.status !== 'pending') throw new AppError('INVALID_STATE')
@@ -111,10 +109,10 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
       workspace: { mode: 'shared', path: directory }, permissions: template ? structuredClone(template.permissions) : effectivePermissionPolicy(run.input.permissions), confirmedInputs: template?.confirmedInputs ?? [],
       ...(inputSnapshot ? { inputSnapshot } : {}),
       planHash: `${run.id}:${run.revision}`, createdAt: Date.now(), scheduledOrigin: { definitionId: run.definitionId, occurrenceId: run.id,
-        ...(run.input.mode === 'general' || run.input.mode === 'empty-text' ? { execution: run.input.mode } : {}) } }
+        ...(general ? { execution: 'general' } : {}) } }
     await this.options.workPlans.save(scope, plan)
     guard()
-    await this.options.metadata.save(scope, { version: 1, taskId: task.id, kind: 'arrangement', participantSubscriptionIds: local || general ? [] : [...new Set(nodes.map(node => node.subscriptionId))], currentSubscriptionId: local || general ? null : primarySubscriptionId, ...(template?.knowledge ? { knowledge: structuredClone(template.knowledge) } : {}), createdAt: Date.now() })
+    await this.options.metadata.save(scope, { version: 1, taskId: task.id, kind: 'arrangement', participantSubscriptionIds: general ? [] : [...new Set(nodes.map(node => node.subscriptionId))], currentSubscriptionId: general ? null : primarySubscriptionId, ...(template?.knowledge ? { knowledge: structuredClone(template.knowledge) } : {}), createdAt: Date.now() })
     guard()
     log.info('========== [SCHEDULED TASK] EXISTING TASK CONFIG PREPARED ==========', {
       ...runLogFields(run),
@@ -122,6 +120,7 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
     })
   }
   async launch(run: ScheduledOccurrence, valid: () => void = () => undefined): Promise<void> {
+    if (run.input.mode === 'empty-text') throw new BeforeScheduledAdmissionError(new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage }))
     const scope = this.scope()
     try {
       const runtime = await this.options.execution()

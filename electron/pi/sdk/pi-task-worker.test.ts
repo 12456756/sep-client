@@ -12,6 +12,7 @@ import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-
 import { advanceModelRequestProgress, type ModelRequestProgress } from '../../domain/model-request-progress'
 import { GatewayRetryWait } from './gateway-retry-wait'
 import { conversationScheduleToolInput, CREATE_SCHEDULED_TASK_TOOL } from '../../../src/shared/scheduled-creation'
+import { DELETE_SCHEDULED_TASK_TOOL, SCHEDULE_MANAGEMENT_TOOLS, UPDATE_SCHEDULED_TASK_TOOL, type ScheduleManagementRequest } from '../../../src/shared/scheduled-management'
 
 const temporaryDirectories: string[] = []
 
@@ -226,7 +227,7 @@ describe('PiTaskWorker', () => {
   })
 
   it('keeps a valid schedule clarification but does not discard blocking reasons or upgrade a draft', () => {
-    const task = { title: '验收文件', goal: '生成验收文件', deliverables: ['验收.md'], execution: { mode: 'auto', subscriptionId: null },
+    const task = { title: '验收文件', goal: '生成验收文件', deliverables: ['验收.md'], execution: { mode: 'general', subscriptionId: null },
       schedule: { kind: 'once', timezone: 'Asia/Shanghai', localDateTime: null, expression: null, description: null } }
     const questions = [{ field: 'schedule', question: '请确认执行日期。' }]
     const reasons = [{ code: 'MISSING_INFORMATION', message: '未指定执行日期。' }]
@@ -243,20 +244,25 @@ describe('PiTaskWorker', () => {
     const root = await makeDirectory()
     const prompt = '每天早上八点生成销售简报'
     const proposal = { action: 'new', candidate: { status: 'ready', task: { title: '销售简报', goal: '生成销售简报', deliverables: ['简报.md'],
-      execution: { mode: 'auto', subscriptionId: null }, schedule: { kind: 'cron', timezone: 'Asia/Shanghai', localDateTime: null,
+      execution: { mode: 'general', subscriptionId: null }, schedule: { kind: 'cron', timezone: 'Asia/Shanghai', localDateTime: null,
         expression: '0 8 * * *', description: null } }, questions: [], reasons: [] } } as const
-    let nextAction: 'reply' | 'schedule' = 'reply'
+    let nextAction: 'reply' | 'schedule' | ScheduleManagementRequest['tool'] = 'reply'
     const requests: Array<{ tools?: Array<{ function: { name: string; parameters?: unknown } }> }> = []
     let submissions = 0
+    const mutations: ScheduleManagementRequest[] = []
     const server = createServer(async (request, response) => {
       let body = ''
       for await (const part of request) body += String(part)
       requests.push(JSON.parse(body))
       response.writeHead(200, { 'Content-Type': 'text/event-stream' })
-      if (nextAction === 'schedule') {
+      if (nextAction !== 'reply') {
+        const action = nextAction
         nextAction = 'reply'
+        const args = action === 'schedule' ? proposal : action === UPDATE_SCHEDULED_TASK_TOOL
+          ? { target: { fromConversation: true }, time: { kind: 'cron', expression: '40,43,45 15 * * *' } }
+          : { target: { id: 'schedule-id' } }
         writeChunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'schedule-1', type: 'function',
-          function: { name: CREATE_SCHEDULED_TASK_TOOL, arguments: JSON.stringify(proposal) } }] })
+          function: { name: action === 'schedule' ? CREATE_SCHEDULED_TASK_TOOL : action, arguments: JSON.stringify(args) } }] })
         writeChunk(response, {}, 'tool_calls')
       } else writeChunk(response, { role: 'assistant', content: 'Normal answer' }, 'stop')
       response.end('data: [DONE]\n\n')
@@ -270,13 +276,17 @@ describe('PiTaskWorker', () => {
           submissions++
           assert.deepEqual(input, proposal)
           return { status: 'created', id: 'schedule-id', title: '销售简报', nextRunAt: 100, timezone: 'Asia/Shanghai' }
+        } : undefined,
+        conversationScheduleManagement: enabled ? async request => {
+          mutations.push(request)
+          return { status: 'cancelled', message: 'Not approved' }
         } : undefined },
       runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
       getRefreshToken: () => 'local-only', onAuthenticationRequired() {}, onApprovalRequest: async () => false,
       createTokenManager: () => new FakeTokenManager(), onEvent() {},
       shouldYieldAfterToolTurn: results => !!results?.every(result => result.toolName === CREATE_SCHEDULED_TASK_TOOL),
     })
-    const ordinary = create(true), planned = create(false), creating = create(true)
+    const ordinary = create(true), planned = create(false), creating = create(true), updating = create(true), deleting = create(true)
     try {
       await ordinary.run('你好')
       assert.equal(requests.length, 1)
@@ -286,15 +296,25 @@ describe('PiTaskWorker', () => {
       assert.equal(parameters.type, 'object')
       assert.deepEqual(Object.keys(parameters.properties), ['action', 'candidate'])
       assert.equal(parameters.additionalProperties, false)
+      for (const name of SCHEDULE_MANAGEMENT_TOOLS) assert.ok(requests[0].tools?.some(tool => tool.function.name === name), name)
       await planned.run('Run a previously scheduled job')
       assert.equal(requests.length, 2)
       assert.ok(!requests[1].tools?.some(tool => tool.function.name === CREATE_SCHEDULED_TASK_TOOL))
+      for (const name of SCHEDULE_MANAGEMENT_TOOLS) assert.ok(!requests[1].tools?.some(tool => tool.function.name === name), name)
       nextAction = 'schedule'
       await creating.run(prompt)
       assert.equal(submissions, 1)
       assert.equal(requests.length, 3)
+      nextAction = UPDATE_SCHEDULED_TASK_TOOL
+      await updating.run('把这个定时任务改到每天的 15:40、15:43、15:45')
+      nextAction = DELETE_SCHEDULED_TASK_TOOL
+      await deleting.run('删除定时任务 schedule-id')
+      assert.deepEqual(mutations, [
+        { tool: UPDATE_SCHEDULED_TASK_TOOL, input: { target: { fromConversation: true }, time: { kind: 'cron', expression: '40,43,45 15 * * *' } } },
+        { tool: DELETE_SCHEDULED_TASK_TOOL, input: { target: { id: 'schedule-id' } } },
+      ])
     } finally {
-      await Promise.all([ordinary.dispose(), planned.dispose(), creating.dispose()])
+      await Promise.all([ordinary.dispose(), planned.dispose(), creating.dispose(), updating.dispose(), deleting.dispose()])
       server.closeAllConnections()
       await new Promise<void>(resolve => server.close(() => resolve()))
     }
