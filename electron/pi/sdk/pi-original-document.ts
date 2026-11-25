@@ -1,14 +1,16 @@
-import { randomUUID } from 'node:crypto'
-import { open, realpath, rename, unlink } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, open, realpath, rename, unlink } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
-import { boundOriginal } from '../../../pi-extension/guard'
+import { boundOriginal, managedFilePath } from '../../../pi-extension/guard'
 import { ORIGINAL_DOCUMENT_REPLACE_TOOL } from '../../../src/shared/python-tool'
 import { redactText } from '../../common/redact'
+import { resolveUnlinkedChild } from '../../data/workspace-result-path'
 import { prepareDocumentBytes, supportsOriginalDocument } from '../../runtime/original-document-formats'
 import { inspectPythonFile, PYTHON_FILE_LIMIT } from '../../runtime/python-runtime'
 import type { PiAgentSessionConfig } from './pi-agent-runtime'
 
 const writing = new Set<string>()
+const backupDirectory = '原件备份'
 
 export function canReplaceOriginalDocument(config: PiAgentSessionConfig): boolean {
   const policy = config.toolPolicy
@@ -53,7 +55,16 @@ export async function prepareOriginalDocument(config: PiAgentSessionConfig, alia
       }
       const id = randomUUID()
       const temporary = join(folder, `.csep-edit-${id}.tmp`)
-      const backup = join(folder, `csep-backup-${id}${extension}`)
+      const workspace = await realpath(config.workspaceDir)
+      const backupFolder = join(workspace, backupDirectory)
+      const backup = join(backupFolder, `csep-backup-${id}${extension}`)
+      const workspacePolicy = { ...policy, fileAccess: 'workspace' as const }
+      const verifyBackupPath = async () => {
+        if (await realpath(config.workspaceDir) !== workspace || managedFilePath(backup, workspacePolicy, true) !== backup) {
+          throw new Error('The workspace backup location is unavailable. The original was not replaced.')
+        }
+      }
+      await verifyBackupPath()
       signal?.throwIfAborted()
       if (!await config.authorizeTool({ toolName: ORIGINAL_DOCUMENT_REPLACE_TOOL, input: {
         path, backup, purpose: redactText(purpose), beforeBytes: snapshot.bytes.length, afterBytes: bytes.length,
@@ -65,6 +76,11 @@ export async function prepareOriginalDocument(config: PiAgentSessionConfig, alia
       let staged = false, backedUp = false, published = false
       try {
         await verifyUnchanged()
+        await verifyBackupPath()
+        await mkdir(backupFolder, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== 'EEXIST') throw error
+        })
+        await resolveUnlinkedChild(workspace, backupDirectory, 'directory')
         const write = async (file: string, content: Buffer, markCreated: () => void, preserveMode = false) => {
           signal?.throwIfAborted()
           const handle = await open(file, 'wx', 0o600)
@@ -73,21 +89,34 @@ export async function prepareOriginalDocument(config: PiAgentSessionConfig, alia
             await handle.writeFile(content)
             if (preserveMode) await handle.chmod(Number(snapshot.info.mode & 0o777n))
             await handle.sync()
+            return await handle.stat({ bigint: true })
           } finally { await handle.close() }
         }
-        await write(temporary, bytes, () => { staged = true }, true)
+        const replacement = await write(temporary, bytes, () => { staged = true }, true)
+        await verifyBackupPath()
         await write(backup, snapshot.bytes, () => { backedUp = true })
+        await verifyBackupPath()
         await verifyUnchanged()
         signal?.throwIfAborted()
         await rename(temporary, path)
         published = true
-        return `Original document replaced: ${basename(path)}. Backup saved next to it: ${basename(backup)}. Reattach the original before editing it again.`
+        const result = `Original document replaced: ${basename(path)}. Backup saved in the task workspace: ${backup}. Reattach the original before editing it again.`
+        if (config.registerWrittenFile) {
+          try {
+            if (managedFilePath(path, workspacePolicy, true)) await config.registerWrittenFile(path)
+            else await config.registerWrittenFile(path, {
+              identity: `${replacement.dev}:${replacement.ino}:${replacement.birthtimeNs}`,
+              size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+            })
+          } catch {
+            return `${result} The file was saved, but could not be added to the task results. Do not repeat the replacement.`
+          }
+        }
+        return result
       } finally {
         // Do not follow a renamed or replaced parent directory during cleanup.
-        if (!published && await realpath(folder).catch(() => '') === folder) {
-          if (staged) await unlink(temporary).catch(() => undefined)
-          if (backedUp) await unlink(backup).catch(() => undefined)
-        }
+        if (!published && staged && await realpath(folder).catch(() => '') === folder) await unlink(temporary).catch(() => undefined)
+        if (!published && backedUp && await realpath(backupFolder).catch(() => '') === backupFolder) await unlink(backup).catch(() => undefined)
         writing.delete(key)
       }
     },

@@ -1,12 +1,15 @@
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, type TestContext } from 'node:test'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { ORIGINAL_DOCUMENT_REPLACE_TOOL, RUN_PYTHON_TOOL } from '../../../src/shared/python-tool'
+import { externalResultReceiptSchema } from '../../../src/shared/result-files'
+import type { TaskReadView } from '../../../src/shared/types'
 import { selectedAttachmentOriginal } from '../../data/attachment-original'
+import { resolveConversationResult } from '../../data/conversation-result-file'
 import { runtimeAttachmentReadScope, runtimeFileToolPolicy } from '../../runtime/file-tool-policy'
 import { bundledPythonExecutable, PYTHON_FILE_LIMIT } from '../../runtime/python-runtime'
 import type { PiAgentSessionConfig } from './pi-agent-runtime'
@@ -127,6 +130,70 @@ test('rejects cancellation and changes to the original while replacement approva
   await assert.rejects(invoke(pythonTool(config, '', async () => output(edited)), request()), /document changed/)
   assert.deepEqual(await readFile(original), concurrent)
   assert.deepEqual((await readdir(root)).sort(), ['original.xlsx', 'workspace'])
+})
+
+test('registers the replaced original as an openable result and keeps only the backup in the workspace', async t => {
+  const source = packageFixture('xlsx')
+  const edited = Buffer.from(zipSync({ ...unzipSync(packageFixture('xlsx', 'edited')), 'padding.bin': Buffer.alloc(150 * 1024) }, { level: 0 }))
+  const { root, original, config } = await fixture(t, 'xlsx', source)
+  const owner = { memberId: 'member', enterpriseId: 'enterprise' }
+  const task: TaskReadView = { id: 'task', title: 'Copy cells', prompt: 'Copy cells', workDir: config.workspaceDir,
+    status: 'running', createdAt: 1, startedAt: 1, completedAt: null, error: null, logs: [], files: [],
+    ownerId: owner.memberId, ownerEnterpriseId: owner.enterpriseId, subscriptionId: 'sub', activeRunId: 'run',
+    workType: { state: 'resolved', kind: 'conversation' } }
+  let backup: string | undefined
+  config.authorizeTool = async approval => {
+    if (approval.toolName === ORIGINAL_DOCUMENT_REPLACE_TOOL) {
+      backup = (approval.input as { backup: string }).backup
+      assert.ok(backup.startsWith(join(config.workspaceDir, '原件备份') + (process.platform === 'win32' ? '\\' : '/')))
+      assert.deepEqual(await readFile(original), source)
+      assert.deepEqual(task.files, [])
+    }
+    return true
+  }
+  config.registerWrittenFile = async (path, receipt) => {
+    assert.equal(path, original)
+    assert.deepEqual(await readFile(path), edited)
+    task.files.push(path)
+    task.externalFileReceipts = { [path]: externalResultReceiptSchema.parse(receipt) }
+  }
+  const result = await invoke(pythonTool(config, '', async () => output(edited)), request())
+  assert.equal(result.details.isError, false)
+  assert.ok(backup)
+  assert.deepEqual(await readFile(backup), source)
+  assert.deepEqual((await readdir(root)).sort(), ['original.xlsx', 'workspace'])
+  assert.deepEqual(task.files, [original])
+  const registered = await resolveConversationResult(owner, task, 'task-file-0')
+  assert.ok(registered?.external)
+  assert.deepEqual(registered.bytes, edited)
+})
+
+test('does not write the original or register a result if the backup directory becomes a link', async t => {
+  const source = packageFixture('xlsx')
+  const { root, original, config } = await fixture(t, 'xlsx', source)
+  const outside = join(root, 'outside')
+  await mkdir(outside)
+  config.authorizeTool = async approval => {
+    if (approval.toolName === ORIGINAL_DOCUMENT_REPLACE_TOOL) {
+      await symlink(outside, join(config.workspaceDir, '原件备份'), process.platform === 'win32' ? 'junction' : 'dir')
+    }
+    return true
+  }
+  config.registerWrittenFile = async () => assert.fail('an unsuccessful replacement must not be registered')
+  const tool = pythonTool(config, '', async () => output(packageFixture('xlsx', 'edited')))
+  await assert.rejects(invoke(tool, request()), /workspace backup location is unavailable/)
+  assert.deepEqual(await readFile(original), source)
+  assert.deepEqual(await readdir(outside), [])
+})
+
+test('a stale original identifier cannot be used to read or replace a document', async t => {
+  const { config } = await fixture(t)
+  config.toolPolicy!.originalFiles = undefined
+  config.authorizeTool = async () => assert.fail('stale identifiers must not trigger an approval')
+  const tool = pythonTool(config, '', async () => assert.fail('unexpected execution'))
+  assert.ok(!('replaceOriginal' in tool.parameters.properties))
+  await assert.rejects(invoke(tool, request()), /Reselect or drop the target original/)
+  await assert.rejects(invoke(tool, { purpose: 'Read attachment', code: 'pass', inputs: [{ path: alias, name: 'source.xlsx' }] }), /readOnlyPath/)
 })
 
 for (const extension of ['xlsx', 'docx', 'pptx', 'pdf'] as const) {

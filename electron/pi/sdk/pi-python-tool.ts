@@ -59,7 +59,12 @@ export function pythonTool(config: PiAgentSessionConfig, executable: string, exe
       const parsed = inputSchema.safeParse(raw)
       if (!parsed.success) throw new Error('Provide a single-line purpose, valid file declarations, and up to 64 KiB of Python source.')
       const { purpose, code, inputs = [], output, replaceOriginal } = parsed.data
-      if ((inputs.length && !canRead) || (output && !writer) || (replaceOriginal && !canReplace)) throw new Error('File access denied by task policy.')
+      if ((inputs.length && !canRead) || (output && !writer)) throw new Error('File access denied by task policy.')
+      if (replaceOriginal && !canReplace) {
+        if (!canRead || !canWrite || policy?.unattended) throw new Error('File access denied by task policy.')
+        throw new Error('No original document is bound for replacement in this turn. Reselect or drop the target original in this conversation.')
+      }
+      if (inputs.some(file => file.path.startsWith('@original/'))) throw new Error('Use conversation_attachment readOnlyPath for Python inputs. Attachment original identifiers are only for replaceOriginal.')
       if (replaceOriginal && output) throw new Error('Choose a text output or an original document replacement, not both.')
       const inputNames = [...inputs.map(file => file.name), ...(replaceOriginal ? [replaceOriginal.name] : [])]
       if (new Set(inputNames.map(name => name.normalize('NFC').toLowerCase())).size !== inputNames.length) throw new Error('Input names must be unique.')

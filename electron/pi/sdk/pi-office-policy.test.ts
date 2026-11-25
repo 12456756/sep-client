@@ -54,6 +54,14 @@ describe('Office command policy', () => {
     assert.equal(evaluateOfficeCommand({ command: ['import-doc', '../source', '../working.docx'] },
       { ...f.policy, readableAttachmentPaths: [source] }).allowed, false)
   })
+  it('explains why OfficeCLI cannot use an attachment original identifier', async t => {
+    const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }))
+    const command = { command: ['get', '@original/att-stale', '/', '--json'] }
+    const decision = evaluateOfficeCommand(command, { ...f.policy, fileAccess: 'local' })
+    assert.equal(decision.allowed, false)
+    assert.match(decision.reason ?? '', /OfficeCLI cannot use attachment original identifiers/)
+    assert.deepEqual(decision.lockPaths, [])
+  })
   it('blocks writes in read-only runs and respects approval settings', async t => {
     const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }))
     const readOnly = { ...f.policy, preset: 'read-only' as const, allowedTools: ['read'] }

@@ -84,6 +84,7 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
       return names.length ? { kind: 'office', operation, files: names, additionalFiles: targets.length > names.length } : undefined
     }
     function file(value: string, writing: boolean): string {
+      if (value.startsWith('@original/')) throw new Error('OfficeCLI cannot use attachment original identifiers. Read the attachment snapshot, or use run_python.replaceOriginal when available; otherwise reselect the target original in this conversation before editing.')
       if (!value || /^(?:[a-z][a-z\d+.-]*:\/\/|\\\\)/i.test(value)) throw new Error('Local file paths are required.')
       const absolute = resolve(policy.workspaceDir, value)
       const actual = canonicalCandidate(absolute)

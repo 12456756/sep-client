@@ -1,9 +1,10 @@
 import { z } from 'zod'
+import { PYTHON_FILE_LIMIT } from './python-tool'
 
 /** Main-process receipt for the exact bytes written by a managed conversation file tool. */
 export const externalResultReceiptSchema = z.object({
   identity: z.string().regex(/^\d+:\d+:\d+$/).max(96),
-  size: z.number().int().min(0).max(128 * 1024),
+  size: z.number().int().min(0).max(PYTHON_FILE_LIMIT),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict()
 export type ExternalResultReceipt = z.infer<typeof externalResultReceiptSchema>

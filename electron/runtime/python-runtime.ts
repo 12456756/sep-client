@@ -3,12 +3,13 @@ import { constants, lstatSync } from 'node:fs'
 import { copyFile, lstat, mkdir, mkdtemp, open, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
+import { PYTHON_FILE_LIMIT } from '../../src/shared/python-tool'
 import { applicationResourcesDirectory } from '../data/application-resources'
 import { redactText } from '../common/redact'
 
 export const PYTHON_CODE_LIMIT = 64 * 1024
 export const PYTHON_TIMEOUT_SECONDS = 60
-export const PYTHON_FILE_LIMIT = 16 * 1024 * 1024
+export { PYTHON_FILE_LIMIT }
 const outputLimit = 16 * 1024
 
 export function bundledPythonExecutable(): string | undefined {
