@@ -490,6 +490,10 @@
 .ent-top-sidebar-toggle:focus-visible { outline: 2px solid var(--ent-brand-solid); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { .ent-top-sidebar-toggle { transition: none; } }
 
+.ent-top-slogan { display: flex; min-width: 0; flex: 1; justify-content: center; color: var(--ent-ink-2); font-size: var(--ent-fs-ui); }
+.ent-top-slogan-text { position: relative; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ent-top-slogan strong { color: var(--ent-brand-ink); font-size: var(--ent-fs-body); font-weight: 700; }
+.ent-top-slogan strong::after { display: inline-block; width: 1px; height: 1em; margin-inline: 12px; background: var(--ent-brand-border); vertical-align: -0.14em; content: ''; }
 .ent-top-head { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .ent-top-breadcrumb { overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-overflow: ellipsis; white-space: nowrap; }
 .ent-top-title { font-size: var(--ent-fs-page); font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }

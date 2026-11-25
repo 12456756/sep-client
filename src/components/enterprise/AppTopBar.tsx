@@ -22,6 +22,11 @@ export function AppTopBar({ actions, sidebarCollapsed, onToggleSidebar }: Props)
           <PanelLeft size={20} strokeWidth={1.8} aria-hidden />
         </button>
       </IconHint>
+      <span className="ent-top-slogan">
+        <span className="ent-top-slogan-text">
+          <strong>元机AI</strong><span className="sr-only">：</span>让组织少内耗，让协作更高效
+        </span>
+      </span>
       {actions ? <div className="ent-top-actions">{actions}</div> : null}
     </header>
   );
