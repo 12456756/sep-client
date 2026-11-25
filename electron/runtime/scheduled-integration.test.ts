@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,7 +23,7 @@ const scope = { memberId: 'member', enterpriseId: 'enterprise' }
 const plan: EmployeeWorkPlan = { status: 'ready', objective: 'Deliver a report', instruction: 'Write the report file', expectedOutput: 'A usable file',
   deliverables: [{ id: 'report', name: 'Report', format: 'txt', path: 'report.txt', contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }] }
 
-for (const mode of ['success', 'empty-file', 'missing-file', 'invalid-submission', 'admission-uncertain', 'legacy-path', 'tool-path-denied'] as const) {
+for (const mode of ['success', 'general-conflict', 'empty-file', 'missing-file', 'invalid-submission', 'admission-uncertain', 'legacy-path', 'tool-path-denied', 'skill-cache-path-denied', 'skill-alias', 'skill-alias-changed'] as const) {
   test(`scheduled execution uses the existing runtime and validates actual delivery: ${mode}`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'sep-scheduled-integration-'))
     const runs = new TaskRunStore(root)
@@ -35,28 +36,67 @@ for (const mode of ['success', 'empty-file', 'missing-file', 'invalid-submission
     let validations = 0
     let skillLoads = 0
     let plannerCalls = 0
+    const liveSkill = mode === 'skill-alias' || mode === 'skill-alias-changed'
+    const reportPath = liveSkill ? 'deliverables/金价日报.md' : 'report.txt'
     const scheduledAt = mode === 'empty-file' ? Date.parse('2026-11-20T04:00:00Z') : 2000
     const workPlan = mode === 'empty-file' ? { ...plan, instruction: '按本次运行开始时间生成空白文本文件，文件名使用 yyyyMMdd-HHmm.txt。',
-      deliverables: [{ ...plan.deliverables[0], path: 'yyyyMMdd-HHmm.txt', acceptanceCriteria: ['文件大小为 0 字节。'] }] } : plan
+      deliverables: [{ ...plan.deliverables[0], path: 'yyyyMMdd-HHmm.txt', acceptanceCriteria: ['文件大小为 0 字节。'] }] }
+      : liveSkill ? { ...plan, deliverables: [{ ...plan.deliverables[0], path: reportPath, format: 'md' }] } : plan
     let now = scheduledAt - 1000
     const employee: EmployeeRuntimeConfig = { subscriptionId: 'sub', modelId: 'model', gatewayUrl: 'http://gateway.invalid' }
     let requests = 0
     const eventTypes: string[] = []
-    if (mode === 'tool-path-denied') {
-      const outside = join(root, 'not-the-run-workspace.txt')
-      await writeFile(outside, 'Outside the run workspace')
+    const livePathDenial = mode === 'tool-path-denied' || mode === 'skill-cache-path-denied'
+    const usePi = liveSkill || livePathDenial
+    const skillContent = '---\nname: report-research\ndescription: Research notes for reports.\n---\nUnique skill instruction: include verified findings.'
+    const reportContent = 'Verified research findings'
+    let aliasAdvertised = false
+    let leakedSkillPath = false
+    let readSkillContent = false
+    let recordedSkillLabel: unknown
+    if (usePi) {
+      const outside = mode === 'skill-cache-path-denied' ? join(root, 'runtime', 'skills-v2', 'wrong-cache-id', 'report-research', 'SKILL.md') : join(root, 'not-the-run-workspace.txt')
+      if (mode === 'tool-path-denied') await writeFile(outside, 'Outside the run workspace')
+      const skillDir = join(root, 'approved-skill')
+      const skillEntry = join(skillDir, 'SKILL.md')
+      if (liveSkill) {
+        await mkdir(skillDir)
+        await writeFile(skillEntry, skillContent)
+        employee.additionalSkillPaths = [skillDir]
+        employee.runtimeSnapshot = {
+          manifestVersion: 1, subscriptionId: 'sub', enterpriseId: scope.enterpriseId, employeeId: 'employee',
+          templateVersion: '1', employeeVersion: '1', maxSteps: 10, systemPrompt: '', modelId: 'model', allowedModels: ['model'],
+          approvedSkills: [{ capabilityId: 'cap', name: 'report-research', versionId: 'v1', version: '1', content: skillContent, description: 'Research notes' }],
+          skills: [{ capabilityId: 'cap', versionId: 'platform-v1', baseSkillVersionId: 'v1', source: 'approved', version: '1',
+            name: 'report-research', description: 'Research notes', content: skillContent, path: skillDir,
+            sha256: createHash('sha256').update(skillContent).digest('hex') }],
+        }
+      }
       const server = createServer((request, response) => {
-        request.resume()
-        request.on('end', () => {
+        const chunks: Buffer[] = []
+        request.on('data', (chunk: Buffer) => chunks.push(chunk))
+        request.on('end', async () => {
+          const payload = Buffer.concat(chunks).toString('utf8')
+          const round = ++requests
+          if (round === 1) {
+            aliasAdvertised = payload.includes('@skill/report-research')
+            leakedSkillPath = payload.includes('approved-skill')
+            if (mode === 'skill-alias-changed') await writeFile(skillEntry, skillContent + '\nChanged outside this run.')
+          }
+          if (payload.includes('Unique skill instruction: include verified findings.')) readSkillContent = true
+          const submission = JSON.stringify({ nodeId: 'employee-work', summary: 'Report ready', finalDeliverables: [{ id: 'report', path: reportPath }] })
           // A write prepared before a denied read must not run in the same Pi tool batch.
-          const toolCalls = ++requests === 1 ? [
+          const toolCalls = liveSkill ? round === 1 && mode === 'skill-alias' ? [{ name: 'read', args: { path: '@skill/report-research/../private.txt' } }]
+            : round <= 2 ? [{ name: 'read', args: { path: '@skill/report-research' } }]
+              : round === 3 ? [{ name: 'write', args: { path: reportPath, content: reportContent } }] : []
+            : round === 1 ? [
             { name: 'write', args: { path: 'report.txt', content: 'Fallback' } },
             { name: 'read', args: { path: outside } },
           ] : [{ name: 'write', args: { path: 'report.txt', content: 'Fallback after refusal' } }]
           response.writeHead(200, { 'Content-Type': 'text/event-stream' })
-          const delta = { role: 'assistant', tool_calls: toolCalls.map(({ name, args }, index) => ({ index, id: `call-${requests}-${index}`,
-            type: 'function', function: { name, arguments: JSON.stringify(args) } })) }
-          for (const [value, reason] of [[delta, null], [{}, 'tool_calls']] as const) {
+          const delta = toolCalls.length ? { role: 'assistant', tool_calls: toolCalls.map(({ name, args }, index) => ({ index, id: `call-${requests}-${index}`,
+            type: 'function', function: { name, arguments: JSON.stringify(args) } })) } : { role: 'assistant', content: submission }
+          for (const [value, reason] of [[delta, null], [{}, toolCalls.length ? 'tool_calls' : 'stop']] as const) {
             response.write(`data: ${JSON.stringify({ id: 'response', object: 'chat.completion.chunk', created: 1, model: 'model', choices: [{ index: 0, delta: value, finish_reason: reason }] })}\n\n`)
           }
           response.end('data: [DONE]\n\n')
@@ -69,10 +109,17 @@ for (const mode of ['success', 'empty-file', 'missing-file', 'invalid-submission
       employee.gatewayUrl = `http://127.0.0.1:${address.port}/v1`
     }
     const runtime = new TaskRuntime({ taskManager: tasks, taskRunStore: runs, workPlanStore: workPlans, arrangementCheckpointStore: checkpoints,
-      getRefreshToken: () => 'test-only', onAuthenticationRequired() {}, onEvent(event) { eventTypes.push(event.type) }, onApprovalRequest() {},
+      getRefreshToken: () => 'test-only', onAuthenticationRequired() {}, onEvent(event) {
+        eventTypes.push(event.type)
+        if (event.type === 'tool_execution_start') {
+          const data = event.data as { skillDetails?: unknown }
+          if (data.skillDetails) recordedSkillLabel = data.skillDetails
+        }
+      }, onApprovalRequest() {},
       resolveEmployee: () => employee,
-      authorizeEmployee: async (_id, model) => { assert.equal(model, 'model'); skillLoads++; return { ...employee, additionalSkillPaths: ['current-employee-skills'] } },
-      createWorker: options => mode === 'tool-path-denied' ? new PiTaskWorker({ ...options,
+      authorizeScheduledModel: async (model, id) => { assert.equal(model, employee.modelId); assert.equal(id, employee.subscriptionId); return employee },
+      authorizeEmployee: async (_id, model) => { assert.equal(model, 'model'); skillLoads++; return usePi ? employee : { ...employee, additionalSkillPaths: ['current-employee-skills'] } },
+      createWorker: options => usePi ? new PiTaskWorker({ ...options,
         runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
         createTokenManager: () => ({ async initialize() {}, async getValidToken() { return 'test-only' }, stop() {} }),
         async onResponseSettled(response) { validations++; return options.onResponseSettled?.(response) },
@@ -98,8 +145,9 @@ for (const mode of ['success', 'empty-file', 'missing-file', 'invalid-submission
       }),
     })
     const runner = new ScheduledTaskRunner({ scope: { currentScope: () => tasks.getCurrentUserScope() }, tasks, workPlans, metadata, checkpoints, runs, storage,
-      authorize: async () => employee, now: () => now, execution: async () => ({
-        executeTask: (id, options) => {
+      authorize: async () => employee, authorizeModel: async () => employee, now: () => now, execution: async () => ({
+        executeTask: async (id, options) => {
+          if (mode === 'general-conflict') await writeFile(join((await tasks.getTask(id))!.workDir!, reportPath), 'previous content', { flag: 'wx' })
           let checks = 0
           return runtime.executeTask(id, { beforeAdmission: () => {
             options?.beforeAdmission?.()
@@ -108,7 +156,7 @@ for (const mode of ['success', 'empty-file', 'missing-file', 'invalid-submission
         }, cancelTask: (id, reason) => runtime.cancelTask(id, reason),
       }) })
     const makeService = () => new ScheduledTaskService({ repository: new ScheduledTaskStore(root), scope: { currentScope: () => tasks.getCurrentUserScope() },
-      employee: async () => employee, planner: async () => { plannerCalls++; return workPlan }, runner, now: () => now,
+      employee: async () => employee, authorizeModel: async () => employee, planner: async () => { plannerCalls++; return workPlan }, runner, now: () => now,
       arrangementPlanner: async () => {
         plannerCalls++
         return { status: 'ready', kind: 'arrangement', title: 'Empty file', intentAnalysis: null,
@@ -120,9 +168,9 @@ for (const mode of ['success', 'empty-file', 'missing-file', 'invalid-submission
     t.after(async () => { service.stop(); await runtime.stopAll(); await rm(root, { recursive: true, force: true }) })
     await tasks.initialize(); await tasks.setCurrentUser(scope.memberId, scope.enterpriseId)
     const input: ScheduleInput = { name: 'Report', goal: mode === 'legacy-path' ? String.raw`在 C:\Users\demo\Desktop 下创建报告` : 'Produce a report',
-      subscriptionId: 'sub', modelId: 'model', workDir: root,
+      ...(mode === 'general-conflict' ? { mode: 'general' as const } : { subscriptionId: 'sub', mode: mode === 'empty-file' || liveSkill ? 'auto' as const : undefined }), modelId: 'model', workDir: root,
       scheduledAt, timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: mode === 'tool-path-denied' ? 'auto-approve' : 'confirm-each' },
-      ...(mode === 'empty-file' ? { mode: 'auto', recurrence: { frequency: 'cron', interval: 1, expression: '*/5 * * * *', preset: 'custom' } } : {}) }
+      ...(mode === 'empty-file' ? { recurrence: { frequency: 'cron', interval: 1, expression: '*/5 * * * *', preset: 'custom' } } : {}) }
     const created = await service.create('request', input)
     const planned = await service.plan(created.id, created.revision)
     await service.confirm(created.id, planned.revision)
@@ -148,18 +196,39 @@ for (const mode of ['success', 'empty-file', 'missing-file', 'invalid-submission
     }
     await service.scan()
     occurrence = (await service.list()).occurrences[0]
-    assert.equal(occurrence.status, mode === 'success' || mode === 'empty-file' ? 'completed' : mode === 'admission-uncertain' ? 'review' : 'failed')
-    if (mode === 'tool-path-denied') {
-      assert.equal(occurrence.error?.code, 'SCHEDULED_PATH_NOT_ALLOWED')
+    assert.equal(occurrence.status, mode === 'success' || mode === 'empty-file' || mode === 'skill-alias' ? 'completed' : mode === 'admission-uncertain' ? 'review' : 'failed')
+    if (mode === 'general-conflict') {
+      assert.equal(occurrence.error?.code, 'FILE_ALREADY_EXISTS')
+      assert.equal(executions, 0)
+      assert.equal(await readFile(join((await tasks.getTask(occurrence.taskId))!.workDir!, reportPath), 'utf8'), 'previous content')
+      assert.deepEqual((await checkpoints.get(scope, occurrence.taskId))?.state.nodes[0]?.delivery?.finalFiles, [])
+      return
+    }
+    if (livePathDenial || mode === 'skill-alias-changed') {
+      assert.equal(occurrence.error?.code, mode === 'tool-path-denied' ? 'SCHEDULED_PATH_NOT_ALLOWED' : 'SCHEDULED_SKILL_UNAVAILABLE')
+      assert.equal(readSkillContent, false)
       assert.equal(occurrence.error?.action, 'blocked')
       assert.equal(requests, 1)
       assert.equal(validations, 0)
       assert.ok(eventTypes.includes('tool_call_blocked'))
       assert.ok(!eventTypes.includes('arrangement_node_completed'))
       const task = await tasks.getTask(occurrence.taskId)
-      assert.ok(!(await readdir(task!.workDir!)).includes('report.txt'))
+      assert.ok(!(await readdir(task!.workDir!)).includes(liveSkill ? 'deliverables' : reportPath))
       const checkpoint = await checkpoints.get(scope, occurrence.taskId)
       assert.deepEqual(checkpoint?.state.nodes[0]?.delivery?.finalFiles, [])
+      return
+    }
+    if (mode === 'skill-alias') {
+      assert.equal(requests, 4)
+      assert.equal(validations, 1)
+      assert.equal(aliasAdvertised, true)
+      assert.equal(leakedSkillPath, false)
+      assert.equal(readSkillContent, true)
+      assert.deepEqual(recordedSkillLabel, { name: 'report-research', description: 'Research notes' })
+      const task = await tasks.getTask(occurrence.taskId)
+      assert.equal(await readFile(join(task!.workDir!, reportPath), 'utf8'), reportContent)
+      const checkpoint = await checkpoints.get(scope, occurrence.taskId)
+      assert.equal(checkpoint?.state.nodes[0]?.delivery?.finalFiles[0]?.path, reportPath)
       return
     }
     assert.equal(executions, 1)

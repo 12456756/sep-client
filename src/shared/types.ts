@@ -321,6 +321,7 @@ export interface ArrangementPermissionSnapshot {
 }
 
 export interface ArrangementPlanSnapshot {
+  scheduledOrigin?: import('./scheduled-tasks').ScheduledOrigin & { execution?: 'general' | 'empty-text' }
   knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1

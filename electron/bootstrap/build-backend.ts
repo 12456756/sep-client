@@ -638,7 +638,7 @@ class BackendRuntime {
     const scheduledWorkSource = new ScheduledWorkSource({ workPlans: this.workPlans, storage: scheduledStorage,
       tasks: this.taskManager, metadata: this.taskMetadataStore, attachments: this.attachments })
     const validateScheduledEmployee = (subscriptionId: string, modelId: string) => this.employees.validateScheduled(subscriptionId, modelId)
-    const authorizeScheduledModel = (modelId: string, subscriptionId?: string) => this.employees.authorizeScheduledModel(modelId, subscriptionId)
+    const authorizeScheduledModel = (modelId: string) => this.employees.authorizeScheduledModel(modelId)
     const employeePlanner = async (input: import('../../src/shared/scheduled-tasks').ModelScheduledInput, employee: unknown, signal: AbortSignal, modelGrantId?: string) => {
       const { PiEmployeePlanner } = await import('../runtime/pi-employee-planner')
       return new PiEmployeePlanner({ gatewayUrl: config.SEP_GATEWAY_URL, workspaceRoot: join(userDataDir, 'scheduled-planning'),

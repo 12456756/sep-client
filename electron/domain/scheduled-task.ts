@@ -4,7 +4,7 @@ import { arrangementNodeWorkContractSchema, isSafeDeliveryPath, scheduledFilenam
 import { deliveryPathKey } from './arrangement-delivery'
 import type { EmployeePlanResult, RecurrenceRule, ScheduleInput, ScheduledIssue } from '../../src/shared/scheduled-tasks'
 import { cronPreview, latestCronTime } from '../../src/shared/cron-schedule'
-import { scheduledWorkSourceSchema } from '../../src/shared/scheduled-tasks'
+import { scheduledGeneralUnavailable, scheduledWorkSourceSchema } from '../../src/shared/scheduled-tasks'
 
 export const employeePlanSchema = z.object({
   status: z.literal('ready'), kind: z.literal('employee').optional(), objective: z.string().trim().min(1).max(4000),
@@ -41,12 +41,20 @@ export const scheduledPathDenied = {
   message: '当前定时任务权限不允许访问指定路径，本次不会改用其他位置交付。请使用独立工作区内的相对路径。',
 } as const
 
+export const scheduledSkillUnavailable = {
+  code: 'SCHEDULED_SKILL_UNAVAILABLE',
+  message: '本次定时任务无法读取员工技能，未交付成果。请检查该员工的技能授权或联系平台管理员。',
+} as const
+
+export const scheduledFileConflict = { code: 'FILE_ALREADY_EXISTS', message: '同名文件已存在，未覆盖，也未作为本次成果交付。' } as const
+export const scheduledCreateOnlyRule = '只允许新建成果；同名文件已存在时停止并报告冲突，不得覆盖、另存或将旧文件作为本次成果。即使任务描述或旧计划要求覆盖，也不能扩大权限。'
+
 export const scheduledOutputNotDelivered: ScheduledIssue = {
   code: 'SCHEDULED_OUTPUT_NOT_DELIVERED', message: '未交付：无法向已授权的产出目录保存全部成果，原成果已保留。', action: 'blocked',
 }
 
 export class ScheduledPathDeniedError extends Error {
-  constructor() { super(scheduledPathDenied.message) }
+  constructor(readonly issue: typeof scheduledPathDenied | typeof scheduledSkillUnavailable | typeof scheduledFileConflict = scheduledPathDenied) { super(issue.message) }
 }
 
 /** Catch explicit I/O requests before planning or admission; the tool policy remains authoritative. */
@@ -84,6 +92,8 @@ function requestsWindowsSchedulePathAccess(text: string): boolean {
 }
 
 export const scheduledDeliveryPlanningRules = [
+  scheduledCreateOnlyRule,
+  '若需求必须修改已有文件才可完成，说明与定时任务权限冲突，不得生成可执行的覆盖计划。',
   '定时任务的「工作目录」「当前目录」默认指本次运行的独立工作目录，也是交付清单相对路径的基准。客户端在每次启动时分配目录，规划时不需要知道实际路径。',
   '例如「在工作目录生成 验收.md」的交付路径是「验收.md」。不要把「工作目录」解释为多次运行共用的父目录，不要推断用户禁止独立工作目录，也不要为默认目录追问或阻塞。保留用户明确要求的相对子目录。',
   '只有用户明确要求其他保存位置时，才区分外部交付：执行仍在独立工作目录内，客户端负责将已验收文件发布到已授权的产出目录。没有授权时明确指出需要配置，不能静默改存或让执行器直接写外部目录。',
@@ -255,7 +265,7 @@ export function scheduledWorkspaceErrorMessage(code: unknown): string | undefine
 
 export function classifyScheduledError(error: unknown): ScheduledIssue {
   if (error instanceof ScheduledDeliveryContractError) return { code: 'DELIVERY_CONTRACT_INVALID', message: error.message, action: 'fail' }
-  if (error instanceof ScheduledPathDeniedError) return { ...scheduledPathDenied, action: 'blocked' }
+  if (error instanceof ScheduledPathDeniedError) return { ...error.issue, action: 'blocked' }
   const value = error && typeof error === 'object' ? error as Record<string, unknown> : {}
   const code = typeof value.code === 'string' ? value.code : ''
   const status = value.statusCode ?? value.status
@@ -269,6 +279,7 @@ export function classifyScheduledError(error: unknown): ScheduledIssue {
     return { code, message: '定时任务指定的员工已不可用或授权已撤销。请检查员工授权或修改任务配置后，再手动检查并恢复本次执行。', action: 'blocked' }
   }
   if (code === 'MODEL_NOT_ALLOWED') {
+    if (value.userMessage === scheduledGeneralUnavailable) return { code, message: scheduledGeneralUnavailable, action: 'blocked' }
     return { code, message: '当前执行方式未获得所选模型的使用授权。请检查模型授权和任务配置，再手动检查并恢复本次执行。', action: 'blocked' }
   }
   if (code === 'AUTH_REQUIRED' || status === 401) {

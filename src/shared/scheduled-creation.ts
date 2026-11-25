@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { isValidCron } from './cron-schedule'
-import { employeeScheduleInputSchema, scheduleInputSchema } from './scheduled-tasks'
+import { employeeScheduleInputSchema, emptyTextActionSchema, scheduleInputSchema } from './scheduled-tasks'
 import { scheduledInstant } from './zoned-time'
 import { referenceAttachmentSelectionSchema, referenceMaterialsSchema, type ReferenceMaterials } from './attachment-contracts'
 
@@ -17,7 +17,12 @@ const scheduleInterpretationFields = z.object({
     title: z.string().trim().min(1).max(160).nullable(),
     goal: textSchema.nullable(),
     deliverables: z.array(z.string().trim().min(1).max(2000)).max(32),
-    execution: z.object({ mode: z.enum(['employee', 'auto']), subscriptionId: subscriptionIdSchema.nullable() }).strict(),
+    execution: z.union([
+      z.object({ mode: z.literal('employee'), subscriptionId: subscriptionIdSchema.nullable() }).strict(),
+      z.object({ mode: z.literal('auto'), subscriptionId: subscriptionIdSchema.nullable(), collaborationRequest: z.string().trim().min(1).max(2000).optional() }).strict(),
+      z.object({ mode: z.literal('general'), subscriptionId: z.null() }).strict(),
+      z.object({ mode: z.literal('empty-text'), subscriptionId: z.null(), emptyText: emptyTextActionSchema }).strict(),
+    ]),
     schedule: z.object({
       kind: z.enum(['once', 'cron']).nullable(), timezone: timezoneSchema,
       localDateTime: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/).nullable(),
@@ -64,6 +69,7 @@ export const scheduleInterpretationSchema = scheduleInterpretationFields.superRe
 export type ScheduleInterpretation = z.infer<typeof scheduleInterpretationSchema>
 
 const creationRequestFields = {
+  parserSubscriptionId: subscriptionIdSchema.optional(),
   message: textSchema, modelId: employeeScheduleInputSchema.shape.modelId, workDir: employeeScheduleInputSchema.shape.workDir,
   timezone: timezoneSchema, permissions: employeeScheduleInputSchema.shape.permissions,
   referenceFiles: referenceAttachmentSelectionSchema.optional(),
@@ -90,7 +96,7 @@ export const conversationScheduleToolInput = z.object({
 export type ConversationScheduleToolInput = z.infer<typeof conversationScheduleToolInput>
 export const conversationScheduleApprovalSchema = z.object({
   title: z.string().min(1).max(160), goal: textSchema, timezone: timezoneSchema,
-  firstRunAt: timestampSchema, recurrence: z.string().max(200).nullable(),
+  firstRunAt: timestampSchema, recurrence: z.string().max(200).nullable(), executor: z.string().trim().min(1).max(300).optional(),
 }).strict()
 export const conversationScheduleReceiptSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('pending') }).strict(),

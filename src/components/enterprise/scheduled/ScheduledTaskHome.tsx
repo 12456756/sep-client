@@ -58,6 +58,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     ? draft.settings.modelId || continuation.request.modelId
     : resolveTaskModel(models, defaultModelId, draft.settings.modelId) }
   const pending = model.pendingCreations ?? []
+  const parser = workspace.myEmployees.find(item => item.assignedToMe && !['unavailable', 'needs-auth'].includes(item.availability) && item.allowedModels.includes(settings.modelId))
   const awaiting = pending.some(item => item.request.requestId === continuationId || item.request.requestId === submitted.current?.requestId) || (!continuationId && pending.length > 0)
   const sending = pending.some(item => item.sending && item.request.requestId === submitted.current?.requestId)
   const files = useTextReferenceComposer({ input, value: draft.goal, update: goal => setDraft(value => ({ ...value, goal })), bindingKey: `${workspace.attachmentScopeKey}:${continuationId ?? 'new-schedule'}`, disabled: awaiting })
@@ -93,10 +94,11 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     else applyExample(example)
   }
   const submit = () => {
-    if (!draft.goal.trim() || awaiting || files.blocked || !settings.workDir.trim() || !models.includes(settings.modelId)) return
+    if (!draft.goal.trim() || awaiting || files.blocked || !settings.workDir.trim() || !parser) return
     if (settings.permissions.preset === 'read-only') return
     if (continuationId && (!continuation || !['needs_input', 'blocked'].includes(continuation.stage))) return
     const request: ScheduledCreationRequest = {
+      parserSubscriptionId: parser.id,
       requestId: continuation?.id ?? crypto.randomUUID(), ...(continuation ? { expectedRevision: continuation.revision } : {}),
       message: mention.submissionText.trim(), modelId: settings.modelId, workDir: settings.workDir.trim(), timezone: continuation?.request.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       permissions: { preset: settings.permissions.preset, approvalMode: settings.permissions.approvalMode ?? 'confirm-each' },
@@ -196,7 +198,8 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
         </div>
       </div>
     <form className="ent-sch-home-compose" onSubmit={event => { event.preventDefault(); submit() }}>
-      <div className="ent-sch-home-compose-actions"><button type="button" className="ent-btn ghost sm" title="设置任务时间和产出目录" onClick={onCreate}>手动设置</button></div>
+      {parser && <small>描述解析：{parser.name} · {settings.modelId}</small>}
+      <div className="ent-sch-home-compose-actions"><button type="button" className="ent-btn ghost sm" title="设置任务时间和产出目录" onClick={onCreate}>手动设置</button>{!models.length && <small role="status">暂无可用于解析描述的模型。</small>}</div>
       {continuation ? <div className="ent-sch-replying"><span>补充：{continuation.interpretation?.task.title ?? continuation.request.message}</span><button type="button" aria-label="退出补充" title="退出补充" disabled={awaiting} onClick={() => { setContinuationId(null); setDraft(value => ({ ...value, goal: '', settings: { ...value.settings, modelId: '' } })) }}><X size={14} /></button></div> : null}
       <fieldset ref={composer} disabled={sending} className="ent-sch-composer">
         <label className="sr-only" htmlFor="schedule-home-goal">定时任务工作内容</label><FileMentionEditor mention={mention} id="schedule-home-goal" ref={input} {...mention.editorAria} rows={2} value={draft.goal} maxLength={16000} placeholder={continuation ? '补充缺少的信息…' : '安排一项定期完成的工作…'} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} onCompositionStart={mention.compositionStart} onCompositionEnd={event => mention.compositionEnd(event.currentTarget)} onKeyDown={event => { mention.keyDown(event); if (!event.defaultPrevented && event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); submit() } }} />

@@ -15,6 +15,8 @@ export type ToolPermissionPreset = 'read-only' | 'workspace-edit' | 'full-local'
 export interface ApprovedSkillReadPath {
   readonly entryPath: string
   readonly packageRoot?: string
+  readonly sha256?: string
+  readonly label?: Readonly<{ name: string; description: string }>
 }
 
 export interface ToolPolicy {
@@ -258,7 +260,7 @@ function isApprovedAttachmentRead(candidate: string, policy: ToolPolicy): boolea
   } catch { return false }
 }
 
-function isApprovedSkillRead(candidate: string, policy: ToolPolicy): boolean {
+export function isApprovedSkillRead(candidate: string, policy: ToolPolicy): boolean {
   if (!policy.approvedSkillPaths?.length) return false
   try {
     const absolute = resolve(policy.workspaceDir, candidate)

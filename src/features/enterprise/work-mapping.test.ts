@@ -71,6 +71,22 @@ describe('arrangement retry display regressions', () => {
     permissions: { preset: 'read-only', allowedTools: [], allowedPaths: [], deniedPaths: [], requireApprovalFor: [], commandPolicy: 'disabled', approvalMode: 'confirm-each' },
     confirmedInputs: [], planHash: 'hash', createdAt: 1,
   }
+  it('displays the scheduled execution identity independent of the model subscription', () => {
+    const origin = { definitionId: 'schedule', occurrenceId: 'occurrence' }
+    const employees = [{ id: 'employee-a', name: '电商运营方案顾问' }] as Parameters<typeof buildWorkItem>[0]['employees']
+    for (const general of [true, false]) {
+      const snapshot: ArrangementPlanSnapshot = { ...plan, mode: 'manual', scheduledOrigin: general ? { ...origin, execution: 'general' } : origin }
+      const work = buildWorkItem({ task: { ...task, scheduledOrigin: origin }, plan: snapshot, employees, activeEmployeeId: 'employee-a' })
+      const expectedId = general ? 'builtin:general-assistant' : 'employee-a'
+      const expectedName = general ? '通用助手' : '电商运营方案顾问'
+      assert.equal(work.currentEmployeeName, expectedName)
+      assert.equal(work.currentEmployeeId, expectedId)
+      assert.deepEqual(work.participants, [expectedId])
+      assert.deepEqual(work.steps.map(step => [step.employeeId, step.employeeName]), [[expectedId, expectedName]])
+      assert.equal(snapshot.nodes[0].subscriptionId, 'employee-a')
+      assert.equal(work.kind, 'flow')
+    }
+  })
   const failed: TaskExecutionEvent = {
     taskId: task.id, runId: 'run-a', subscriptionId: 'employee-a', sequence: 1,
     type: 'arrangement_state_changed', occurredAt: 3, data: { nodeId: 'node-a', nodeStatus: 'failed', status: 'waiting-user' },

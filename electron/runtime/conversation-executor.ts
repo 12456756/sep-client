@@ -329,6 +329,7 @@ export class ConversationExecutor {
       const conversationSchedule = canSchedule
         ? bindConversationSchedule({
           submit: submitSchedule, taskId, messageId: queued.messageId ? `message:${queued.messageId}` : 'initial', userMessage: queued.prompt,
+          parserSubscriptionId: employee.subscriptionId,
           receivedAt: queued.messageReceivedAt ?? (queued.messageId ? startedAt : task.createdAt), modelId: employee.modelId, workDir, signal: mediaSignal, draft,
           resumeDrafts: scheduleTimeline ? () => conversationScheduleDrafts(taskId, runId, messages, scheduleTimeline) : undefined,
           isCurrent: () => {
@@ -338,6 +339,7 @@ export class ConversationExecutor {
           approve: async input => {
             const decision = await this.options.approvals.requestDecision({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: CREATE_SCHEDULED_TASK_TOOL,
               input: redactValue({ title: input.name, goal: input.goal, timezone: input.timezone, firstRunAt: input.scheduledAt,
+                executor: input.mode === 'empty-text' ? '本地动作：创建空白文本（不使用模型）' : input.mode === 'general' ? '通用助手' : input.mode === 'auto' ? '多员工编排' : `指定员工：${input.subscriptionId}`,
                 recurrence: input.recurrence?.frequency === 'cron' ? input.recurrence.expression : null }) })
             return decision.approved || (decision.reason === REVISE_CONVERSATION_SCHEDULE_TIME ? 'revise_time' : false)
           },

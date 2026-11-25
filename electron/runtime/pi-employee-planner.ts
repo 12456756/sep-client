@@ -39,7 +39,7 @@ export class PiEmployeePlanner {
     signal.throwIfAborted()
     return this.generate(input, buildScheduleCreationPrompt(input), 'Interpret the supplied creation messages. Return only the complete scheduled-creation JSON contract.',
       value => scheduleInterpretationSchema.parse(value), 'Could not interpret a valid scheduled creation request. Clarify the task and schedule, then retry.', signal,
-      'Contract validation failed. Return the complete strict creation JSON with status, task (title, goal, deliverables, execution, schedule), questions and reasons, exactly as specified in the system prompt. For unresolved input use needs_input plus field/question entries; needs_input requires empty reasons. For unsupported input use blocked plus code/message reasons; blocked requires empty questions. Ready requires both questions and reasons empty. If no employee is specified, default to auto, not an execution question. Include the full task in every status; never use the legacy reasons:string[] format. No extra fields or tools.')
+      'Contract validation failed. Return the complete strict creation JSON with status, task (title, goal, deliverables, execution, schedule), questions and reasons exactly as specified. Preserve the execution rules in the system prompt. Do not promote ordinary work to employee orchestration. Include the full task in every status; no extra fields or tools.')
   }
   private async generate<T>(input: { subscriptionId: string; modelId: string }, prompt: string, request: string, parse: (value: unknown) => T, failure: string, signal: AbortSignal, correctionPrompt: string): Promise<T> {
     signal.throwIfAborted()

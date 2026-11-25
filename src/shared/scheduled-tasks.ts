@@ -24,6 +24,9 @@ export const emptyTextFilenameSchema = z.string().trim().max(160)
   .refine(value => /^[^<>:"/\\|?*]+\.txt$/i.test(value)
     && [...value].every(character => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
     && !/^(?:CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])\s*(?:\.|$)/i.test(value), '请输入有效的 .txt 文件名，不含目录')
+export const scheduledGeneralUnavailable = '通用助手未获得所选模型的使用授权，请检查员工订阅及其允许使用的模型。'
+export const emptyTextActionSchema = z.union([z.object({ naming: z.literal('fixed'), filename: emptyTextFilenameSchema }).strict(),
+  z.object({ naming: z.enum(['scheduled', 'started']) }).strict()])
 const scheduleIdentity = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const scheduleModel = z.string().trim().min(1).max(160)
 const scheduleBaseSchema = z.object({
@@ -44,8 +47,7 @@ export const scheduleInputSchema = z.union([
   scheduleBaseSchema.extend({ mode: z.literal('general'), subscriptionId: z.never().optional(), modelId: scheduleModel, emptyText: z.never().optional() }),
   scheduleBaseSchema.extend({ mode: z.literal('empty-text'), subscriptionId: z.never().optional(), modelId: z.never().optional(),
     permissions: z.object({ preset: z.literal('workspace-edit'), approvalMode: z.literal('confirm-each') }).strict(),
-    emptyText: z.union([z.object({ naming: z.literal('fixed'), filename: emptyTextFilenameSchema }).strict(),
-      z.object({ naming: z.enum(['scheduled', 'started']) }).strict()]),
+    emptyText: emptyTextActionSchema,
   }),
 ]).superRefine((input, context) => {
   if (input.recurrence?.frequency !== 'cron') return

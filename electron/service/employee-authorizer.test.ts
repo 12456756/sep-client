@@ -150,14 +150,15 @@ describe('general assistant model authorization', () => {
     assert.equal(skills.prepared(), 0)
   })
 
-  it('refreshes scheduled model authorization and never silently swaps the admitted grant', async () => {
-    let instances = [subscription('sub-a', 'model'), subscription('sub-b', 'model')]
+  it('borrows an active model subscription without skills and never substitutes a revoked admitted grant', async () => {
     const skills = fakeSkills()
+    let instances = [subscription('sub-a', 'model'), subscription('sub-b', 'model')]
     const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => instances), skills, GATEWAY)
-    assert.equal((await authorizer.authorizeScheduledModel('model', 'sub-a')).subscriptionId, 'sub-a')
+    assert.equal((await authorizer.authorizeScheduledModel('model')).subscriptionId, 'sub-a')
     instances = [subscription('sub-b', 'model')]
     await assert.rejects(authorizer.authorizeScheduledModel('model', 'sub-a'), { code: 'MODEL_NOT_ALLOWED' })
     assert.equal((await authorizer.authorizeScheduledModel('model')).subscriptionId, 'sub-b')
+    await assert.rejects(authorizer.authorizeScheduledModel('other'), { code: 'MODEL_NOT_ALLOWED' })
     assert.equal(skills.prepared(), 0)
   })
 

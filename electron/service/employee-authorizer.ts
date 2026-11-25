@@ -15,6 +15,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { AuthApiError, type Subscription } from '../common/platform/platform-api'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
 import { AppError } from '../errors/app-error'
+import { scheduledGeneralUnavailable } from '../../src/shared/scheduled-tasks'
 import { employeeRuntimeSnapshotSchema, parseEmployeeRuntimeManifest, preparedEmployeeSkillSchema, type EmployeeRuntimeSkill, type PreparedEmployeeSkill } from '../common/platform/employee-runtime-contract'
 import type { SkillArtifactAvailable } from '../common/platform/skill-artifact-contract'
 // import type 会被编译擦除，所以不构成对 runtime/ 的运行时依赖；
@@ -160,7 +161,7 @@ export class EmployeeAuthorizer {
     if (!scope) throw new AppError('AUTH_REQUIRED')
     const grant = await this.authorizeModel(modelId, subscriptionId, true)
     if (!scope.isCurrent()) throw new AppError('AUTH_REQUIRED')
-    if (!grant) throw new AppError('MODEL_NOT_ALLOWED', { message: '通用助手当前没有此模型的使用授权。' })
+    if (!grant) throw new AppError('MODEL_NOT_ALLOWED', { message: scheduledGeneralUnavailable })
     return grant
   }
 

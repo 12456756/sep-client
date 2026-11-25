@@ -143,13 +143,14 @@ test('a browser summary is bound to the tool and contains only an origin', () =>
 
 test('scheduled tasks require explicit confirmation showing the task and first execution time', async () => {
   const ui = mount(CREATE_SCHEDULED_TASK_TOOL, { title: '日报', goal: '汇总昨天的销售数据', timezone: 'Asia/Shanghai',
-    firstRunAt: Date.parse('2026-11-24T00:00:00Z'), recurrence: '0 8 * * *' })
+    firstRunAt: Date.parse('2026-11-24T00:00:00Z'), recurrence: '0 8 * * *', executor: '多员工编排' })
   try {
     const dialog = ui.feedback.getSnapshot()
     assert.ok(dialog)
     assert.match(dialog.message, /日报.*预计首次执行.*08:00/s)
     assert.match(dialog.message, /重复规则：每天 08:00/)
     assert.match(dialog.message, /汇总昨天的销售数据/)
+    assert.match(dialog.message, /执行方式：多员工编排/)
     assert.deepEqual(ui.decisions, [])
     await ui.feedback.accept(dialog.id)
     await new Promise<void>(resolve => setImmediate(resolve))

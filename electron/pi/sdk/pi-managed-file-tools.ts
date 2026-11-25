@@ -81,6 +81,18 @@ export function managedFileTools(config: PiAgentSessionConfig) {
   const write = async (input: string, value: string, signal: AbortSignal | undefined, selected: boolean, expected?: Awaited<ReturnType<typeof read>>) => {
     const path = safe(input, selected)
     const bytes = textBytes(value)
+    const conflict = async (): Promise<never> => {
+      await config.reportPolicyEvent?.('tool_call_blocked', { reason: 'scheduled-file-exists' })
+      throw new Error('同名文件已存在，定时任务未覆盖。')
+    }
+    // Exclusive creation also catches files appearing after admission.
+    if (policy.unattended && !created.has(path)) {
+      if (expected) return conflict()
+      if (!textExtensions.has(extname(path).toLowerCase())) throw new Error('Only supported UTF-8 text files can be changed.')
+      try { await create(path, bytes, signal) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return conflict(); throw error }
+      return path
+    }
     let existing = expected
     if (!existing) {
       try { existing = await read(path) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
@@ -90,10 +102,10 @@ export function managedFileTools(config: PiAgentSessionConfig) {
       await create(path, bytes, signal)
       return path
     }
-    if (existing.bytes.equals(bytes)) return path
     const owned = created.get(path)
+    if (policy.unattended && (selected || owned?.dev !== existing.info.dev || owned.ino !== existing.info.ino)) return conflict()
+    if (existing.bytes.equals(bytes)) return path
     if (policy.fileAccess !== 'local' && (selected || owned?.dev !== existing.info.dev || owned.ino !== existing.info.ino)) {
-      if (policy.unattended) throw new Error('A scheduled task cannot modify a pre-existing file.')
       const approved = await config.authorizeTool({ toolName: 'file_edit_once', input: { path, before: text.decode(existing.bytes), after: value } })
       if (!approved) throw new Error('File change was not approved.')
     }

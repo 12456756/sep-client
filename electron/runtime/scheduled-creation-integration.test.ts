@@ -212,11 +212,11 @@ for (const scenario of ['general', 'empty-text', 'workspace-file'] as const) {
       await assert.rejects(readFile(join(directory, 'cancelled.txt')), { code: 'ENOENT' })
       await restarted.schedules.scan()
       const conflict = (await restarted.schedules.list()).occurrences.find(item => item.scheduledAt === next)!
-      await waitForTerminalWork(restarted, conflict.taskId)
-      await restarted.schedules.scan()
-      const failed = (await restarted.schedules.list()).occurrences.find(item => item.id === conflict.id)!
-      assert.equal(failed.status, 'failed')
-      assert.equal(failed.error?.code, 'FILE_ALREADY_EXISTS')
+      assert.equal(conflict.status, 'blocked')
+      assert.equal(conflict.error?.code, 'FILE_ALREADY_EXISTS')
+      assert.match(conflict.error.message, /同名文件已存在/)
+      assert.equal(conflict.startedAt, null)
+      assert.equal(await restarted.tasks.getTask(conflict.taskId), null)
       assert.equal(await readFile(target, 'utf8'), 'keep existing data')
 
       const open = fs.open
@@ -291,7 +291,7 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
       runner: { prepare: forbidden, launch: forbidden, inspect: forbidden, cancel: forbidden }, now: () => now })
     const title = contextual ? '定时验收' : '金价日报'
     const original = contextual ? '请 Analyst 在北京时间 14:34 执行一次：在工作目录生成 定时验收.md，内容为“通用助手定时执行成功”'
-      : '每天生成金价日报，保存到 report.txt，并注明数据时间和来源。'
+      : '请 Analyst 每天生成金价日报，保存到 report.txt，并注明数据时间和来源。'
     const taskSpec: ScheduleInterpretation['task'] = { title, goal: original, deliverables: ['report.txt，注明数据时间和来源'],
       execution: { mode: 'employee', subscriptionId: 'analyst' },
       schedule: { kind: 'cron', timezone: 'Asia/Shanghai', localDateTime: null, expression: '0 9 * * *', description: '每天 09:00' } }
@@ -414,7 +414,7 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
       await wait(() => approvals.length === 1, 'the assembled task should reach approval')
       const firstRunAt = Date.parse('2026-11-25T06:40:00Z')
       assert.deepEqual(approvals[0]!.input, { title, goal: `${contextualTask.goal}\n\nDeliverables:\n- ${contextualTask.deliverables[0]}`,
-        timezone: 'Asia/Shanghai', firstRunAt, recurrence: null })
+        timezone: 'Asia/Shanghai', firstRunAt, recurrence: null, executor: '指定员工：analyst' })
       const pending = await storage.read(scope)
       assert.equal(pending.creations?.length, 1)
       assert.equal(pending.creations?.[0]?.id, awaiting.draft.id)
@@ -449,7 +449,7 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
     assert.equal(submissions[1]!.requestId, awaiting.draft.id)
     assert.equal(submissions[1]!.expectedRevision, awaiting.draft.revision)
     assert.deepEqual(approvals.at(-1)!.input, { title, goal: `${original}\n\nDeliverables:\n- ${taskSpec.deliverables[0]}`,
-      timezone: 'Asia/Shanghai', recurrence: '0 10 * * *', firstRunAt: now + 7200000 })
+      timezone: 'Asia/Shanghai', recurrence: '0 10 * * *', firstRunAt: now + 7200000, executor: '指定员工：analyst' })
     assert.deepEqual((await storage.read(scope)).definitions, [])
     assert.equal(runtime.respondToApproval({ requestId: approvals.at(-1)!.requestId, approved: scenario !== 'deny' }), true)
     await idle()
@@ -484,10 +484,10 @@ for (const mode of ['employee', 'auto'] as const) {
     const local = localDateTime(scheduledAt, timezone)
     const request: ScheduledCreationRequest = { requestId: randomUUID(),
       message: mode === 'employee' ? `Have Analyst produce report.txt once at ${local} in ${timezone}.`
-        : `Research evidence and produce report.txt once at ${local} in ${timezone}.`,
+        : `Use automatic arrangement to research evidence and produce report.txt once at ${local} in ${timezone}.`,
       modelId, workDir: root, timezone, permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
     const interpretation: ScheduleInterpretation = { status: 'ready', task: { title: 'Scheduled report', goal: 'Research and report verified findings',
-      deliverables: ['report.txt with verified findings'], execution: { mode, subscriptionId: mode === 'employee' ? 'analyst' : null },
+      deliverables: ['report.txt with verified findings'], execution: mode === 'employee' ? { mode, subscriptionId: 'analyst' } : { mode, subscriptionId: null, collaborationRequest: 'Use automatic arrangement' },
       schedule: { kind: 'once', timezone, localDateTime: local, expression: null, description: 'Run once at the requested local time' } }, questions: [], reasons: [] }
     let interpretations = 0, employeePlans = 0, automaticPlans = 0, workerDisposals = 0
     const executions: string[] = []

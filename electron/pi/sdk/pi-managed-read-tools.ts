@@ -1,12 +1,14 @@
-import { constants } from 'node:fs'
+import { constants, realpathSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import { basename, join, matchesGlob, relative, resolve } from 'node:path'
 import { createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, createReadToolDefinition, defineTool } from '@earendil-works/pi-coding-agent'
 import { externalFileCandidate, isManagedReadException, managedFilePath } from '../../../pi-extension/guard'
 import type { PiAgentSessionConfig } from './pi-agent-runtime'
 import { decodeToolText } from './pi-text-encoding'
+import { isScheduledSkillAlias, type bindScheduledSkills } from './pi-scheduled-skill-read'
 
-export function managedReadTools(config: PiAgentSessionConfig) {
+export function managedReadTools(config: PiAgentSessionConfig, resolveSkill?: ReturnType<typeof bindScheduledSkills>['resolve']) {
   const cwd = config.workspaceDir
   const policy = config.toolPolicy!
   function checked(input: string, fileException = false, selected = false) {
@@ -15,14 +17,17 @@ export function managedReadTools(config: PiAgentSessionConfig) {
     if (fileException && isManagedReadException(input, policy)) return resolve(cwd, input)
     throw new Error('File access denied by task policy.')
   }
-  async function contents(path: string, limit: number) {
-    const canonical = await realpath(path)
+  async function contents(path: string, limit: number, requireCanonical = false) {
+    // Check frozen grants with the same canonicalizer used to create them (Windows short names).
+    const canonical = requireCanonical ? realpathSync(path) : await realpath(path)
+    if (requireCanonical && path !== canonical) throw new Error('File changed.')
     const before = await lstat(canonical, { bigint: true })
     if (!before.isFile() || before.nlink !== 1n || before.ino === 0n || before.size > limit) throw new Error('Unsupported file.')
     const handle = await open(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
     try {
       const info = await handle.stat({ bigint: true })
-      if (info.dev !== before.dev || info.ino !== before.ino || info.nlink !== 1n || info.size > limit || await realpath(path) !== canonical) throw new Error('File changed.')
+      if (info.dev !== before.dev || info.ino !== before.ino || info.nlink !== 1n || info.size > limit ||
+          (requireCanonical ? realpathSync(path) : await realpath(path)) !== canonical) throw new Error('File changed.')
       const buffer = Buffer.alloc(Number(info.size) + 1)
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
       if (BigInt(bytesRead) !== info.size) throw new Error('File changed.')
@@ -48,6 +53,29 @@ export function managedReadTools(config: PiAgentSessionConfig) {
   const find = createFindToolDefinition(cwd)
   const grep = createGrepToolDefinition(cwd)
   return [defineTool({ ...read, async execute(id, input, signal, onUpdate, ctx) {
+    if (resolveSkill && isScheduledSkillAlias(input.path)) {
+      const target = resolveSkill(input.path)
+      if (!target) throw new Error('Unknown skill or resource. Use an exact @skill alias from the available skills list.')
+      const unavailable = async (): Promise<never> => {
+        await config.reportPolicyEvent?.('tool_call_blocked', { toolName: 'read', reason: 'scheduled-skill-unavailable' })
+        throw new Error('The approved scheduled skill could not be read.')
+      }
+      if (target === 'unavailable') return unavailable()
+      signal?.throwIfAborted()
+      let bytes: Buffer
+      try {
+        bytes = await contents(target.path, 24 * 1024 * 1024, true)
+        const current = resolveSkill(input.path)
+        if (!current || current === 'unavailable' || current.path !== target.path ||
+          (target.sha256 && createHash('sha256').update(bytes).digest('hex') !== target.sha256)) throw new Error('Skill changed.')
+      } catch {
+        signal?.throwIfAborted()
+        return unavailable()
+      }
+      signal?.throwIfAborted()
+      const tool = createReadToolDefinition(cwd, { operations: { access: async () => {}, readFile: async () => bytes } })
+      return tool.execute(id, input, signal, onUpdate, ctx)
+    }
     const exception = isManagedReadException(input.path, policy)
     const outside = !exception && externalFileCandidate(input.path, policy)
     const approved = outside ? await config.authorizeTool({ toolName: 'file_select_original', input: { path: outside } }) : false

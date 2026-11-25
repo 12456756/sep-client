@@ -9,7 +9,7 @@ import { ScheduledCreationService } from './scheduled-creation-service'
 import { AppError } from '../errors/app-error'
 
 const request: ScheduledCreationRequest = {
-  requestId: '11111111-1111-4111-8111-111111111111', message: 'Every day at nine create a report',
+  requestId: '11111111-1111-4111-8111-111111111111', message: 'Have Researcher create a report every day at nine',
   modelId: 'model', workDir: 'D:/reports', timezone: 'UTC', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' },
 }
 const interpretation: ScheduleInterpretation = {
@@ -45,6 +45,7 @@ function harness() {
   }
   const scopes = { currentScope: () => scope }
   const schedules = new ScheduledTaskService({ repository, scope: scopes, now: () => now, employee: async () => ({}),
+    authorizeModel: async modelId => { assert.equal(modelId, 'model'); return { subscriptionId: 'sub' } },
     planner: async () => { plans++; return planner() },
     arrangementPlanner: async () => ({ status: 'ready', kind: 'arrangement', title: 'Report', intentAnalysis: null,
       nodes: [{ id: 'work', subscriptionId: 'sub', modelId: 'model', title: 'Report', instruction: plan.instruction,
@@ -81,6 +82,56 @@ test('homepage creation plans and enables without confirmation, then repeated re
     assert.equal(h.interpretations, 1)
     assert.equal(h.plans, 1)
     assert.equal(h.data.definitions.length, 1)
+  } finally { h.stop() }
+})
+
+test('a general report borrows model authorization and enables without binding an employee', async () => {
+  const h = harness()
+  try {
+    h.setInterpret(async () => ({ ...interpretation, task: { ...interpretation.task, execution: { mode: 'general', subscriptionId: null } } }))
+    const result = await h.creation.submit({ ...request, message: 'Every day at nine create a report' })
+    assert.equal(result.stage, 'completed')
+    assert.equal(h.plans, 1)
+    assert.equal(h.data.definitions[0].enabled, true)
+    assert.equal(h.data.definitions[0].input.mode, 'general')
+    assert.equal(h.data.definitions[0].input.subscriptionId, undefined)
+  } finally { h.stop() }
+})
+
+test('a revoked parser subscription is not replaced by another employee with the same model', async () => {
+  const h = harness()
+  try {
+    const record = await h.creation.submit({ ...request, parserSubscriptionId: 'revoked' })
+    assert.equal(record.stage, 'failed')
+    assert.equal(h.interpretations, 0)
+    assert.equal(h.data.definitions.length, 0)
+  } finally { h.stop() }
+})
+
+test('an invented assignee or collaboration quotation does not enable work', async () => {
+  for (const execution of [interpretation.task.execution, { mode: 'auto', subscriptionId: null, collaborationRequest: 'Use two employees' } as const]) {
+    const h = harness()
+    try {
+      h.setInterpret(async () => ({ ...interpretation, task: { ...interpretation.task, execution } }))
+      const record = await h.creation.submit({ ...request, message: 'Every day at nine create a report' })
+      assert.equal(record.stage, 'needs_input')
+      assert.equal(record.interpretation?.questions[0].field, 'execution')
+      assert.equal(h.data.definitions.length, 0)
+    } finally { h.stop() }
+  }
+})
+
+test('a parsed local action never persists the interpreter subscription or model', async () => {
+  const h = harness()
+  try {
+    h.setInterpret(async () => ({ ...interpretation, task: { ...interpretation.task, goal: 'Create one empty file', deliverables: ['record.txt'], execution: { mode: 'empty-text', subscriptionId: null, emptyText: { naming: 'fixed', filename: 'record.txt' } } } }))
+    const result = await h.creation.submit({ ...request, message: 'Create an empty record.txt daily at nine' })
+    assert.equal(result.stage, 'completed')
+    const input = h.data.definitions[0].input
+    assert.equal(input.mode, 'empty-text')
+    assert.equal(input.subscriptionId, undefined)
+    assert.equal(input.modelId, undefined)
+    assert.equal(h.plans, 0)
   } finally { h.stop() }
 })
 
@@ -184,7 +235,7 @@ test('a conversation schedule cannot substitute a workspace delivery for an expl
 test('a conversation schedule can deliver to a relative path and include a Windows path as literal text', async () => {
   const h = harness()
   try {
-    const result = await h.creation.submitConversation({ ...request, message: String.raw`每天九点生成报告，保存到 deliverables/report.md，内容引用 C:\example\file.txt` }, {
+    const result = await h.creation.submitConversation({ ...request, message: String.raw`请 Researcher 每天九点生成报告，保存到 deliverables/report.md，内容引用 C:\example\file.txt` }, {
       signal: new AbortController().signal, receivedAt: Date.parse('2026-10-21T08:00:00Z'), approve: async () => true,
     })
     assert.equal(result.status, 'created')
@@ -217,7 +268,7 @@ test('confirming an every-minute conversation schedule after the preview remains
     return true
   } }
   try {
-    const submission = { ...request, message: '每分钟生成简报', timezone: 'Asia/Shanghai' }
+    const submission = { ...request, message: '请 Researcher 每分钟生成简报', timezone: 'Asia/Shanghai' }
     const receipt = await h.creation.submitConversation(submission, review)
     assert.equal(receipt.status, 'created')
     assert.equal(h.data.definitions[0].enabled, true)
@@ -258,8 +309,8 @@ test('clarification continues the same persisted creation and automatic mode reu
     assert.equal(draft.stage, 'needs_input')
     assert.equal(h.data.definitions.length, 0)
     const recovered = h.make()
-    h.setInterpret(async () => ({ ...structuredClone(interpretation), task: { ...structuredClone(interpretation.task), execution: { mode: 'auto', subscriptionId: null } } }))
-    const result = await recovered.submit({ ...request, expectedRevision: draft.revision, message: 'Nine every morning' })
+    h.setInterpret(async () => ({ ...structuredClone(interpretation), task: { ...structuredClone(interpretation.task), execution: { mode: 'auto', subscriptionId: null, collaborationRequest: 'Use automatic arrangement' } } }))
+    const result = await recovered.submit({ ...request, expectedRevision: draft.revision, message: 'Use automatic arrangement. Nine every morning' })
     assert.equal(result.id, draft.id)
     assert.equal(result.stage, 'completed')
     assert.equal(result.messages.length, 2)

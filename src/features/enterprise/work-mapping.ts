@@ -204,11 +204,14 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     ? { state: 'resolved', kind: 'arrangement' }
     : task.workType ?? { state: 'loading' };
   const resolvedKind = workType.state === 'resolved' ? workType.kind : null;
+  // A general scheduled node carries a billing subscription, not an employee assignment.
+  const scheduledGeneral = plan?.scheduledOrigin?.execution === 'general';
+  const actorId = (subscriptionId: string) => scheduledGeneral ? GENERAL_ASSISTANT_ID : subscriptionId;
   const meta: WorkMeta | null = plan && plan.mode !== 'conversation' ? {
     kind: 'flow', goal: plan.goal,
-    steps: plan.nodes.map(node => ({ id: node.id, employeeId: node.subscriptionId, title: node.title,
+    steps: plan.nodes.map(node => ({ id: node.id, employeeId: actorId(node.subscriptionId), title: node.title,
       input: node.instruction, output: node.expectedOutput, dependsOn: [...node.dependsOn], needsConfirm: false })),
-    participants: [...new Set(plan.nodes.map(node => node.subscriptionId))],
+    participants: [...new Set(plan.nodes.map(node => actorId(node.subscriptionId)))],
     sharedContext: { goal: plan.goal, confirmedInputs: [...plan.confirmedInputs], previousResults: [], userNotes: [] },
   } : legacyMeta;
   const kind: 'conversation' | 'flow' = resolvedKind === 'arrangement'
@@ -241,7 +244,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
 
   const progress = plan && plan.mode !== 'conversation' && steps.length
     ? steps.filter(step => step.state === 'done').length / steps.length * 100 : legacyProgress;
-  const currentEmployeeId = plan?.mode === 'conversation' && plan.conversation?.kind === 'general' ? GENERAL_ASSISTANT_ID : activeEmployeeId
+  const currentEmployeeId = scheduledGeneral || (plan?.mode === 'conversation' && plan.conversation?.kind === 'general') ? GENERAL_ASSISTANT_ID : activeEmployeeId
     ?? steps.find(step => step.state === 'running' || step.state === 'waiting-user' || step.state === 'waiting-employee')?.employeeId
     ?? task.subscriptionId
     ?? steps[0]?.employeeId

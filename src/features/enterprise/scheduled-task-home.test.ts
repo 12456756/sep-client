@@ -43,12 +43,12 @@ test('scheduled automatic mode prefers a saved default and finds an employee aut
 
 test('home drafts start without execution authority or a guessed employee and do not share mutable settings', () => {
   const first = emptyScheduledTaskDraft(), second = emptyScheduledTaskDraft()
-  assert.deepEqual(first, { goal: '', mode: 'employee', subscriptionId: '', settings: { workDir: '', modelId: '', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' }, knowledge: { mode: 'none', knowledgeBaseIds: [] } } })
+  assert.deepEqual(first, { goal: '', mode: 'general', subscriptionId: '', settings: { workDir: '', modelId: '', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' }, knowledge: { mode: 'none', knowledgeBaseIds: [] } } })
   first.settings.permissions.approvalMode = 'auto-approve'
   assert.equal(second.settings.permissions.approvalMode, 'confirm-each')
 })
 
-test('only saved empty-text tasks retain the empty-text option in the editor', async () => {
+test('new editor defaults to the general assistant, hides the picker for orchestration, and preserves old local actions', async () => {
   const hooks = registerHooks({ load: (url, context, nextLoad) => url.endsWith('.css')
     ? { format: 'module', source: 'export {}', shortCircuit: true } : nextLoad(url, context) })
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'React')
@@ -58,11 +58,14 @@ test('only saved empty-text tasks retain the empty-text option in the editor', a
     type EditorProps = React.ComponentProps<typeof ScheduledTaskEditorForm>
     const props = { workspace: { myEmployees: [] } as unknown as EditorProps['workspace'], model: { busy: false } as EditorProps['model'], onClose() {} }
     const scheduledAt = Date.now() + 3600000
-    const fresh = renderToStaticMarkup(React.createElement(ScheduledTaskEditorForm, { ...props, initialDraft: { ...emptyScheduledTaskDraft(), mode: 'empty-text' } }))
+    const fresh = renderToStaticMarkup(React.createElement(ScheduledTaskEditorForm, { ...props }))
     const modes = fresh.match(/<select aria-label="任务模式">(.*?)<\/select>/)?.[1]
     assert.ok(modes)
-    assert.deepEqual([...modes.matchAll(/<option value="([^"]+)"[^>]*>/g)].map(match => match[1]), ['employee', 'auto', 'general'])
+    assert.deepEqual([...modes.matchAll(/<option value="([^"]+)"[^>]*>/g)].map(match => match[1]), ['employee', 'auto'])
+    assert.match(fresh, /title="通用助手" aria-label="执行员工"/)
     assert.doesNotMatch(fresh, /scheduled-filename-mode/)
+    const auto = renderToStaticMarkup(React.createElement(ScheduledTaskEditorForm, { ...props, initialDraft: { ...emptyScheduledTaskDraft(), mode: 'auto' } }))
+    assert.doesNotMatch(auto, /aria-label="执行员工"/)
     const existing = renderToStaticMarkup(React.createElement(ScheduledTaskEditorForm, { ...props, definition: {
       id: 'existing', revision: 1, enabled: false, deleted: false, plan: null, planInputKey: null, nextRunAt: null, createdAt: 1, updatedAt: 1,
       input: { mode: 'empty-text', name: 'Existing task', goal: 'Create an empty file', workDir: 'C:/work', scheduledAt, timezone: 'UTC',

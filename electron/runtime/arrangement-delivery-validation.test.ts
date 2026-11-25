@@ -105,7 +105,8 @@ test('scheduled validation stops after three distinct failures and preserves the
   assert.equal(f.progress().firstIssue?.code, 'INVALID_SUBMISSION')
   assert.equal(f.progress().issues[0]?.code, 'FILE_MISSING')
   assert.equal(f.progress().correctionStopped, true)
-  if (result.status === 'failed') assert.match(resolveArrangementNodeFailure(result.error, false, false).message, /INVALID_SUBMISSION/)
+  if (result.status === 'failed') assert.equal(resolveArrangementNodeFailure(result.error, false, false).message,
+    `已停止自动纠错。首次失败：${f.progress().firstIssue!.message}`)
 })
 
 for (const kind of ['image', 'video'] as const) {

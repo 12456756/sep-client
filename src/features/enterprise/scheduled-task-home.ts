@@ -11,7 +11,7 @@ export interface ScheduledTaskDraft {
 }
 
 export function emptyScheduledTaskDraft(): ScheduledTaskDraft {
-  return { goal: '', mode: 'employee', subscriptionId: '', settings: { ...defaultRunSettings(), permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } } }
+  return { goal: '', mode: 'general', subscriptionId: '', settings: { ...defaultRunSettings(), permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } } }
 }
 
 export function authorizedScheduledModels(employees: ReadonlyArray<Pick<SiliconEmployee, 'assignedToMe' | 'availability' | 'allowedModels'>>): string[] {

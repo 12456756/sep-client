@@ -3,7 +3,9 @@ import { link, lstat, open, unlink } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { readDeliveryPreviewFile } from './arrangement-delivery-files'
 import { resolveArrangementMediaFile } from './arrangement-media-files'
-import { resolveUnlinkedChild, resolveUnlinkedDirectory } from './workspace-result-path'
+import { resolveUnlinkedChild, resolveUnlinkedDirectory, resolveWorkspaceResult } from './workspace-result-path'
+import { ResultFilePathError } from '../errors/result-file-path-error'
+import { scheduledFileConflict, ScheduledPathDeniedError } from '../domain/scheduled-task'
 import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
 
 export async function inspectScheduledOutputDirectory(input: string) {
@@ -13,6 +15,36 @@ export async function inspectScheduledOutputDirectory(input: string) {
     throw new Error('Invalid scheduled output directory.')
   }
   return { path, identity: `${info.dev}:${info.ino}:${info.birthtimeNs}` }
+}
+
+export async function assertScheduledPathAvailable(directory: string, path: string) {
+  try { await resolveWorkspaceResult(directory, path) }
+  catch (error) {
+    if (error instanceof ResultFilePathError && error.reason === 'missing') return
+    throw error
+  }
+  throw new ScheduledPathDeniedError(scheduledFileConflict)
+}
+
+function publishedName(path: string, index: number, occurrenceId: string, scheduledAt: number) {
+  const stamp = new Date(scheduledAt).toISOString().slice(0, 16).replaceAll(':', '').replace('T', '-')
+  return `${stamp}-${occurrenceId.slice(0, 12)}-${index + 1}-${basename(path.replaceAll('\\', '/'))}`
+}
+
+export async function checkScheduledOutputPaths(workspace: string, paths: string[], destination: { path: string; identity?: string } | undefined,
+  occurrenceId: string, scheduledAt: number, guard: () => void) {
+  for (const path of paths) {
+    guard()
+    await assertScheduledPathAvailable(workspace, path)
+  }
+  if (!destination) return
+  guard()
+  const target = await inspectScheduledOutputDirectory(destination.path)
+  if (target.identity !== destination.identity) throw new ScheduledPathDeniedError()
+  for (const [index, path] of paths.entries()) {
+    guard()
+    await assertScheduledPathAvailable(target.path, publishedName(path, index, occurrenceId, scheduledAt))
+  }
 }
 
 export async function publishScheduledOutputs(input: {
@@ -26,10 +58,9 @@ export async function publishScheduledOutputs(input: {
     await input.assertCurrent()
     return target.path
   }
-  const stamp = new Date(input.scheduledAt).toISOString().slice(0, 16).replaceAll(':', '').replace('T', '-')
   for (let i = 0; i < input.files.length; i++) {
     const file = input.files[i]!
-    const name = `${stamp}-${input.occurrenceId.slice(0, 12)}-${i + 1}-${basename(file.path.replaceAll('\\', '/'))}`
+    const name = publishedName(file.path, i, input.occurrenceId, input.scheduledAt)
     const root = await check()
     const destination = join(root, name)
     const verifyExisting = async () => {

@@ -198,6 +198,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
       if (!schedule.success) { settle(false); return }
       const { title, goal, firstRunAt, timezone, recurrence } = schedule.data
       message = `创建并启用「${title}」？${recurrence ? '预计首次执行' : '计划执行时间'}：${formatScheduleReceiptTime(firstRunAt, timezone)}。${recurrence ? ` 重复规则：${scheduleRecurrenceLabel(recurrence)}。` : ' 仅执行一次。'}\n\n${goal}`
+      if (schedule.data.executor) message += `\n\n执行方式：${schedule.data.executor}`
     }
     if (request.toolName === 'local_media_process' && input.success) {
       const labels = { trim: '裁剪', join: '拼接', compose: '合成视频', extract_audio: '提取音频', transcode: '转码',

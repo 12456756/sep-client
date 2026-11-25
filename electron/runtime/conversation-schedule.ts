@@ -64,6 +64,7 @@ export function bindConversationSchedule(options: {
   submit: SubmitConversationSchedule
   taskId: string; messageId: string; userMessage: string; receivedAt: number
   workDir: string; modelId: string; signal: AbortSignal; isCurrent(): boolean
+  parserSubscriptionId?: string
   draft?: ConversationScheduleDraft
   resumeDrafts?(): Promise<ConversationScheduleDraft[]>
   approve(input: ScheduleInput): Promise<boolean | 'revise_time'>
@@ -97,6 +98,7 @@ export function bindConversationSchedule(options: {
           requestId: draft?.id ?? conversationScheduleRequestId(options.taskId, options.messageId),
           ...(draft ? { expectedRevision: draft.revision } : {}),
           message, modelId: options.modelId, workDir: options.workDir,
+          ...(options.parserSubscriptionId ? { parserSubscriptionId: options.parserSubscriptionId } : {}),
           timezone,
           permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' },
         }, { signal, receivedAt: options.receivedAt, candidate: input?.candidate, resumeDrafts, approve: async input => {

@@ -102,6 +102,24 @@ test('a new file at an explicit external destination requires confirmation and n
   assert.equal(await readFile(granted, 'utf8'), 'local grant')
 })
 
+test('unattended writes reject existing files, even identical bytes, and report the conflict without approval', async t => {
+  const { workspaceDir, config } = await fixture(t)
+  config.toolPolicy = runtimeFileToolPolicy(undefined, workspaceDir, { unattended: true })
+  config.authorizeTool = async () => assert.fail('unexpected approval')
+  const events: unknown[] = []
+  config.reportPolicyEvent = (type, data) => { events.push({ type, data }) }
+  const save = write(config), path = join(workspaceDir, '定时验收.md')
+  await writeFile(path, 'original')
+  for (const content of ['changed', 'original']) {
+    await assert.rejects(save(path, content), /同名文件已存在/)
+    assert.equal(await readFile(path, 'utf8'), 'original')
+  }
+  assert.deepEqual(events, Array(2).fill({ type: 'tool_call_blocked', data: { reason: 'scheduled-file-exists' } }))
+  await save('new.md', 'draft')
+  await save('new.md', 'final')
+  assert.equal(await readFile(join(workspaceDir, 'new.md'), 'utf8'), 'final')
+})
+
 test('a new file can be created and revised in the same run without approving a pre-existing file', async t => {
   const { workspaceDir, config } = await fixture(t)
   const save = write(config)

@@ -81,6 +81,7 @@ import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
 import { managedFileTools } from './pi-managed-file-tools'
 import { managedReadTools } from './pi-managed-read-tools'
+import { bindScheduledSkills, isScheduledSkillAlias, isScheduledSkillCacheEntry } from './pi-scheduled-skill-read'
 import { RUN_PYTHON_TOOL } from '../../../src/shared/python-tool'
 import { bundledPythonExecutable } from '../../runtime/python-runtime'
 import { pythonTool, pythonToolAllowed, pythonToolSummary } from './pi-python-tool'
@@ -758,7 +759,8 @@ export function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
   }
 }
 
-export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime, pythonExecutable?: string): ExtensionFactory[] {
+export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime, pythonExecutable?: string,
+  scheduledSkills?: { resolve: ReturnType<typeof bindScheduledSkills>['resolve'] }): ExtensionFactory[] {
   const systemPromptTransform: ExtensionFactory = pi => {
     if (config.transformSystemPrompt) {
       pi.on('before_agent_start', event => ({ systemPrompt: config.transformSystemPrompt!(event.systemPrompt) }))
@@ -766,7 +768,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime, p
   }
   const encodingTools: ExtensionFactory = pi => {
     const selected = sessionToolOptions(config.toolPolicy, config.disableTools).tools ?? []
-    const definitions = config.toolPolicy?.fileAccess ? [...managedReadTools(config), ...managedFileTools(config)] : encodingToolDefinitions(config.workspaceDir, {
+    const definitions = config.toolPolicy?.fileAccess ? [...managedReadTools(config, scheduledSkills?.resolve), ...managedFileTools(config)] : encodingToolDefinitions(config.workspaceDir, {
       createBashToolDefinition, createGrepToolDefinition, createReadToolDefinition, defineTool, getShellConfig,
     })
     for (const tool of definitions) if (selected.includes(tool.name)) pi.registerTool(tool)
@@ -925,11 +927,19 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime, p
         return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
       }
       if (toolPolicy) {
+        const readPath = toolName === 'read' && event.input && 'path' in event.input && typeof event.input.path === 'string' ? event.input.path : undefined
+        if (scheduledSkills && readPath && isScheduledSkillAlias(readPath) &&
+          toolPolicy.allowedTools.includes('read') && pi.getActiveTools().includes('read')) {
+          // The managed read tool resolves the alias under its exact, run-bound grant.
+          return { block: false }
+        }
         const decision = evaluateToolCall(toolName, event.input, toolPolicy, mcp.permissions)
         if (!decision.allowed) {
+          const reason = toolPolicy.unattended && decision.reason === 'path-not-allowed' && readPath && isScheduledSkillCacheEntry(readPath, toolPolicy)
+            ? 'scheduled-skill-unavailable' : decision.reason ?? 'policy-denied'
           await config.reportPolicyEvent?.('tool_call_blocked', {
             toolName,
-            reason: decision.reason ?? 'policy-denied',
+            reason,
           })
           return { block: true, reason: `Tool denied by task policy: ${toolName} (${decision.reason ?? 'policy-denied'})` }
         }
@@ -977,6 +987,7 @@ class PiCodingAgentSession implements PiAgentSession {
       observe: (event: AgentSessionEvent) => void
       startPrompt: () => void
       contextOverhead: (timestamp: number) => ReturnType<typeof estimateRequestOverhead>
+      describeSkill?: ReturnType<typeof bindScheduledSkills>['describe']
     },
   ) {
     const toolStarts = new Map<string, number>()
@@ -1018,6 +1029,12 @@ class PiCodingAgentSession implements PiAgentSession {
       this.requestTracker?.observe(event)
       const normalized = normalizeEvent(event)
       if (!normalized) return
+      if (event.type === 'tool_execution_start' && event.toolName === 'read') {
+        const path = (event.args as { path?: unknown } | null)?.path
+        const skill = typeof path === 'string' ? this.diagnostics?.describeSkill?.(path) : undefined
+        if (skill) normalized.data = { ...(normalized.data as Record<string, unknown>),
+          input: { path: redactText(skill.path) }, skillDetails: redactValue(skill.label) }
+      }
       if (event.type === 'auto_retry_start') {
         normalized.data = { ...(normalized.data as Record<string, unknown>), delayMs }
       }
@@ -1361,28 +1378,36 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         ? ['浏览器使用规则：', ...PLAYWRIGHT_GUIDELINES, ...(mcp.builtinBrowser ? PLAYWRIGHT_HANDOFF_GUIDELINES : [])].join('\n')
         : undefined
       const pythonExecutable = pythonToolAllowed(config) ? bundledPythonExecutable() : undefined
+      const skillLoader = config.disableSkills && !commonPaths.length
+        ? { noSkills: true, skillsOverride: () => ({ skills: [], diagnostics: [] }) }
+        : employeeSkillLoaderOptions(config.workspaceDir, config.agentDir,
+          config.disableSkills ? undefined : config.employeeProfile || config.toolPolicy?.unattended ? config.additionalSkillPaths ?? [] : undefined,
+          loadSkills, commonPaths)
+      const scheduledPolicy = config.toolPolicy?.unattended && config.toolPolicy.fileAccess && config.toolPolicy.allowedTools.includes('read') && !config.disableTools
+        ? config.toolPolicy : undefined
+      let boundSkills: ReturnType<typeof bindScheduledSkills> | undefined
+      const scheduledSkills = scheduledPolicy ? { resolve: (input: string) => boundSkills?.resolve(input) ?? null } : undefined
       const resourceLoader = new DefaultResourceLoader({
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
-        extensionFactories: buildExtensions(config, mcp, pythonExecutable),
-        ...(config.disableSkills && !commonPaths.length
-          ? { noSkills: true, skillsOverride: () => ({ skills: [], diagnostics: [] }) }
-          : employeeSkillLoaderOptions(
-            config.workspaceDir,
-            config.agentDir,
-            config.disableSkills ? undefined : config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
-            loadSkills,
-            commonPaths,
-          )),
+        extensionFactories: buildExtensions(config, mcp, pythonExecutable, scheduledSkills),
+        ...skillLoader,
+        ...(scheduledPolicy ? { skillsOverride: (base: ReturnType<PiLoadSkills>) => {
+          const result = skillLoader.skillsOverride?.(base) ?? base
+          boundSkills = bindScheduledSkills(result.skills, scheduledPolicy)
+          // Keep real paths for SDK bookkeeping, but advertise aliases to the model.
+          return { ...result, skills: result.skills.map(skill => ({ ...skill, disableModelInvocation: true })) }
+        } } : {}),
         noContextFiles: true,
         additionalSkillPaths: config.disableSkills ? commonPaths : [...(config.additionalSkillPaths ?? []), ...commonPaths],
         // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
         systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
           : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,
-        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt || mediaPrompt || browserPrompt || common.unavailable.length
+        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt || mediaPrompt || browserPrompt || common.unavailable.length || scheduledSkills
           ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : []),
             ...(mediaPrompt ? [mediaPrompt] : []),
             ...(browserPrompt ? [browserPrompt] : []),
+            ...(boundSkills?.prompt ? [boundSkills.prompt] : []),
             ...(common.unavailable.length ? ['The built-in Office capability is unavailable for this session. Do not claim it was used or install another executable.'] : [])]
           : undefined,
       })
@@ -1421,6 +1446,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       log.trace('createAgentSession completed', { sessionId: session.sessionId })
       return new PiCodingAgentSession(session, mcp, retryWait, settingsManager, requestTracker, async () => { await Promise.all([...pendingTraces]) }, {
         current: () => config,
+        describeSkill: path => boundSkills?.describe(path),
         update: next => { originalRecorder = next.modelTrace; config = { ...config, ...next, modelTrace: next.modelTrace ? record : undefined } },
         purpose: value => { requestPurpose = value },
         startPrompt: () => { requestsInPrompt = 0; observedKind = 'execution' },

@@ -302,8 +302,16 @@ export class ScheduledTaskService {
   }
   private async enable(id: string, revision: number, creation?: { id: string; revision: number; guard?: () => void }): Promise<ScheduledDefinition> {
     const scope = this.scope()
+    const generation = this.generation
+    const snapshot = this.definition(await this.options.repository.read(scope), id, revision)
+    this.assertScope(scope, generation)
+    creation?.guard?.()
+    if (snapshot.plan && snapshot.input.mode === 'general') {
+      if (!this.options.authorizeModel) throw new AppError('MODEL_NOT_ALLOWED')
+      await withTimeout(this.options.authorizeModel(snapshot.input.modelId), 60000, 'scheduled-enable-model-authorization')
+    }
     const result = await this.options.repository.update(scope, data => {
-      this.assertScope(scope)
+      this.assertScope(scope, generation)
       creation?.guard?.()
       const preparation = creation ? data.creations?.find(item => item.id === creation.id) : undefined
       if (creation && (!preparation || preparation.revision !== creation.revision || preparation.stage !== 'enabling' || preparation.definitionId !== id)) throw new AppError('DRAFT_REVISION_CONFLICT')

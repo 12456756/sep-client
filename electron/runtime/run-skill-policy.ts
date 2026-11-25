@@ -40,7 +40,8 @@ export function withApprovedSkillReadPaths(
           // Symlinks inside the package cannot relocate its approved entry.
           if (resolve(packageRoot, ...parts) !== entryPath) continue
         }
-        paths.push(Object.freeze({ entryPath, ...(packageRoot ? { packageRoot } : {}) }))
+        paths.push(Object.freeze({ entryPath, sha256: skill.sha256, ...(packageRoot ? { packageRoot } : {}),
+          label: Object.freeze({ name: approved.name || skill.name, description: approved.description ?? '' }) }))
       } catch {
         // Missing/replaced files fail closed; never fall back to the profile root.
       }

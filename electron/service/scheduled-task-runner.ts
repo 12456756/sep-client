@@ -7,12 +7,12 @@ import type { ScheduledTaskStore } from '../data/scheduled-task-store'
 import type { TaskRunStore } from '../data/task-run-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { effectivePermissionPolicy, type WorkPlan } from '../domain/arrangement-plan'
-import { buildEmptyTextPlan, classifyScheduledError, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes, scheduledPathDenied, scheduledOutputNotDelivered, scheduledWorkspaceGoal, ScheduledPathDeniedError } from '../domain/scheduled-task'
+import { buildEmptyTextPlan, classifyScheduledError, requestsRestrictedWindowsSchedulePath, resolveScheduledDeliveryNodes, scheduledPathDenied, scheduledSkillUnavailable, scheduledOutputNotDelivered, scheduledWorkspaceGoal, ScheduledPathDeniedError } from '../domain/scheduled-task'
 import { AppError } from '../errors/app-error'
 import { BeforeScheduledAdmissionError, type ScheduledRunnerPort } from './scheduled-dispatcher'
 import { logger } from '../common/logger'
 import type { ScheduledWorkSource } from './scheduled-work-source'
-import { publishScheduledOutputs } from '../data/scheduled-output-directory'
+import { checkScheduledOutputPaths, publishScheduledOutputs } from '../data/scheduled-output-directory'
 
 const log = logger.child('scheduled-runner')
 const runLogFields = (run: ScheduledOccurrence) => ({
@@ -95,6 +95,8 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
         deliverables: employeePlan!.deliverables, dependsOn: [], skillIds: [], requiresUserConfirmation: false }],
     { scheduledAt: run.scheduledAt, startedAt, timezone: run.input.timezone }, !template && !local)
     const directory = await this.options.storage.prepareWorkspace(run.input.workDir, run.id)
+    await checkScheduledOutputPaths(directory, workNodes.flatMap(node => (node.deliverables ?? []).map(file => file.path)),
+      run.input.outputDirectory, run.id, run.scheduledAt, guard)
     guard()
     const primarySubscriptionId = nodes[0]!.subscriptionId
     const task = await this.options.tasks.createTask(run.input.name, goal, directory, local || general ? null : primarySubscriptionId,
@@ -197,9 +199,8 @@ export class ScheduledTaskRunner implements ScheduledRunnerPort {
       const blocked = checkpoint?.state.nodes[0]?.delivery?.issues.find(issue => issue.code === 'INPUT_REQUIRED')
       const failedNodes = checkpoint?.planHash === `${run.id}:${run.revision}` && checkpoint.state.status === 'failed'
         ? checkpoint.state.nodes.filter(node => node.status === 'failed' && node.delivery?.correctionStopped) : []
-      if (failedNodes.some(node => node.delivery?.firstIssue?.code === scheduledPathDenied.code)) {
-        return { state: 'failed', error: classifyScheduledError(new ScheduledPathDeniedError()) }
-      }
+      const accessIssue = [scheduledPathDenied, scheduledSkillUnavailable].find(issue => failedNodes.some(node => node.delivery?.firstIssue?.code === issue.code))
+      if (accessIssue) return { state: 'failed', error: classifyScheduledError(new ScheduledPathDeniedError(accessIssue)) }
       const first = failedNodes[0]?.delivery?.firstIssue
       if (first && !blocked) {
         const issue: ScheduledIssue = { code: first.code, message: `交付验收未通过。首次失败：${first.message}`, action: 'fail' }

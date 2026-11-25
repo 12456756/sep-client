@@ -169,7 +169,13 @@ export class ArrangementDeliveryValidation {
 
   private async accept(submission: DeliverySubmission, checked: Awaited<ReturnType<ArrangementDeliveryValidation['inspect']>>): Promise<void> {
     if (!checked.result.ok) return
-    await this.save({ ...this.progress, issues: [], finalFiles: checked.result.files, summary: submission.summary, pendingSubmission: undefined,
+    const finalFiles = checked.result.files
+    if (this.options.scheduled) {
+      // Published filenames use the approved manifest order, not the model's reply order.
+      const order = new Map(this.options.node.deliverables?.map((file, index) => [file.id, index]))
+      finalFiles.sort((left, right) => order.get(left.id)! - order.get(right.id)!)
+    }
+    await this.save({ ...this.progress, issues: [], finalFiles, summary: submission.summary, pendingSubmission: undefined,
       ...(this.options.mediaSession ? { mediaPhase: 'delivered' as const,
         materializeMs: checked.validationStartedAt - checked.materializeStartedAt, deliveryMs: Date.now() - checked.validationStartedAt } : {}) })
   }
@@ -182,7 +188,7 @@ export class ArrangementDeliveryValidation {
     if (this.options.scheduled && (this.progress.validationAttempts >= MAX_SCHEDULED_VALIDATIONS ||
         priorIssues.length > 0 && issueKey(priorIssues) === issueKey(this.progress.issues))) {
       const first = this.progress.firstIssue
-      const reason = first ? `首次失败（${first.code}）：${first.message}` : '交付未通过验收。'
+      const reason = first ? `首次失败：${first.message}` : '交付未通过验收。'
       await this.save({ ...this.progress, correctionStopped: true })
       return { status: 'failed', stage: 'decision', error: new ScheduledDeliveryValidationError(`已停止自动纠错。${reason}`) }
     }

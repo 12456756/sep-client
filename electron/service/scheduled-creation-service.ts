@@ -172,7 +172,7 @@ export class ScheduledCreationService {
     try {
       const catalog = z.array(employeeSchema).max(1000).parse(await withTimeout(this.options.catalog(), 30000, 'scheduled-creation-catalog'))
       guard()
-      const planningEmployee = catalog.find(item => item.allowedModels.includes(input.modelId))
+      const planningEmployee = catalog.find(item => (!input.parserSubscriptionId || item.subscriptionId === input.parserSubscriptionId) && item.allowedModels.includes(input.modelId))
       if (!planningEmployee) throw new AppError('MODEL_NOT_ALLOWED')
       await withTimeout(this.options.authorize(planningEmployee.subscriptionId, input.modelId), 30000, 'scheduled-creation-authorization')
       guard()
@@ -220,9 +220,24 @@ export class ScheduledCreationService {
         return record
       }
       const execution = candidate.task.execution
+      if (execution.mode === 'auto' && !(execution.collaborationRequest && record.messages.some(message => message.content.includes(execution.collaborationRequest!)))) {
+        await change(item => {
+          item.stage = 'needs_input'; item.error = null
+          item.interpretation = { ...candidate, status: 'needs_input', reasons: [], questions: [{ field: 'execution', question: '请确认这项任务是否需要多员工协作或独立复核。' }] }
+        })
+        return record
+      }
       const selected = execution.mode === 'employee' ? catalog.find(item => item.subscriptionId === execution.subscriptionId) : planningEmployee
       if (!selected) throw new AppError('EMPLOYEE_UNAVAILABLE')
       if (!selected.allowedModels.includes(input.modelId)) throw new AppError('MODEL_NOT_ALLOWED')
+      if (execution.mode === 'employee' && !record.messages.some(message =>
+        [selected.name, selected.subscriptionId].some(value => value && message.content.toLowerCase().includes(value.toLowerCase())))) {
+        await change(item => {
+          item.stage = 'needs_input'; item.error = null
+          item.interpretation = { ...candidate, status: 'needs_input', reasons: [], questions: [{ field: 'execution', question: `如需由「${selected.name}」执行，请在任务描述中明确指定该员工。` }] }
+        })
+        return record
+      }
       let configured: ScheduleInput
       try { configured = scheduleCandidateInput(candidate, { ...input, subscriptionId: selected.subscriptionId }, this.now()) }
       catch (error) {
@@ -285,8 +300,7 @@ export class ScheduledCreationService {
         return record
       }
       guard()
-      if (configured.mode === 'general' || configured.mode === 'empty-text') throw new AppError('INVALID_STATE')
-      const nodes = definition.plan?.kind === 'arrangement' ? definition.plan.nodes : [{ subscriptionId: configured.subscriptionId, modelId: configured.modelId }]
+      const nodes = configured.mode === 'empty-text' || configured.mode === 'general' ? [] : definition.plan?.kind === 'arrangement' ? definition.plan.nodes : [{ subscriptionId: configured.subscriptionId, modelId: configured.modelId }]
       for (const node of nodes) {
         await withTimeout(this.options.authorize(node.subscriptionId, node.modelId), 30000, 'scheduled-creation-final-authorization')
         guard()

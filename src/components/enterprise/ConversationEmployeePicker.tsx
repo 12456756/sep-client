@@ -83,7 +83,7 @@ export function ConversationEmployeePicker({ employees, employeeId, currentEmplo
               </li>
             ))}
           </ul> : <p className="ent-chat-none" role="status">没有匹配的同事</p>}
-        </div>, root.current?.closest('[aria-modal="true"]') ?? document.body,
+        </div>, root.current?.closest('[aria-modal="true"], [role="dialog"]') ?? document.body,
       ) : null}
     </div>
   );
