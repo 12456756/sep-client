@@ -228,6 +228,13 @@ it('keeps pending media visible but removes delivery status after final acceptan
   }
 });
 
+it('does not show a second confirmation for tool approval, but preserves workflow checkpoints', () => {
+  assert.doesNotMatch(renderDetail({ ...work, kind: 'conversation', status: 'waiting-user', nextUserAction: '等待处理操作审批' }), /确认，继续/)
+  assert.match(renderDetail({ ...work, kind: 'flow', status: 'waiting-user',
+    arrangementExecution: { activeRunId: null, status: 'waiting-user', updatedAt: 3,
+      nodes: [{ nodeId: 'video', status: 'completed', finalFiles: [], pendingConfirmation: true }] } }), /确认，继续/)
+})
+
 it('renders a media question and an empty reply form instead of an approval action', () => {
   const html = renderDetail({ ...work, kind: 'flow', status: 'waiting-user',
     arrangementExecution: { activeRunId: null, status: 'waiting-user', updatedAt: 3,

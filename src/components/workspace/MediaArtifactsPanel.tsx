@@ -405,10 +405,11 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
         case 'redo': return api.redoMediaJob(input)
       }
     }
-    if (action !== 'cancel' && action !== 'redo') { void run(action, execute); return }
-    const message = action === 'redo' ? '确认重新生成图片？本次将创建新任务，可能产生费用。' : cancelUpstream ? '确认请求平台取消此任务？取消结果以平台返回为准，不代表退款。' : '确认停止本地跟踪？平台任务可能继续生成和计费。'
+    // Upstream cancellation already goes through the host approval gate.
+    if (cancelUpstream || (action !== 'cancel' && action !== 'redo')) { void run(action, execute); return }
+    const message = action === 'redo' ? '确认重新生成图片？本次将创建新任务，可能产生费用。' : '确认停止本地跟踪？平台任务可能继续生成和计费。'
     void feedbackController.confirm({ key: `image-action:${taskId}:${job.jobId}:${action}:${cancelUpstream}`, message,
-      actionLabel: action === 'redo' ? '重新生成' : cancelUpstream ? '请求取消' : '停止跟踪', busyLabel: '正在处理',
+      actionLabel: action === 'redo' ? '重新生成' : '停止跟踪', busyLabel: '正在处理',
       onConfirm: async () => {
         if (!notice.isCurrent()) return { success: false }
         try { return await run(action, execute, true) }

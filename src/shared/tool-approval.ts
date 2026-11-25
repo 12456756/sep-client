@@ -29,6 +29,9 @@ export const toolApprovalSummarySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('browser-click') }).strict(),
   z.object({ kind: z.literal('browser-snapshot'), savesFile: z.boolean() }).strict(),
   z.object({ kind: z.literal('browser-save-assets') }).strict(),
+  z.object({ kind: z.literal('dingtalk-message'), targetType: z.enum(['person', 'group']),
+    target: z.string().min(1).max(240).regex(/^[^\p{Cc}\p{Bidi_Control}]+$/u),
+    body: z.string().min(1).max(64000) }).strict(),
 ])
 export type ToolApprovalSummary = z.infer<typeof toolApprovalSummarySchema>
 

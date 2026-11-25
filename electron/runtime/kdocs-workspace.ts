@@ -150,7 +150,7 @@ export class KdocsWorkspaceRuntime implements ConnectorRuntimePort {
       id: 'kdocs', name: '金山文档', instructions: {
         reference: 'Read kdocs/SKILL.md before using Kdocs cloud documents.',
         schema: 'Inspect bounded Kdocs adapter contracts: kdocs, drive, otl, sheet or service.action. Actions use hyphens. Not the full official CLI.',
-        execute: 'Execute as the connected WPS personal account. args: [service, action, --json, JSON object]. Read reference/schema first. All executions require approval. Preserve pagination and pending task IDs. Verify writes and show created links. Never retry uncertain writes or bypass permissions.',
+        execute: 'Execute as the connected WPS personal account. args: [service, action, --json, JSON object]. Read reference/schema first. Preserve pagination and pending task IDs. Verify writes and show created links. Never retry uncertain writes or bypass permissions.',
       },
       reference: async path => { if (path !== 'kdocs/SKILL.md') throw new ConnectorInputError('请读取 kdocs/SKILL.md。'); return reference },
       schema: async path => ({ text: kdocsSchema(path), isError: false }),

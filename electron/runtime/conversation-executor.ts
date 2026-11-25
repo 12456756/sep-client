@@ -78,7 +78,7 @@ export interface ConversationExecutorOptions {
   authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   authorizeModel?: ((modelId: string, preferredSubscriptionId?: string) => Promise<EmployeeRuntimeConfig | null>) | undefined
   workspaceRoot: () => string
-  approvals: Pick<ToolApprovals, 'request' | 'requestDecision'>
+  approvals: Pick<ToolApprovals, 'request' | 'requestDecision' | 'requestTaskTool'>
   events: Pick<EventPipeline, 'drain' | 'enqueue' | 'forgetRun' | 'pendingSideEffects' | 'takeResponse'>
   workers: Pick<WorkerRegistry, 'forget' | 'isCurrent' | 'register'>
   enqueue: (queued: QueuedRun) => void
@@ -283,7 +283,7 @@ export class ConversationExecutor {
           artifactPath: join(workspaceDir, directory.relativePath),
           artifactRelativePath: directory.relativePath,
           checkArtifact: async () => (await this.options.conversationArtifacts?.prepare(workspaceDir, taskId))?.status === 'ready',
-          authorize: input => this.options.approvals.request({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: LOCAL_MEDIA_TOOL, input: redactValue(input) }),
+          authorize: input => this.options.approvals.requestTaskTool({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: LOCAL_MEDIA_TOOL, input: redactValue(input) }, undefined, !!task.scheduledOrigin),
         }) : undefined
       diagnosticPhase = 'media-setup'
       const rawMediaTools = await this.options.media?.prepareRun({
@@ -405,7 +405,7 @@ export class ConversationExecutor {
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
-        onApprovalRequest: (request, detection) => this.options.approvals.request(request, detection),
+        onApprovalRequest: (request, detection) => this.options.approvals.requestTaskTool(request, detection, !!task.scheduledOrigin),
         shouldYieldAfterToolTurn: toolResults => scheduleReceiptReady && !!toolResults?.every(result => result.toolName === CREATE_SCHEDULED_TASK_TOOL),
         onResponseSettled: async () => { await waitForMedia() },
         onEvent: event => this.options.events.enqueue(describeSkillRead(event)),

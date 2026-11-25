@@ -17,10 +17,33 @@ import type { BrowserHandoff, SharedBrowserOwner } from './pi-browser-owner'
 import { BROWSER_SAVE_ASSETS, BrowserPageAssets, createBrowserPageTools } from './pi-browser-page-tools'
 import { handoffCompletionSchema, prepareHandoffDetection } from './pi-browser-handoff'
 import { BrowserAccessGuard, browserRateLimitMessage } from './pi-browser-access-guard'
+import { isOrdinaryBrowserOrigin, isRoutineBrowserCall } from './pi-playwright-mcp'
 
 export const BROWSER_MODE_TOOL = 'mcp__playwright__browser_set_mode'
 const BROWSER_SNAPSHOT_TOOL = 'mcp__playwright__browser_snapshot'
+const BROWSER_NAVIGATE_TOOL = 'mcp__playwright__browser_navigate'
+const BROWSER_CLICK_TOOL = 'mcp__playwright__browser_click'
 const inlineSnapshotSchema = z.object({ depth: z.number().optional(), boxes: z.boolean().optional() }).strict()
+const simpleClick = z.object({ target: z.string().regex(/^(?:f[1-9]\d{0,8})?e[1-9]\d{0,8}$/), element: z.string().max(500).optional(),
+  button: z.literal('left').optional(), doubleClick: z.literal(false).optional(), modifiers: z.tuple([]).optional() }).strict()
+
+function ordinaryPage(url: string): boolean {
+  try { return isOrdinaryBrowserOrigin(new URL(url)) } catch { return false }
+}
+
+async function ordinaryLinkDestination(page: Page, target: string): Promise<string | undefined> {
+  // Resolve a native link and navigate to its href, never dispatch its click handlers.
+  const link = page.locator(`aria-ref=${target}`).and(page.locator('a[href]:visible:not([download],[ping],[onclick],[onmousedown],[onpointerdown],[data-method],[role])'))
+  const href = await link.evaluate(node => {
+    const element = node as unknown as { href: string; getAttribute(name: string): string | null; closest(selector: string): unknown;
+      ownerDocument: { defaultView: { top: unknown } | null } }
+    const view = element.ownerDocument.defaultView
+    const target = element.getAttribute('target')
+    return view && view.top === view && (!target || target === '_self') && !element.closest('form, [contenteditable=true]') ? element.href : undefined
+  }, undefined, { timeout: 500 }).catch(() => undefined)
+  if (!href || !isRoutineBrowserCall(BROWSER_NAVIGATE_TOOL, { url: href })) return undefined
+  return new URL(href).origin === pageOrigin(page) ? href : undefined
+}
 
 function pageOrigin(page: Page): string | undefined {
   try {
@@ -71,6 +94,15 @@ export class BrowserModeSession {
     if (!this.backgroundHidden || pages?.length !== 1) return undefined
     try { if (pages[0].url() === new URL(url).href) return pages[0] }
     catch { return undefined }
+  }
+
+  routinePage(): Page | undefined {
+    const pages = this.context?.pages()
+    return this.backgroundHidden && pages?.length === 1 && ordinaryPage(pages[0].url()) ? pages[0] : undefined
+  }
+
+  canReadCurrentPage(): boolean {
+    return !this.unavailable && this.mode === 'background' && (this.context?.pages().every(page => page.url() === 'about:blank' || ordinaryPage(page.url())) ?? true)
   }
 
   hasNavigatedPage(): boolean {
@@ -219,7 +251,7 @@ export async function createHostMcpRuntime(
       handoff => createHostMcpRuntime(browserServers, workspaceDir, true, undefined, handoff, undefined, browserArtifactTaskId, browserTaskStateDir), waitForHuman)
     try {
       const other = await createMcpRuntime(otherServers, workspaceDir, fetches)
-      return { builtinBrowser: true, browserSnapshotApproval: browser.browserSnapshotApproval, tools: [...browser.tools, ...other.tools],
+      return { builtinBrowser: true, browserRoutineAccess: browser.browserRoutineAccess, browserSnapshotApproval: browser.browserSnapshotApproval, tools: [...browser.tools, ...other.tools],
         permissions: new Map([...browser.permissions, ...other.permissions]),
         dispose: async () => { try { await other.dispose() } finally { await browser.dispose() } } }
     } catch (error) { await browser.dispose(); throw error }
@@ -287,6 +319,22 @@ export async function createHostMcpRuntime(
       tail = result.then(() => undefined, () => undefined)
       return result
     }
+    const navigate = active.tools.find(tool => tool.name === BROWSER_NAVIGATE_TOOL)
+    const linkClaims = new Map<string, { page: Page; source: string; target: string; href: string }>()
+    const browserRoutineAccess: NonNullable<McpRuntime['browserRoutineAccess']> = {
+      canReadCurrentPage: () => !lifetime.signal.aborted && browser.canReadCurrentPage(),
+      claimLink: (id, input, signal) => serial(signal, async () => {
+        const parsed = simpleClick.safeParse(input)
+        const page = browser.routinePage()
+        if (!navigate || !page || !parsed.success || linkClaims.size >= 64 || linkClaims.has(id)) return false
+        const source = page.url(), { target } = parsed.data
+        const href = await ordinaryLinkDestination(page, target)
+        if (!href || lifetime.signal.aborted || signal?.aborted || browser.routinePage() !== page || page.url() !== source) return false
+        linkClaims.set(id, { page, source, target, href })
+        return true
+      }),
+      reset: () => linkClaims.clear(),
+    }
     const listTabs = active.tools.find(tool => tool.name === 'mcp__playwright__browser_tabs')
     const currentPage = async (id: string, signal: AbortSignal) => {
       const tabs = await listTabs?.execute(id, { action: 'list' }, signal)
@@ -298,7 +346,7 @@ export async function createHostMcpRuntime(
     }
     const modeTool: McpRuntime['tools'][number] = {
       name: BROWSER_MODE_TOOL, label: '切换浏览器显示',
-      description: 'Navigate to the target site first. Use visible with purpose handoff (default) for login, QR scan or CAPTCHA. Shows the same tab and pauses until a clear completion signal or the user clicks the fallback, for up to 3 minutes. By default the host looks for a new sign-out control on the same site. If the expected result is known, pass completion with the exact destination URL (no query or fragment) and exact visible success text that is absent before handoff. Never guess either value or include account details, tokens or form values. Denial, timeout or cancellation closes the browser. Use purpose observe only when the user asks to watch automation. Read a fresh snapshot and verify the result after handoff. Handoff never grants business authorization.',
+      description: 'Navigate to the target site first. Use visible with purpose handoff (default) for login, QR scan or CAPTCHA. Shows the same tab and pauses until a clear completion signal or the user clicks the fallback, for up to 3 minutes. The host uses a known site login signal when available; otherwise it looks for a new sign-out control on the same site. For sites without a known signal, if the expected result is known, pass completion with the exact destination URL (no query or fragment) and exact visible success text absent before handoff. Never guess either value or include account details, tokens or form values. Denial, timeout or cancellation closes the browser. Use purpose observe only when the user asks to watch automation. Read a fresh snapshot only if the handed-off page remains available. Handoff never grants business authorization.',
       promptSnippet: 'Switch between background browsing, human handoff and watching automated actions.',
       parameters: Type.Unsafe<Record<string, unknown>>({ type: 'object', properties: { mode: { type: 'string', enum: ['background', 'visible'] }, purpose: { type: 'string', enum: ['handoff', 'observe'] },
         completion: { type: 'object', properties: { url: { type: 'string', maxLength: 2048 }, text: { type: 'string', minLength: 3, maxLength: 100 } }, required: ['url', 'text'], additionalProperties: false },
@@ -314,6 +362,11 @@ export async function createHostMcpRuntime(
         const handoff = parsed.data.mode === 'visible' && parsed.data.purpose !== 'observe'
         if (parsed.data.completion && !handoff) return result('Completion can only be used for a visible handoff.', true)
         if (handoff && !waitForHuman) return result('Manual browser handoff is unavailable in this host.', true)
+        let page: Page | undefined
+        let detection: Awaited<ReturnType<typeof prepareHandoffDetection>> | undefined
+        const completionMessage = () => detection?.evidence === 'site-login' ? 'Login was confirmed.'
+          : detection?.evidence === 'page-marker' ? 'The page showed the expected completion marker. Login status was not independently verified.'
+            : 'Login status could not be confirmed.'
         try {
           if (await checkRateLimit(operationSignal)) return rateLimited('browser_set_mode')
           lastNavigation = undefined
@@ -325,12 +378,12 @@ export async function createHostMcpRuntime(
             catch { return result('Persistent profile is unavailable or a temporary page is open. Close that session before opting in.', true) }
           }
           if (handoff && !browser.hasNavigatedPage()) return result('No target website is open. Navigate to the intended login page before requesting handoff; do not show a blank window.', true)
-          const page = handoff ? await currentPage(_id, operationSignal).catch(() => undefined) : undefined
+          page = handoff ? await currentPage(_id, operationSignal).catch(() => undefined) : undefined
           if (handoff && !page) return result('Select the target website tab before requesting login; the current tab is blank or unavailable.', true)
-          const waitForCompletion = page && await prepareHandoffDetection(page, parsed.data.completion)
+          detection = page && await prepareHandoffDetection(page, parsed.data.completion)
           const switchMode = (mode: BrowserMode) => browser.setMode(mode, operationSignal)
           await switchMode(parsed.data.mode)
-          if (page && waitForCompletion) {
+          if (page && detection) {
             const closed = new AbortController()
             const onClose = () => closed.abort()
             const handoffSignal = AbortSignal.any([operationSignal, closed.signal])
@@ -344,38 +397,52 @@ export async function createHostMcpRuntime(
                 handoffSignal.addEventListener('abort', onAbort, { once: true })
               })
               handoffSignal.throwIfAborted()
-              const completed = await Promise.race([waitForHuman!({ signal: handoffSignal, waitForCompletion }), cancelled])
+              const completed = await Promise.race([waitForHuman!({ signal: handoffSignal, waitForCompletion: detection.waitForCompletion }), cancelled])
               handoffSignal.throwIfAborted()
               if (!completed) {
+                detection.dispose()
                 await browser.dispose()
-                return result('Human handoff was denied or expired. Browser session closed. Do not assume login succeeded; ask the user before retrying in a new session.', true, true)
+                return result(`The handoff was denied or expired. ${completionMessage()} Browser session closed. Do not reopen or retry automatically.`, true, true)
               }
               origin = pageOrigin(page)
             } finally {
+              detection.dispose()
               if (onAbort) handoffSignal.removeEventListener('abort', onAbort)
               page.removeListener('close', onClose)
             }
+            if (page.isClosed()) throw new Error('Handed-off page closed.')
             await switchMode('background')
-            if (await checkRateLimit(operationSignal)) return rateLimited('browser_set_mode')
+            const limited = await checkRateLimit(operationSignal)
+            if (page.isClosed() || browser.unavailable) throw new Error('Handed-off page closed.')
+            if (limited) return rateLimited('browser_set_mode')
             if (epoch === approvalEpoch && origin && pageOrigin(page) === origin && browser.singleBackgroundPage(page.url()) === page) {
-              snapshotGrant = { page, origin }
+              const grantedPage = page
+              snapshotGrant = { page: grantedPage, origin }
               const revoke = () => browserSnapshotApproval.reset()
-              const onNavigation = () => { if (pageOrigin(page) !== origin) revoke() }
-              page.on('framenavigated', onNavigation)
-              page.once('close', revoke)
-              detachSnapshotGrant = () => { page.off('framenavigated', onNavigation); page.off('close', revoke) }
+              const onNavigation = () => { if (pageOrigin(grantedPage) !== origin) revoke() }
+              grantedPage.on('framenavigated', onNavigation)
+              grantedPage.once('close', revoke)
+              detachSnapshotGrant = () => { grantedPage.off('framenavigated', onNavigation); grantedPage.off('close', revoke) }
             }
           }
           if (parsed.data.mode === 'visible' && !handoff) return result('Browser window remains visible for the user to watch automated actions. Read a fresh snapshot. Use a manual handoff before the user edits the page; use background when observation ends. Window visibility does not authorize business submissions.')
-          return result(`${browser.backgroundHidden ? 'Background browser ready.' : 'Native hiding unavailable; the original browser window remains visible.'}${parsed.data.profile ? ' Conversation persistent profile enabled.' : ''} The same pages are retained without reload. Read a fresh snapshot and verify login now. Human completion does not authorize business submissions. Do not replay any submission.`)
+          const nextStep = detection?.evidence === 'site-login' ? 'Login was confirmed. Read a fresh snapshot before continuing.'
+            : 'Read a fresh snapshot and verify login if needed.'
+          return result(`${browser.backgroundHidden ? 'Background browser ready.' : 'Native hiding unavailable; the original browser window remains visible.'}${parsed.data.profile ? ' Conversation persistent profile enabled.' : ''} The same pages are retained without reload. ${nextStep} Human completion does not authorize business submissions. Do not replay any submission.`)
         } catch {
-          await browser.dispose()
-          return result('Browser handoff or mode switch did not complete; browser session closed. Login is unverified. Do not replay any business submission.', true, true)
-        }
+          detection?.dispose()
+          const pageClosed = handoff && !operationSignal.aborted && !!page && (page.isClosed() || browser.unavailable)
+          await browser.dispose().catch(() => undefined)
+          if (pageClosed) return result(`${completionMessage()} The handed-off browser page was closed and cannot be used to continue. Do not reopen or retry automatically.`, !detection?.evidence, true)
+          const completion = handoff ? ` ${completionMessage()}` : ''
+          return result(`Browser handoff or mode switch did not complete; browser session closed.${completion} Do not replay any business submission.`, true, true)
+        } finally { detection?.dispose() }
       }),
     }
     const tools = active.tools.map(tool => ({ ...tool, execute: (...args: Parameters<typeof tool.execute>) => tool.name.startsWith('mcp__playwright__') ? serial(args[2], async () => {
       const name = tool.name.slice('mcp__playwright__'.length)
+      const link = tool.name === BROWSER_CLICK_TOOL ? linkClaims.get(args[0]) : undefined
+      if (link) linkClaims.delete(args[0])
       const claim = tool.name === BROWSER_SNAPSHOT_TOOL ? snapshotClaims.get(args[0]) : undefined
       if (claim) snapshotClaims.delete(args[0])
       const snapshotScopeChanged = (): McpToolResult => ({ content: [{ type: 'text', text: 'The handed-off page changed. No snapshot is returned. Recheck the target and request fresh approval if needed.' }],
@@ -395,7 +462,14 @@ export async function createHostMcpRuntime(
           details: { serverName: 'playwright', toolName: name, isError: false } }
       }
       if (name !== 'browser_snapshot') lastNavigation = undefined
-      const result = await tool.execute(...args)
+      // A stale claim cannot become a genuine click. Recheck the exact link under the same browser lock.
+      if (link && (!navigate || simpleClick.safeParse(args[1]).data?.target !== link.target || browser.routinePage() !== link.page ||
+        link.page.url() !== link.source || await ordinaryLinkDestination(link.page, link.target) !== link.href || link.page.url() !== link.source)) {
+        return { content: [{ type: 'text' as const, text: 'The ordinary link changed. No click was performed. Read the current page and locate the link again.' }],
+          details: { serverName: 'playwright', toolName: name, isError: true } }
+      }
+      signal.throwIfAborted()
+      const result = link && navigate ? await navigate.execute(args[0], { url: link.href }, signal) : await tool.execute(...args)
       // A cancelled upstream action may still run. Close this isolated browser before another call.
       if (result.details.executionUncertain) await browser.dispose()
       else if (tool.name === 'mcp__playwright__browser_close' && !result.details.isError) await browser.close()
@@ -420,7 +494,7 @@ export async function createHostMcpRuntime(
         return await checkRateLimit(signal) ? browserRateLimitMessage : undefined
       },
     }) : []
-    return { builtinBrowser: true, browserSnapshotApproval, tools: [...tools, modeTool, ...pageTools], permissions: new Map([...active.permissions,
+    return { builtinBrowser: true, browserRoutineAccess, browserSnapshotApproval, tools: [...tools, modeTool, ...pageTools], permissions: new Map([...active.permissions,
       [BROWSER_MODE_TOOL, 'confirm-each' as const], ...pageTools.map(tool => [tool.name, tool.name === BROWSER_SAVE_ASSETS ? 'confirm-each' : 'auto-approve'] as const)]), dispose }
   } catch (error) { await dispose(); throw error }
 }

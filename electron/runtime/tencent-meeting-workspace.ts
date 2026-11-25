@@ -133,7 +133,7 @@ export class TencentMeetingWorkspaceRuntime implements ConnectorRuntimePort {
       id: 'tmeet', name: '腾讯会议', instructions: {
         reference: 'Read the Tencent Meeting adapter guide at tmeet/SKILL.md before invoking meeting or recording tools.',
         schema: 'Inspect the supported CSEP Tencent Meeting adapter contract; path is tmeet, meeting, record, identity or service.method. This is not the full native CLI.',
-        execute: 'Execute a supported Tencent Meeting command as the connected user. args is [service, method, --json, JSON object]. Read reference and schema first. All executions require approval. Never override identity. Verify concrete writes, preserve pagination and never retry uncertain writes. Only ordinary scheduled meetings are supported.',
+        execute: 'Execute a supported Tencent Meeting command as the connected user. args is [service, method, --json, JSON object]. Read reference and schema first. Never override identity. Verify concrete writes, preserve pagination and never retry uncertain writes. Only ordinary scheduled meetings are supported.',
       },
       reference: async path => {
         if (path !== 'tmeet/SKILL.md') throw new Error('Invalid Tencent Meeting reference.')

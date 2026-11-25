@@ -290,10 +290,12 @@ describe('TaskRuntime arrangement integration', () => {
     const checkpoints = new MemoryCheckpointStore()
     const events: TaskExecutionEvent[] = []
     const contexts: Array<Parameters<NonNullable<ConstructorParameters<typeof TaskRuntime>[0]['createWorker']>>[0]['context']> = []
+    const approvalRequests: string[] = []
 
     const runtime = new TaskRuntime({
       taskManager: manager, taskRunStore: runStore, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
-      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: event => events.push(event), onApprovalRequest: () => {},
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: event => events.push(event),
+      onApprovalRequest: request => { approvalRequests.push(request.toolName); runtime.respondToApproval({ requestId: request.requestId, approved: false }) },
       resolveEmployee: id => id === employee.subscriptionId ? employee : null,
       authorizeEmployee: async (subscriptionId, modelId) => {
         if (subscriptionId !== employee.subscriptionId) return null
@@ -307,6 +309,9 @@ describe('TaskRuntime arrangement integration', () => {
             assert.match(prompt, /^你正在执行编排工作计划中的一个节点。/)
             assert.match(prompt, /没有可用的前置节点输出。/)
             assert.match(prompt, /节点执行指令：\ndo node A/)
+            const { taskId, runId, subscriptionId } = options.context
+            assert.equal(await options.onApprovalRequest({ taskId, runId, subscriptionId,
+              toolName: 'feishu_execute', input: {}, registeredTool: true }), true)
             await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'node result' } })
           },
           async abort() {},
@@ -320,7 +325,10 @@ describe('TaskRuntime arrangement integration', () => {
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
 
     assert.deepEqual(contexts.map(context => context.modelId), ['node-model'])
-    assert.equal(contexts[0]?.toolPolicy?.preset, 'full-local')
+    // A saved preset is not an explicit full-file grant for this execution.
+    assert.equal(contexts[0]?.toolPolicy?.fileAccess, 'workspace')
+    assert.equal(contexts[0]?.toolPolicy?.allowedTools.includes('bash'), false)
+    assert.deepEqual(approvalRequests, [])
     assert.ok(events.some(event => event.type === 'arrangement_node_started'))
     assert.ok(events.some(event => event.type === 'arrangement_node_completed'))
     const runs = await runStore.list(scope, task.id)

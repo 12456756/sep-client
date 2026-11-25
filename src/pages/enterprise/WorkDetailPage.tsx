@@ -284,7 +284,7 @@ function NeedsYou({ work, workspace, mediaRetryState, conversationSkipped, onVie
     {waiting.map(node => <MediaInputReplyForm key={node.inputRequest!.requestId} work={work} workspace={workspace} nodeId={node.nodeId} request={node.inputRequest!} />)}
   </section>;
 
-  if (work.status === 'waiting-user') {
+  if (work.status === 'waiting-user' && execution?.status === 'waiting-user' && execution.nodes.some(node => node.pendingConfirmation)) {
     return (
       <div className="ent-flow-act">
         <AlertTriangle size={16} aria-hidden />

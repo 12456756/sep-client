@@ -1,7 +1,10 @@
 import { Type } from 'typebox'
+import { z } from 'zod'
 import { ConnectorInputError } from '../../domain/connectors'
 import type { ConnectorBinding, ConnectorCommandResult } from '../../domain/connectors'
 import type { McpRuntime, McpToolResult } from './pi-mcp-client'
+
+const executeInput = z.object({ args: z.array(z.string()).min(2).max(128) }).strict()
 
 export function attachConnectorTools(runtime: McpRuntime, binding: ConnectorBinding | undefined, workspaceDir: string): McpRuntime {
   if (!binding?.commands?.length) return runtime
@@ -31,5 +34,9 @@ export function attachConnectorTools(runtime: McpRuntime, binding: ConnectorBind
       tool('execute', (params, signal) => provider.execute(params.args as string[], workspaceDir, signal)),
     ]
   })
-  return { ...runtime, tools: [...runtime.tools, ...tools], permissions }
+  return { ...runtime, tools: [...runtime.tools, ...tools], permissions, evaluateConnectorCommand(toolName, input) {
+    const provider = binding.commands?.find(command => `${command.id}_execute` === toolName)
+    const parsed = executeInput.safeParse(input)
+    if (parsed.success) return provider?.evaluateCommand?.(parsed.data.args)
+  } }
 }

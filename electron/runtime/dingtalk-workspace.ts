@@ -5,7 +5,7 @@ import type { ConnectorState } from '../../src/shared/connectors'
 import type { DingTalkWorkspaceStore } from '../data/dingtalk-workspace-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { ConnectorBinding, ConnectorRuntimePort, ConnectorCommandResult, ConnectorCommandBinding } from '../domain/connectors'
-import { runDingTalk, validateDingTalkArgs, dingTalkSchemaArgs, DINGTALK_PRODUCTS, type DingTalkRunner } from './dingtalk-command'
+import { runDingTalk, validateDingTalkArgs, evaluateDingTalkCommand, dingTalkSchemaArgs, DINGTALK_PRODUCTS, type DingTalkRunner } from './dingtalk-command'
 
 const key = (scope: TaskOwnerScope): string => JSON.stringify([scope.enterpriseId, scope.memberId])
 interface Attempt { controller: AbortController; done: Promise<void>; state: ConnectorState }
@@ -145,7 +145,7 @@ export class DingTalkWorkspaceRuntime implements ConnectorRuntimePort {
         id: 'dingtalk', name: '钉钉', instructions: {
           reference: 'Read official DingTalk DWS instructions. Start with SKILL.md, then relevant references/*.md. Use dingtalk_execute instead of bash. Do not guess commands or IDs; follow business confirmation rules.',
           schema: 'Read the official compact DWS schema for a product or exact leaf command path, e.g. calendar or calendar event create. This returns command contracts, not business data.',
-          execute: 'Execute a DingTalk business command as the connected user. args is argv without dws. Read relevant reference and leaf schema first. Client manages identity, format and yes flags. No auth/profile/token/debug/shell/config flags. Never automatically retry uncertain writes. Obtain explicit approval for batch/permanent PAT grants including scope, grant type and expiry. Preserve pagination and partial failures; verify writes with one read.',
+          execute: 'Execute a DingTalk business command as the connected user. args is argv without dws. Read relevant reference and leaf schema first. Client manages identity, format and yes flags. Execute ordinary work within the connected account without asking again in chat. For a simple message to a unique person or group, call chat +dm --to NAME --content TEXT or chat +send-to-group --group NAME --content TEXT directly. Clarify ambiguous recipients before sending. Never automatically retry uncertain writes. Obtain explicit approval for batch/permanent PAT grants including scope, grant type and expiry. Preserve pagination and partial failures; verify writes with one read.',
         },
         reference: async path => {
           if (!valid()) throw new Error('DingTalk connection changed.')
@@ -159,6 +159,7 @@ export class DingTalkWorkspaceRuntime implements ConnectorRuntimePort {
           if (!/^[\w+ -]{1,160}$/.test(path) || !DINGTALK_PRODUCTS.has(path.split(' ')[0])) throw new Error('Invalid DingTalk schema path.')
           return invoke(dingTalkSchemaArgs(path), undefined, source)
         },
+        evaluateCommand: evaluateDingTalkCommand,
         execute: (args, workspaceDir, source) => invoke(validateDingTalkArgs(args), workspaceDir, source),
     }
     return { revision: record.revision, servers: [], fetch, commands: [commands] }

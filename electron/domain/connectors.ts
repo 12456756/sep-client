@@ -1,4 +1,5 @@
 import type { ConnectorCredentials, ConnectorId, ConnectorState } from '../../src/shared/connectors'
+import type { ToolApprovalSummary } from '../../src/shared/tool-approval'
 import type { TaskOwnerScope } from '../data/scope-path'
 
 export class ConnectorInputError extends Error {
@@ -17,8 +18,10 @@ export interface ConnectorCommandBinding {
   instructions: { reference: string; schema: string; execute: string }
   reference(path: string, signal?: AbortSignal): Promise<string>
   schema(path: string, signal?: AbortSignal): Promise<ConnectorCommandResult>
+  evaluateCommand?(args: string[]): ConnectorCommandDecision | undefined
   execute(args: string[], workspaceDir: string, signal?: AbortSignal): Promise<ConnectorCommandResult>
 }
+export type ConnectorCommandDecision = { kind: 'read' } | { kind: 'approval'; summary: ToolApprovalSummary }
 export interface ConnectorCommandResult { text: string; isError: boolean; executionUncertain?: true }
 export interface ConnectorRegistryPort {
   provider(id: ConnectorId): Promise<ConnectorRuntimePort>

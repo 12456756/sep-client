@@ -1,9 +1,48 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { ToolApprovals } from './run-approvals'
+import { LOCAL_MEDIA_TOOL } from '../../src/shared/local-media-progress'
+import { ORIGINAL_DOCUMENT_REPLACE_TOOL, RUN_PYTHON_TOOL } from '../../src/shared/python-tool'
 
 const handoff = { taskId: 'task', runId: 'run', subscriptionId: 'sub', toolName: 'mcp__playwright__browser_set_mode',
   input: { operation: 'manual-handoff', autoDetect: true } }
+
+test('interactive execution bypasses generic tool approval without creating pending requests', async () => {
+  const approvals = new ToolApprovals({ onRequest: () => assert.fail('unexpected approval request'),
+    onResolved: () => assert.fail('unexpected pending approval resolution') })
+  for (const toolName of ['write', 'edit', LOCAL_MEDIA_TOOL, RUN_PYTHON_TOOL]) {
+    assert.equal(await approvals.requestTaskTool({ ...handoff, toolName, input: {} }), true, toolName)
+  }
+  for (const toolName of ['feishu_execute', 'mcp__officecli__officecli', 'mcp__playwright__browser_click', 'mcp__custom__write']) {
+    assert.equal(await approvals.requestTaskTool({ ...handoff, toolName, input: {}, registeredTool: true }), true, toolName)
+  }
+  assert.equal(approvals.size, 0)
+})
+
+test('existing consent and unattended execution do not inherit the interactive task default', async () => {
+  let requestId = ''
+  const approvals = new ToolApprovals({ onRequest: request => { requestId = request.requestId } })
+  const reserved = [
+    { toolName: 'file_select_original', input: { path: '/external/file.txt' } },
+    { toolName: 'file_edit_once', input: {} },
+    { toolName: ORIGINAL_DOCUMENT_REPLACE_TOOL, input: {}, registeredTool: true },
+    { toolName: 'bash', input: {} },
+    { toolName: 'media_generate_image', input: {} },
+    { toolName: handoff.toolName, input: { profile: 'persistent' } },
+    { toolName: 'dingtalk_execute', input: { args: ['--format=json', 'pat', 'grant'] }, registeredTool: true },
+    { toolName: 'mcp__playwright__browser_snapshot', input: {}, registeredTool: true, summary: { kind: 'browser-snapshot', savesFile: true } },
+  ] as const
+  for (const request of reserved) {
+    const result = approvals.requestTaskTool({ ...handoff, ...request })
+    assert.equal(approvals.getPending(requestId)?.toolName, request.toolName)
+    assert.equal(approvals.respond({ requestId, approved: false }), true)
+    assert.equal(await result, false)
+  }
+  const result = approvals.requestTaskTool({ ...handoff, toolName: 'feishu_execute', input: {}, registeredTool: true }, undefined, true)
+  assert.equal(approvals.getPending(requestId)?.toolName, 'feishu_execute')
+  approvals.denyAll()
+  assert.equal(await result, false)
+})
 
 test('browser detection resolves only the originating handoff after delivery', async () => {
   const events: Array<[string, boolean, string]> = []

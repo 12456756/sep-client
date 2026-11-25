@@ -14,15 +14,15 @@ export interface RunSettings {
 
 export const RUN_PERMISSIONS: { id: ArrangementPermissionPreset; label: string; hint: string }[] = [
   { id: 'read-only', label: '仅可查看', hint: '可以读取和搜索，不允许修改文件。' },
-  { id: 'workspace-edit', label: '工作区内修改', hint: '可以新建成果；修改已有文件须确认。' },
-  { id: 'full-local', label: '完全访问（本机文件）', hint: '仅本次运行；运行内置 Python 仍需单独确认。' },
+  { id: 'workspace-edit', label: '工作区内修改', hint: '可直接新建、修改工作区内的文件。' },
+  { id: 'full-local', label: '完全访问（本机文件）', hint: '仅本次运行，可访问工作区外的本机文件。' },
 ];
 
 export const DEFAULT_CONVERSATION_PERMISSION: ArrangementPermissionPreset = 'workspace-edit';
 
 export const FULL_FILE_ACCESS_CONFIRMATION: FeedbackConfirmation = {
   title: '确认允许完全访问？',
-  message: '仅本次运行可以读取和修改本机文件（含附件原件），修改时不再逐次确认。若员工请求运行内置 Python，客户端会另行确认。',
+  message: '仅本次运行可以读取和修改本机文件（含附件原件），修改时不再逐次确认。',
   checkboxLabel: '我了解风险', checkboxRequired: true, actionLabel: '允许完全访问', busyLabel: '确认中',
 };
 

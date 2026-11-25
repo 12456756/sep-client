@@ -1026,7 +1026,7 @@ export class TaskRuntime {
         createWorker: this.createWorker,
         getRefreshToken: this.getRefreshToken,
         onAuthenticationRequired: this.onAuthenticationRequired,
-        onApprovalRequest: (request, detection) => this.approvals.request(request, detection),
+        onApprovalRequest: (request, detection) => this.approvals.requestTaskTool(request, detection, !!plan.scheduledOrigin),
         onEvent: event => this.enqueueEvent(event),
         beforeNodeCompletion: this.beforeNodeCompletion,
         authorizeEmployee: (subscriptionId, modelId) => plan.scheduledOrigin?.execution === 'general'

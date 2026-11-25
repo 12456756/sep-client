@@ -106,7 +106,8 @@ export function managedFileTools(config: PiAgentSessionConfig) {
     if (policy.unattended && (selected || owned?.dev !== existing.info.dev || owned.ino !== existing.info.ino)) return conflict()
     if (existing.bytes.equals(bytes)) return path
     if (policy.fileAccess !== 'local' && (selected || owned?.dev !== existing.info.dev || owned.ino !== existing.info.ino)) {
-      const approved = await config.authorizeTool({ toolName: 'file_edit_once', input: { path, before: text.decode(existing.bytes), after: value } })
+      const approved = await config.authorizeTool({ toolName: 'file_edit_once', input: { path, before: text.decode(existing.bytes), after: value },
+        ...(!selected ? { registeredTool: true as const } : {}) })
       if (!approved) throw new Error('File change was not approved.')
     }
     const key = process.platform === 'win32' ? path.toLowerCase() : path

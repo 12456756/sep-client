@@ -7,7 +7,7 @@
 .feedback-corner-close:hover:not(:disabled) { background: color-mix(in srgb, currentColor 10%, transparent); }
 .feedback-corner-close:disabled { opacity: .55; cursor: wait; }
 .feedback-dialog .feedback-corner-close:focus-visible { outline: 2px solid currentColor !important; outline-offset: 1px; box-shadow: none !important; }
-.feedback-description { margin: 0; font-size: var(--ent-fs-body); line-height: 1.7; white-space: pre-line; }
+.feedback-description { margin: 0; font-size: var(--ent-fs-body); line-height: 1.7; white-space: pre-wrap; }
 dialog[data-feedback-host]::backdrop { background: transparent !important; }
 .feedback-field { display: grid; gap: 8px; margin-top: 16px; }
 .feedback-checkbox { display: flex; align-items: center; gap: 8px; width: fit-content; margin-top: 16px; cursor: pointer; }

@@ -149,6 +149,22 @@ test('registered Office edits show only the validated write targets and still re
   } finally { ui.cleanup() }
 })
 
+test('DingTalk sends have one approval showing the recipient and complete message', async () => {
+  const body = '明天  9:00 开会。\n请带上材料。'
+  const ui = mount('dingtalk_execute', {}, undefined, undefined, { registeredTool: true,
+    summary: { kind: 'dingtalk-message', targetType: 'person', target: '张三', body } })
+  try {
+    const dialog = ui.feedback.getSnapshot()!
+    assert.equal(dialog.message, `发送钉钉消息？\n收件人：张三\n\n正文：\n${body}`)
+    assert.equal(dialog.actionLabel, '发送消息')
+    assert.deepEqual(ui.decisions, [])
+    await ui.feedback.accept(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(ui.decisions, [true])
+    assert.equal(ui.feedback.getSnapshot(), null)
+  } finally { ui.cleanup() }
+})
+
 test('registered tools with no usable summary keep an ordinary confirmation', async () => {
   const cases: Array<[string, string, NonNullable<Props['request']>['summary']]> = [
     [OFFICE_TOOL_NAME, '允许本次使用 OfficeCLI？', undefined],

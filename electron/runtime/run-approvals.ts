@@ -13,10 +13,32 @@ import { randomUUID } from 'node:crypto'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { ToolApprovalResponse } from '../../src/shared/ipc'
 import { isDetectedBrowserHandoff, toolApprovalTimeoutMs } from '../../src/shared/tool-approval'
+import { LOCAL_MEDIA_TOOL } from '../../src/shared/local-media-progress'
+import { ORIGINAL_DOCUMENT_REPLACE_TOOL, RUN_PYTHON_TOOL } from '../../src/shared/python-tool'
 import type { BrowserHandoffDetection } from '../domain/browser-handoff'
 import { logger } from '../common/logger'
+import { normalizeConnectorJsonArgs } from './connector-command'
 
 const log = logger.child('run-approvals')
+type ApprovalInput = Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>
+const directTaskTools = new Set(['write', 'edit', LOCAL_MEDIA_TOOL, RUN_PYTHON_TOOL])
+
+function canExecuteDirectly(input: ApprovalInput): boolean {
+  if (input.toolName === ORIGINAL_DOCUMENT_REPLACE_TOOL) return false
+  if (directTaskTools.has(input.toolName)) return true
+  if (!input.registeredTool) return false
+  // Registered tools are already enabled for the run. Keep consent for actions
+  // that can extend the browser or account grants rather than use them.
+  if (input.toolName === 'mcp__playwright__browser_set_mode') return false
+  if (input.summary?.kind === 'browser-snapshot' && input.summary.savesFile) return false
+  if (input.summary?.kind === 'browser-navigate' && !input.summary.origin) return false
+  if (input.toolName === 'dingtalk_execute' && input.summary?.kind !== 'dingtalk-message') {
+    const value = input.input
+    if (!value || typeof value !== 'object' || !('args' in value) || !Array.isArray(value.args)) return false
+    try { return normalizeConnectorJsonArgs(value.args)[0] !== 'pat' } catch { return false }
+  }
+  return true
+}
 
 interface PendingApproval {
   request: ToolAuthorizationRequest
@@ -45,6 +67,12 @@ export class ToolApprovals {
 
   async request(input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>, detection?: BrowserHandoffDetection): Promise<boolean> {
     return (await this.requestDecision(input, detection)).approved
+  }
+
+  /** Called after the task's tool and resource policies have allowed the operation. */
+  requestTaskTool(input: ApprovalInput, detection?: BrowserHandoffDetection, unattended = false): Promise<boolean> {
+    if (!unattended && !detection && canExecuteDirectly(input)) return Promise.resolve(true)
+    return this.request(input, detection)
   }
 
   requestDecision(input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>, detection?: BrowserHandoffDetection): Promise<{ approved: boolean; reason: string }> {

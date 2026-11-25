@@ -15,7 +15,7 @@ Pass argv without wecom-cli. Supply a JSON object using --json; pagination uses 
 Read only the conversations the user requested. Account authorization does not imply access to all conversations.
 Before sending, verify the actual sending identity, exact recipient, content, and official method schema. Never invent IDs or switch from employee to bot identity after failure.
 message aibot sends as a bot; it is NOT sending as the employee. For bot sends, identity whoami identifies the authorizer; other recipients must be matched against a fresh message aibot sessions list. No match or multiple matches requires clarification.
-All execute calls require CSEP approval. Preserve policy error 853006; it does not mean logout. Auth expiry 853004 requires reconnect.
+Preserve policy error 853006; it does not mean logout. Auth expiry 853004 requires reconnect.
 Do not retry uncertain writes. First release supports text messaging, conversation queries, identity and contacts; local attachments and downloads are not exposed.`
 
 export class WecomWorkspaceRuntime implements ConnectorRuntimePort {

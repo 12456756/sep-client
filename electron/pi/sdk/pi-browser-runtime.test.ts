@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BROWSER_MODE_TOOL, BrowserModeSession, createHostMcpRuntime } from './pi-browser-runtime'
+import { prepareHandoffDetection } from './pi-browser-handoff'
 import { createPlaywrightMcpServer } from './pi-playwright-mcp'
 import type { McpRuntime } from './pi-mcp-client'
 import { ToolApprovals } from '../../runtime/run-approvals'
@@ -532,10 +533,134 @@ describe('background browser and manual window', () => {
         assert.deepEqual(outcomes, [])
       }
       http.setHandoffState('configured-complete')
-      assert.equal((await pending).details.isError, false)
+      const result = await pending
+      assert.equal(result.details.isError, false)
+      assert.doesNotMatch(result.content[0].text, /Login was confirmed/)
       assert.deepEqual(outcomes, [true])
     } finally { approvals.denyAll(); await runtime.dispose(); await http.close() }
   })
+
+  it('uses only fresh Bilibili status responses from the handed-off main frame, without refetching', { timeout: 30_000 }, async () => {
+    const session = new BrowserModeSession()
+    const verification = new AbortController()
+    let observer: Awaited<ReturnType<typeof prepareHandoffDetection>> | undefined
+    let detection: Promise<void> | undefined
+    try {
+      const context = await session.getContext()
+      let statusRequests = 0
+      const statusUrl = 'https://api.bilibili.com/x/web-interface/nav'
+      await context.route('**/*', route => {
+        const url = new URL(route.request().url())
+        if (url.pathname === '/x/web-interface/nav') {
+          statusRequests++
+          const state = url.searchParams.get('state')
+          return route.fulfill({ json: { code: state === 'error' ? -101 : 0, data: { isLogin: state !== 'guest' } },
+            headers: { 'access-control-allow-origin': '*', 'cache-control': 'no-store' } })
+        }
+        return route.fulfill({ contentType: 'text/html; charset=utf-8', body: url.pathname === '/login'
+          ? '<input type="password">' : '<div class="header-avatar-wrap"><a class="header-entry-mini" href="//space.bilibili.com/1">Account</a></div><iframe src="/login"></iframe>' })
+      })
+      const page = await context.newPage()
+      await page.goto('https://passport.bilibili.com/login')
+      const requestStatus = (url: string) => page.evaluate(async url => { await (await fetch(url)).json() }, url)
+      await requestStatus(statusUrl)
+      observer = await prepareHandoffDetection(page, undefined)
+      detection = observer.waitForCompletion(verification.signal)
+      void detection.catch(() => undefined)
+      await page.goto('https://www.bilibili.com/')
+      await requestStatus(`${statusUrl}?state=guest`)
+      await requestStatus(`${statusUrl}?state=error`)
+      await requestStatus(statusUrl.replace('api.bilibili.com', 'api.bilibili.com.example.test'))
+      await page.frames()[1].evaluate(async url => { await (await fetch(url)).json() }, statusUrl)
+      const other = await context.newPage()
+      await other.goto('https://www.bilibili.com/login')
+      await other.evaluate(async url => { await (await fetch(url)).json() }, statusUrl)
+      await other.close()
+      assert.equal(observer.evidence, undefined)
+      assert.equal(statusRequests, 6)
+      await requestStatus(statusUrl)
+      await detection
+      await page.close()
+      assert.equal(observer.evidence, 'site-login', 'closing the page cannot erase verified login')
+      assert.equal(statusRequests, 7, 'only requests initiated by the test page were sent')
+    } finally { observer?.dispose(); verification.abort(); await detection?.catch(() => undefined); await session.dispose() }
+  })
+
+  for (const timing of ['open', 'closed-before-response', 'closed-after-confirmation'] as const) {
+    it(`settles the Bilibili handoff and approval when ${timing}`, { timeout: 30_000 }, async t => {
+      const statusUrl = 'https://api.bilibili.com/x/web-interface/nav'
+      const getContext = BrowserModeSession.prototype.getContext
+      const setMode = BrowserModeSession.prototype.setMode
+      const configured = new WeakSet<Awaited<ReturnType<typeof getContext>>>()
+      let page: Awaited<ReturnType<typeof getContext>>['pages'] extends () => Array<infer P> ? P : never
+      let requested!: (id: string) => void
+      const ready = new Promise<string>(resolve => { requested = resolve })
+      let statusRequested!: () => void
+      const statusStarted = new Promise<void>(resolve => { statusRequested = resolve })
+      let releaseStatus!: () => void
+      const statusReleased = new Promise<void>(resolve => { releaseStatus = resolve })
+      let statusSent!: () => void
+      const statusFinished = new Promise<void>(resolve => { statusSent = resolve })
+      let statusRequests = 0
+      const outcomes: Array<[boolean, string]> = []
+      const approvals = new ToolApprovals({ timeoutMs: 10_000, onRequest: request => requested(request.requestId),
+        onResolved: (_request, approved, reason) => outcomes.push([approved, reason]) })
+      t.mock.method(BrowserModeSession.prototype, 'getContext', async function (this: BrowserModeSession) {
+        const context = await getContext.call(this)
+        if (!configured.has(context)) {
+          await context.route('**/*', async route => {
+            if (route.request().url() !== statusUrl) return route.fulfill({ contentType: 'text/html', body: '<title>Bilibili fixture</title>' })
+            statusRequests++
+            try {
+              statusRequested()
+              await statusReleased
+              await route.fulfill({ json: { code: 0, data: { isLogin: true } }, headers: { 'access-control-allow-origin': '*' } })
+            } catch (error) {
+              if (timing !== 'closed-before-response') throw error
+            } finally { statusSent() }
+          })
+          configured.add(context)
+        }
+        return context
+      })
+      t.mock.method(BrowserModeSession.prototype, 'setMode', async function (this: BrowserModeSession, ...args: Parameters<typeof setMode>) {
+        if (args[0] === 'visible') page = (await getContext.call(this)).pages()[0]
+        if (args[0] === 'background' && timing === 'closed-after-confirmation') await page.close()
+        return setMode.apply(this, args)
+      })
+      const runtime = await createHostMcpRuntime([createPlaywrightMcpServer()], tmpdir(), true, undefined, detection =>
+        approvals.request({ taskId: 'task', runId: 'run', subscriptionId: 'sub', toolName: BROWSER_MODE_TOOL,
+          input: { operation: 'manual-handoff', autoDetect: true } }, detection))
+      try {
+        const call = (name: string, input: Record<string, unknown>) => runtime.tools.find(tool => tool.name === `mcp__playwright__${name}`)!.execute(name, input, undefined)
+        const navigate = await call('browser_navigate', { url: 'https://www.bilibili.com/' })
+        assert.equal(navigate.details.isError, false, navigate.content[0]?.text)
+        const pending = call('browser_set_mode', { mode: 'visible' })
+        const requestId = await Promise.race([ready, pending.then(result => { assert.fail(result.content[0]?.text) })])
+        await page!.evaluate(url => { void fetch(url).catch(() => undefined) }, statusUrl)
+        await statusStarted
+        if (timing === 'closed-before-response') await page!.close()
+        releaseStatus()
+        const result = await pending
+        await statusFinished
+        assert.equal(approvals.getPending(requestId), undefined)
+        assert.equal(statusRequests, 1, 'the tool did not send any additional login status request')
+        assert.equal(result.details.browserSessionClosed, timing === 'open' ? undefined : true)
+        assert.equal(result.details.isError, timing === 'closed-before-response', result.content[0]?.text)
+        if (timing === 'closed-before-response') {
+          assert.match(result.content[0].text, /Login status could not be confirmed/)
+          assert.deepEqual(outcomes, [[false, 'browser_handoff_cancelled']])
+        } else {
+          assert.match(result.content[0].text, /Login was confirmed/)
+          assert.deepEqual(outcomes, [[true, 'browser_handoff_detected']])
+        }
+        if (timing !== 'open') {
+          assert.match(result.content[0].text, /page was closed and cannot be used to continue/)
+          assert.equal(runtime.browserSnapshotApproval!.claim('after-close', {}), false)
+        }
+      } finally { releaseStatus(); approvals.denyAll(); await runtime.dispose() }
+    })
+  }
 
   it('stops before any retry when the full search-limit message appears during login handoff', { timeout: 30_000 }, async () => {
     const http = await fixture()

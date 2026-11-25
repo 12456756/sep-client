@@ -116,6 +116,11 @@ function approvalSummaryMessage(request: ToolApprovalRequest): string | undefine
     case 'browser-save-assets':
       if (request.toolName === 'mcp__playwright__browser_save_assets') return messages[request.toolName]
       break
+    case 'dingtalk-message':
+      if (request.toolName === 'dingtalk_execute') {
+        return `发送钉钉消息？\n${summary.targetType === 'person' ? '收件人' : '目标群'}：${summary.target}\n\n正文：\n${summary.body}`
+      }
+      break
   }
 }
 
@@ -243,7 +248,8 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
     const officeCommand = input.success && request.toolName === OFFICE_TOOL_NAME ? input.data.command : null
     if (Array.isArray(officeCommand) && officeCommand[0] === 'import-doc') message = '允许用本机 Microsoft Word 打开这个旧版 Word 文件并创建编辑副本？仅在信任文件来源时允许。原文件不会被覆盖。'
     if (Array.isArray(officeCommand) && officeCommand[0] === 'export-doc') message = '允许用本机 Microsoft Word 生成一个新的 Word 97–2003 文件？原文件不会被覆盖。'
-    message = approvalSummaryMessage(request) ?? message
+    const summaryMessage = approvalSummaryMessage(request)
+    message = summaryMessage ?? message
     if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。员工将在原页面继续操作。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
     if (detectedHandoff) message = '请在浏览器中完成登录或验证。检测到完成后会自动继续；若未自动继续，可点击“已完成，继续”。本轮读取接管后同一标签页、同一站点的网页快照无需再确认，不包括保存文件或提交操作。请在 3 分钟内完成。'
     if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
@@ -261,10 +267,11 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
       approval.abort()
       settle(false)
     }, remaining)
+    const sendDingTalk = request.toolName === 'dingtalk_execute' && request.summary?.kind === 'dingtalk-message' && summaryMessage !== undefined
     void feedback.ask({
       key: `approval:${request.requestId ?? request.timestamp ?? deadline}`,
       message: isVideo && quote.success ? `${message} 本次报价 ¥${quote.data.quote.amount}。` : message,
-      actionLabel: scheduling ? '创建并启用' : updatingSchedule ? '保存修改' : deletingSchedule ? '删除' : browserHandoff ? '已完成，继续' : resubmission ? '仍然生成' : isVideo && quote.success ? '同意并生成' : '允许',
+      actionLabel: sendDingTalk ? '发送消息' : scheduling ? '创建并启用' : updatingSchedule ? '保存修改' : deletingSchedule ? '删除' : browserHandoff ? '已完成，继续' : resubmission ? '仍然生成' : isVideo && quote.success ? '同意并生成' : '允许',
       ...(scheduling && onReviseScheduleTime ? { alternate: { label: '修改时间', busyLabel: '修改时间', onConfirm: async () => {
         reviseScheduleTime = true
         return { success: true }

@@ -6,7 +6,7 @@
  * `pi-extension/guard.ts` 的 `APPROVAL_TOOLS`。
  *
  * 三处语义完全相同——「这个工具会改变外部状态」——但用途不同：
- *   - 审批：调用前必须拿到用户显式批准（项目安全约束）
+ *   - 审批：供工具策略判断，是否需要人工审批由任务授权入口决定
  *   - 停机：in-flight 的这类调用必须产出 SIDE_EFFECT_UNKNOWN（不变式 I7 / C3）
  *   - 崩溃恢复：重启后为没收到 tool_execution_end 的这类调用补 SIDE_EFFECT_UNKNOWN
  *
@@ -15,13 +15,15 @@
  */
 import { CREATE_SCHEDULED_TASK_TOOL } from '../../src/shared/scheduled-creation'
 import { RUN_PYTHON_TOOL } from '../../src/shared/python-tool'
+import { connectorIdSchema } from '../../src/shared/connectors'
 
 export const SIDE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['bash', 'write', 'edit', CREATE_SCHEDULED_TASK_TOOL, RUN_PYTHON_TOOL])
+const connectorExecutors = new Set(connectorIdSchema.options.map(id => `${id}_execute`))
 
 /** 保守的副作用分类。MCP 执行权限另由实际注册工具白名单决定。 */
 export function hasSideEffects(toolName: string): boolean {
-  // External MCP tools are conservatively tracked for interruption/recovery, not permission grants.
-  return SIDE_EFFECT_TOOLS.has(toolName) || toolName.startsWith('mcp__')
+  // External tools are conservatively tracked for recovery, not permission grants.
+  return SIDE_EFFECT_TOOLS.has(toolName) || toolName.startsWith('mcp__') || connectorExecutors.has(toolName)
 }
 
 

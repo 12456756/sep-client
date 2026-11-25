@@ -286,7 +286,8 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     currentEmployeeName: nameOf(currentEmployeeId),
     steps,
     nextUserAction: effectiveExecution?.nodes.find(node => node.inputRequest)?.inputRequest?.question ??
-      (effectiveExecution?.nodes.some(node => node.status === 'waiting-employee') ? '部分节点等待替代员工，可申请推荐员工或重新查找' : nextUserAction(status, steps)),
+      (effectiveExecution?.nodes.some(node => node.status === 'waiting-employee') ? '部分节点等待替代员工，可申请推荐员工或重新查找'
+        : status === 'waiting-user' && task.status === 'waiting_approval' ? '等待处理操作审批' : nextUserAction(status, steps)),
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     completedAt: task.completedAt,

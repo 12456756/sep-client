@@ -13,9 +13,11 @@ import { setLogSink } from '../../common/logger'
 import { prepareCommonSkills } from './common-skills'
 import { OFFICE_TOOL_NAME } from './pi-office-policy'
 import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
-import { BROWSER_MODE_TOOL } from './pi-browser-runtime'
+import { BROWSER_MODE_TOOL, BrowserModeSession } from './pi-browser-runtime'
 import { BROWSER_EXTRACT, BROWSER_SAVE_ASSETS, BROWSER_SCROLL } from './pi-browser-page-tools'
-import { createPlaywrightMcpServer, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
+import { createPlaywrightMcpServer, isRoutineBrowserCall, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
+import { evaluateDingTalkCommand } from '../../runtime/dingtalk-command'
+import { ToolApprovals } from '../../runtime/run-approvals'
 import type { ModelTraceEntry } from '../../domain/model-trace'
 import { RUN_PYTHON_TOOL } from '../../../src/shared/python-tool'
 
@@ -334,9 +336,10 @@ function messageText(value: unknown): string {
   return value
 }
 
+type FixtureCall = { name: string; input: unknown }
 async function mediaSession(
   overrides: Partial<PiAgentSessionConfig>,
-  call?: { name: string; input: unknown } | Array<{ name: string; input: unknown } | undefined>,
+  call?: FixtureCall | Array<FixtureCall | undefined> | ((step: number, lastToolResult: string) => FixtureCall | undefined),
   result: unknown = jobView,
   prepare?: (root: string) => Promise<void>,
   continueSession?: (session: Awaited<ReturnType<PiCodingAgentAdapter['createSession']>>) => Promise<void>,
@@ -353,8 +356,9 @@ async function mediaSession(
     request.on('end', () => {
       bodies.push(JSON.parse(body))
       response.writeHead(200, { 'Content-Type': 'text/event-stream' })
-      const toolCall = Array.isArray(call) ? call[bodies.length - 1] : bodies.length === 1 && call
-      const delta = toolCall ? { role: 'assistant', tool_calls: [{ index: 0, id: Array.isArray(call) ? `call-${bodies.length}` : 'call-media', type: 'function', function: { name: toolCall.name, arguments: JSON.stringify(toolCall.input) } }] }
+      const toolCall = typeof call === 'function' ? call(bodies.length, String(bodies.at(-1)?.messages.filter(message => message.role === 'tool').at(-1)?.content ?? ''))
+        : Array.isArray(call) ? call[bodies.length - 1] : bodies.length === 1 && call
+      const delta = toolCall ? { role: 'assistant', tool_calls: [{ index: 0, id: Array.isArray(call) || typeof call === 'function' ? `call-${bodies.length}` : 'call-media', type: 'function', function: { name: toolCall.name, arguments: JSON.stringify(toolCall.input) } }] }
         : { role: 'assistant', content: 'done' }
       for (const [current, reason] of [[delta, null], [{}, toolCall ? 'tool_calls' : 'stop']] as const) {
         response.write(`data: ${JSON.stringify({ id: 'response-a', object: 'chat.completion.chunk', created: 1, model: 'model-a', choices: [{ index: 0, delta: current, finish_reason: reason }] })}\n\n`)
@@ -620,6 +624,65 @@ describe('browser instructions in real provider requests', () => {
 })
 
 describe('built-in browser handoff with the real Pi SDK', () => {
+  it('classifies an ordinary site discovery, page read and personal center navigation without marking side effects routine', () => {
+    const routine = (tool: string, input: unknown) => isRoutineBrowserCall(`mcp__playwright__browser_${tool}`, input)
+    for (const url of ['https://search.example.test/?q=campus+jobs', 'https://jobs.example.test/', 'https://jobs.example.test/candidate/center']) {
+      assert.equal(routine('navigate', { url }), true, url)
+    }
+    assert.equal(routine('snapshot', {}), true)
+    assert.equal(routine('tabs', { action: 'list' }), true)
+    assert.equal(routine('snapshot', { filename: 'local.md' }), false)
+    assert.equal(routine('tabs', { action: 'close' }), false)
+    assert.equal(routine('click', { target: 'e1' }), false)
+    assert.equal(routine('type', { target: 'e2', text: 'form', submit: true }), false)
+    for (const url of ['file:///private', 'http://127.0.0.1/', 'https://intranet.local/', 'https://user:password@example.test/',
+      'https://jobs.example.test/%6Cogout', 'https://jobs.example.test/?action=delete', 'https://jobs.example.test/?next=/checkout']) {
+      assert.equal(routine('navigate', { url }), false, url)
+    }
+  })
+
+  it('opens, reads, follows a link and submits a form without an approval prompt', { timeout: 40_000 }, async t => {
+    if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+      t.skip('Requires default browser configuration.'); return
+    }
+    const getContext = BrowserModeSession.prototype.getContext
+    const contexts = new WeakSet()
+    const visits: string[] = []
+    t.mock.method(BrowserModeSession.prototype, 'getContext', async function (this: BrowserModeSession) {
+      const context = await getContext.call(this)
+      if (!contexts.has(context)) {
+        contexts.add(context)
+        await context.route('https://jobs.example.test/**', async route => {
+          const path = new URL(route.request().url()).pathname
+          visits.push(`${route.request().method()} ${path}`)
+          await route.fulfill({ contentType: 'text/html; charset=utf-8', body: path === '/candidate/center'
+            ? '<h1>Candidate center</h1><form method="post" action="/submit"><button>Submit</button></form>'
+            : path === '/submit' ? '<h1>Form received</h1>'
+              : '<h1>Campus jobs</h1><a href="/candidate/center">Candidate profile</a><script>document.querySelector("a").addEventListener("click", event => { event.preventDefault(); location.href = "/unexpected-click" })</script>' })
+        })
+      }
+      return context
+    })
+    const navigate = 'mcp__playwright__browser_navigate'
+    const click = 'mcp__playwright__browser_click'
+    const approvals: string[] = []
+    const broker = new ToolApprovals({ onRequest: request => { approvals.push(request.toolName); broker.respond({ requestId: request.requestId, approved: false }) } })
+    const { bodies } = await mediaSession({ mcpServers: undefined, disableSkills: true,
+      authorizeTool: (request, detection) => broker.requestTaskTool({ ...request, taskId: 'task', runId: 'run', subscriptionId: 'sub' }, detection) }, (step, last) => {
+      if (step === 1) return { name: navigate, input: { url: 'https://jobs.example.test/' } }
+      if (step === 2 || step === 4) return { name: 'mcp__playwright__browser_snapshot', input: {} }
+      if (step === 3) return { name: click, input: { target: /link "Candidate profile" \[ref=((?:f\d+)?e\d+)\]/.exec(last)?.[1] ?? 'missing-ref' } }
+      if (step === 5) return { name: click, input: { target: /button "Submit" \[ref=((?:f\d+)?e\d+)\]/.exec(last)?.[1] ?? 'missing-ref' } }
+    })
+    assert.deepEqual(approvals, [])
+    assert.deepEqual(visits, ['GET /', 'GET /candidate/center', 'POST /submit'])
+    const lastTool = (step: number) => messageText(bodies[step - 1].messages.filter(message => message.role === 'tool').at(-1)!.content)
+    assert.match(lastTool(4), /https:\/\/jobs\.example\.test\/candidate\/center/)
+    assert.match(lastTool(5), /Candidate center/)
+    assert.match(lastTool(5), /button "Submit" \[ref=(?:f\d+)?e\d+\]/)
+    assert.match(lastTool(6), /Page URL: https:\/\/jobs\.example\.test\/submit/)
+  })
+
   it('sends only a validated browser summary for registered operations', async t => {
     if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
       t.skip('Requires default browser configuration.'); return
@@ -766,6 +829,26 @@ describe('built-in browser handoff with the real Pi SDK', () => {
       assert.match(messageText(bodies[1].messages.find(message => message.role === 'tool')!.content), /No target website is open/)
     })
   }
+})
+
+it('executes DingTalk messages and other connected business commands without prompting', async () => {
+  const toolName = 'dingtalk_execute', body = '明天  9:00 开会。\n请带上材料。'
+  const lookup = ['aisearch', 'person', '--query', '张三', '--dimension', 'name']
+  const send = ['chat', '+dm', '--to', '张三', '--content', body]
+  const verify = ['chat', '+chat-messages', '--user', 'opaque-id', '--no-reactions']
+  const grant = ['pat', 'grant']
+  const feishu = ['im', '+messages-send', '--text', body]
+  const executed: string[][] = [], approvals: Array<Parameters<PiAgentSessionConfig['authorizeTool']>[0]> = []
+  const broker = new ToolApprovals({ onRequest: request => { approvals.push(request); broker.respond({ requestId: request.requestId, approved: false }) } })
+  await mediaSession({ connectorBinding: { revision: 'test', servers: [], fetch, commands: (['dingtalk', 'feishu'] as const).map(id => ({ id, name: id,
+    instructions: { reference: 'reference', schema: 'schema', execute: 'execute' },
+    reference: async () => '', schema: async () => ({ text: '', isError: false }), evaluateCommand: id === 'dingtalk' ? evaluateDingTalkCommand : undefined,
+    execute: async args => { executed.push(args); return { text: 'fixture', isError: false } },
+  })) }, authorizeTool: (request, detection) => broker.requestTaskTool({ ...request, taskId: 'task', runId: 'run', subscriptionId: 'sub' }, detection) },
+  [...[lookup, send, send, verify, grant].map(args => ({ name: toolName, input: { args } })), { name: 'feishu_execute', input: { args: feishu } }])
+  assert.deepEqual(executed, [lookup, send, send, verify, feishu])
+  assert.equal(approvals.length, 1)
+  assert.deepEqual(approvals[0].input, { args: grant })
 })
 
 describe('common Office skills with the real Pi SDK', () => {

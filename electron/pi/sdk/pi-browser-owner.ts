@@ -47,8 +47,17 @@ export class SharedBrowserOwner {
       }
       const active = this.runtime!
       const snapshotApproval = active.browserSnapshotApproval
+      const routineAccess = active.browserRoutineAccess
       snapshotApproval?.reset()
-      return { ...active, browserSnapshotApproval: snapshotApproval && {
+      routineAccess?.reset()
+      return { ...active, browserRoutineAccess: routineAccess && {
+        canReadCurrentPage() { assertLease(); return routineAccess.canReadCurrentPage() },
+        async claimLink(id, input, signal) {
+          assertLease()
+          return routineAccess.claimLink(id, input, signal ? AbortSignal.any([signal, lease.cancellation.signal]) : lease.cancellation.signal)
+        },
+        reset: () => { if (this.lease === lease) routineAccess.reset() },
+      }, browserSnapshotApproval: snapshotApproval && {
         claim(id, input) { assertLease(); return snapshotApproval.claim(id, input) },
         reset: () => { if (this.lease === lease) snapshotApproval.reset() },
       }, tools: active.tools.map(tool => ({ ...tool, execute: async (id, input, signal, ...rest) => {

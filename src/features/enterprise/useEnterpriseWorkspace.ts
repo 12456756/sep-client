@@ -907,7 +907,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const execution = work?.arrangementExecution ?? arrangement.executions[workId];
     const nodeIds = execution?.nodes.filter(node => node.pendingConfirmation).map(node => node.nodeId) ?? [];
     if (nodeIds.length) await run(() => window.electronAPI.confirmArrangementNodes({ taskId: workId, nodeIds }), 'workConfirm');
-    else if (work?.workType.state === 'resolved' && work.workType.kind === 'conversation') await run(() => window.electronAPI.continueTask({ taskId: workId, messageId: crypto.randomUUID(), prompt: '我已确认当前结果，请继续下一步。' }), 'workConfirm');
   }, [arrangement.executions, run, works]);
 
   const stopWork = useCallback(async (workId: string, reason: string) => {

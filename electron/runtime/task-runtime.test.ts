@@ -14,7 +14,6 @@ import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskService } from '../service/task-service'
 import { projectTaskMessages } from '../data/task-messages'
 import { effectivePermissionPolicy, type WorkPlan } from '../domain/arrangement-plan'
-import { LOCAL_MEDIA_TOOL } from '../domain/local-media-tools'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { SEP_TEST_SUBSCRIPTION } from './sep-platform-fixtures'
 import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
@@ -630,13 +629,13 @@ describe('conversation task lifecycle', () => {
   })
 
   for (const preset of ['full-local', 'workspace-edit', 'read-only'] as const) {
-    it(`keeps local media separately approved for a writable conversation (${preset})`, async () => {
+    it(`runs local media without a popup when the conversation can write (${preset})`, async () => {
       const userData = await makeUserDataDir()
       const manager = new TaskManager(userData)
       await manager.initialize()
       await manager.setCurrentUser('member-a', 'enterprise-a')
       const task = await manager.createTask('general chat', 'compose a photo and a clip')
-      // Executable presence is enough to reach approval; these placeholders must never run.
+      // Attachment resolution below stops the operation before any binary runs.
       await Promise.all((['ffmpeg', 'ffprobe'] as const).map(tool => writeFile(join(userData, localMediaExecutable(tool)), '', { mode: 0o755 })))
       const ref = { attachmentId: 'clip', sha256: '0'.repeat(64) }
       const attachment = { ...ref, displayName: 'clip.mp4', mediaType: 'video/mp4',
@@ -654,13 +653,17 @@ describe('conversation task lifecycle', () => {
       }
       const requests: ToolAuthorizationRequest[] = []
       const contexts: PiTaskWorkerOptions['context'][] = []
+      let mediaReads = 0
       const employee = { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' }
       const runtime = new TaskRuntime({
         taskManager: manager, workPlanStore: { get: async () => plan, save: async () => {} },
-        localMedia: new LocalMediaRuntime(userData, async () => assert.fail('a denied operation must not create scratch files')),
+        localMedia: new LocalMediaRuntime(userData, async () => assert.fail('an unavailable attachment must not create scratch files')),
         attachmentInputs: {
           describeTaskInputs: async () => [attachment, photo], resolvePlannerMaterials: async () => [],
-          resolveTaskInputs: async () => ({ attachments: [attachment, photo], images: [], digest: 'digest' }),
+          resolveTaskInputs: async (_scope, _taskId, refs) => {
+            if (refs.length === 1) { mediaReads++; return { attachments: [], images: [], digest: 'digest' } }
+            return { attachments: [attachment, photo], images: [], digest: 'digest' }
+          },
         },
         getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {},
         resolveEmployee: id => id === employee.subscriptionId ? employee : null,
@@ -675,7 +678,7 @@ describe('conversation task lifecycle', () => {
               { attachmentId: 'photo', displayName: 'photo.jpg', kind: 'image' },
             ] })
             assert.equal(requests.length, 0)
-            await assert.rejects(context.localMedia.execute({ operation: 'trim', attachmentId: 'clip', start: 0, end: 1 }), /未授权/)
+            await assert.rejects(context.localMedia.execute({ operation: 'trim', attachmentId: 'clip', start: 0, end: 1 }), /素材无法读取/)
           },
           async abort() {}, async dispose() {},
         }),
@@ -686,8 +689,8 @@ describe('conversation task lifecycle', () => {
       assert.equal(contexts.length, 1)
       assert.equal(contexts[0].toolPolicy?.preset, preset === 'read-only' ? 'read-only' : 'workspace-edit')
       assert.equal(!!contexts[0].localMedia, preset !== 'read-only')
-      assert.deepEqual(requests.map(request => [request.taskId, request.runId, request.toolName]),
-        preset !== 'read-only' ? [[task.id, contexts[0].runId, LOCAL_MEDIA_TOOL]] : [])
+      assert.deepEqual(requests, [])
+      assert.equal(mediaReads, preset !== 'read-only' ? 1 : 0)
     })
   }
 
