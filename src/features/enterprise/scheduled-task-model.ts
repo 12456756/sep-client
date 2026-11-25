@@ -30,6 +30,32 @@ export function scheduledHomeGroups(definitions: ScheduledDefinition[], occurren
   return { active: active.sort(latest), paused: paused.sort(latest), pending: pending.sort(latest), history: history.sort(latest) }
 }
 
+type ScheduledTaskAction = 'edit' | 'pause' | 'resume' | 'history' | 'reschedule' | 'archive'
+
+export function canResumeSchedule(definition: ScheduledDefinition, seenTime: boolean, now = Date.now()): boolean {
+  const frequency = definition.input.recurrence?.frequency ?? 'once'
+  return Boolean(definition.plan && (frequency !== 'once' || (!seenTime && definition.input.scheduledAt > now)))
+}
+
+export function scheduledTaskActions(definition: ScheduledDefinition, runs: readonly ScheduledOccurrence[], { inHistory, busy, now }: {
+  inHistory: boolean; busy: boolean; now?: number
+}): { id: ScheduledTaskAction; disabledReason?: string }[] {
+  if (definition.deleted) return [{ id: 'history' }]
+  const busyReason = busy ? '正在处理操作，请稍后再试。' : undefined
+  const active = runs.some(run => !TERMINAL_RUNS.has(run.status))
+  const editReason = busyReason ?? (active ? '请先处理或停止当前执行。' : undefined)
+  const actions: ReturnType<typeof scheduledTaskActions> = inHistory
+    ? [{ id: 'history' }, { id: 'reschedule', disabledReason: editReason }]
+    : [{ id: 'edit', disabledReason: editReason }]
+  if (definition.enabled) actions.push({ id: 'pause', disabledReason: busyReason })
+  else if (definition.pausedAt != null) {
+    const seenTime = runs.some(run => run.scheduledAt === definition.input.scheduledAt)
+    actions.push({ id: 'resume', disabledReason: editReason ?? (canResumeSchedule(definition, seenTime, now) ? undefined
+      : definition.plan ? '请先将任务改为未来的执行时间。' : '请先生成并确认工作计划。') })
+  }
+  return [...actions, { id: 'archive', disabledReason: editReason }]
+}
+
 export function recurrenceLabel(definition: ScheduledDefinition): string {
   const recurrence = definition.input.recurrence
   if (!recurrence || recurrence.frequency === 'once') return '仅执行一次'

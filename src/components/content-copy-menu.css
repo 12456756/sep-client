@@ -4,4 +4,7 @@
 .ent-content-copy-menu { max-height: calc(100vh - 16px); overflow: auto; }
 .ent-content-copy-menu [role="separator"] { margin: 4px 6px; border-top: 1px solid var(--ent-line, #ddd); }
 .ent-content-copy-menu button:disabled { opacity: .5; cursor: default; background: transparent; color: inherit; }
+.ent-content-copy-menu button[data-danger=true]:not(:disabled) { color: var(--ent-danger); }
+.ent-content-copy-menu button[data-danger=true]:not(:disabled):is(:hover,:focus-visible) { background: var(--ent-danger-bg); }
+.ent-content-menu-hint { max-width: 165px; margin: 4px 8px; color: var(--ent-ink-3); font-size: 12px; line-height: 1.5; }
 .ent-copyable-preview-image:focus-visible { outline: 2px solid var(--ent-brand, currentColor); outline-offset: -2px; }

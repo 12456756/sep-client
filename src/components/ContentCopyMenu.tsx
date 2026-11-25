@@ -1,13 +1,17 @@
 import { Copy, type LucideIcon } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { useOperationFeedback } from './feedback/use-operation-feedback'
 
-export interface ContentMenuCommand {
+export interface ContentMenuItem {
   label: string
-  run: (signal: AbortSignal) => Promise<void>
   icon?: LucideIcon
   separator?: boolean
   disabledReason?: string
+  danger?: boolean
+}
+
+export interface ContentMenuCommand extends ContentMenuItem {
+  run: (signal: AbortSignal) => Promise<void>
 }
 export class ContentMenuError extends Error {}
 
@@ -91,7 +95,8 @@ export function useContentCopy() {
     catch (error) { if (!controller.signal.aborted) notice.show(error instanceof ContentMenuError ? error.message : `${command.label}失败，请重试。`) }
     finally { if (pending.current === controller) pending.current = null }
   }
-  return { showMenu, copy, menu: request ? <ContentCopyMenu request={request} onClose={onClose} onCopy={copy} /> : null }
+  return { showMenu, copy, menu: request ? <ContentMenu trigger={request.trigger} point={request} items={request.commands}
+    label={request.commands.length === 1 ? '复制操作' : '文件操作'} onClose={onClose} onSelect={copy} /> : null }
 }
 
 export function useImagePreviewCopy(url: string | null, readImage?: ReadImage, commands?: readonly ContentMenuCommand[]) {
@@ -110,8 +115,38 @@ export function useImagePreviewCopy(url: string | null, readImage?: ReadImage, c
   }
 }
 
-function ContentCopyMenu({ request, onClose, onCopy }: { request: CopyMenuRequest; onClose: () => void; onCopy: (command: ContentMenuCommand) => Promise<void> }) {
+export function ContentActionMenu<T extends ContentMenuItem>({ label, triggerLabel, triggerClassName, triggerIcon, className, children, items, onSelect }: {
+  label: string; triggerLabel: string; triggerClassName?: string; triggerIcon: ReactNode; className?: string
+  children: ReactNode; items: readonly T[]; onSelect: (item: T) => void
+}) {
+  const id = useId()
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [request, setRequest] = useState<{ trigger: HTMLElement; point?: { x: number; y: number } } | null>(null)
+  const onClose = useCallback(() => setRequest(null), [])
+  return <div className={className} onContextMenu={event => {
+    const trigger = triggerRef.current
+    if (!trigger) return
+    event.preventDefault()
+    event.stopPropagation()
+    setRequest(event.button === 2 ? { trigger, point: { x: event.clientX, y: event.clientY } } : { trigger })
+  }}>
+    {children}
+    <button ref={triggerRef} type="button" className={triggerClassName} aria-label={triggerLabel} title="更多操作" aria-haspopup="menu"
+      aria-expanded={request !== null} aria-controls={request ? id : undefined}
+      onClick={event => { const trigger = event.currentTarget; setRequest(current => current ? null : { trigger }) }}
+      onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); setRequest({ trigger: event.currentTarget }) } }}>{triggerIcon}</button>
+    {request && <ContentMenu id={id} trigger={request.trigger} point={request.point} popover="manual"
+      label={label} items={items} onClose={onClose} onSelect={onSelect} />}
+  </div>
+}
+
+function ContentMenu<T extends ContentMenuItem>({ id, trigger, point, popover = 'auto', label, items, onClose, onSelect }: {
+  id?: string; trigger: HTMLElement; point?: { x: number; y: number }; label: string; items: readonly T[]
+  popover?: 'auto' | 'manual'; onClose: () => void; onSelect: (item: T) => void
+}) {
   const menuRef = useRef<HTMLDivElement>(null)
+  const hintId = useId()
+  const hints = popover === 'manual' ? [...new Set(items.flatMap(item => item.disabledReason ? [item.disabledReason] : []))] : []
 
   useLayoutEffect(() => {
     const menu = menuRef.current
@@ -119,31 +154,40 @@ function ContentCopyMenu({ request, onClose, onCopy }: { request: CopyMenuReques
     const handleToggle = () => { if (!menu.matches(':popover-open')) onClose() }
     menu.addEventListener('toggle', handleToggle)
     menu.showPopover()
+    const anchor = trigger.getBoundingClientRect()
     const { width, height } = menu.getBoundingClientRect()
-    menu.style.left = `${Math.max(8, Math.min(request.x, window.innerWidth - width - 8))}px`
-    menu.style.top = `${Math.max(8, Math.min(request.y, window.innerHeight - height - 8))}px`
-    menu.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true })
-    const anchor = request.trigger.getBoundingClientRect()
+    const x = point?.x ?? anchor.right - width
+    const y = point?.y ?? (anchor.bottom + height + 12 > window.innerHeight ? anchor.top - height - 4 : anchor.bottom + 4)
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - width - 8))}px`
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - height - 8))}px`
+    const firstItem = menu.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? menu
+    firstItem.focus({ preventScroll: true })
     const handleScroll = () => {
-      const current = request.trigger.getBoundingClientRect()
+      const current = trigger.getBoundingClientRect()
       if (anchor.x !== current.x || anchor.y !== current.y) onClose()
     }
+    const dismissOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !menu.contains(event.target) && !trigger.contains(event.target)) onClose()
+    }
+    if (popover === 'manual') document.addEventListener('pointerdown', dismissOutside, true)
     document.addEventListener('scroll', handleScroll, true)
     window.addEventListener('resize', onClose)
     return () => {
       menu.removeEventListener('toggle', handleToggle)
+      if (popover === 'manual') document.removeEventListener('pointerdown', dismissOutside, true)
       document.removeEventListener('scroll', handleScroll, true)
       window.removeEventListener('resize', onClose)
       if (menu.matches(':popover-open')) menu.hidePopover()
     }
-  }, [request, onClose])
+  }, [trigger, point, popover, onClose])
 
   const close = () => {
     if (menuRef.current?.matches(':popover-open')) menuRef.current.hidePopover()
-    request.trigger.focus({ preventScroll: true })
+    trigger.focus({ preventScroll: true })
     onClose()
   }
-  return <div ref={menuRef} {...{ popover: 'auto' }} className="ent-content-copy-menu" role="menu" aria-label={request.commands.length === 1 ? '复制操作' : '文件操作'}
+  return <div ref={menuRef} id={id} {...{ popover }} className="ent-content-copy-menu" role="menu"
+    aria-label={label} aria-describedby={hints.length ? hintId : undefined} tabIndex={-1}
     onContextMenu={event => { event.preventDefault(); event.stopPropagation() }}
     onKeyDown={event => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
@@ -153,16 +197,18 @@ function ContentCopyMenu({ request, onClose, onCopy }: { request: CopyMenuReques
         const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
         const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
-          : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+          : index < 0 ? (event.key === 'ArrowDown' ? 0 : buttons.length - 1)
+            : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
         buttons[next]?.focus()
       }
     }}>
-    {request.commands.map(command => {
-      const Icon = command.icon ?? Copy
-      return <div key={command.label} role="none">
-        {command.separator ? <div role="separator" /> : null}
-        <button type="button" role="menuitem" disabled={Boolean(command.disabledReason)} title={command.disabledReason} onClick={() => { close(); void onCopy(command) }}>
-          <Icon size={16} aria-hidden />{command.label}
+    {hints.length > 0 && <p id={hintId} className="ent-content-menu-hint">{hints.join(' ')}</p>}
+    {items.map(item => {
+      const Icon = item.icon ?? Copy
+      return <div key={item.label} role="none">
+        {item.separator ? <div role="separator" /> : null}
+        <button type="button" role="menuitem" data-danger={item.danger || undefined} disabled={Boolean(item.disabledReason)} title={item.disabledReason} onClick={() => { close(); onSelect(item) }}>
+          <Icon size={16} aria-hidden />{item.label}
         </button>
       </div>
     })}

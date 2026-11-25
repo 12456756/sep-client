@@ -3,7 +3,7 @@ import { FileText, Pencil, Trash2 } from 'lucide-react'
 import type { ScheduledWorkPlan, ScheduledDefinition, ScheduledOccurrence } from '../../../shared/scheduled-tasks'
 import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterpriseWorkspace'
 import type { ScheduledTasksModel } from '../../../features/enterprise/use-scheduled-tasks'
-import { definitionLabel, recurrenceLabel, RUN_LABELS, runActions, scheduleTime, TERMINAL_RUNS } from '../../../features/enterprise/scheduled-task-model'
+import { canResumeSchedule, definitionLabel, recurrenceLabel, RUN_LABELS, runActions, scheduleTime, TERMINAL_RUNS } from '../../../features/enterprise/scheduled-task-model'
 import { EmployeeFace } from '../EmployeeFace'
 
 function Plan({ plan }: { plan: ScheduledWorkPlan }) {
@@ -11,10 +11,10 @@ function Plan({ plan }: { plan: ScheduledWorkPlan }) {
   return <section className="ent-sch-card ent-sch-plan" aria-label="只读工作计划"><h3>工作计划 <small>只读</small></h3><p>{plan.objective}</p><h4>最终成果</h4><p>{plan.expectedOutput}</p><ul>{plan.deliverables.map(file => <li key={file.id}><FileText size={16} /><div><strong>{file.name}</strong><code>{file.path}</code><ul>{file.contentOutline.map((text, index) => <li key={index}>{text}</li>)}</ul><p className="ent-sch-help">验收：{file.acceptanceCriteria.join('；')}</p></div></li>)}</ul><details><summary>查看完整执行指令</summary><p className="ent-sch-instruction">{plan.instruction}</p></details></section>
 }
 
-export function ScheduledTaskDetail({ definition, workspace, model, inHistory }: { definition: ScheduledDefinition; workspace: EnterpriseWorkspace; model: ScheduledTasksModel; inHistory: boolean }) {
+export function ScheduledTaskDetail({ definition, workspace, model, inHistory, onDelete }: { definition: ScheduledDefinition; workspace: EnterpriseWorkspace; model: ScheduledTasksModel; inHistory: boolean; onDelete(definition: ScheduledDefinition): void }) {
   const route = workspace.route.name === 'scheduled' ? workspace.route : { name: 'scheduled' as const }
   const tab = route.view === 'configuration' ? 'configuration' : 'history'
-  const [confirming, setConfirming] = useState<'archive' | 'review' | 'cancel' | null>(null)
+  const [confirming, setConfirming] = useState<'review' | 'cancel' | null>(null)
   const [confirmedRun, setConfirmedRun] = useState<string | null>(null)
   const confirmationRef = useRef<HTMLDivElement>(null)
 
@@ -37,7 +37,7 @@ export function ScheduledTaskDetail({ definition, workspace, model, inHistory }:
   const goTab = (view: 'configuration' | 'history') => { setConfirming(null); workspace.replaceRoute({ name: 'scheduled', taskId: definition.id, view, runId: route.runId }) }
   const openWork = (run: ScheduledOccurrence) => workspace.navigate({ name: 'work', workId: run.taskId })
   const perform = async () => {
-    const result = confirming === 'archive' ? await model.archive(definition) : confirming === 'review' && confirmedRun ? await model.acknowledge(confirmedRun) : confirming === 'cancel' && confirmedRun ? await model.cancel(confirmedRun) : null
+    const result = confirming === 'review' && confirmedRun ? await model.acknowledge(confirmedRun) : confirming === 'cancel' && confirmedRun ? await model.cancel(confirmedRun) : null
     if (result?.success) { setConfirming(null); setConfirmedRun(null) }
   }
 
@@ -49,9 +49,9 @@ export function ScheduledTaskDetail({ definition, workspace, model, inHistory }:
       <section className="ent-sch-card"><h3>任务配置</h3><dl className="ent-sch-facts"><div><dt>工作目标</dt><dd>{definition.input.goal}</dd></div><div><dt>执行时间</dt><dd>{scheduleTime(definition.input.scheduledAt, definition.input.timezone)} · {definition.input.timezone}</dd></div>{local ? <div><dt>文件名</dt><dd>{filename}</dd></div> : <div><dt>模型</dt><dd>{definition.input.modelId}</dd></div>}<div><dt>工作目录</dt><dd className="ent-sch-path" title={definition.input.workDir}>{definition.input.workDir}</dd></div>{definition.input.outputDirectory && <div><dt>产出目录（仅交付）</dt><dd className="ent-sch-path" title={definition.input.outputDirectory.path}>{definition.input.outputDirectory.path}</dd></div>}<div><dt>权限</dt><dd>{definition.input.permissions.preset === 'full-local' ? '旧版权限已停用，请重新保存任务' : local ? '仅创建新文件，不覆盖' : '在工作目录内创建文件，不修改已有文件'}</dd></div>{!local && <div><dt>技能</dt><dd>{general ? '不加载员工技能' : '执行时使用员工当前选择且有权使用的版本'}</dd></div>}<div><dt>配置版本</dt><dd>第 {definition.revision} 版 · 历史执行保留当时的快照</dd></div></dl></section>
       {definition.plan ? <Plan plan={definition.plan} /> : <section className="ent-sch-card"><h3>工作计划尚未生成</h3><p>{local ? '本地计划不调用模型。' : general ? '根据工作目标生成执行指令和文件交付要求。此步骤只做规划。' : '将根据员工职责和工作目标生成执行指令及文件交付要求。此步骤只做规划。'}</p>{!definition.deleted ? <button type="button" className="ent-btn primary" disabled={model.busy || active} onClick={() => void model.plan(definition)}>{model.busy ? '正在生成…' : '生成工作计划'}</button> : null}</section>}
       {!definition.deleted ? <footer className="ent-sch-actions">
-        {definition.enabled ? <button type="button" className="ent-btn" disabled={model.busy} onClick={() => void model.pause(definition)}>暂停后续调度</button> : definition.plan && (recurring || (!seenTime && definition.input.scheduledAt > Date.now())) ? <button type="button" className="ent-btn primary" disabled={model.busy || active} onClick={() => void model.confirm(definition)}>{recurring && seenTime ? '恢复周期调度' : '确认计划并启用'}</button> : null}
+        {definition.enabled ? <button type="button" className="ent-btn" disabled={model.busy} onClick={() => void model.pause(definition)}>暂停后续调度</button> : canResumeSchedule(definition, seenTime) ? <button type="button" className="ent-btn primary" disabled={model.busy || active} onClick={() => void model.confirm(definition)}>{recurring && seenTime ? '恢复周期调度' : '确认计划并启用'}</button> : null}
         <button type="button" className="ent-btn" disabled={model.busy || active} onClick={() => workspace.replaceRoute({ name: 'scheduled', taskId: definition.id, view: 'edit' })}><Pencil size={14} />编辑任务配置</button>
-        <button type="button" className="ent-btn danger ghost" disabled={model.busy || active} onClick={() => setConfirming('archive')}><Trash2 size={14} />删除任务</button>
+        <button type="button" className="ent-btn danger ghost" disabled={model.busy || active} onClick={() => onDelete(definition)}><Trash2 size={14} />删除任务</button>
       </footer> : <p className="ent-sch-help">该任务已删除，配置和执行记录仅供查阅。</p>}
       {active ? <p className="ent-sch-help">请先处理或停止当前执行，再修改或删除配置。暂停后续调度不会停止已经生成的执行。</p> : seenTime ? <p className="ent-sch-help">这个时间点已经执行过。再次安排请编辑原任务，选择未来时间并重新启用。</p> : definition.input.scheduledAt <= Date.now() && !definition.enabled ? <p className="ent-sch-help">原执行时间已过，请编辑为未来时间后启用。</p> : null}
     </div> : <div role="tabpanel" aria-label="执行记录">
@@ -71,6 +71,6 @@ export function ScheduledTaskDetail({ definition, workspace, model, inHistory }:
         </section> : null}
       </div>}
     </div>}
-    {confirming ? <div ref={confirmationRef} tabIndex={-1} className="ent-sch-confirm" role="alertdialog" aria-label={confirming === 'archive' ? '删除定时任务' : confirming === 'review' ? '核查确认' : '停止执行'}><p>{confirming === 'archive' ? '删除后停止未来调度，已有执行历史仍会保留。确定删除吗？' : confirming === 'review' ? '我已核查现有文件和外部操作，并确认关闭本次执行。此操作不会重跑任务。' : '停止本次执行？已产生的文件和外部操作不会自动撤回。'}</p><div className="ent-sch-actions"><button type="button" className="ent-btn" disabled={model.busy} onClick={() => setConfirming(null)}>返回</button><button type="button" className="ent-btn danger" disabled={model.busy} onClick={() => void perform()}>{confirming === 'archive' ? '确认删除' : confirming === 'review' ? '已核查，关闭记录' : '确认停止'}</button></div></div> : null}
+    {confirming ? <div ref={confirmationRef} tabIndex={-1} className="ent-sch-confirm" role="alertdialog" aria-label={confirming === 'review' ? '核查确认' : '停止执行'}><p>{confirming === 'review' ? '我已核查现有文件和外部操作，并确认关闭本次执行。此操作不会重跑任务。' : '停止本次执行？已产生的文件和外部操作不会自动撤回。'}</p><div className="ent-sch-actions"><button type="button" className="ent-btn" disabled={model.busy} onClick={() => setConfirming(null)}>返回</button><button type="button" className="ent-btn danger" disabled={model.busy} onClick={() => void perform()}>{confirming === 'review' ? '已核查，关闭记录' : '确认停止'}</button></div></div> : null}
   </div>
 }

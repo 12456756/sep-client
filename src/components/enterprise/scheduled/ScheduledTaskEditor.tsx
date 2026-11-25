@@ -95,6 +95,7 @@ export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, m
       {outputDirectory && <label><input type="checkbox" checked={outputConfirmed} onChange={event => setOutputConfirmed(event.target.checked)} /> 允许此定时任务每次将成果保存到该目录，不覆盖已有文件</label>}
       <ScheduledTimeSettings value={timing} onChange={setTiming} employeeId={employeeId} modelId={settings.modelId} model={model} manualCron={local || general} onParsingChange={onParsingChange} />
     </fieldset>
+    {original && <p className="ent-sch-help">保存后任务不会自动调度，请在任务配置中确认计划并启用。</p>}
     {error || model.error ? <p className="ent-sch-modal-error" role="alert">{error || model.error}</p> : null}</div>
     <footer><button type="button" className="ent-btn" disabled={busy} onClick={onClose}>取消</button><button type="submit" className="ent-btn primary" disabled={busy || !name.trim() || !settings.workDir || (!local && (!goal.trim() || (!general && !employeeId) || !settings.modelId))}>{model.busy ? '正在保存…' : '保存'}</button></footer>
   </form>

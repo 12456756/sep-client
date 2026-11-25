@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { scheduledInstant, localDateTime, definitionLabel, recurrenceLabel, runActions, scheduledHomeGroups } from './scheduled-task-model'
+import { scheduledInstant, localDateTime, definitionLabel, recurrenceLabel, runActions, scheduledHomeGroups, scheduledTaskActions } from './scheduled-task-model'
 import type { ScheduledDefinition, ScheduledOccurrence } from '../../shared/scheduled-tasks'
 
 test('one-off wall times use the selected timezone, rejecting DST gaps and ambiguous hours', () => {
@@ -48,4 +48,39 @@ test('uncertain execution permits review but never offers replay or a generic re
   assert.deepEqual(runActions('review'), ['inspect', 'acknowledge', 'cancel'])
   assert.deepEqual(runActions('blocked'), ['inspect', 'check', 'cancel'])
   assert.deepEqual(runActions('completed'), ['inspect'])
+})
+
+const task = { input: { scheduledAt: 200 }, enabled: false, deleted: false, plan: {}, pausedAt: null } as ScheduledDefinition
+const menuOptions = { inHistory: false, busy: false, now: 100 }
+
+test('task list menu matches the definition state and keeps deletion last', () => {
+  const actions = (definition: ScheduledDefinition, inHistory = false) => scheduledTaskActions(definition, [], { ...menuOptions, inHistory }).map(action => action.id)
+  assert.deepEqual(actions({ ...task, plan: null }), ['edit', 'archive'])
+  assert.deepEqual(actions({ ...task, enabled: true }), ['edit', 'pause', 'archive'])
+  assert.deepEqual(actions({ ...task, pausedAt: 10 }), ['edit', 'resume', 'archive'])
+  assert.deepEqual(actions(task, true), ['history', 'reschedule', 'archive'])
+  assert.deepEqual(actions({ ...task, deleted: true }, true), ['history'])
+})
+
+test('unfinished runs block mutations other than pausing future executions', () => {
+  for (const status of ['running', 'waiting_approval', 'review', 'cancelling'] as const) {
+    const runs = [{ status }] as ScheduledOccurrence[]
+    const enabled = scheduledTaskActions({ ...task, enabled: true }, runs, menuOptions)
+    assert.deepEqual(enabled.filter(action => !action.disabledReason).map(action => action.id), ['pause'])
+    assert.ok(scheduledTaskActions({ ...task, pausedAt: 10 }, runs, menuOptions).every(action => action.disabledReason))
+  }
+  const done = [{ status: 'completed' }] as ScheduledOccurrence[]
+  assert.ok(scheduledTaskActions({ ...task, enabled: true }, done, menuOptions).every(action => !action.disabledReason))
+  assert.ok(scheduledTaskActions({ ...task, enabled: true }, done, { ...menuOptions, busy: true }).every(action => action.disabledReason))
+})
+
+test('resume requires an existing plan and an unused future time for one-off tasks', () => {
+  const paused = { ...task, pausedAt: 10 }
+  const resumeAction = (definition: ScheduledDefinition, runs: ScheduledOccurrence[] = [], now = 100) => scheduledTaskActions(definition, runs, { ...menuOptions, now }).find(action => action.id === 'resume')
+  assert.equal(resumeAction(paused)?.disabledReason, undefined)
+  assert.match(resumeAction(paused, [], 200)?.disabledReason ?? '', /未来/)
+  assert.match(resumeAction(paused, [{ status: 'completed', scheduledAt: 200 }] as ScheduledOccurrence[])?.disabledReason ?? '', /未来/)
+  assert.match(resumeAction({ ...paused, plan: null })?.disabledReason ?? '', /工作计划/)
+  const recurring = { ...paused, input: { ...paused.input, recurrence: { frequency: 'daily' as const, interval: 1 } } }
+  assert.equal(resumeAction(recurring, [], 200)?.disabledReason, undefined)
 })

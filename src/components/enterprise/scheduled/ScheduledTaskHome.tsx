@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowLeft, ArrowUp, ChevronDown, Plus, Search, X } from 'lucide-react'
+import { ArrowLeft, ArrowUp, CalendarClock, ChevronDown, History, MoreHorizontal, Pause, Pencil, Play, Plus, Search, Trash2, X } from 'lucide-react'
 import scheduledClock from '../../../assets/scheduled-clock.png'
-import type { ScheduledDefinition } from '../../../shared/scheduled-tasks'
+import type { ScheduledDefinition, ScheduledOccurrence } from '../../../shared/scheduled-tasks'
 import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterpriseWorkspace'
 import type { ScheduledTasksModel } from '../../../features/enterprise/use-scheduled-tasks'
-import { definitionLabel, recurrenceLabel, scheduledHomeGroups } from '../../../features/enterprise/scheduled-task-model'
+import { definitionLabel, recurrenceLabel, scheduledHomeGroups, scheduledTaskActions } from '../../../features/enterprise/scheduled-task-model'
 import { authorizedScheduledModels, emptyScheduledTaskDraft, SCHEDULE_EXAMPLES } from '../../../features/enterprise/scheduled-task-home'
 import type { ScheduledCreation, ScheduledCreationRequest } from '../../../shared/scheduled-creation'
 import { creationAccepted } from '../../../features/enterprise/scheduled-task-client'
@@ -18,11 +18,24 @@ import { resolveTaskModel } from '../../../shared/model-preferences'
 import { FileMentionChips, FileMentionPicker } from '../attachments/FileMentionPicker'
 import { FileMentionEditor } from '../attachments/FileMentionEditor'
 import { useTextReferenceComposer } from '../attachments/use-text-reference-composer'
+import { ContentActionMenu, type ContentMenuItem } from '../../ContentCopyMenu'
+import { useFeedback } from '../../feedback/FeedbackProvider'
+import { useOperationFeedback } from '../../feedback/use-operation-feedback'
 
 interface Props { workspace: EnterpriseWorkspace; model: ScheduledTasksModel; selectedDefinition?: ScheduledDefinition; onCreate(): void }
 type Example = typeof SCHEDULE_EXAMPLES[number]
+const taskMenuItems = {
+  edit: { label: '编辑任务', icon: Pencil },
+  pause: { label: '暂停后续调度', icon: Pause },
+  resume: { label: '恢复调度', icon: Play },
+  history: { label: '查看执行记录', icon: History },
+  reschedule: { label: '重新安排', icon: CalendarClock },
+  archive: { label: '删除任务', icon: Trash2, separator: true, danger: true },
+} satisfies Record<ReturnType<typeof scheduledTaskActions>[number]['id'], ContentMenuItem>
 
 export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCreate }: Props) {
+  const feedback = useFeedback()
+  const { capture } = useOperationFeedback(workspace.attachmentScopeKey)
   const [searching, setSearching] = useState(false)
   const [search, setSearch] = useState('')
   const [draft, setDraft] = useState(emptyScheduledTaskDraft)
@@ -60,6 +73,15 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     submitted.current = null
   }, [data])
   const groups = useMemo(() => scheduledHomeGroups(data?.definitions ?? [], data?.occurrences ?? []), [data])
+  const runsByDefinition = useMemo(() => {
+    const grouped = new Map<string, ScheduledOccurrence[]>()
+    for (const run of data?.occurrences ?? []) {
+      const runs = grouped.get(run.definitionId)
+      if (runs) runs.push(run)
+      else grouped.set(run.definitionId, [run])
+    }
+    return grouped
+  }, [data?.occurrences])
   const applyExample = (example: Example) => {
     setDraft(value => ({ ...value, goal: example.prompt }))
     lastExample.current = example.prompt
@@ -91,6 +113,21 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     focusComposer()
   }
   const open = (id: string) => workspace.navigate({ name: 'scheduled', taskId: id, view: 'history' })
+  const deleteTask = (item: ScheduledDefinition) => {
+    const binding = capture()
+    void feedback.confirm({
+      key: `delete-scheduled-task:${item.id}`,
+      title: '删除定时任务',
+      message: `删除「${item.input.name}」？删除后不再调度，已有执行记录和产出文件会保留。`,
+      actionLabel: '删除任务',
+      busyLabel: '正在删除…',
+      onConfirm: async () => {
+        if (!binding.isCurrent()) return { success: false, message: '当前工作区已切换，请关闭弹窗后重试。' }
+        const result = await model.archive(item)
+        return result?.success ? { success: true } : { success: false, message: result?.error?.message || '删除结果未确认，请刷新后重试。' }
+      },
+    })
+  }
   const focusComposer = () => {
     workspace.replaceRoute({ name: 'scheduled' })
     requestAnimationFrame(() => input.current?.focus({ preventScroll: true }))
@@ -111,10 +148,24 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
   const pendingDefinitions = groups.pending.filter(item => !creationDefinitions.has(item.id))
   const matches = (item: ScheduledDefinition) => `${item.input.name} ${item.input.goal}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
   const list = (items: ScheduledDefinition[], label: string, inHistory = false) => items.length ? <section className="ent-sch-nav-group" aria-label={label}>
-    {items.filter(matches).map(item => <button type="button" className="ent-sch-nav-task" aria-current={selectedDefinition?.id === item.id ? 'page' : undefined} key={item.id} onClick={() => workspace.navigate({ name: 'scheduled', taskId: item.id, view: !inHistory && !item.plan && !item.enabled ? 'edit' : 'history' })}>
-      <span className="ent-sch-nav-task-title"><strong>{item.input.name}</strong>{inHistory && <span className="ent-sch-state">{definitionLabel(item, inHistory)}</span>}</span>
-      <span className="ent-sch-nav-task-recurrence">{recurrenceLabel(item)}</span>
-    </button>)}
+    {items.filter(matches).map(item => <ContentActionMenu key={item.id} className="ent-sch-nav-row"
+        label="定时任务操作" triggerLabel={`更多操作：${item.input.name}`} triggerClassName="ent-sch-nav-menu"
+        triggerIcon={<MoreHorizontal size={16} aria-hidden />}
+        items={scheduledTaskActions(item, runsByDefinition.get(item.id) ?? [], { inHistory, busy: model.busy }).map(action => ({ ...taskMenuItems[action.id], ...action }))}
+        onSelect={({ id }) => {
+          switch (id) {
+            case 'edit': case 'reschedule': workspace.navigate({ name: 'scheduled', taskId: item.id, view: 'edit' }); break
+            case 'history': open(item.id); break
+            case 'pause': void model.pause(item); break
+            case 'resume': void model.confirm(item); break
+            case 'archive': deleteTask(item); break
+          }
+        }}>
+      <button type="button" className="ent-sch-nav-task" aria-current={selectedDefinition?.id === item.id ? 'page' : undefined} onClick={() => workspace.navigate({ name: 'scheduled', taskId: item.id, view: !inHistory && !item.plan && !item.enabled ? 'edit' : 'history' })}>
+        <span className="ent-sch-nav-task-title"><strong title={item.input.name}>{item.input.name}</strong>{inHistory && <span className="ent-sch-state">{definitionLabel(item, inHistory)}</span>}</span>
+        <span className="ent-sch-nav-task-recurrence">{recurrenceLabel(item)}</span>
+      </button>
+    </ContentActionMenu>)}
   </section> : null
   const hasCreations = Boolean(data?.creations?.some(item => !item.deleted) || pending.length)
   const creationsView = workspace.route.name === 'scheduled' && workspace.route.view === 'creations'
@@ -136,7 +187,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
       </div>
     </aside>
     <section ref={mainPane} className={`ent-sch-main-pane${home ? ' ent-sch-compose-pane' : ''}`} aria-label="定时任务内容">
-      {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{creationsView ? hasCreations ? <ScheduledCreationList model={model} onResume={resume} onOpen={open} /> : <p role="status">暂无创建进度。</p> : selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} inHistory={groups.history.some(item => item.id === selectedDefinition.id)} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
+      {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{creationsView ? hasCreations ? <ScheduledCreationList model={model} onResume={resume} onOpen={open} /> : <p role="status">暂无创建进度。</p> : selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} inHistory={groups.history.some(item => item.id === selectedDefinition.id)} onDelete={deleteTask} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
       <div className="ent-sch-home-content" tabIndex={0} aria-label="定时任务创建区">
         <div className="ent-sch-welcome"><img className="ent-sch-clock" src={scheduledClock} width={80} height={80} alt="" /><h2>安排任务</h2>
         <section className="ent-sch-examples" aria-label="定时任务示例"><h3>常用任务</h3>
