@@ -311,7 +311,10 @@ async function postMultipart<T>(
   form.append('file', new Blob([input.bytes], { type: input.contentType }), input.filename)
   const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      ...platformSourceHeaders(config.SEP_WEB_ORIGIN),
+    },
     body: form,
   })
   if (!response.ok) throw await parseError(response, resource, [accessToken])

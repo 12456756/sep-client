@@ -25,24 +25,38 @@ describe('profile and personal recharge platform APIs', () => {
     })
   })
 
-  it('uploads avatar and enterprise logo as multipart file fields', async () => {
-    const calls: string[] = []
-    globalThis.fetch = async (input, init) => {
-      calls.push(String(input))
-      assert.equal(init?.method, 'POST')
-      assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer access')
-      assert.ok(init?.body instanceof FormData)
-      const form = init.body as FormData
-      const file = form.get('file')
-      assert.ok(file instanceof File || file instanceof Blob)
-      assert.equal(file && 'name' in file ? file.name : undefined, 'avatar.png')
-      return response(calls.length === 1 ? { avatar: '/api/users/avatars/a.png' } : { logo: '/api/enterprise/logos/l.png' }, 201)
-    }
-    assert.equal((await api.uploadUserAvatar({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).avatar, `${config.SEP_BASE_URL}/users/avatars/a.png`)
-    assert.equal((await api.uploadEnterpriseLogo({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).logo, `${config.SEP_BASE_URL}/enterprise/logos/l.png`)
-    assert.match(calls[0]!, /\/users\/me\/avatar$/)
-    assert.match(calls[1]!, /\/enterprise\/logo$/)
-  })
+  for (const kind of ['avatar', 'logo'] as const) {
+    it(`uploads ${kind} with authorization, web source headers and a multipart file`, async () => {
+      const endpoint = kind === 'avatar' ? '/users/me/avatar' : '/enterprise/logo'
+      const assetPath = kind === 'avatar' ? '/users/avatars/a.png' : '/enterprise/logos/l.png'
+      const bytes = new Uint8Array([1, 2])
+      let calls = 0
+      globalThis.fetch = async (input, init) => {
+        calls++
+        assert.equal(String(input), `${config.SEP_BASE_URL}${endpoint}`)
+        assert.equal(init?.method, 'POST')
+        const headers = new Headers(init?.headers)
+        assert.equal(headers.get('Authorization'), 'Bearer access')
+        assert.equal(headers.get('Origin'), config.SEP_WEB_ORIGIN)
+        assert.equal(headers.get('Referer'), `${config.SEP_WEB_ORIGIN}/`)
+        assert.equal(headers.get('Content-Type'), null)
+        assert.ok(init?.body instanceof FormData)
+        const request = new Request(String(input), init)
+        assert.match(request.headers.get('Content-Type')!, /^multipart\/form-data; boundary=/)
+        const file = (await request.formData()).get('file')
+        assert.ok(file instanceof File)
+        assert.equal(file.name, 'avatar.png')
+        assert.equal(file.type, 'image/png')
+        assert.deepEqual(new Uint8Array(await file.arrayBuffer()), bytes)
+        return response({ [kind]: `/api${assetPath}` }, 201)
+      }
+      const upload = kind === 'avatar' ? api.uploadUserAvatar : api.uploadEnterpriseLogo
+      assert.deepEqual(await upload({ bytes, filename: 'avatar.png', contentType: 'image/png' }, 'access'), {
+        [kind]: `${config.SEP_BASE_URL}${assetPath}`,
+      })
+      assert.equal(calls, 1)
+    })
+  }
 
   it('creates, queries, and reconciles a personal recharge order', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
