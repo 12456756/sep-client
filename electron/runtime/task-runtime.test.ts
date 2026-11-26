@@ -85,7 +85,7 @@ describe('TaskRuntime media lifecycle', () => {
       assert.equal((await manager.getTask(task.id))?.status, TaskStatus.RUNNING)
       assert.equal(prepared?.employee, employee)
       assert.equal(prepared?.runId, context?.runId)
-      const input = { taskId: task.id, runId: context!.runId, subscriptionId: employee.subscriptionId, toolName: 'media_generate_image', input: { quote: { amount: '1', currency: 'credits' } } }
+      const input = { taskId: task.id, runId: context!.runId, subscriptionId: employee.subscriptionId, toolName: 'media_cancel_job', input: { cancelUpstream: true } }
       const approved = prepared!.requestApproval(input)
       await waitFor(() => requests.length === 1)
       assert.equal(runtime.respondToApproval({ requestId: requests[0].requestId, approved: true }), true)
@@ -208,16 +208,7 @@ describe('TaskRuntime video lifecycle', () => {
       assert.equal((await manager.getTask(task.id))?.status, TaskStatus.RUNNING)
       assert.equal(prepared?.employee, employee)
       assert.equal(prepared?.runId, context?.runId)
-      const input = { taskId: task.id, runId: context!.runId, subscriptionId: employee.subscriptionId, toolName: 'video_from_video', input: { quote: { amount: '1', currency: 'credits' } } }
-      const approved = prepared!.requestApproval(input)
-      await waitFor(() => requests.length === 1)
-      assert.equal(runtime.respondToApproval({ requestId: requests[0].requestId, approved: true }), true)
-      assert.equal(await approved, true)
-      const boundRequest = runtime.requestMediaApproval
-      const denied = boundRequest(input)
-      await waitFor(() => requests.length === 2)
-      assert.equal(runtime.respondToApproval({ requestId: requests[1].requestId, approved: false }), true)
-      assert.equal(await denied, false)
+      assert.equal(requests.length, 0)
       deliver()
       await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
       assert.equal((await manager.getTask(task.id))?.status, TaskStatus.COMPLETED)

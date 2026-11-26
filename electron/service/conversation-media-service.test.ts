@@ -64,7 +64,6 @@ async function fixture() {
       },
     }),
     ...createVideoScopeAdapter(root, images, videos),
-    requestApproval: async () => true,
     tracker: { floorMs: 1, maxAttempts: 4, budgetMs: 5000 },
   }
   const video = new VideoRunService(videoOptions)

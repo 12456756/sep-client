@@ -530,8 +530,6 @@ export class ArrangementExecutor {
     let scheduledAccessError: ScheduledPathDeniedError | undefined
     let diagnosticPhase: DiagnosticPhase = 'node-setup'
     const mediaEvidence = this.options.arrangementDiagnostics ? trackMediaToolFailureEvidence() : undefined
-    const expectsVideo = node.mediaRequirements?.some(item => item.kind === 'video') === true ||
-      node.deliverables?.some(file => file.artifact?.kind === 'video') === true
     const requiresMediaBridge = !!node.mediaRequirements?.length ||
       !!node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')
     // File-only scheduled assistants have a model grant but no task-level employee binding.
@@ -708,9 +706,7 @@ export class ArrangementExecutor {
       })
       const rawVideoTools = await video?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
-        requestApproval: request => this.options.onApprovalRequest(request),
         onJobCreated: mediaSession?.onJobCreated, recoverJobIds: mediaSession?.recoverJobIds,
-        autoApproveMedia: expectsVideo,
         onTerminalFailure: async error => {
           terminalMediaFailure ??= error
           await worker?.abort().catch(() => undefined)

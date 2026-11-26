@@ -237,7 +237,7 @@ describe('TaskRuntime arrangement integration', () => {
     } finally { deliver(); await runtime.stopAll() }
   })
 
-  it('pauses an arrangement awaiting video and denies a pending node video approval', async () => {
+  it('pauses an arrangement awaiting video without a tool approval', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-video-pause-'))
     directories.push(userDataDir)
     const manager = new TaskManager(userDataDir)
@@ -261,10 +261,9 @@ describe('TaskRuntime arrangement integration', () => {
     try {
       await runtime.executeTask(task.id)
       await waitFor(() => waiting)
-      const approval = prepared!.requestApproval({ taskId: task.id, runId: prepared!.runId, subscriptionId: employee.subscriptionId, toolName: 'video_from_image', input: { quote: { amount: '1', currency: 'credits' } } })
-      await waitFor(() => approvalRequested)
+      assert.equal(prepared?.taskId, task.id)
       await runtime.pauseTask(task.id)
-      assert.equal(await approval, false)
+      assert.equal(approvalRequested, false)
       assert.deepEqual(stopped, [task.id])
       assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PAUSED)
     } finally { deliver(); await runtime.stopAll() }

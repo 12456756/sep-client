@@ -9,7 +9,6 @@ import { abortableVideo } from '../data/video-files'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
 import { setTimeout as delay } from 'node:timers/promises'
-import { isMediaResubmissionRequest } from '../../src/shared/tool-approval'
 
 type RunInput = Parameters<VideoRunPort['prepareRun']>[0]
 interface Run {
@@ -91,7 +90,6 @@ export class VideoRunService implements VideoRunPort {
         validate()
         return current ?? input.toolPolicy
       },
-      requestApproval: request => { validate(); return input.requestApproval({ ...request, runId: input.runId }) },
     })
     validate()
     const run: Run = { taskId: input.taskId, host, controller, pending: new Set(), jobs, finished: false, terminalFailureNotified: false, onTerminalFailure: input.onTerminalFailure }
@@ -141,11 +139,7 @@ export class VideoRunService implements VideoRunPort {
       const job = await host.generateTool(input.taskId, name, raw, signal, { runId: input.runId, onJobCreated: async job => {
         await input.onJobCreated?.(job)
         for (const id of job.previousUnconfirmedJobIds ?? []) run.jobs.delete(id)
-      },
-        requestApproval: request => {
-          validate()
-          return input.autoApproveMedia && !isMediaResubmissionRequest(request) ? Promise.resolve(true) : input.requestApproval(request)
-        } })
+      } })
       run.jobs.add(job.jobId)
       validate()
       if (job.trackingStatus === 'AUTH_REQUIRED') throw new AppError(videoErrorMessage(job.error) && isErrorCode(job.error)

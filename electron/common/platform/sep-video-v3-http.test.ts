@@ -115,12 +115,12 @@ test('negotiates actual SEP V3 video runtime and saves a tool-generated video ov
     gateway: () => new SepRealVideoGateway({ mock: false, baseUrl, subscriptionId: scope.subscriptionId,
       token: async () => 'fixture-video-http-not-a-real-token' }),
     authorizationRevision: () => 0, getTask: async () => ({ subscriptionId: scope.subscriptionId }),
-    authorize: async () => video, requestApproval: async () => true,
+    authorize: async () => video,
     readReference: async () => assert.fail('Text-to-video must not upload a reference'),
     tracker: { floorMs: 1, maxAttempts: 4, budgetMs: 5000 } })
   cleanup.stop = () => service.stopAll()
   const tools = await service.prepareRun({ taskId: 'task-video-http', runId: 'run-video-http', subscriptionId: scope.subscriptionId,
-    employee, requestApproval: async () => true })
+    employee })
   assert.ok(tools)
   await assertMediaToolsInModelRequest(directory, { videoTools: tools }, ['video_generate', 'video_from_image', 'video_get_job'])
   const result = await tools.execute('video_generate', { creativeBrief, protocolVersion: 3,

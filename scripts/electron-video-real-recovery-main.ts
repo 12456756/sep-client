@@ -55,7 +55,6 @@ async function start() {
       }, authorizationRevision: () => 0,
       gateway: () => offlineGateway as MockVideoHostGateway,
       readReference: async () => { throw new AppError('PERMISSION_DENIED') },
-      requestApproval: async () => { audit.approvals++; throw new AppError('PERMISSION_DENIED') },
       openOutput: async (scope, taskId, jobId, outputId, signal, validate) => {
         signal.throwIfAborted(); validate()
         const path = await store.verifiedAssetPath(scope, taskId, jobId, outputId)

@@ -218,25 +218,33 @@ export async function runVideoV2Live(configPath: string, env: NodeJS.ProcessEnv 
         requireLive(manifest.subscriptionId === scope.subscriptionId, 'runtime-subscription')
         return videoRuntimeSchema.parse(manifest.runtime.video)
       },
-      gateway: actual => { requireLive(isDeepStrictEqual(actual, scope), 'gateway-scope'); return gateway },
+      gateway: actual => {
+        requireLive(isDeepStrictEqual(actual, scope), 'gateway-scope')
+        return {
+          uploadReference: gateway.uploadReference.bind(gateway),
+          quote: async (request, bounded) => {
+            requireLive(canGenerate && !quoteApproved && request.operation === config.operation &&
+              isDeepStrictEqual(request.parameters, expectedParameters), 'repeated-or-changed-cost-approval')
+            const quote = await gateway.quote(request, bounded)
+            approveLiveVideo({ mock: false, parameters: request.parameters, quote: {
+              currency: quote.currency, amount: quote.amount, expiresAt: quote.expiresAt,
+            } }, config, uploadApproved)
+            quoteApproved = true; counts.quoteApprovals++
+            return quote
+          },
+          submit: gateway.submit.bind(gateway), findReceipt: gateway.findReceipt.bind(gateway),
+          getReceipt: gateway.getReceipt.bind(gateway), content: gateway.content.bind(gateway),
+        }
+      },
       readReference: async (actual, taskId, localId) => {
-        requireLive(uploadApproved && config.pngPath && isDeepStrictEqual(actual, scope) && taskId === config.taskId && localId === 'live-png', 'reference-scope-or-approval')
+        requireLive(canGenerate && config.pngPath && isDeepStrictEqual(actual, scope) && taskId === config.taskId && localId === 'live-png', 'reference-scope-or-approval')
+        approveLiveVideo({ operation: 'upload-references', referenceCount: 1, mock: false }, config, uploadApproved)
+        uploadApproved = true; counts.uploadApprovals++
         const bytes = await privateBytes(config.pngPath, 10 * 1024 * 1024)
         const info = inspectMediaImage(bytes)
         requireLive(info.mime === 'image/png' && info.width <= 4096 && info.height <= 4096, 'invalid-png')
         referenceSha256 = createHash('sha256').update(bytes).digest('hex')
         return { bytes, sha256: referenceSha256 }
-      },
-      requestApproval: async approval => {
-        requireLive(canGenerate && approval.taskId === config.taskId && approval.subscriptionId === scope.subscriptionId &&
-          approval.toolName === (config.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'), 'approval-scope')
-        const kind = approveLiveVideo(approval.input, config, uploadApproved)
-        if (kind === 'upload') { uploadApproved = true; counts.uploadApprovals++ }
-        else {
-          requireLive(!quoteApproved && isDeepStrictEqual((approval.input as { parameters: unknown }).parameters, expectedParameters), 'repeated-or-changed-cost-approval')
-          quoteApproved = true; counts.quoteApprovals++
-        }
-        return true
       },
       openOutput: async (actual, taskId, jobId, outputId, bounded, validate) => {
         bounded.throwIfAborted(); validate()

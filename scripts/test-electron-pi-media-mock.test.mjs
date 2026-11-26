@@ -10,38 +10,28 @@ function timeline() {
     subscriptionId: context.subscriptionId, sequence, occurredAt, type, data })
   const start = (seq, time, name, input) => event(seq, time, 'tool_execution_start', { toolName: name, toolId: name, input })
   const end = (seq, time, name) => event(seq, time, 'tool_execution_end', { toolName: name, toolId: name, success: true })
-  const request = (seq, time, id, operation) => event(seq, time, 'approval_requested', {
-    requestId: id, toolName: 'media_generate_image', input: { operation, referenceCount: 1 } })
-  const decision = (seq, time, id) => event(seq, time, 'approval_resolved', {
-    requestId: id, toolName: 'media_generate_image', approved: true })
   return [
     start(1, 1, 'read', { path: context.skillPath }), end(2, 2, 'read'),
-    request(3, 7, 'upload', 'upload-references'),
     start(4, 3, 'media_get_capabilities', {}), end(5, 4, 'media_get_capabilities'),
     start(8, 6, 'media_generate_image', { profileId: 'mock-sync', operation: 'edit', localAssetIds: ['ref-a'],
       parameters: { aspectRatio: '1:1', count: 1, size: '1x1' } }),
-    decision(9, 8, 'upload'), request(10, 9, 'generation', 'edit'), decision(11, 10, 'generation'),
     end(13, 11, 'media_generate_image'), start(15, 12, 'media_get_job', { jobId: 'job-a' }),
     end(16, 13, 'media_get_job'), event(17, 14, 'text_delta', { text: 'mock complete' }),
     event(18, 15, 'agent_end', { willRetry: false }),
   ]
 }
 
-test('accepts buffered worker persistence without losing the real approval boundary', () => {
-  assert.equal(verifyPiTimeline(timeline(), context).approvals.length, 2)
+test('requires a single automatic generation and an original-job query', () => {
+  assert.equal(verifyPiTimeline(timeline(), context).approvalCount, 0)
 })
 
-test('rejects approval requested before generation actually starts', () => {
-  const events = timeline()
-  events[2].occurredAt = 5
-  assert.throws(() => verifyPiTimeline(events, context), /APPROVAL_TOOL_ORDER/)
-})
-
-test('rejects an approval resolution after generation completes', () => {
-  const events = timeline()
-  events.find(event => event.sequence === 11).occurredAt = 12
-  assert.throws(() => verifyPiTimeline(events, context), /APPROVAL_TOOL_ORDER/)
-})
+for (const type of ['approval_requested', 'approval_resolved']) {
+  test(`rejects unexpected ${type} during automatic generation`, () => {
+    const events = timeline()
+    events.splice(5, 0, { ...events[4], sequence: 9, occurredAt: 7, type, data: { toolName: 'media_generate_image' } })
+    assert.throws(() => verifyPiTimeline(events, context), /UNEXPECTED_MEDIA_APPROVAL/)
+  })
+}
 
 test('rejects missing or invalid timestamps instead of weakening temporal checks', () => {
   const events = timeline()
@@ -51,34 +41,27 @@ test('rejects missing or invalid timestamps instead of weakening temporal checks
 
 for (const scenario of ['GENERATE', 'PARTIAL']) {
   test(`validates ${scenario} Pi generation and original-job query, not a second generation`, () => {
-    const events = timeline().filter(event => !['upload-references', 'edit'].includes(event.data.operation)
-      && !['upload', 'generation'].includes(event.data.requestId))
+    const events = timeline()
     const start = events.find(event => event.type === 'tool_execution_start' && event.data.toolName === 'media_generate_image')
     start.data.input = { profileId: 'mock-sync', operation: 'generate', localAssetIds: [],
       parameters: { aspectRatio: '1:1', count: scenario === 'PARTIAL' ? 2 : 1, size: '1x1' } }
-    const request = { ...events[0], sequence: 10, occurredAt: 9, type: 'approval_requested',
-      data: { requestId: 'approve', toolName: 'media_generate_image', input: { operation: 'generate', referenceCount: 0 } } }
-    const resolved = { ...request, sequence: 11, occurredAt: 10, type: 'approval_resolved',
-      data: { requestId: 'approve', toolName: 'media_generate_image', approved: true } }
-    events.push(request, resolved)
-    events.sort((a, b) => a.sequence - b.sequence)
     assert.equal(verifyPiTimeline(events, { ...context, scenario }).referenceCount, 0)
     start.data.input.parameters.count = scenario === 'PARTIAL' ? 1 : 2
     assert.throws(() => verifyPiTimeline(events, { ...context, scenario }), /PI_PARAMETERS/)
   })
 }
 
-test('requires the original manual approval and quote, with stable frozen request hashes', () => {
+test('requires the original automatically validated quote, with stable frozen request hashes', () => {
   const task = { id: 'task-a', subscriptionId: 'sub-a', ownerId: 'user-a', ownerEnterpriseId: 'enterprise-a' }
   const job = { owner: { memberId: 'user-a', enterpriseId: 'enterprise-a' }, taskId: task.id,
     subscriptionId: task.subscriptionId, jobId: 'job-a', runId: 'run-a', submission: 'RECEIPTED',
     receiptId: 'receipt-a', clientRequestId: 'request-a', requestHash: 'a'.repeat(64), profile: { configVersion: 'config-a' },
-    approval: 'manual', quote: { quoteId: 'quote-a', requestHash: 'a'.repeat(64) },
+    approval: 'automatic', quote: { quoteId: 'quote-a', requestHash: 'a'.repeat(64) },
     request: { clientRequestId: 'request-a', requestHash: 'a'.repeat(64), configVersion: 'config-a', quoteId: 'quote-a' } }
   const original = verifyFailureJobIdentity(job, task, 'job-a', 'run-a')
   const mutable = { ...job, trackingStatus: 'STOPPED', saveStatus: 'SAVED', updatedAt: Date.now() }
   assert.deepEqual(verifyFailureJobIdentity(mutable, task, 'job-a', 'run-a'), original)
-  assert.throws(() => verifyFailureJobIdentity({ ...job, approval: 'automatic' }, task, 'job-a', 'run-a'), /PERSISTED_APPROVAL_IDENTITY/)
+  assert.throws(() => verifyFailureJobIdentity({ ...job, approval: 'manual' }, task, 'job-a', 'run-a'), /PERSISTED_APPROVAL_IDENTITY/)
   assert.throws(() => verifyFailureJobIdentity({ ...job, runId: 'other-run' }, task, 'job-a', 'run-a'), /PERSISTED_JOB_IDENTITY/)
   assert.throws(() => verifyFailureJobIdentity({ ...job, quote: { ...job.quote, quoteId: 'new-quote' } }, task, 'job-a', 'run-a'), /PERSISTED_APPROVAL_IDENTITY/)
   assert.notEqual(verifyFailureJobIdentity({ ...job, request: { ...job.request, creativeBrief: 'changed' } }, task, 'job-a', 'run-a').requestSha256, original.requestSha256)

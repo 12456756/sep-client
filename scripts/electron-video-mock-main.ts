@@ -102,7 +102,7 @@ app.whenReady().then(async () => {
       const bytes = await store.readAsset(owner, taskId, jobId, outputId)
       await exportVideoBytes(profile, path, bytes, signal, validate)
     },
-    requestApproval: input => approvals.request(input), tracker: { floorMs: 300, maxAttempts: 12, budgetMs: 30_000 },
+    tracker: { floorMs: 300, maxAttempts: 12, budgetMs: 30_000 },
   })
   let piSession: PiAgentSession | undefined
   let piRun: Promise<void> | undefined

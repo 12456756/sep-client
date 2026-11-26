@@ -365,7 +365,6 @@ class BackendRuntime {
           const error = await shell.openPath(path)
           if (error) throw new Error('Local video player unavailable.')
         }),
-        requestApproval: async input => (await this.getTaskRuntime()).requestMediaApproval(input),
         policy: async taskId => {
           const scope = this.currentScope()
           if (!scope) return undefined

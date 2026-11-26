@@ -23,7 +23,7 @@ async function run(): Promise<void> {
   }
   const root = await mkdtemp(join(await realpath(tmpdir()), 'sep-video-v1-http-'))
   const nativeFetch = globalThis.fetch
-  const counts = { quote: 0, submit: 0, content: 0, runtime: 0, approvals: 0 }
+  const counts = { quote: 0, submit: 0, content: 0, runtime: 0 }
   globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
     assert.equal(url.origin, base.origin, 'No external requests are allowed in V1 acceptance.')
@@ -70,12 +70,6 @@ async function run(): Promise<void> {
       const bytes = await media.readAsset(owner, taskId, localAssetId)
       return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') }
     },
-    requestApproval: async approval => {
-      counts.approvals++
-      assert.equal(approval.subscriptionId, scope.subscriptionId)
-      assert.equal(approval.toolName, 'video_from_image')
-      return true
-    },
   })
   let host = makeHost()
   try {
@@ -96,7 +90,6 @@ async function run(): Promise<void> {
     assert.equal(generated.generationStatus, 'QUEUED')
     const [frozen] = await store.listJobs(scope)
     assert.equal(frozen!.request.configVersion, profile.configVersion)
-    assert.equal(counts.approvals, 2)
     await host.resume('task-v1', generated.jobId)
     await host.stopAll()
     host = makeHost()

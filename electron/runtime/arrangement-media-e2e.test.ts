@@ -71,7 +71,6 @@ interface Scenario {
   imageGateway?: MockMediaGatewayOptions
   imageCannotQuery?: boolean
   videoScenario?: MockVideoScenario
-  denyApproval?: boolean
   foreignMapping?: boolean
   missingVideoCapability?: boolean
   holdNode?: 'image' | 'video'
@@ -162,12 +161,12 @@ async function fixture(scenario: Scenario = {}) {
     const getTask = (id: string) => currentManager.getTask(id)
     const owner = { currentScope: () => currentManager.getCurrentUserScope() }
     const media = new MediaService({ scope: owner, store: new MediaStore(root), gateway: imageGateway, getTask,
-      authorize: async id => employee(id), requestApproval: async () => !scenario.denyApproval,
+      authorize: async id => employee(id), requestApproval: async () => assert.fail('Unexpected image generation approval'),
       pollFloorMs: 1, maxAttempts: 2, operationTimeoutMs: 2000 })
     const adapter = createVideoScopeAdapter(root, images, videos)
     const video = new VideoRunService({ mock: true, scope: owner, store: new VideoStore(root), getTask,
       authorizationRevision: () => 0, authorize: async () => runtimeVideo, authorizeRecovery: async () => {},
-      ...adapter, requestApproval: async () => !scenario.denyApproval, tracker: { floorMs: 1, maxAttempts: 5, budgetMs: 5000 },
+      ...adapter, tracker: { floorMs: 1, maxAttempts: 5, budgetMs: 5000 },
       gateway: () => ({ quote: videoGateway.quote.bind(videoGateway), submit: videoGateway.submit.bind(videoGateway),
         findReceipt: videoGateway.findReceipt.bind(videoGateway), getReceipt: videoGateway.getReceipt.bind(videoGateway), content: videoGateway.content.bind(videoGateway),
         ...(scenario.textVideo ? {
@@ -190,7 +189,7 @@ async function fixture(scenario: Scenario = {}) {
       arrangementCheckpointStore: new ArrangementCheckpointStore(root), arrangementMedia, media, video,
       getRefreshToken: () => 'local-only', onAuthenticationRequired() {}, onEvent() {}, resolveEmployee: employee,
       authorizeEmployee: async (id, modelId) => { authorization.calls++; return authorization.calls === authorization.denyAt ? null : employee(id, modelId) },
-      onApprovalRequest(request) { approvals.push(request); runtime.respondToApproval({ requestId: request.requestId, approved: !scenario.denyApproval }) },
+      onApprovalRequest(request) { approvals.push(request); runtime.respondToApproval({ requestId: request.requestId, approved: false }) },
       createWorker: options => {
         let aborted = false
         return { async run() {
@@ -329,7 +328,7 @@ test('backend E2E: image to video crosses employees, preserves hashes and automa
     assert.equal(file.sha256, file.sourceArtifact!.sha256)
     assert.equal(file.snapshot!.sha256, file.sha256)
   }
-  assert.equal(f.approvals.length, 1, 'video upload and quote approvals are covered by the arrangement media authorization')
+  assert.equal(f.approvals.length, 0, 'Media upload and quotes do not ask for renderer approval')
   assert.equal(f.imageGateway.calls.submit.length, 1); assert.equal(f.videoGateway.calls.submit, 1)
 
   // Recreate the shared IPC host: its task is owned by the image employee,
@@ -341,7 +340,6 @@ test('backend E2E: image to video crosses employees, preserves hashes and automa
     arrangementMediaLinks: f.links, getTask: id => f.manager.getTask(id), authorizationRevision: () => 0,
     authorize: async () => { assert.fail('Saved video preview must not authorize generation') },
     gateway: () => { assert.fail('Saved video preview must not construct an online gateway') },
-    requestApproval: async () => { assert.fail('Saved video preview must not request tool approval') },
     ...createVideoScopeAdapter(f.root, f.images, f.videos),
   })
   cleanups.push(() => sharedHost.stopAll())
@@ -490,18 +488,18 @@ for (const mappingFailures of [1, 7]) test(`backend E2E: model corrects ${mappin
   assert.deepEqual((await f.checkpoints.get(scope, f.task.id))!.state.nodes.map(node => node.delivery!.validationAttempts), [mappingFailures + 1, mappingFailures + 1])
 })
 
-test('backend E2E: rejected approval never submits generation', async () => {
-  const f = await fixture({ denyApproval: true })
+test('backend E2E: a denied quote never submits generation', async () => {
+  const f = await fixture({ imageGateway: { quote: { budgetAuthorized: false } } })
   await f.runtime.executeTask(f.task.id)
   assert.equal((await f.settled())?.status, TaskStatus.PAUSED)
   assert.equal(f.imageGateway.calls.submit.length, 0); assert.equal(f.videoGateway.calls.submit, 0)
 })
 
-test('backend E2E: association persistence failure prevents dispatch even after approval', async () => {
+test('backend E2E: association persistence failure prevents dispatch even with a valid quote', async () => {
   const f = await fixture({ associationFailure: true })
   await f.runtime.executeTask(f.task.id)
   assert.equal((await f.settled())?.status, TaskStatus.PAUSED)
-  assert.ok(f.approvals.length > 0)
+  assert.equal(f.approvals.length, 0)
   assert.equal(f.imageGateway.calls.submit.length, 0)
   assert.equal((await f.images.listJobs(scope, f.task.id))[0]!.submission, 'NOT_SENT')
 })

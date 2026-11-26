@@ -5,7 +5,6 @@ import { videoAllowedAudioModes, videoBillingPending, videoRuntimeSchema, videoR
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema } from '../../src/shared/media-spec-contract'
 import { mediaReferenceProblem } from '../../src/shared/media-references'
 import { inspectMediaImage } from '../data/media-image'
-import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
 import { videoDefaultRecoveryExclusions, videoSubmissionRejected, videoSpecAcceptance, videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
@@ -18,11 +17,10 @@ import type { ArrangementMediaLinkStorePort } from '../domain/arrangement-media'
 import { VideoService } from './video-service'
 import { VideoTracker, type VideoTrackerOptions } from './video-tracker'
 
-type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
-type GenerationRun = { runId: string; requestApproval: Approval; onJobCreated?: (job: MediaJobCreated) => Promise<void> }
+type GenerationRun = { runId: string; onJobCreated?: (job: MediaJobCreated) => Promise<void> }
 const log = logger.child('mock-video-host')
 // Run and IPC hosts share the same task persistence. An instance-local gate
-// cannot protect a task while approval, upload or submit is still in flight.
+// cannot protect a task while upload, quote or submit is still in flight.
 const submissions = new Set<string>()
 const trackingOwners = new Map<string, symbol>()
 
@@ -62,7 +60,6 @@ interface VideoHostOptionsBase {
   }
   exportOutput?(scope: VideoScope, taskId: string, jobId: string, outputId: string, path: string, signal: AbortSignal, validate: () => void): Promise<void>
   openOutput?(scope: VideoScope, taskId: string, jobId: string, outputId: string, signal: AbortSignal, validate: () => void): Promise<void>
-  requestApproval: Approval
   policy?(taskId: string): Promise<TaskToolPolicy | undefined>
   /** Synchronous host generation, incremented on task binding, policy or grant changes. */
   authorizationRevision(): number
@@ -520,26 +517,18 @@ export class MockVideoHostService {
               submissionState: 'not_submitted', billingState: 'not_reserved' } })
         }
         const profile = this.profile(runtime, input)
-        const policy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
         const toolName = input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
-        if (policy && (policy.preset === 'read-only' || policy.preset !== 'full-local' && !policy.allowedTools.includes(toolName))) throw new AppError('PERMISSION_DENIED')
-        const approve = async (details: Record<string, unknown>, force = false) => {
+        const validatePolicy = async () => {
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
           const currentPolicy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
           if (currentPolicy && (currentPolicy.preset === 'read-only' || currentPolicy.preset !== 'full-local' && !currentPolicy.allowedTools.includes(toolName))) throw new AppError('PERMISSION_DENIED')
-          if (!force && currentPolicy?.preset === 'full-local' && currentPolicy.approvalMode === 'auto-approve') return
-          const allowed = await abortableVideo((run?.requestApproval ?? this.options.requestApproval)({ taskId, runId, subscriptionId: scope.subscriptionId, toolName, input: details }), signal)
-          this.assert(scope, epoch, signal)
-          if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
-          if (!allowed) throw new AppError('PERMISSION_DENIED')
         }
-        if (unconfirmed.length) await approve({ operation: 'confirm-new-generation', unconfirmedJobCount: unconfirmed.length }, true)
+        await validatePolicy()
         const referenceIds: string[] = []
         if (input.localAssetIds.length) {
-          await approve({ operation: 'upload-references', referenceCount: input.localAssetIds.length, mock: this.options.mock })
           const references = []
           for (const id of input.localAssetIds) {
             const reference = await abortableVideo(this.options.readReference(scope, taskId, id), signal)
@@ -557,6 +546,7 @@ export class MockVideoHostService {
           })
           if (problem) throw new AppError('INVALID_ARGUMENT', { message: problem })
           for (const reference of references) {
+            if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
             const uploaded = videoReferenceSchema.parse(await context.uploadReference(taskId, toolName, reference.bytes, signal))
             if (uploaded.mock !== this.options.mock || uploaded.mimeType !== reference.mime || uploaded.sha256.toLowerCase() !== reference.sha256.toLowerCase() || uploaded.byteLength !== reference.bytes.byteLength || Date.parse(uploaded.expiresAt) <= this.now()) throw new AppError('INVALID_STATE')
             referenceIds.push(uploaded.referenceId)
@@ -565,11 +555,9 @@ export class MockVideoHostService {
         const { localAssetIds: _localAssetIds, ...semantic } = input
         const job = await context.service.prepare(taskId, { ...semantic, creativeBrief, configVersion: profile.configVersion, referenceIds }, signal, runId,
           unconfirmed.map(previous => previous.jobId))
-        if (this.options.mock ? job.quote.amount !== '0.000000' || job.quote.currency !== 'MOCK' : job.quote.currency !== 'CNY' || !/^\d+\.\d{6}$/.test(job.quote.amount ?? '')) throw new AppError('PERMISSION_DENIED')
-        await approve({ profile: profile.displayName, parameters: input.parameters, creativeBrief,
-          mock: this.options.mock, quote: { amount: job.quote.amount, currency: job.quote.currency, expiresAt: job.quote.expiresAt,
-            ...(!this.options.mock ? { amountUsd: job.quote.amountUsd, funding: job.quote.funding, pricingVersion: job.quote.pricingVersion } : {}) } })
-        // Approval is for the captured task/subscription and frozen configuration only.
+        if (this.options.mock ? job.quote.amount !== '0.000000' || job.quote.currency !== 'MOCK' : job.quote.currency !== 'CNY' || !/^\d+\.\d{6}$/.test(job.quote.amount ?? '') || !Number.isFinite(Number(job.quote.amount))) throw new AppError('PERMISSION_DENIED')
+        // Recheck the captured task, policy and frozen configuration before submission.
+        await validatePolicy()
         this.profile(await this.runtime(scope, epoch, signal), input, profile.configVersion)
         const current = await this.task(taskId, signal)
         if (JSON.stringify(current.scope) !== JSON.stringify(scope)) throw new AppError('AUTH_REQUIRED')
