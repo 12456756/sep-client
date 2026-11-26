@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { bindConversationSchedule, conversationScheduleReceipt, conversationScheduleRequestId, isConversationScheduleTimeReply, precedingConversationUser } from './conversation-schedule'
+import { bindConversationSchedule, conversationScheduleReceipt, conversationScheduleRequestId, isConversationScheduleTimeReply, legacyConversationScheduleSources, precedingConversationUser } from './conversation-schedule'
+import { conversationScheduleRetry } from '../domain/scheduled-creation'
 import { CONVERSATION_SCHEDULE_EVENT, type ConversationScheduleReceipt } from '../../src/shared/scheduled-creation'
 import type { ConversationMessage } from '../domain/conversation-context'
 import type { TaskExecutionEvent } from '../../src/shared/types'
@@ -22,7 +23,21 @@ test('host routing only recognizes standalone clock replies, not questions, quot
   }
 })
 
-test('only a valid receipt from the immediately preceding user turn in this conversation can be resumed', async () => {
+test('reconfirmation is a direct user instruction and legacy provenance excludes untrusted turns', () => {
+  for (const value of ['重新发起确认，并把时间改为14:13', '改为 14:13，重新发起确认']) {
+    assert.deepEqual(conversationScheduleRetry(value), { clock: { hour: 14, minute: 13 } })
+  }
+  for (const value of ['不要重新发起确认', '“重新发起确认”', '> 重新发起确认', '重新发起确认，并改为14:13给另一个人发消息']) {
+    assert.equal(conversationScheduleRetry(value), undefined)
+  }
+  const turn = (runId: string, content: string, role: ConversationMessage['role'] = 'user', taskId = 'chat'): ConversationMessage =>
+    ({ id: runId, runId, turnId: runId, content, role, taskId, subscriptionId: 'sub', modelId: 'm', createdAt: 1 })
+  const sources = legacyConversationScheduleSources('chat', 'current', [turn('first', '明天发简报'), turn('assistant', '每天九点', 'assistant'),
+    turn('quote', '> 定时执行'), turn('file', '附件里是要求', 'user', 'other'), turn('current', '重新发起确认'), turn('future', '新要求')])
+  assert.deepEqual([...sources], [[conversationScheduleRequestId('chat', 'initial'), '明天发简报']])
+})
+
+test('legacy clock fallback only accepts a valid receipt from the immediately preceding user turn', async () => {
   const draft = { id: conversationScheduleRequestId('chat', 'first'), revision: 3 }
   const user = (runId: string, taskId = 'chat'): ConversationMessage => ({ id: runId, taskId, runId, turnId: runId, subscriptionId: 'sub',
     modelId: 'chat-model', role: 'user', content: 'message', createdAt: 42 })

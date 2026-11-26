@@ -12,6 +12,7 @@ import { CREATE_TASK_INVALID, createTaskInput } from './task'
 import { attachmentImportLimits, attachmentRefSchema } from '../../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../../src/shared/knowledge-selection'
 import { conversationQueueInputSchema } from '../../../src/shared/conversation-queue'
+import { conversationScheduleDraftActionSchema, conversationScheduleDraftActionText } from '../../../src/shared/scheduled-creation'
 
 /** 三种会话恢复模式，与服务层的 SessionRecoveryMode 同集合。 */
 const recoveryMode = z.enum(['strict', 'confirm_rebuild', 'auto_rebuild_from_task_history'])
@@ -25,7 +26,8 @@ const continueInput = z.object({
   attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   attachmentRefs: z.array(attachmentRefSchema).max(attachmentImportLimits.maxFiles).optional(),
   knowledge: knowledgeSelectionSchema.optional(),
-})
+  scheduleDraftAction: conversationScheduleDraftActionSchema.optional(),
+}).refine(input => !input.scheduleDraftAction || (!input.attachmentRefs?.length && input.prompt === conversationScheduleDraftActionText(input.scheduleDraftAction)))
 
 const switchEmployeeInput = z.union([
   z.object({ taskId: z.string().min(1), kind: z.literal('general'), modelId: z.string().trim().min(1) }).strict(),
@@ -52,6 +54,7 @@ export const conversationRoutes = [
       attachmentRefs: input.attachmentRefs,
       recoveryMode: input.recoveryMode,
       confirmRecovery: input.confirmRecovery === true,
+      ...(input.scheduleDraftAction ? { scheduleDraftAction: input.scheduleDraftAction } : {}),
       ...(input.knowledge ? { knowledge: input.knowledge } : {}),
       ...(input.attachmentSessionId ? { attachmentSessionId: input.attachmentSessionId } : {}),
       ...(input.attachmentRefs ? { attachmentRefs: input.attachmentRefs } : {}),

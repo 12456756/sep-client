@@ -28,6 +28,7 @@ import { ModelSelector } from './ModelSelector';
 import { ConversationEmployeePicker } from './ConversationEmployeePicker';
 import { mediaRetryNotice, type MediaRetryState } from '../../shared/media-retry';
 import { FileAttachmentTarget, type AddFileToConversation } from '../workspace/file-menu-actions';
+import { conversationScheduleDraftActionText, type ConversationScheduleDraftAction } from '../../shared/scheduled-creation';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -198,6 +199,19 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
     } finally { savedSession.finishSend(); }
   };
 
+  const sendScheduleAction = async (action: ConversationScheduleDraftAction) => {
+    if (workspace.busy || queued.busy || work.isActive || savedSession.sending || canSkip) return false;
+    const messageId = savedSession.beginSend(JSON.stringify(action));
+    if (!messageId) return false;
+    followsLatest.current = true;
+    setHasNewContent(false);
+    try {
+      const sent = await workspace.sendMessage(work.id, conversationScheduleDraftActionText(action), [], undefined, undefined, messageId, action);
+      if (sent) void queued.refresh();
+      return sent;
+    } finally { savedSession.finishSend(); }
+  };
+
   const addFile: AddFileToConversation = useCallback(async file => {
     if (!importFileRef.current) throw new Error('附件输入框未就绪，请重试。');
     await importFileRef.current(file);
@@ -229,7 +243,8 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
           <div className="ent-talk">
             <FileAttachmentTarget.Provider value={addFile}>
               <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} mediaState={mediaState}
-                onOpenSchedule={id => workspace.navigate({ name: 'scheduled', taskId: id, view: 'configuration' })} />
+                onOpenSchedule={id => workspace.navigate({ name: 'scheduled', taskId: id, view: 'configuration' })}
+                onScheduleAction={sendScheduleAction} scheduleActionDisabled={workspace.busy || queued.busy || work.isActive || sending || canSkip} />
             </FileAttachmentTarget.Provider>
           </div>
         </div>

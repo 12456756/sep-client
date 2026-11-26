@@ -5,21 +5,24 @@ import { retiredScheduledExecutionMessage, type ModelScheduledInput } from '../.
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { occurrenceId, requestsRestrictedWindowsSchedulePath, scheduledPathDenied, scheduledWorkspaceErrorMessage } from '../domain/scheduled-task'
-import { conversationScheduleClock, reviseConversationScheduleClock, scheduleCandidateInput, ScheduleCandidateError } from '../domain/scheduled-creation'
+import { applyConversationScheduleTime, conversationScheduleClock, conversationScheduleRetry, reviseConversationScheduleClock, scheduleCandidateInput, ScheduleCandidateError } from '../domain/scheduled-creation'
 import { cronPreview } from '../../src/shared/cron-schedule'
 import { AppError } from '../errors/app-error'
 import { withTimeout } from '../common/with-timeout'
 import { logger } from '../common/logger'
 import type { ScheduledTaskService } from './scheduled-task-service'
 import type { AttachmentService } from './attachment-service'
+import type { ConversationCreationReview } from '../runtime/conversation-schedule'
+import { redactText } from '../common/redact'
 
-interface ConversationCreationReview {
-  signal: AbortSignal
-  approve(input: ModelScheduledInput): Promise<boolean | 'revise_time'>
-  receivedAt: number
-  candidate?: ScheduleInterpretation
-  resumeDrafts?: ConversationScheduleDraft[]
-}
+type CreationReview = ConversationCreationReview & { legacySource?: ScheduledCreation; turnId?: string }
+const draftRef = (item: ScheduledCreation): ConversationScheduleDraft => ({ id: item.id, revision: item.revision })
+const awaiting = (item: ScheduledCreation) => item.stage === 'needs_input' || item.stage === 'needs_confirmation'
+const verifiedLegacy = (item: ScheduledCreation, records: ScheduledCreation[], sources?: ReadonlyMap<string, string>) =>
+  !item.conversationId && !item.definitionId && item.stage === 'cancelled' && sources?.get(item.id) === item.messages[0]?.content &&
+  !!sources?.has(item.id) && !records.some(record => record.reissuedFrom === item.id)
+const timeOnly = (candidate: ScheduleInterpretation): ScheduleInterpretation => ({ ...candidate, status: 'needs_input', reasons: [],
+  questions: [{ field: 'schedule', question: '任务尚未启用。请提供明确的未来执行时间。' }] })
 
 const log = logger.child('scheduled-creation')
 const employeeSchema = z.object({ subscriptionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), name: z.string().max(300),
@@ -66,40 +69,81 @@ export class ScheduledCreationService {
   submit(raw: ScheduledCreationRequest): Promise<ScheduledCreation> {
     return this.start(raw)
   }
+  async hasConversationDrafts(conversationId: string, legacySources?: ReadonlyMap<string, string>): Promise<boolean> {
+    const scope = this.scope(), generation = this.generation
+    const { creations = [] } = await this.options.repository.read(scope)
+    this.assertScope(scope, generation)
+    return creations.some(item => item.fromConversation && !item.deleted &&
+      (item.conversationId === conversationId && awaiting(item) || verifiedLegacy(item, creations, legacySources)))
+  }
   async submitConversation(raw: ScheduledCreationRequest, review: ConversationCreationReview): Promise<ConversationScheduleReceipt> {
     const scope = this.scope(), generation = this.generation
-    if (review.resumeDrafts) {
-      const revisions = new Map(review.resumeDrafts.map(draft => [draft.id, draft.revision]))
-      const records = revisions.size ? (await this.options.repository.read(scope)).creations ?? [] : []
-      this.assertScope(scope, generation)
-      review.signal.throwIfAborted()
-      const awaiting = records.filter(item => item.fromConversation && !item.deleted && item.stage === 'needs_input' && revisions.has(item.id))
-      const draft = awaiting[0]
-      if (!draft || awaiting.length !== 1 || revisions.get(draft.id) !== draft.revision) return { status: 'blocked', message: awaiting.length > 1
-        ? '本会话有多份待补充的定时草稿，请在「定时任务」中选择要继续的草稿。没有新建或启用任务。'
-        : '没有可继续的定时草稿，草稿可能已结束或变更。没有新建或启用任务。' }
-      raw = { ...raw, requestId: draft.id, expectedRevision: draft.revision }
+    let resolved: CreationReview = { ...review, ...(review.conversationId && raw.expectedRevision === undefined ? { turnId: raw.requestId } : {}) }
+    if (review.continuation || review.resumeDrafts || review.draftAction) {
+      const revisions = new Map(review.resumeDrafts?.map(draft => [draft.id, draft.revision]))
+      const records = (await this.options.repository.read(scope)).creations ?? []
+      const guard = () => { this.assertScope(scope, generation); review.signal.throwIfAborted() }
+      guard()
+      const replay = records.find(item => item.conversationId === review.conversationId && item.conversationTurnId === resolved.turnId && !!resolved.turnId)
+      if (replay) return this.conversationReceipt(scope, generation, replay)
+      const target = review.draftAction?.draft
+      const explicitRetry = review.continuation === 'review' && !!conversationScheduleRetry(raw.message)
+      const legacy = (item: ScheduledCreation) => !!review.conversationId && verifiedLegacy(item, records, review.legacySources)
+      const available = records.filter(item => item.fromConversation && !item.deleted && (
+        awaiting(item) && (item.conversationId ? item.conversationId === review.conversationId : revisions.has(item.id)) ||
+        (explicitRetry || review.draftAction?.kind === 'review') && legacy(item)))
+      const matches = target ? available.filter(item => item.id === target.id) : available
+      if (matches.length > 1) {
+        const clock = conversationScheduleRetry(raw.message)?.clock ?? conversationScheduleClock(raw.message)
+        const time = clock && `${String(clock.hour).padStart(2, '0')}:${String(clock.minute).padStart(2, '0')}`
+        return { status: 'choose_draft', message: '本会话有多份定时草稿，请选择要继续的一份。',
+          drafts: matches.map(item => ({ draft: draftRef(item), title: redactText(item.interpretation?.task.title ?? '定时任务') })), ...(time ? { time } : {}) }
+      }
+      const draft = matches[0]
+      if (!draft || target && draft.revision !== target.revision || !draft.conversationId && awaiting(draft) && revisions.get(draft.id) !== draft.revision) {
+        return { status: 'blocked', message: target ? '这份定时草稿已变更或结束，请使用最新的确认入口。'
+          : '本会话没有可核实的定时草稿。请说明要定时执行的工作。' }
+      }
+      const current = this.operations.has(this.key(scope, draft.id))
+      if (current) return { status: 'blocked', message: '这份定时草稿正在处理中，请稍后再试。' }
+      if (review.draftAction?.kind === 'discard') {
+        const item = await this.cancel(draft.id, draft.revision, guard)
+        return { status: 'discarded', message: '已放弃草稿，定时任务未启用。', draft: draftRef(item) }
+      }
+      if (legacy(draft)) resolved = { ...resolved, candidate: undefined, legacySource: draft }
+      else raw = { ...raw, requestId: draft.id, expectedRevision: draft.revision }
     }
-    const record = await this.start(raw, review)
+    const record = await this.start(raw, resolved)
     this.assertScope(scope, generation)
+    return this.conversationReceipt(scope, generation, record)
+  }
+  private async conversationReceipt(scope: TaskOwnerScope, generation: number, record: ScheduledCreation): Promise<ConversationScheduleReceipt> {
+    if (record.deleted || record.confirmationOutcome === 'pending') return { status: 'blocked', message: '这份定时草稿已结束或仍在等待确认。' }
+    if (record.stage === 'needs_confirmation') {
+      const message = record.confirmationOutcome === 'timeout' ? '上次确认已超时，任务未启用，草稿已保留。'
+        : '上次未完成确认，任务未启用，草稿已保留。'
+      return { status: 'needs_confirmation', message, draft: draftRef(record) }
+    }
     if (record.stage === 'completed') {
       const definition = (await this.options.repository.read(scope)).definitions.find(item => item.id === record.definitionId)
       this.assertScope(scope, generation)
       if (definition?.enabled && definition.nextRunAt !== null) return { status: 'created', id: definition.id, title: definition.input.name,
-        timezone: definition.input.timezone, nextRunAt: definition.nextRunAt }
+        timezone: definition.input.timezone, nextRunAt: definition.nextRunAt, ...(record.conversationId ? { draft: draftRef(record) } : {}) }
       return { status: 'blocked', message: '这条消息已创建过定时任务；请前往「定时任务」查看当前状态。' }
     }
     if (record.stage === 'needs_input') return { status: 'needs_input', message: record.interpretation?.questions.map(item => item.question).join('\n').slice(0, 3800) || '请补充工作内容和明确的开始时间。',
-      ...(!record.deleted ? { draft: { id: record.id, revision: record.revision } } : {}) }
+      ...(!record.deleted ? { draft: draftRef(record) } : {}),
+      ...(record.interpretation?.questions.length && record.interpretation.questions.every(question => question.field === 'schedule') ? { timeOnly: true } : {}) }
     if (record.stage === 'blocked') return { status: 'blocked', message: record.interpretation?.reasons.map(item => item.message).join('\n').slice(0, 3800) || '当前请求不能创建定时任务。' }
     if (record.stage === 'cancelled') return { status: 'cancelled', message: '未获确认，定时任务未启用。' }
     return { status: 'failed', message: record.error ?? '定时任务未启用，请查看后重试。' }
   }
-  private start(raw: ScheduledCreationRequest, review?: ConversationCreationReview): Promise<ScheduledCreation> {
+  private start(raw: ScheduledCreationRequest, review?: CreationReview): Promise<ScheduledCreation> {
     const request = scheduledCreationRequestSchema.parse(raw), scope = this.scope(), generation = this.generation
     const { requestId, expectedRevision, ...input } = request
     const submission = review ? ['conversation', input, ...(expectedRevision === undefined ? [] : [expectedRevision])] : input
-    const submissionKey = createHash('sha256').update(JSON.stringify(review?.candidate ? [submission, review.candidate] : submission)).digest('hex')
+    const submissionKey = createHash('sha256').update(JSON.stringify(review?.draftAction || review?.legacySource
+      ? [submission, review.draftAction, review.legacySource?.id] : review?.candidate ? [submission, review.candidate] : submission)).digest('hex')
     const key = this.key(scope, requestId), running = this.operations.get(key)
     if (running) {
       if (running.key !== submissionKey) return Promise.reject(new AppError('CONFLICT'))
@@ -113,11 +157,13 @@ export class ScheduledCreationService {
     this.operations.set(key, { key: submissionKey, controller, promise })
     return promise
   }
-  private async run(scope: TaskOwnerScope, generation: number, request: ScheduledCreationRequest, submissionKey: string, controller: AbortController, review?: ConversationCreationReview): Promise<ScheduledCreation> {
+  private async run(scope: TaskOwnerScope, generation: number, request: ScheduledCreationRequest, submissionKey: string, controller: AbortController, review?: CreationReview): Promise<ScheduledCreation> {
     const { requestId, expectedRevision, ...submitted } = request
     const proposal = review?.candidate && scheduleInterpretationSchema.parse(review.candidate)
-    const clock = review && !proposal && expectedRevision !== undefined ? conversationScheduleClock(submitted.message) : undefined
-    if (review && expectedRevision !== undefined && ((!clock && !proposal) || submitted.referenceFiles)) throw new AppError('INVALID_ARGUMENT')
+    const retry = review?.continuation === 'review' ? conversationScheduleRetry(submitted.message) : undefined
+    const clock = retry?.clock ?? (review && expectedRevision !== undefined ? conversationScheduleClock(submitted.message) : undefined)
+    const actionTime = review?.draftAction?.kind === 'review' ? review.draftAction.time : undefined
+    if (review && expectedRevision !== undefined && ((!clock && !retry && !proposal && !review.draftAction) || submitted.referenceFiles)) throw new AppError('INVALID_ARGUMENT')
     const signal = review ? AbortSignal.any([controller.signal, review.signal]) : controller.signal
     const guard = () => { this.assertScope(scope, generation); signal.throwIfAborted() }
     const prior = submitted.referenceFiles ? (await this.options.repository.read(scope)).creations?.find(item => item.id === requestId) : undefined
@@ -132,30 +178,38 @@ export class ScheduledCreationService {
       const records = data.creations ??= []
       const existing = records.find(item => item.id === requestId)
       if (existing) {
-        if (!!existing.fromConversation !== !!review) throw new AppError('INVALID_STATE')
+        if (!!existing.fromConversation !== !!review || existing.conversationId && existing.conversationId !== review?.conversationId) throw new AppError('INVALID_STATE')
         if (existing.submissionKey === submissionKey) return existing
         if (existing.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
         if (existing.deleted || ['completed', 'cancelled'].includes(existing.stage)) throw new AppError('INVALID_STATE', { message: '本次创建已结束，请从任务详情修改配置，或新建任务。' })
-        if (review && (existing.stage !== 'needs_input' || (!proposal && !existing.interpretation?.questions.some(item => item.field === 'schedule')))) {
+        if (review && !awaiting(existing)) {
           throw new AppError('DRAFT_REVISION_CONFLICT')
         }
         if (existing.messages.length >= 20) throw new AppError('INVALID_ARGUMENT', { message: '补充次数已达上限，请重新描述并新建任务。' })
         const input = review ? { ...existing.request, message: submitted.message } : submitted
-        Object.assign(existing, { request: input, submissionKey,
+        Object.assign(existing, { request: input, submissionKey, ...(review?.conversationId ? { conversationId: review.conversationId } : {}),
+          ...(review?.turnId ? { conversationTurnId: review.turnId } : {}),
           messages: [...existing.messages, messageWithReferences], stage: 'parsing', error: null,
           revision: existing.revision + 1, updatedAt: this.now() })
         return existing
       }
       if (expectedRevision !== undefined) throw new AppError('DRAFT_REVISION_CONFLICT')
-      const created: ScheduledCreation = { id: requestId, revision: 1, request: submitted, submissionKey,
+      const legacySource = review?.legacySource && records.find(item => item.id === review.legacySource!.id)
+      if (review?.legacySource && (!legacySource || legacySource.revision !== review.legacySource.revision || legacySource.deleted ||
+        legacySource.stage !== 'cancelled' || legacySource.definitionId || records.some(item => item.reissuedFrom === legacySource.id))) throw new AppError('DRAFT_REVISION_CONFLICT')
+      const created: ScheduledCreation = { id: requestId, revision: 1, request: legacySource ? { ...legacySource.request, message: submitted.message } : submitted, submissionKey,
         ...(review ? { fromConversation: true } : {}),
-        referenceNow: this.now(), messages: [messageWithReferences], interpretation: null, parsedSubmissionKey: null, definitionSubmissionKey: null,
+        ...(review?.conversationId ? { conversationId: review.conversationId } : {}),
+        ...(review?.turnId ? { conversationTurnId: review.turnId } : {}),
+        ...(legacySource ? { reissuedFrom: legacySource.id } : {}),
+        referenceNow: legacySource?.referenceNow ?? this.now(), messages: legacySource ? [legacySource.messages[0]!, message] : [messageWithReferences],
+        interpretation: null, parsedSubmissionKey: null, definitionSubmissionKey: null,
         stage: 'parsing', definitionId: null, definitionInput: null, error: null, createdAt: this.now(), updatedAt: this.now() }
       records.push(created)
       return created
     })
     this.assertScope(scope, generation)
-    if (record.deleted || ['completed', 'cancelled', 'needs_input', 'blocked'].includes(record.stage)) return record
+    if (record.deleted || ['completed', 'cancelled', 'needs_input', 'needs_confirmation', 'blocked'].includes(record.stage)) return record
     const input = record.request
     const change = async (mutate: (item: ScheduledCreation) => void) => {
       guard()
@@ -183,17 +237,27 @@ export class ScheduledCreationService {
       if (record.parsedSubmissionKey !== submissionKey || !previousDraft) {
         await change(item => { item.stage = 'parsing'; item.error = null })
         const previous = clock ? previousDraft : null
-        let parsed = proposal ?? (previous && clock ? reviseConversationScheduleClock(previous, clock) : undefined)
+        const preserve = previousDraft && (actionTime || retry || review?.draftAction || record.confirmationOutcome &&
+          previousDraft.questions.every(question => question.field === 'schedule'))
+        let parsed = preserve ? (actionTime ? applyConversationScheduleTime(previousDraft, actionTime) ?? timeOnly(previousDraft)
+          : clock ? reviseConversationScheduleClock(previousDraft, clock)
+          : proposal?.status === 'ready' && previousDraft.task.schedule.kind === 'once' && proposal.task.schedule.localDateTime
+            ? applyConversationScheduleTime(previousDraft, proposal.task.schedule.localDateTime) ?? timeOnly(previousDraft)
+            : previousDraft) : (previous && clock ? reviseConversationScheduleClock(previous, clock) : undefined) ?? proposal
         if (!parsed) {
           const timeout = setTimeout(() => controller.abort(), 45000)
           try {
             const result = await withTimeout(this.options.interpret({ subscriptionId: planningEmployee.subscriptionId, modelId: input.modelId,
               ...(review ? { fromConversation: true } : {}),
               referenceNow: record.referenceNow, timezone: input.timezone, employeeCatalog: catalog,
-              currentDraft: previousDraft, messages: record.messages }, signal), 45000, 'scheduled-creation-interpretation')
+              currentDraft: previousDraft, messages: review?.legacySource ? record.messages.slice(0, 1) : record.messages }, signal), 45000, 'scheduled-creation-interpretation')
             guard()
             parsed = scheduleInterpretationSchema.parse(result)
           } finally { clearTimeout(timeout) }
+          if (review?.legacySource && parsed.status !== 'blocked') {
+            parsed = actionTime ? applyConversationScheduleTime(parsed, actionTime) ?? timeOnly(parsed)
+              : clock ? reviseConversationScheduleClock(parsed, clock) ?? parsed : parsed
+          }
           if (previous) {
             parsed.task.title = previous.task.title ?? parsed.task.title
             parsed.task.goal = previous.task.goal ?? parsed.task.goal
@@ -268,22 +332,28 @@ export class ScheduledCreationService {
       }
       const definitionId = occurrenceId(`definition:${requestId}`, 0)
       if (review) {
+        if (record.conversationId) await change(item => { item.stage = 'needs_confirmation'; item.confirmationOutcome = 'pending' })
         const approved = await review.approve(configured)
         guard()
         if (approved === 'revise_time') {
           await change(item => {
             item.stage = 'needs_input'
+            if (item.conversationId) item.confirmationOutcome = 'dismissed'
             item.interpretation = { ...candidate, status: 'needs_input', questions: [{ field: 'schedule', question: '定时任务尚未启用。请直接回复新的执行时间，例如「改成早上 10 点」。' }] }
           })
           return record
         }
-        if (!approved) {
+        if (approved === 'timeout' || approved === 'dismissed' || approved === 'interrupted') {
+          await change(item => { item.stage = 'needs_confirmation'; item.confirmationOutcome = approved })
+          return record
+        }
+        if (approved !== true) {
           await change(item => { item.stage = 'cancelled' })
           return record
         }
       }
       const previousInput = record.definitionInput
-      await change(item => { item.definitionId = definitionId; item.stage = 'planning'; item.error = null })
+      await change(item => { item.definitionId = definitionId; item.stage = 'planning'; item.error = null; delete item.confirmationOutcome })
       if (!definition) definition = await this.options.schedules.create(requestId, configured, { id: record.id, revision: record.revision, guard })
       else if (JSON.stringify(definition.input) !== JSON.stringify(configured)) {
         if (!previousInput || JSON.stringify(definition.input) !== JSON.stringify(previousInput)) throw new AppError('DRAFT_REVISION_CONFLICT')
@@ -345,7 +415,9 @@ export class ScheduledCreationService {
         this.assertScope(scope, generation)
         const item = data.creations?.find(value => value.id === requestId)
         if (!item || item.revision !== current.revision || ['cancelled', 'completed'].includes(item.stage)) throw new AppError('DRAFT_REVISION_CONFLICT')
-        item.stage = 'failed'; item.error = message; item.revision++; item.updatedAt = this.now()
+        if (item.stage === 'needs_confirmation' && item.confirmationOutcome === 'pending') item.confirmationOutcome = 'interrupted'
+        else { item.stage = 'failed'; item.error = message }
+        item.revision++; item.updatedAt = this.now()
         return item
       })
       log.warn('scheduled creation did not complete', { creationId: record.id, scheduledTaskId: record.definitionId, code })
@@ -364,7 +436,7 @@ export class ScheduledCreationService {
       if (item.deleted) throw new AppError('NOT_FOUND')
       if (item.revision !== revision) throw new AppError('DRAFT_REVISION_CONFLICT')
       if (item.stage === 'completed') throw new AppError('INVALID_STATE', { message: '任务已创建，请从任务详情暂停或删除。' })
-      item.stage = 'cancelled'; item.error = null; item.revision++; item.updatedAt = this.now()
+      item.stage = 'cancelled'; item.error = null; delete item.confirmationOutcome; item.revision++; item.updatedAt = this.now()
       return item
     })
     this.assertScope(scope, generation)
@@ -398,7 +470,10 @@ export class ScheduledCreationService {
     await this.options.repository.update(scope, data => {
       this.assertScope(scope, generation)
       for (const item of data.creations ?? []) {
-        if (isScheduledCreationWorking(item.stage) && !this.operations.has(this.key(scope, item.id))) {
+        if (this.operations.has(this.key(scope, item.id))) continue
+        if (item.stage === 'needs_confirmation' && item.confirmationOutcome === 'pending') {
+          item.confirmationOutcome = 'interrupted'; item.revision++; item.updatedAt = this.now()
+        } else if (isScheduledCreationWorking(item.stage)) {
           item.stage = 'failed'; item.error = '创建过程已中断，已保存进度，请继续创建。'; item.revision++; item.updatedAt = this.now()
         }
       }

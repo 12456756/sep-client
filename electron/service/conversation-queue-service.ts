@@ -22,7 +22,7 @@ interface Options {
   onInitialFailure?(taskId: string, error: unknown, scope: TaskOwnerScope, signal: AbortSignal): Promise<void>
   onFailure?(taskId: string, entry: ConversationQueueEntry, error: unknown, scope: TaskOwnerScope, subscriptionId: string): void
 }
-type Prepared = Pick<ConversationQueueEntry, 'attachmentRefs' | 'attachmentNames' | 'knowledge' | 'mode' | 'confirmed'>
+type Prepared = Pick<ConversationQueueEntry, 'attachmentRefs' | 'attachmentNames' | 'knowledge' | 'mode' | 'confirmed' | 'scheduleDraftAction'>
 const log = logger.child('conversation-queue')
 
 /** Serializes only queue transitions; model execution continues outside this write chain. */

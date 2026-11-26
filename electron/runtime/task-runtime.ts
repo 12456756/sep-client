@@ -115,6 +115,7 @@ export interface TaskRuntimeOptions {
   arrangementDiagnostics?: import('../service/arrangement-diagnostic-service').WorkFailureCapture
   conversationMedia?: ConversationMediaPort
   submitConversationSchedule?: ConversationExecutorOptions['submitConversationSchedule']
+  hasConversationScheduleDrafts?: ConversationExecutorOptions['hasConversationScheduleDrafts']
   scheduledTaskManagement?: ConversationExecutorOptions['scheduledTaskManagement']
   scheduledCreationManagement?: ConversationExecutorOptions['scheduledCreationManagement']
   selectScheduledOutputDirectory?: ConversationExecutorOptions['selectScheduledOutputDirectory']
@@ -272,6 +273,7 @@ export class TaskRuntime {
       video: options.conversationVideo ?? this.video,
       conversationMedia: options.conversationMedia,
       submitConversationSchedule: options.submitConversationSchedule,
+      hasConversationScheduleDrafts: options.hasConversationScheduleDrafts,
       scheduledTaskManagement: options.scheduledTaskManagement,
       scheduledCreationManagement: options.scheduledCreationManagement,
       selectScheduledOutputDirectory: options.selectScheduledOutputDirectory,
@@ -494,7 +496,8 @@ export class TaskRuntime {
   async continueConversation(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number;
+      scheduleDraftAction?: import('../../src/shared/scheduled-creation').ConversationScheduleDraftAction } = {},
   ): Promise<void> {
     this.startLifecycleAudit()
     const knowledge = recovery.knowledge ?? await this.latestKnowledgeSelection(taskId)

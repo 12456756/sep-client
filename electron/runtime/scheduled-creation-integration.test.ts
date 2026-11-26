@@ -218,11 +218,13 @@ const catalog = [
   { subscriptionId: 'writer', name: 'Writer', position: 'Report writer', description: 'Write reports from evidence', functionalCategory: 'reporting', allowedModels: [modelId] },
 ]
 
-for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-reply', 'contextual-retry', 'contextual-elapsed', 'contextual-ambiguous'] as const) {
+for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-reply', 'contextual-retry', 'contextual-elapsed', 'contextual-ambiguous', 'contextual-timeout'] as const) {
   test(`conversation time continuation (${scenario}) preserves one draft and requires approval`, { timeout: 15000 }, async t => {
     const root = await mkdtemp(join(tmpdir(), 'csep-conversation-schedule-'))
     const contextual = scenario.startsWith('contextual-')
     const now = Date.parse(contextual ? `2026-11-25T06:${scenario === 'contextual-elapsed' ? '41' : '36'}:00Z` : '2026-11-25T00:00:00Z')
+    let schedulerNow = now
+    const simulatedMessages: string[] = []
     const storage = new ScheduledTaskStore(root), runs = new TaskRunStore(root)
     const tasks = new TaskManager(root, null, undefined, runs)
     const owner = { currentScope: () => tasks.getCurrentUserScope() }
@@ -230,20 +232,27 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
     const authorize = async (subscriptionId: string) => ({ subscriptionId, modelId, gatewayUrl: 'http://gateway.invalid' })
     const schedules = new ScheduledTaskService({ repository: storage, scope: owner, employee: authorize, planner: async () => employeePlan,
       authorizeModel: async () => ({ subscriptionId: 'analyst' }),
-      runner: { prepare: forbidden, launch: forbidden, inspect: forbidden, cancel: forbidden }, now: () => now })
+      runner: scenario === 'contextual-timeout' ? {
+        async prepare(_run, guard) { guard() },
+        async launch(run, guard) { guard(); simulatedMessages.push(run.input.goal) },
+        async inspect() { return { state: 'completed' } },
+        cancel: forbidden,
+      } : { prepare: forbidden, launch: forbidden, inspect: forbidden, cancel: forbidden }, now: () => schedulerNow })
     const title = contextual ? '定时验收' : '金价日报'
     const editGoalPrompt = '把这个定时任务的产出从 TXT 改为 Markdown，其他要求不变'
-    const original = contextual ? '请在北京时间 14:34 执行一次：在工作目录生成 定时验收.md，内容为“通用助手定时执行成功”'
+    const original = scenario === 'contextual-timeout' ? '请在北京时间 14:40 用钉钉给测试收件人发送“定时任务测试”。'
+      : contextual ? '请在北京时间 14:34 执行一次：在工作目录生成 定时验收.md，内容为“通用助手定时执行成功”'
       : '请 Analyst 每天生成金价日报，保存到 report.txt，并注明数据时间和来源。'
     const taskSpec: ScheduleInterpretation['task'] = { title, goal: original, deliverables: ['report.txt，注明数据时间和来源'],
       execution: { mode: 'employee', subscriptionId: 'analyst' },
       schedule: { kind: 'cron', timezone: 'Asia/Shanghai', localDateTime: null, expression: '0 9 * * *', description: '每天 09:00' } }
-    const contextualTask: ScheduleInterpretation['task'] = { title, goal: '在当前工作目录生成定时验收.md，内容为“通用助手定时执行成功”。',
-      deliverables: ['定时验收.md，正文为通用助手定时执行成功'], execution: { mode: 'general', subscriptionId: null },
+    const contextualTask: ScheduleInterpretation['task'] = { title,
+      goal: scenario === 'contextual-timeout' ? '用钉钉给测试收件人发送“定时任务测试”。' : '在当前工作目录生成定时验收.md，内容为“通用助手定时执行成功”。',
+      deliverables: scenario === 'contextual-timeout' ? ['核对发送结果'] : ['定时验收.md，正文为通用助手定时执行成功'], execution: { mode: 'general', subscriptionId: null },
       schedule: { kind: 'once', timezone: 'Asia/Shanghai', localDateTime: '2026-11-25T14:40', expression: null, description: null } }
     const otherRequest = '请在北京时间 15:34 执行一次：在工作目录生成 另一份验收.md。'
     let interpretations = 0
-    const creations = new ScheduledCreationService({ repository: storage, scope: owner, schedules,
+    const createService = () => new ScheduledCreationService({ repository: storage, scope: owner, schedules,
       catalog: async () => catalog, authorize, now: () => now, validateWorkspace: async dir => { await storage.validateWorkspace(dir) },
       interpret: async input => {
         interpretations++
@@ -261,6 +270,7 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
             questions: [{ field: 'schedule', question: '请补充时间。' }], reasons: [] }
           : { status: 'ready', task: taskSpec, questions: [], reasons: [] }
       } })
+    let creations = createService()
     const workerPrompts: string[] = [], submissions: ScheduledCreationRequest[] = [], approvals: import('../../src/shared/types').ToolAuthorizationRequest[] = []
     const mutations: ScheduleManagementReceipt[] = []
     const employee = { subscriptionId: 'analyst', modelId, gatewayUrl: 'http://gateway.invalid' }
@@ -268,6 +278,7 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
       resolveEmployee: id => id === employee.subscriptionId ? employee : null, authorizeEmployee: authorize,
       getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest(request) { approvals.push(request) },
       submitConversationSchedule: async (request, review) => { submissions.push(request); return creations.submitConversation(request, review) },
+      hasConversationScheduleDrafts: scenario === 'contextual-timeout' ? (taskId, legacySources) => creations.hasConversationDrafts(taskId, legacySources) : undefined,
       scheduledTaskManagement: schedules,
       createWorker: options => ({ async run(prompt) {
         workerPrompts.push(prompt)
@@ -280,9 +291,10 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
           const tool = conversationScheduleToolDefinition(options.context.conversationSchedule!)
           if (workerPrompts.length === 1 || userText === otherRequest) {
             const task = userText === otherRequest ? { ...contextualTask, title: '另一份验收', goal: '生成另一份验收.md', deliverables: ['另一份验收.md'] } : contextualTask
-            await tool.execute('first', { action: 'new', candidate: { status: 'needs_input', task: { ...task,
+            const candidate = scenario === 'contextual-timeout' ? { status: 'ready', task, questions: [], reasons: [] } : { status: 'needs_input', task: { ...task,
               schedule: { ...task.schedule, localDateTime: null } }, questions: [{ field: 'schedule', question: '请确认执行日期。' }],
-              reasons: [{ code: 'MISSING_INFORMATION', message: '已指定北京时间和执行时刻，但未指定执行日期。' }] } }, undefined, undefined, {} as never)
+              reasons: [{ code: 'MISSING_INFORMATION', message: '已指定北京时间和执行时刻，但未指定执行日期。' }] }
+            await tool.execute('first', { action: 'new', candidate }, undefined, undefined, {} as never)
           } else if ((scenario !== 'contextual-retry' && userText === '今天的14:40') || userText === '创建定时任务') {
             await tool.execute('resume', { action: 'resume', candidate: { status: 'ready', task: contextualTask, questions: [], reasons: [] } }, undefined, undefined, {} as never)
           }
@@ -318,6 +330,43 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
       return conversationScheduleReceiptSchema.parse(timeline.filter(event => event.type === CONVERSATION_SCHEDULE_EVENT).at(-1)?.data)
     }
     await runtime.executeTask(chat.id, { conversation: true })
+    if (scenario === 'contextual-timeout') {
+      await wait(() => approvals.length === 1, 'initial schedule approval')
+      const first = approvals[0]!
+      assert.equal(runtime.respondToApproval({ requestId: first.requestId, approved: false, reason: 'timeout' }), true)
+      await idle()
+      const expired = await receipt()
+      assert.equal(expired.status, 'needs_confirmation')
+      assert.match(expired.message, /超时.*草稿已保留/)
+      assert.deepEqual((await storage.read(scope)).definitions, [])
+      const reopened = createService()
+      creations.stop(); creations = reopened
+      await reopened.recover()
+      await reply('重新发起确认，并把时间改为14:43')
+      await wait(() => approvals.length === 2, 'fresh approval after restarting creation service')
+      const second = approvals[1]!
+      assert.notEqual(first.requestId, second.requestId)
+      assert.deepEqual(second.input, { ...(first.input as object), firstRunAt: Date.parse('2026-11-25T06:43:00Z') })
+      assert.equal(runtime.respondToApproval({ requestId: first.requestId, approved: true }), false)
+      assert.deepEqual((await storage.read(scope)).definitions, [])
+      assert.equal(runtime.respondToApproval({ requestId: second.requestId, approved: true }), true)
+      assert.equal(runtime.respondToApproval({ requestId: second.requestId, approved: true }), false)
+      await idle()
+      assert.equal((await receipt()).status, 'created')
+      const snapshot = await storage.read(scope)
+      assert.equal(snapshot.creations?.length, 1)
+      assert.equal(snapshot.definitions.length, 1)
+      assert.equal(snapshot.definitions[0]?.enabled, true)
+      assert.equal(workerPrompts.length, 1, 'reconfirmation never needs the model to reconstruct the draft')
+      schedulerNow = Date.parse('2026-11-25T06:42:00Z')
+      await schedules.scan()
+      assert.deepEqual(simulatedMessages, [])
+      schedulerNow += 60_000
+      await schedules.scan(); await schedules.scan()
+      assert.deepEqual(simulatedMessages, [`${contextualTask.goal}\n\nDeliverables:\n- ${contextualTask.deliverables[0]}`])
+      assert.equal((await storage.read(scope)).occurrences.length, 1)
+      return
+    }
     if (scenario !== 'clarify' && !contextual) {
       await wait(() => approvals.length === 1, 'original approval should open')
       assert.equal((approvals[0]!.input as { recurrence: string }).recurrence, '0 9 * * *')
@@ -341,11 +390,13 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
         assert.equal(before.creations?.length, 2)
         await reply('创建定时任务'); await idle()
         const result = await receipt()
-        assert.equal(result.status, 'blocked')
-        assert.match(result.message, /多份待补充/)
+        assert.equal(result.status, 'choose_draft')
+        assert.match(result.message, /多份定时草稿/)
+        assert.equal(result.drafts.length, 2)
         await storage.update(scope, data => { data.creations!.find(item => item.id === awaiting.draft!.id)!.revision++ })
         const edited = await storage.read(scope)
-        await reply('创建定时任务'); await idle()
+        await runtime.continueConversation(chat.id, '重新发起确认', { messageId: randomUUID(),
+          scheduleDraftAction: { kind: 'review', draft: awaiting.draft } }); await idle()
         assert.equal((await receipt()).status, 'blocked', 'A stale revision must not silently select the other draft')
         assert.deepEqual(await storage.read(scope), edited)
         assert.deepEqual(approvals, [])
@@ -414,7 +465,7 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
     const snapshot = await storage.read(scope)
     assert.equal(snapshot.creations?.length, 1)
     if (scenario === 'deny') {
-      assert.equal((await receipt()).status, 'cancelled')
+      assert.equal((await receipt()).status, 'needs_confirmation')
       assert.deepEqual(snapshot.definitions, [])
     } else {
       assert.equal((await receipt()).status, 'created')
@@ -424,10 +475,10 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
       await reply('几点执行？'); await idle()
       assert.match(workerPrompts.at(-1)!, /已启用，首次执行时间：.*10:00/)
     }
-    const replay = await creations.submitConversation(submissions[1]!, { signal: new AbortController().signal, receivedAt: now, approve: forbidden })
-    assert.equal(replay.status, scenario === 'deny' ? 'cancelled' : 'created')
+    const replay = await creations.submitConversation(submissions[1]!, { signal: new AbortController().signal, receivedAt: now, conversationId: chat.id, approve: forbidden })
+    assert.equal(replay.status, scenario === 'deny' ? 'needs_confirmation' : 'created')
     await assert.rejects(creations.submitConversation({ ...submissions[1]!, message: '上午十一点' },
-      { signal: new AbortController().signal, receivedAt: now, approve: forbidden }), (error: unknown) => error instanceof AppError && error.code === 'DRAFT_REVISION_CONFLICT')
+      { signal: new AbortController().signal, receivedAt: now, conversationId: chat.id, approve: forbidden }), (error: unknown) => error instanceof AppError && error.code === 'DRAFT_REVISION_CONFLICT')
     assert.deepEqual((await storage.read(scope)).definitions, snapshot.definitions)
     if (scenario === 'confirm') {
       const original = snapshot.definitions[0]!

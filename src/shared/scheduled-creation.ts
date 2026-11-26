@@ -88,6 +88,14 @@ export const CONVERSATION_SCHEDULE_EVENT = 'conversation_schedule_creation'
 export const REVISE_CONVERSATION_SCHEDULE_TIME = 'revise_conversation_schedule_time'
 export const conversationScheduleDraftSchema = z.object({ id: z.string().uuid(), revision: z.number().int().positive() }).strict()
 export type ConversationScheduleDraft = z.infer<typeof conversationScheduleDraftSchema>
+export const conversationScheduleDraftActionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('review'), draft: conversationScheduleDraftSchema,
+    time: z.string().regex(/^(?:\d{4}-\d{2}-\d{2}T)?(?:[01]\d|2[0-3]):[0-5]\d$/).optional() }).strict(),
+  z.object({ kind: z.literal('discard'), draft: conversationScheduleDraftSchema }).strict(),
+])
+export type ConversationScheduleDraftAction = z.infer<typeof conversationScheduleDraftActionSchema>
+export const conversationScheduleDraftActionText = (action: ConversationScheduleDraftAction) => action.kind === 'discard' ? '放弃定时草稿'
+  : action.time ? `改为 ${action.time.replace('T', ' ')}，重新发起确认` : '重新发起确认'
 const conversationScheduleCandidate = scheduleInterpretationFields.transform(candidate => {
   // Some models explain missing input in both arrays. Keep the question, but never discard a blocking reason.
   return candidate.status === 'needs_input' && candidate.questions.length && candidate.reasons.every(reason => reason.code === 'MISSING_INFORMATION')
@@ -105,8 +113,13 @@ export const conversationScheduleApprovalSchema = z.object({
 export const conversationScheduleReceiptSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('pending') }).strict(),
   z.object({ status: z.literal('created'), id: z.string().min(1).max(128), title: z.string().min(1).max(160),
-    nextRunAt: timestampSchema, timezone: timezoneSchema }).strict(),
-  z.object({ status: z.literal('needs_input'), message: z.string().min(1).max(4000), draft: conversationScheduleDraftSchema.optional() }).strict(),
+    nextRunAt: timestampSchema, timezone: timezoneSchema, draft: conversationScheduleDraftSchema.optional() }).strict(),
+  z.object({ status: z.literal('needs_input'), message: z.string().min(1).max(4000), draft: conversationScheduleDraftSchema.optional(), timeOnly: z.literal(true).optional() }).strict(),
+  z.object({ status: z.literal('needs_confirmation'), message: z.string().min(1).max(4000), draft: conversationScheduleDraftSchema }).strict(),
+  z.object({ status: z.literal('choose_draft'), message: z.string().min(1).max(4000), drafts: z.array(z.object({
+    draft: conversationScheduleDraftSchema, title: z.string().min(1).max(160),
+  }).strict()).min(2), time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).optional() }).strict(),
+  z.object({ status: z.literal('discarded'), message: z.string().min(1).max(4000), draft: conversationScheduleDraftSchema }).strict(),
   z.object({ status: z.enum(['blocked', 'failed', 'cancelled']), message: z.string().min(1).max(4000) }).strict(),
 ])
 export type ConversationScheduleReceipt = z.infer<typeof conversationScheduleReceiptSchema>
@@ -117,8 +130,12 @@ export function formatScheduleReceiptTime(timestamp: number, timezone: string): 
 export const scheduledCreationSchema = z.object({
   id: z.string().uuid(), revision: z.number().int().positive(),
   fromConversation: z.literal(true).optional(),
+  conversationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
+  conversationTurnId: z.string().uuid().optional(),
+  reissuedFrom: z.string().uuid().optional(),
+  confirmationOutcome: z.enum(['pending', 'timeout', 'dismissed', 'interrupted']).optional(),
   deleted: z.literal(true).optional(),
-  stage: z.enum(['parsing', 'needs_input', 'blocked', 'planning', 'enabling', 'completed', 'failed', 'cancelled']),
+  stage: z.enum(['parsing', 'needs_input', 'needs_confirmation', 'blocked', 'planning', 'enabling', 'completed', 'failed', 'cancelled']),
   request: z.object(creationRequestFields).strict(), submissionKey: submissionKeySchema,
   parsedSubmissionKey: submissionKeySchema.nullable(), definitionSubmissionKey: submissionKeySchema.nullable(),
   referenceNow: timestampSchema, messages: z.array(messageSchema).min(1).max(20),

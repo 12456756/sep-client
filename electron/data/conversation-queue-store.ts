@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { attachmentRefSchema } from '../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../src/shared/knowledge-selection'
 import { conversationQueueItemSchema } from '../../src/shared/conversation-queue'
+import { conversationScheduleDraftActionSchema } from '../../src/shared/scheduled-creation'
 import { diagnoseJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 
@@ -12,6 +13,7 @@ const entrySchema = conversationQueueItemSchema.extend({
   status: z.enum(['waiting', 'active', 'completed', 'failed', 'cancelled']),
   attachmentRefs: z.array(attachmentRefSchema).optional(),
   knowledge: knowledgeSelectionSchema.optional(),
+  scheduleDraftAction: conversationScheduleDraftActionSchema.optional(),
   mode: z.enum(['strict', 'confirm_rebuild', 'auto_rebuild_from_task_history']).optional(),
   confirmed: z.boolean().optional(),
 })

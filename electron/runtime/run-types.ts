@@ -60,6 +60,7 @@ export interface QueuedRun {
   prompt: string
   messageId?: string
   messageReceivedAt?: number
+  scheduleDraftAction?: import('../../src/shared/scheduled-creation').ConversationScheduleDraftAction
   conversation: boolean
   resumeSessionFile?: string
 

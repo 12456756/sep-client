@@ -1,18 +1,24 @@
 import { createHash } from 'node:crypto'
 import {
   CONVERSATION_SCHEDULE_EVENT, conversationScheduleReceiptSchema,
-  formatScheduleReceiptTime, type ConversationScheduleDraft, type ConversationScheduleReceipt, type ScheduledCreationRequest, type ScheduleInterpretation,
+  formatScheduleReceiptTime, type ConversationScheduleDraft, type ConversationScheduleDraftAction, type ConversationScheduleReceipt, type ScheduledCreationRequest, type ScheduleInterpretation,
 } from '../../src/shared/scheduled-creation'
 import type { ScheduleInput } from '../../src/shared/scheduled-tasks'
 import type { ConversationScheduleTool } from '../pi/sdk/pi-conversation-schedule'
 import type { ConversationMessage } from '../domain/conversation-context'
 import type { TaskExecutionEvent } from '../../src/shared/types'
-import { conversationScheduleClock } from '../domain/scheduled-creation'
+import { conversationScheduleClock, conversationScheduleRetry } from '../domain/scheduled-creation'
 
-export type SubmitConversationSchedule = (request: ScheduledCreationRequest, review: {
-  signal: AbortSignal; receivedAt: number; approve(input: ScheduleInput): Promise<boolean | 'revise_time'>
+export type ScheduleApprovalDecision = boolean | 'revise_time' | 'timeout' | 'dismissed' | 'interrupted'
+export interface ConversationCreationReview {
+  signal: AbortSignal; receivedAt: number; approve(input: ScheduleInput): Promise<ScheduleApprovalDecision>
   candidate?: ScheduleInterpretation; resumeDrafts?: ConversationScheduleDraft[]
-}) => Promise<ConversationScheduleReceipt>
+  conversationId?: string
+  continuation?: 'clock' | 'review' | 'contextual'
+  draftAction?: ConversationScheduleDraftAction
+  legacySources?: ReadonlyMap<string, string>
+}
+export type SubmitConversationSchedule = (request: ScheduledCreationRequest, review: ConversationCreationReview) => Promise<ConversationScheduleReceipt>
 
 /** A queued message keeps its identity on retry even when its execution run changes. */
 export function conversationScheduleRequestId(taskId: string, messageId: string): string {
@@ -29,6 +35,18 @@ export function precedingConversationUser(taskId: string, runId: string, message
   const currentIndex = messages.findIndex(message => message.role === 'user' && message.taskId === taskId && message.runId === runId)
   const throughPrevious = currentIndex === -1 ? [...messages] : messages.slice(0, currentIndex)
   return throughPrevious.reverse().find(message => message.role === 'user' && message.taskId === taskId)
+}
+
+export function legacyConversationScheduleSources(taskId: string, runId: string, messages: ConversationMessage[]): ReadonlyMap<string, string> {
+  const sources = new Map<string, string>()
+  const users = messages.filter(message => message.taskId === taskId && message.role === 'user')
+  for (const [index, message] of users.entries()) {
+    if (message.runId === runId) break
+    const content = message.content.trim()
+    if (message.attachmentRefs?.length || !content || /^(>|```|~~~|[“「"])/u.test(content) || conversationScheduleRetry(content)) continue
+    sources.set(conversationScheduleRequestId(taskId, index === 0 ? 'initial' : `message:${message.runId}`), content)
+  }
+  return sources
 }
 
 export async function conversationScheduleReceipt(previous: ConversationMessage, timeline: (runId: string) => Promise<TaskExecutionEvent[]>): Promise<ConversationScheduleReceipt | undefined> {
@@ -67,7 +85,10 @@ export function bindConversationSchedule(options: {
   parserSubscriptionId?: string
   draft?: ConversationScheduleDraft
   resumeDrafts?(): Promise<ConversationScheduleDraft[]>
-  approve(input: ScheduleInput): Promise<boolean | 'revise_time'>
+  continuation?: 'clock' | 'review'
+  draftAction?: ConversationScheduleDraftAction
+  legacySources?: ReadonlyMap<string, string>
+  approve(input: ScheduleInput): Promise<ScheduleApprovalDecision>
   receipt(receipt: ConversationScheduleReceipt): Promise<void>
 }): ConversationScheduleTool {
   const message = options.userMessage.trim()
@@ -83,7 +104,7 @@ export function bindConversationSchedule(options: {
     if (!message.split('\n').some(line => line.trim() && !/^\s*>/.test(line)) || /^(```|~~~)/.test(message)) {
       return { status: 'blocked', message: '请在会话正文中直接说明要定时执行的工作和开始时间。' }
     }
-    if (!options.draft && input?.action !== 'resume' && isConversationScheduleTimeReply(message)) {
+    if (!options.draft && !options.continuation && !options.draftAction && input?.action !== 'resume' && isConversationScheduleTimeReply(message)) {
       return { status: 'blocked', message: '这条消息没有对应的待补充定时草稿。请说明要定时执行的工作。' }
     }
     operation ??= (async () => {
@@ -91,9 +112,11 @@ export function bindConversationSchedule(options: {
       let receipt: ConversationScheduleReceipt
       try {
         assertCurrent()
-        const resumeDrafts = input?.action === 'resume' ? await options.resumeDrafts?.() ?? [] : undefined
+        const continuation = options.continuation ?? (options.legacySources && conversationScheduleRetry(message) ? 'review'
+          : input?.action === 'resume' ? 'contextual' : undefined)
+        const resumeDrafts = continuation ? await options.resumeDrafts?.() : undefined
         assertCurrent()
-        const draft = input?.action ? undefined : options.draft
+        const draft = continuation || options.draftAction || input?.action ? undefined : options.draft
         receipt = await options.submit({
           requestId: draft?.id ?? conversationScheduleRequestId(options.taskId, options.messageId),
           ...(draft ? { expectedRevision: draft.revision } : {}),
@@ -101,14 +124,15 @@ export function bindConversationSchedule(options: {
           ...(options.parserSubscriptionId ? { parserSubscriptionId: options.parserSubscriptionId } : {}),
           timezone,
           permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' },
-        }, { signal, receivedAt: options.receivedAt, candidate: input?.candidate, resumeDrafts, approve: async input => {
+        }, { signal, receivedAt: options.receivedAt, candidate: input?.candidate, resumeDrafts, conversationId: options.taskId,
+          continuation, draftAction: options.draftAction, legacySources: options.legacySources, approve: async input => {
           assertCurrent()
           const approved = await options.approve(input)
           assertCurrent()
           return approved
         } })
       } catch {
-        receipt = { status: signal.aborted ? 'cancelled' : 'failed', message: options.draft || input?.action === 'resume'
+        receipt = { status: signal.aborted ? 'cancelled' : 'failed', message: options.draft || options.continuation || options.draftAction || input?.action === 'resume'
           ? '未能更新这份定时草稿，请在「定时任务」中查看当前状态后再试。'
           : '未能确认创建结果，请在「定时任务」中查看后再试。' }
       }

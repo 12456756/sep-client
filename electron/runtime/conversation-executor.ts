@@ -50,9 +50,10 @@ import { withTimeout } from '../common/with-timeout'
 import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
-import { bindConversationSchedule, conversationScheduleContext, conversationScheduleDrafts, conversationScheduleReceipt, isConversationScheduleTimeReply, precedingConversationUser, type SubmitConversationSchedule } from './conversation-schedule'
+import { bindConversationSchedule, conversationScheduleContext, conversationScheduleDrafts, conversationScheduleReceipt, isConversationScheduleTimeReply, legacyConversationScheduleSources, precedingConversationUser, type SubmitConversationSchedule } from './conversation-schedule'
+import { conversationScheduleRetry } from '../domain/scheduled-creation'
 import { bindConversationScheduleManagement, type ScheduleManagementServices } from './conversation-schedule-management'
-import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL, REVISE_CONVERSATION_SCHEDULE_TIME } from '../../src/shared/scheduled-creation'
+import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL, REVISE_CONVERSATION_SCHEDULE_TIME, type ConversationScheduleDraftAction } from '../../src/shared/scheduled-creation'
 import { redactText, redactValue } from '../common/redact'
 import { LOCAL_MEDIA_TOOL } from '../domain/local-media-tools'
 import type { LocalMediaRuntime } from './local-media-runtime'
@@ -100,6 +101,7 @@ export interface ConversationExecutorOptions {
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   submitConversationSchedule?: SubmitConversationSchedule
+  hasConversationScheduleDrafts?: (taskId: string, legacySources?: ReadonlyMap<string, string>) => Promise<boolean>
   scheduledTaskManagement?: ScheduleManagementServices['service']
   scheduledCreationManagement?: ScheduleManagementServices['creations']
   selectScheduledOutputDirectory?: ScheduleManagementServices['selectOutputDirectory']
@@ -120,7 +122,7 @@ export class ConversationExecutor {
   async continue(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number; scheduleDraftAction?: ConversationScheduleDraftAction } = {},
   ): Promise<void> {
     await this.continueAs(taskId, prompt, undefined, recovery)
   }
@@ -321,6 +323,7 @@ export class ConversationExecutor {
       const readOnlySchedules = toolPolicy?.preset === 'read-only'
       const canSchedule = canManageSchedules && !readOnlySchedules && submitSchedule && workDir
       const clockReply = !queued.attachmentRefs?.length && isConversationScheduleTimeReply(queued.prompt)
+      const retrySchedule = !queued.attachmentRefs?.length && !!conversationScheduleRetry(queued.prompt)
       const management = this.options.scheduledTaskManagement
       const messages = canManageSchedules && (canSchedule || management) && runStore && queued.messageId ? await this.conversationStore(scope, taskId).listMessages() : []
       const previousUser = precedingConversationUser(taskId, runId, messages)
@@ -332,6 +335,12 @@ export class ConversationExecutor {
       const previousSchedule = scheduleTimeline && previousUser && (clockReply || previousWasClock)
         ? await conversationScheduleReceipt(previousUser, scheduleTimeline) : undefined
       const draft = clockReply && previousSchedule?.status === 'needs_input' ? previousSchedule.draft : undefined
+      const explicitClockCorrection = /^(?:改成|改为|调整为|调整到|提前到|推迟到|设为)/u.test(queued.prompt.trim())
+      const legacySources = retrySchedule || queued.scheduleDraftAction ? legacyConversationScheduleSources(taskId, runId, messages) : undefined
+      const canRetrySchedule = canSchedule && retrySchedule && (await this.options.hasConversationScheduleDrafts?.(taskId, legacySources) ?? true)
+      const scheduleContinuation = canRetrySchedule ? 'review' : canSchedule && clockReply &&
+        (explicitClockCorrection || previousSchedule?.status === 'needs_input' || previousSchedule?.status === 'needs_confirmation') &&
+        await this.options.hasConversationScheduleDrafts?.(taskId) ? 'clock' : undefined
       const isCurrentScheduleTurn = () => {
         const current = this.options.taskManager.getCurrentUserScope()
         return !!active && active.control === 'none' && this.options.workers.isCurrent(active) && !!scope && scope.enterpriseId === current?.enterpriseId && scope.memberId === current.memberId
@@ -360,14 +369,20 @@ export class ConversationExecutor {
           submit: submitSchedule, taskId, messageId: queued.messageId ? `message:${queued.messageId}` : 'initial', userMessage: queued.prompt,
           parserSubscriptionId: employee.subscriptionId,
           receivedAt: queued.messageReceivedAt ?? (queued.messageId ? startedAt : task.createdAt), modelId: employee.modelId, workDir, signal: mediaSignal, draft,
-          resumeDrafts: scheduleTimeline ? () => conversationScheduleDrafts(taskId, runId, messages, scheduleTimeline) : undefined,
+          continuation: scheduleContinuation, draftAction: queued.scheduleDraftAction,
+          legacySources,
+          resumeDrafts: scheduleTimeline ? async () => await this.options.hasConversationScheduleDrafts?.(taskId) ? []
+            : conversationScheduleDrafts(taskId, runId, messages, scheduleTimeline) : undefined,
           isCurrent: isCurrentScheduleTurn,
           approve: async input => {
             const decision = await this.options.approvals.requestDecision({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: CREATE_SCHEDULED_TASK_TOOL,
               input: redactValue({ title: input.name, goal: input.goal, timezone: input.timezone, firstRunAt: input.scheduledAt,
                 executor: input.mode === 'general' ? '通用助手' : input.mode === 'auto' ? '多员工编排' : `指定员工：${input.subscriptionId}`,
                 recurrence: input.recurrence?.frequency === 'cron' ? input.recurrence.expression : null }) })
-            return decision.approved || (decision.reason === REVISE_CONVERSATION_SCHEDULE_TIME ? 'revise_time' : false)
+            if (decision.approved) return true
+            if (decision.reason === REVISE_CONVERSATION_SCHEDULE_TIME) return 'revise_time'
+            if (decision.reason === 'timeout') return 'timeout'
+            return decision.reason === 'user_response' || decision.reason === 'user_denied' ? 'dismissed' : 'interrupted'
           },
           receipt: async receipt => {
             await this.options.events.enqueue({ taskId, runId, subscriptionId: queued.subscriptionId, sequence: 0,
@@ -495,7 +510,11 @@ export class ConversationExecutor {
         return
       }
       diagnosticPhase = 'model-execution'
-      if (draft && conversationSchedule) await conversationSchedule()
+      if ((draft || scheduleContinuation || queued.scheduleDraftAction) && conversationSchedule) await conversationSchedule()
+      else if (queued.scheduleDraftAction) {
+        await this.options.events.enqueue({ taskId, runId, subscriptionId: queued.subscriptionId, sequence: 0,
+          type: CONVERSATION_SCHEDULE_EVENT, occurredAt: Date.now(), data: { status: 'blocked', message: '当前会话不允许继续定时草稿。' } })
+      }
       else await worker.run(workerPrompt)
       await waitForMedia()
       diagnosticPhase = 'run-persistence'
@@ -626,7 +645,7 @@ export class ConversationExecutor {
     taskId: string,
     prompt: string,
     employeeOverride: string | undefined,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number },
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number; scheduleDraftAction?: ConversationScheduleDraftAction },
   ): Promise<void> {
     recovery.signal?.throwIfAborted()
     const scope = this.options.taskManager.getCurrentUserScope()
@@ -703,6 +722,7 @@ export class ConversationExecutor {
       prompt: prompt.trim(),
       messageId: recovery.messageId ?? runId,
       messageReceivedAt: recovery.messageReceivedAt,
+      scheduleDraftAction: recovery.scheduleDraftAction,
       conversation: true,
       signal: recovery.signal,
       arrangement: arrangement ?? undefined,

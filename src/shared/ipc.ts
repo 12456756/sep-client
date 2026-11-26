@@ -221,6 +221,7 @@ export interface ExecuteTaskInput {
 
 export interface ContinueTaskInput {
   messageId?: string
+  scheduleDraftAction?: import('./scheduled-creation').ConversationScheduleDraftAction
   knowledge?: KnowledgeSelection
   taskId: string
   prompt: string
