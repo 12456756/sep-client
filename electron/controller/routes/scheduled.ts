@@ -12,7 +12,7 @@ const creationMutation = mutation.extend({ id: z.string().uuid() })
 const selectOutputDirectory = (ctx: RequestContext) => async (path: string) => {
   const window = ctx.window()
   if (!window) return null
-  const result = await dialog.showOpenDialog(window, { title: '授权定时任务的产出目录', defaultPath: path, properties: ['openDirectory'] })
+  const result = await dialog.showOpenDialog(window, { title: '授权定时任务的产出目录（同名时先备份再覆盖）', defaultPath: path, properties: ['openDirectory'] })
   return result.canceled ? null : result.filePaths[0] ?? null
 }
 export const scheduledRoutes = [
@@ -27,7 +27,7 @@ export const scheduledRoutes = [
   route(INVOKE_CHANNELS.SCHEDULE_CREATE, z.object({ requestId: id, input: scheduleInputSchema }).strict(), async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.create(value.requestId, value.input, undefined, selectOutputDirectory(ctx)) }), { trustedMainFrame: true }),
   route(INVOKE_CHANNELS.SCHEDULE_EDIT, mutation.extend({ input: scheduleInputSchema }), async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.edit(value.id, value.expectedRevision, value.input, undefined, selectOutputDirectory(ctx)) }), { trustedMainFrame: true }),
   route(INVOKE_CHANNELS.SCHEDULE_PLAN, mutation, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.plan(value.id, value.expectedRevision) })),
-  route(INVOKE_CHANNELS.SCHEDULE_CONFIRM, mutation, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.confirm(value.id, value.expectedRevision) })),
+  route(INVOKE_CHANNELS.SCHEDULE_CONFIRM, mutation, async (ctx, value) => ({ success: true, data: await ctx.scheduledTasks.confirm(value.id, value.expectedRevision) }), { trustedMainFrame: true }),
   route(INVOKE_CHANNELS.SCHEDULE_PAUSE, mutation, async (ctx, value) => { await ctx.scheduledTasks.pause(value.id, value.expectedRevision); return { success: true } }),
   route(INVOKE_CHANNELS.SCHEDULE_DELETE, mutation, async (ctx, value) => { await ctx.scheduledTasks.pause(value.id, value.expectedRevision, true); return { success: true } }),
   route(INVOKE_CHANNELS.SCHEDULE_CHECK, id, async (ctx, value) => { await ctx.scheduledTasks.check(value); return { success: true } }),

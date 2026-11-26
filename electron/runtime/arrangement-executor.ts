@@ -70,6 +70,8 @@ export interface ArrangementExecutionResult {
 }
 
 export interface ArrangementExecutionOptions {
+  scheduledTools?: import('../domain/connectors').ScheduledToolExecution
+  resolveConnectorBinding?: import('../pi/sdk/pi-task-worker').PiTaskWorkerContext['resolveConnectorBinding']
   fullFileAccess?: boolean
   createModelTrace?: ModelTraceFactory
   scope: TaskOwnerScope | null
@@ -178,7 +180,7 @@ inputSelection 是选图意图；当前每项需求只解析一个明确来源�
 【本节点交付】
 预期输出：${node.expectedOutput}
 交付清单：${JSON.stringify(node.deliverables ?? [], null, 2)}
-全部交付物都必须实际保存到指定路径。可以产生过程文件，但最终提交清单不得包含资料、草稿和临时文件。
+${plan.scheduledOrigin ? '普通文件必须保存到交付清单指定的目录并保持文件格式。按用户要求生成文件名，清单中的文件名仅供参考；结束 JSON 填实际保存的相对路径，不照抄未展开的模板。宿主保存的图片和视频仍使用计划中的交付路径。' : '全部交付物都必须实际保存到指定路径。'}可以产生过程文件，但最终提交清单不得包含资料、草稿和临时文件。
 ${node.deliverables?.some(file => file.contentPolicy === 'empty') ? '标记为 contentPolicy=empty 的文本文件必须恰好为 0 字节，不得写入换行、空格或字节顺序标记。' : ''}
 只能使用分配的共享工作区，不要重放或虚构前置节点的工具调用。
 ${mediaDeliverables.length ? '标记为 media-output 的图片或视频交付物必须来自本节点已保存的媒体资产。结束 JSON 的 mediaDeliverables 必须为每个此类交付物填写明确的 deliverableId 和媒体工具返回的 artifactId；不得猜测 ID、使用其他节点未声明的资产或提交本地路径。' : ''}
@@ -190,6 +192,7 @@ ${mediaDeliverables.length ? '媒体提交成功后，由主进程跟踪原任�
 执行中、进度说明、等待处理、修正过程中，不得以 JSON 作为回复；工具调用的 JSON 参数和要求生成的 JSON 文件不受此限制。
 确认节点工作结束后，只返回以下严格 JSON，不附加其他文字、Markdown 或推理过程：
 ${JSON.stringify(ending, null, 2)}
+${plan.scheduledOrigin ? '定时任务专用：如果本节点有必要的外部操作未执行、失败或无法核实，仍提交已保存的报告，并在结束 JSON 增加 "externalWorkBlocked": true，在 summary 写明原因。文件交付不代表外部操作成功。' : ''}
 提交只是申请结束，后端校验通过才算完成。收到校验失败原因后，修复问题，保留有效成果，不重复已完成的操作。
 修复并重新确认节点全部工作结束后，再提交完整最终 JSON。`
   }
@@ -530,8 +533,6 @@ export class ArrangementExecutor {
     let scheduledAccessError: ScheduledPathDeniedError | undefined
     let diagnosticPhase: DiagnosticPhase = 'node-setup'
     const mediaEvidence = this.options.arrangementDiagnostics ? trackMediaToolFailureEvidence() : undefined
-    const expectsVideo = node.mediaRequirements?.some(item => item.kind === 'video') === true ||
-      node.deliverables?.some(file => file.artifact?.kind === 'video') === true
     const requiresMediaBridge = !!node.mediaRequirements?.length ||
       !!node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')
     // File-only scheduled assistants have a model grant but no task-level employee binding.
@@ -567,7 +568,7 @@ export class ArrangementExecutor {
         for (const dependency of dependencies) {
           const progress = state.nodes.find(item => item.nodeId === dependency.node.id)
           if (progress?.status !== 'completed' || progress.pendingConfirmation) throw new DeliveryExecutionError('前置节点尚未确认完成，不能启动下游节点。')
-          const recorded = parseRecordedDeliverySubmission(dependency.node, dependency.files)
+          const recorded = parseRecordedDeliverySubmission(dependency.node, dependency.files, undefined, !!plan.scheduledOrigin)
           if (!recorded.ok) throw new PredecessorRepairRequired(dependency.node.id, recorded.issues)
           const resolved = await resolveDeliveryFiles(workspaceDir, dependency.files, signal, fileOptions)
           if (resolved.issues.length) throw new PredecessorRepairRequired(dependency.node.id, resolved.issues)
@@ -582,7 +583,7 @@ export class ArrangementExecutor {
           dependency.files = resolved.files.map((file, index) => ({ ...file, readPath: resolved.readPaths[index] }))
         }
         if (delivery.finalFiles.length) {
-          const recorded = parseRecordedDeliverySubmission(node, delivery.finalFiles, delivery.summary ?? 'verified')
+          const recorded = parseRecordedDeliverySubmission(node, delivery.finalFiles, delivery.summary ?? 'verified', !!plan.scheduledOrigin)
           const resolved = recorded.ok ? await resolveDeliveryFiles(workspaceDir, delivery.finalFiles, signal, fileOptions) : null
           const issues = !recorded.ok ? recorded.issues : resolved?.issues ?? []
           if (issues.length) {
@@ -664,7 +665,7 @@ export class ArrangementExecutor {
         knowledgeContext = formatKnowledgeContext(knowledge.query, result)
       }
       checkControl()
-      if (structured && delivery.issues.length) prompt += `\n\n${buildArrangementDeliveryCorrection(delivery.issues, node)}`
+      if (structured && delivery.issues.length) prompt += `\n\n${buildArrangementDeliveryCorrection(delivery.issues, node, undefined, !!plan.scheduledOrigin)}`
       diagnosticPhase = 'input-read'
       const nodeAttachmentRefs = (node.inputRefs ?? []).flatMap(ref => ref.kind === 'attachment' ? [ref.attachment] : [])
       const attachmentInputs = this.options.scope && nodeAttachmentRefs.length && this.options.attachmentInputs
@@ -708,9 +709,7 @@ export class ArrangementExecutor {
       })
       const rawVideoTools = await video?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
-        requestApproval: request => this.options.onApprovalRequest(request),
         onJobCreated: mediaSession?.onJobCreated, recoverJobIds: mediaSession?.recoverJobIds,
-        autoApproveMedia: expectsVideo,
         onTerminalFailure: async error => {
           terminalMediaFailure ??= error
           await worker?.abort().catch(() => undefined)
@@ -770,6 +769,8 @@ export class ArrangementExecutor {
       worker = this.options.createWorker({
         context: {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
+          scheduledTools: this.options.scheduledTools,
+          resolveConnectorBinding: this.options.resolveConnectorBinding,
           vision: employee.vision,
           modelTrace,
           taskTitle: plan.goal,
@@ -816,6 +817,11 @@ export class ArrangementExecutor {
           if (result.status === 'failed') { diagnosticPhase = result.stage; throw result.error }
           if (result.status === 'accepted') {
             output = result.submission.summary
+            if (plan.scheduledOrigin && result.submission.externalWorkBlocked) {
+              await this.options.scheduledTools?.recordBlocked?.('scheduled_external_work', 'not-attempted')
+              await this.options.onEvent({ taskId, runId: nodeRunId, subscriptionId: node.subscriptionId,
+                type: 'scheduled_operation_failed', data: { toolName: 'scheduled_external_work' }, occurredAt: Date.now(), sequence: 0 })
+            }
             accepted = true
             return
           }

@@ -23,6 +23,7 @@ import {
 import { employeeRuntimeSnapshotSchema, type PreparedEmployeeSkill } from '../common/platform/employee-runtime-contract'
 import type { SkillArtifactAvailable } from '../common/platform/skill-artifact-contract'
 import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
+import { MOCK_MEDIA_PNG, MOCK_MEDIA_PNG_SHA256 } from '../data/mock-media-gateway'
 import { sepRuntimeV3Fixture } from '../../src/shared/fixtures/sep-media-runtime-v3'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -494,7 +495,7 @@ async function videoAuthorizationHost(authorizer: EmployeeAuthorizer, overrides:
     }),
     readReference: async () => { throw new Error('Unexpected reference read') },
     references: { list: async () => [], import: async () => { effects.imports++; return [] } },
-    exportOutput: async () => { effects.exports++ }, requestApproval: async () => true,
+    exportOutput: async () => { effects.exports++ },
     ...overrides,
   })
   return { host, gateway, effects, store, saved, async dispose() { await host.stopAll(); await rm(root, { recursive: true, force: true }) } }
@@ -778,11 +779,11 @@ describe('observed video authorization revision', () => {
     })
   }
 
-  it('rejects a pending approval when another authorize observes disabled video before reference upload', async t => {
+  it('interrupts preparation when another authorize observes disabled video before upload', async t => {
     const { manifest, authorizer } = videoAuthorizer()
-    const approval = deferred<void>(), waiting = deferred<void>()
+    const release = deferred<void>(), waiting = deferred<void>()
     const f = await videoAuthorizationHost(authorizer, {
-      requestApproval: async () => { waiting.resolve(); await approval.promise; return true },
+      readReference: async () => { waiting.resolve(); await release.promise; return { bytes: MOCK_MEDIA_PNG, sha256: MOCK_MEDIA_PNG_SHA256 } },
     })
     t.after(f.dispose)
     const { profileId, operation, creativeBrief, parameters } = videoFixture.quoteRequest
@@ -794,7 +795,7 @@ describe('observed video authorization revision', () => {
     await waiting.promise
     manifest.runtime.video = { ...videoFixture.runtime, executionAvailable: false, tools: [] }
     assert.ok(await authorizer.authorize('sub-a'))
-    approval.resolve()
+    release.resolve()
     await rejected
     assert.equal(f.gateway.calls.quote, 0)
     assert.equal(f.gateway.calls.submit, 0)

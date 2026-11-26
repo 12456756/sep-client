@@ -17,6 +17,7 @@ import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentService } from './attachment-service'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
+import type { ConversationScheduleDraftAction } from '../../src/shared/scheduled-creation'
 import type { ConversationQueueService } from './conversation-queue-service'
 import { createHash } from 'node:crypto'
 import type { ConversationQueueInput, ConversationQueueView } from '../../src/shared/conversation-queue'
@@ -43,6 +44,7 @@ export interface ContinueConversationInput {
   attachmentSessionId?: string
   attachmentRefs?: AttachmentRef[]
   knowledge?: KnowledgeSelection
+  scheduleDraftAction?: ConversationScheduleDraftAction
 }
 
 type ConversationHandoffTarget = string | { kind: 'general'; modelId: string }
@@ -73,7 +75,8 @@ export class ConversationService {
       if (type.state !== 'resolved' || type.kind !== 'conversation') throw new AppError('INVALID_ARGUMENT')
       const current = requireScope(this.deps.scope)
       if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
-      const requestKey = createHash('sha256').update(JSON.stringify([input.prompt, input.attachmentSessionId, input.attachmentRefs, input.knowledge, input.recoveryMode, input.confirmRecovery])).digest('hex')
+      const requestKey = createHash('sha256').update(JSON.stringify([input.prompt, input.attachmentSessionId, input.attachmentRefs, input.knowledge, input.recoveryMode, input.confirmRecovery,
+        ...(input.scheduleDraftAction ? [input.scheduleDraftAction] : [])])).digest('hex')
       const result = await this.deps.queue.enqueue(input.taskId, { id: input.messageId, prompt: input.prompt, requestKey }, async () => {
         if (plan?.conversation?.kind !== 'general' && !await this.deps.employees.authorize(task.subscriptionId!)) throw new AppError('EMPLOYEE_UNAVAILABLE')
         const current = requireScope(this.deps.scope)
@@ -85,7 +88,8 @@ export class ConversationService {
           attachmentNames = (await this.deps.attachments.validateRefs(scope, input.attachmentSessionId, input.attachmentRefs)).map(item => item.displayName)
           attachmentRefs = (await this.deps.attachments.claimTask(input.attachmentSessionId, input.taskId, input.attachmentRefs)).attachments
         }
-        return { attachmentRefs, attachmentNames, knowledge: input.knowledge ?? plan?.knowledge ?? { mode: 'none' as const, knowledgeBaseIds: [] }, mode: input.recoveryMode, confirmed: input.confirmRecovery }
+        return { attachmentRefs, attachmentNames, knowledge: input.knowledge ?? plan?.knowledge ?? { mode: 'none' as const, knowledgeBaseIds: [] }, mode: input.recoveryMode, confirmed: input.confirmRecovery,
+          ...(input.scheduleDraftAction ? { scheduleDraftAction: input.scheduleDraftAction } : {}) }
       })
       return { queued: result.queued }
     }
@@ -107,6 +111,7 @@ export class ConversationService {
       confirmed: input.confirmRecovery === true,
       ...(inputSnapshot ? { inputSnapshot } : {}),
       ...(input.knowledge ? { knowledge: input.knowledge } : {}),
+      ...(input.scheduleDraftAction ? { scheduleDraftAction: input.scheduleDraftAction } : {}),
     })
     return { queued: false }
   }

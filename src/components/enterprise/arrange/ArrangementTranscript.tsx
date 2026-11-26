@@ -16,6 +16,8 @@ interface Props {
   busy: boolean
   onStop: (id: string, reason: string) => Promise<boolean>
   onResults: () => void
+  scheduledStatus?: string
+  onScheduledHistory?: () => void
   onExportDiagnostic?: ElectronAPI['exportWorkDiagnostic']
 }
 
@@ -26,7 +28,7 @@ export function ArrangementTranscript(props: Props) {
     onExportDiagnostic={window.electronAPI?.exportWorkDiagnostic} loading={transcript.loading} error={transcript.error} onReload={transcript.reload} />
 }
 
-export function ArrangementTranscriptView({ work, employees, nodes, loading = false, error = null, onReload, onStop, onResults, onExportDiagnostic, busy }: Omit<Props, 'scopeKey'> & {
+export function ArrangementTranscriptView({ work, employees, nodes, loading = false, error = null, onReload, onStop, onResults, scheduledStatus, onScheduledHistory, onExportDiagnostic, busy }: Omit<Props, 'scopeKey'> & {
   nodes: NodeTranscript[]; loading?: boolean; error?: string | null; onReload?: () => void
 }) {
   const body = useRef<HTMLDivElement>(null)
@@ -44,10 +46,12 @@ export function ArrangementTranscriptView({ work, employees, nodes, loading = fa
   return <section className="ent-arrangement-transcript" aria-label="编排执行过程">
     <div className="ent-transcript-toolbar">
       <div className="ent-transcript-running" aria-label="正在执行的节点">
-        {active.length ? <><LoaderCircle size={14} className="ent-spin" aria-hidden /><span>正在执行</span>
+        {work.scheduledOrigin && !work.isActive ? <span>{scheduledStatus ?? '正在核对执行结果'}</span>
+          : active.length ? <><LoaderCircle size={14} className="ent-spin" aria-hidden /><span>正在执行</span>
           {active.map(node => <button type="button" key={node.step.id} onClick={() => jump(node.step.id)}>{node.step.title}</button>)}</>
-          : <span>{work.status === 'completed' ? '全部工作已完成' : work.status === 'paused' ? '工作已终止' : work.status === 'failed' ? '工作已中断' : '等待执行'}</span>}
+          : <span>{scheduledStatus ?? (work.status === 'completed' ? '全部工作已完成' : work.status === 'paused' ? '工作已终止' : work.status === 'failed' ? '工作已中断' : work.isActive ? '正在完成本次执行' : '等待执行')}</span>}
       </div>
+      {onScheduledHistory && !work.isActive && <button type="button" className="ent-btn sm ghost" onClick={onScheduledHistory}>查看执行记录</button>}
       {work.isActive ? <button type="button" className="ent-btn sm ghost" disabled={busy} onClick={() => { void onStop(work.id, '用户终止了这项工作') }}><StopCircle size={14} aria-hidden />终止</button> : null}
     </div>
     <div className="ent-transcript-body" ref={body} onScroll={() => {
@@ -58,10 +62,11 @@ export function ArrangementTranscriptView({ work, employees, nodes, loading = fa
     }}>
       <div className="ent-transcript-content">
         <section className="ent-transcript-goal" aria-label="最初的用户任务"><strong>你</strong><p>{work.goal}</p></section>
+        {work.scheduledOrigin && work.stopReason && <p className="ent-transcript-notice" role="status">{work.stopReason}</p>}
         {error ? <div className="ent-transcript-notice" role="alert">{error}<button type="button" className="ent-btn sm" onClick={onReload}><RotateCcw size={13} aria-hidden />重新读取</button></div> : null}
         {loading ? <p className="ent-hint" role="status">正在读取执行过程…</p> : null}
         {nodes.map(node => <NodeSection key={node.step.id} node={node} employee={employees.find(employee => employee.id === node.step.employeeId)}
-          taskId={work.id} files={work.deliverables.filter(file => file.nodeId === node.step.id)} onResults={onResults} onExportDiagnostic={onExportDiagnostic} />)}
+          scheduled={!!work.scheduledOrigin} taskId={work.id} files={work.deliverables.filter(file => file.nodeId === node.step.id)} onResults={onResults} onExportDiagnostic={onExportDiagnostic} />)}
         {!nodes.length && !loading ? <p className="ent-hint">尚未生成执行节点。</p> : null}
       </div>
     </div>
@@ -72,11 +77,12 @@ export function ArrangementTranscriptView({ work, employees, nodes, loading = fa
   </section>
 }
 
-function NodeSection({ node, employee, files, onResults, taskId, onExportDiagnostic }: {
+function NodeSection({ node, employee, files, onResults, taskId, onExportDiagnostic, scheduled }: {
   node: NodeTranscript; employee?: SiliconEmployee; files: WorkItem['deliverables']; onResults: () => void
-  taskId: string; onExportDiagnostic?: ElectronAPI['exportWorkDiagnostic']
+  taskId: string; scheduled: boolean; onExportDiagnostic?: ElectronAPI['exportWorkDiagnostic']
 }) {
   const { step, entries } = node
+  const completion = scheduled ? '此工作节点已结束。' : '我已经完成工作。'
   const active = step.state === 'running' || step.state === 'waiting-user'
   const phase = active ? 'active' : step.state
   const [choice, setChoice] = useState<{ state: string; open: boolean } | null>(null)
@@ -95,7 +101,7 @@ function NodeSection({ node, employee, files, onResults, taskId, onExportDiagnos
       <span className="ent-transcript-node-name"><strong>{step.title}</strong><small>{step.employeeName}</small></span>
       <StepStateChip value={step.state} />
     </button>
-    {!open && step.state === 'done' ? <p className="ent-transcript-collapsed">我已经完成工作。{files.length ? ` · ${files.length} 个产物` : ''}</p> : null}
+    {!open && step.state === 'done' ? <p className="ent-transcript-collapsed">{completion}{files.length ? ` · ${files.length} 个产物` : ''}</p> : null}
     {step.state === 'failed' && node.diagnosticRunId && onExportDiagnostic ? <DiagnosticExport key={node.diagnosticRunId}
       input={{ taskId, nodeId: step.id, nodeRunId: node.diagnosticRunId }} onExport={onExportDiagnostic} /> : null}
     <div id={`transcript-node-${step.id}`} ref={body} className="ent-transcript-node-body" hidden={!open} tabIndex={open ? 0 : -1}
@@ -104,7 +110,7 @@ function NodeSection({ node, employee, files, onResults, taskId, onExportDiagnos
         if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
       }}>
       {entries.map(entry => <Entry key={entry.id} entry={entry} active={active} />)}
-      {step.state === 'done' ? <p className="ent-transcript-completed"><CheckCircle2 size={15} aria-hidden />我已经完成工作。</p>
+      {step.state === 'done' ? <p className="ent-transcript-completed"><CheckCircle2 size={15} aria-hidden />{completion}</p>
         : step.state === 'failed' ? <p className="ent-transcript-failed"><XCircle size={15} aria-hidden />当前节点执行失败，已产生的内容保留。</p>
       : active ? <p className="ent-transcript-waiting" role="status"><LoaderCircle size={13} className="ent-spin" aria-hidden />{step.state === 'waiting-user' ? '等待你的确认' : entries.length ? '正在继续处理任务…' : '正在准备执行…'}</p> : null}
       {files.length ? <button type="button" className="ent-btn sm ghost" onClick={onResults}><FileOutput size={14} aria-hidden />查看 {files.length} 个产物</button> : null}
@@ -120,6 +126,7 @@ function Entry({ entry, active }: { entry: TranscriptEntry; active: boolean }) {
   const state = entry.kind === 'tool' ? entry.state === 'running' && !active ? 'interrupted' : entry.state : undefined
   return <div className={`ent-transcript-operation ${state ?? ''}`}>
     {state === 'failed' ? <XCircle size={14} aria-hidden /> : state === 'completed' ? <CheckCircle2 size={14} aria-hidden /> : <Wrench size={14} aria-hidden />}
-    <span>{entry.text}</span><small>{state === 'running' ? '进行中' : state === 'completed' ? '已完成' : state === 'failed' ? '失败' : state === 'interrupted' ? '已中断' : ''}</small>
+    <span>{entry.text}{entry.toolName ? <code>{entry.toolName}</code> : null}</span>
+    <small>{state === 'running' ? '进行中' : state === 'completed' ? '已完成' : state === 'failed' ? '失败' : state === 'interrupted' ? '已中断' : ''}</small>
   </div>
 }

@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { z } from 'zod'
 import { useFeedback } from './feedback/FeedbackProvider'
-import { approvalBrowserOrigin, isBrowserHandoffRequest, isDetectedBrowserHandoff, isMediaResubmissionRequest, OFFICE_TOOL_NAME, toolApprovalSummarySchema, toolApprovalTimeoutMs } from '../shared/tool-approval'
+import { approvalBrowserOrigin, isBrowserHandoffRequest, isDetectedBrowserHandoff, OFFICE_TOOL_NAME, toolApprovalSummarySchema, toolApprovalTimeoutMs } from '../shared/tool-approval'
 import type { ToolAuthorizationRequest } from '../shared/types'
 import { conversationScheduleApprovalSchema, CREATE_SCHEDULED_TASK_TOOL, formatScheduleReceiptTime } from '../shared/scheduled-creation'
-import { DELETE_SCHEDULED_TASK_TOOL, scheduleManagementApprovalSchema, UPDATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-management'
+import { DELETE_SCHEDULED_TASK_TOOL, scheduleActionApprovalSchema, scheduleManagementApprovalSchema, SCHEDULE_MANAGEMENT_TOOLS, SCHEDULE_READ_TOOLS, UPDATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-management'
 import { RUN_PYTHON_TOOL } from '../shared/python-tool'
 
 type ToolApprovalRequest = Pick<ToolAuthorizationRequest, 'toolName' | 'input' | 'registeredTool' | 'summary' | 'expiresAt'>
@@ -16,10 +16,6 @@ interface Props {
   onReviseScheduleTime?: () => void
 }
 
-const paidQuote = z.object({ mock: z.literal(false), quote: z.object({
-  amount: z.string().regex(/^\d+\.\d{6}$/).refine(value => Number.isFinite(Number(value))), currency: z.literal('CNY'),
-}) })
-const imageQuote = z.object({ quote: z.object({ amount: z.string().regex(/^\d+(?:\.\d+)?$/).refine(value => Number.isFinite(Number(value))), currency: z.string().min(1).max(20) }) })
 const mediaSeconds = z.number().min(0).max(86400)
 const mediaOverlay = { name: z.string().max(400), position: z.enum(['top-left', 'top-right', 'bottom-left', 'bottom-right']), size: z.number().min(0.1).max(0.5) }
 const mediaPlan = z.object({
@@ -63,10 +59,7 @@ const messages: Readonly<Record<string, string>> = {
   [RUN_PYTHON_TOOL]: '允许运行本次生成的 Python 代码？文件访问仍遵循本次任务权限。',
   write: '允许员工创建或覆盖文件？覆盖后原有内容可能无法恢复。',
   edit: '允许员工修改文件内容？',
-  media_generate_image: '允许员工生成图片？本次操作可能产生费用。',
   media_cancel_job: '允许请求平台取消图片任务？取消结果以平台返回为准，不代表退款。',
-  video_generate: '允许员工按已确认的要求生成视频？',
-  video_from_image: '允许员工上传所选参考图或生成视频？',
   local_media_process: '允许在本机处理所选素材并保存新文件？原素材不会被覆盖。',
   mcp__playwright__browser_navigate: '允许打开指定网页？',
   mcp__playwright__browser_navigate_back: '允许返回当前标签页的上一页？',
@@ -162,22 +155,13 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
       }
       else onDeny()
     }
-    const quote = paidQuote.safeParse(request.input)
-    const isVideo = request.toolName === 'video_generate' || request.toolName === 'video_from_image'
-    const raw = z.object({ mock: z.boolean().optional() }).safeParse(request.input)
     const input = z.record(z.string(), z.unknown()).safeParse(request.input)
     const browserHandoff = isBrowserHandoffRequest(request)
     const detectedHandoff = isDetectedBrowserHandoff(request)
-    const resubmission = isMediaResubmissionRequest(request)
-    const transmission = (isVideo || request.toolName === 'media_generate_image') && input.success && input.data.operation === 'upload-references'
-    if (!Number.isFinite(deadline) || remaining <= 0 || isVideo && !transmission && !resubmission && (!raw.success || raw.data.mock !== true && !quote.success)) {
+    // Generation is authorized and quoted by the host. Stale renderer requests cannot authorize it.
+    const hostOnly = ['media_generate_image', 'video_generate', 'video_from_image'].includes(request.toolName)
+    if (!Number.isFinite(deadline) || remaining <= 0 || hostOnly) {
       if (!detectedHandoff) settle(false)
-      return
-    }
-    const price = request.toolName === 'media_generate_image' ? imageQuote.safeParse(request.input) : null
-    // The trusted host validates media quotes and spending before asking the renderer to proceed.
-    if (!transmission && !resubmission && (isVideo || price?.success)) {
-      settle(true)
       return
     }
     const toolName = request.toolName
@@ -208,7 +192,10 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
     }
     const updatingSchedule = toolName === UPDATE_SCHEDULED_TASK_TOOL
     const deletingSchedule = toolName === DELETE_SCHEDULED_TASK_TOOL
-    if (updatingSchedule || deletingSchedule) {
+    const scheduleAction = SCHEDULE_MANAGEMENT_TOOLS.some(name => name === toolName) && !SCHEDULE_READ_TOOLS.has(toolName)
+      ? scheduleActionApprovalSchema.safeParse(request.input) : undefined
+    if (scheduleAction?.success) message = scheduleAction.data.message
+    else if (updatingSchedule || deletingSchedule) {
       const parsed = scheduleManagementApprovalSchema.safeParse(request.input)
       if (!parsed.success || (updatingSchedule && !parsed.data.newTitle && !parsed.data.newTime && !parsed.data.newGoal)) { settle(false); return }
       const { title, nextRunAt, timezone, enabled, newTitle, newTime, newGoal } = parsed.data
@@ -224,7 +211,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
         if (!enabled) message += '\n此任务当前未启用，修改不会启用它。'
         if (newGoal) message += `\n\n确认后将根据以下完整工作目标重新生成执行计划；生成失败则保留原任务。\n\n新工作目标：\n${newGoal}`
       }
-    }
+    } else if (scheduleAction) { settle(false); return }
     if (request.toolName === 'local_media_process' && input.success) {
       const labels = { trim: '裁剪', join: '拼接', compose: '合成视频', extract_audio: '提取音频', transcode: '转码',
         batch_transcode: '批量转码', frame: '提取视频帧', thumbnail_grid: '生成缩略图网格', gif: '导出 GIF', subtitle: '识别字幕' }
@@ -252,11 +239,6 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
     message = summaryMessage ?? message
     if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。员工将在原页面继续操作。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
     if (detectedHandoff) message = '请在浏览器中完成登录或验证。检测到完成后会自动继续；若未自动继续，可点击“已完成，继续”。本轮读取接管后同一标签页、同一站点的网页快照无需再确认，不包括保存文件或提交操作。请在 3 分钟内完成。'
-    if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
-    if (resubmission) message = isVideo
-      ? '原任务是否受理及计费尚未确认，可能仍在生成。仍要创建新的视频任务？新旧任务可能分别生成并计费，原任务状态仍会保留。'
-      : `有 ${input.success ? Number(input.data.unconfirmedJobCount) : 1} 个原图片任务的提交结果尚未确认。仍要重新生成这批图片？新旧任务可能分别计费，原任务仍会保留。`
-    if (price?.success) message += ` 本次报价 ${price.data.quote.amount} ${price.data.quote.currency}。`
     if (input.success && ['bash', 'write', 'edit'].includes(request.toolName)) {
       const target = request.toolName === 'bash' ? input.data.command : input.data.path
       if (typeof target === 'string') message += ` ${request.toolName === 'bash' ? '命令' : '文件'}：${target}`
@@ -270,8 +252,8 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
     const sendDingTalk = request.toolName === 'dingtalk_execute' && request.summary?.kind === 'dingtalk-message' && summaryMessage !== undefined
     void feedback.ask({
       key: `approval:${request.requestId ?? request.timestamp ?? deadline}`,
-      message: isVideo && quote.success ? `${message} 本次报价 ¥${quote.data.quote.amount}。` : message,
-      actionLabel: sendDingTalk ? '发送消息' : scheduling ? '创建并启用' : updatingSchedule ? '保存修改' : deletingSchedule ? '删除' : browserHandoff ? '已完成，继续' : resubmission ? '仍然生成' : isVideo && quote.success ? '同意并生成' : '允许',
+      message,
+      actionLabel: sendDingTalk ? '发送消息' : scheduling ? '创建并启用' : scheduleAction?.success ? scheduleAction.data.label : updatingSchedule ? '保存修改' : deletingSchedule ? '删除' : browserHandoff ? '已完成，继续' : '允许',
       ...(scheduling && onReviseScheduleTime ? { alternate: { label: '修改时间', busyLabel: '修改时间', onConfirm: async () => {
         reviseScheduleTime = true
         return { success: true }

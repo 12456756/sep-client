@@ -9,10 +9,11 @@ const pendingByApi = new WeakMap<ElectronAPI, Map<string, Map<string, PendingSch
 const emptySubscribe = () => () => {}
 const initialSnapshot = () => initial
 
-export function useScheduledTasks(api: ElectronAPI = window.electronAPI, scopeKey?: string) {
+export function useScheduledTasks(api: ElectronAPI = window.electronAPI, scopeKey?: string, enabled = true) {
   const [binding, setBinding] = useState<{ api: ElectronAPI; scopeKey?: string; client: ScheduledTaskClient } | null>(null)
-  const client = binding?.api === api && binding.scopeKey === scopeKey ? binding.client : null
+  const client = enabled && binding?.api === api && binding.scopeKey === scopeKey ? binding.client : null
   useEffect(() => {
+    if (!enabled) return
     let pending = new Map<string, PendingScheduledCreation>()
     if (scopeKey) {
       let scopes = pendingByApi.get(api)
@@ -45,7 +46,7 @@ export function useScheduledTasks(api: ElectronAPI = window.electronAPI, scopeKe
       document.removeEventListener('visibilitychange', visible)
       active.dispose()
     }
-  }, [api, scopeKey])
+  }, [api, scopeKey, enabled])
   const state = useSyncExternalStore(client?.subscribe ?? emptySubscribe, client?.getSnapshot ?? initialSnapshot)
   const parsed = async (operation: () => ReturnType<ElectronAPI['createScheduledTask']>) => {
     const result = await operation()

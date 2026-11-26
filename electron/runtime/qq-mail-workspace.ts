@@ -9,6 +9,7 @@ import { QQMailApi, qqMailFailure } from './qq-mail-api'
 import { qqMailRequest, qqMailSchema } from './qq-mail-command'
 
 const recordSchema = z.object({ revision: z.string().uuid(), connectedAt: z.number(), credentials: qqMailCredentialsSchema })
+const recipientRejections = z.object({ rejected: z.array(z.string()).min(1) })
 const key = (scope: TaskOwnerScope): string => JSON.stringify([scope.enterpriseId, scope.memberId])
 interface Attempt { controller: AbortController }
 const reference = `QQ Mail connector, using the connected mailbox's IMAP/SMTP identity.
@@ -110,6 +111,19 @@ export class QQMailWorkspaceRuntime implements ConnectorRuntimePort {
       },
       reference: async path => { if (path !== 'qqmail/SKILL.md') throw new ConnectorInputError('请读取 qqmail/SKILL.md。'); return reference },
       schema: async path => ({ text: qqMailSchema(path), isError: false }),
+      evaluateCommand: args => {
+        try { return !['message.send', 'message.reply'].includes(qqMailRequest(args).method) ? { kind: 'read' } : undefined }
+        catch { return undefined }
+      },
+      scheduledOperation: args => {
+        try {
+          const request = qqMailRequest(args)
+          if (request.method === 'message.send' || request.method === 'message.reply') return {
+            identity: [request.method, request.data],
+            ...(request.method === 'message.send' && request.data.to.length === 1 && !request.data.cc?.length ? { target: request.data.to[0] } : {}),
+          }
+        } catch { /* The connector validates the actual command at execution. */ }
+      },
       execute: async (args, _workspace, source): Promise<ConnectorCommandResult> => {
         const request = qqMailRequest(args)
         let launched = false
@@ -120,7 +134,8 @@ export class QQMailWorkspaceRuntime implements ConnectorRuntimePort {
           launched = true
           const result = await this.api.execute(record.credentials, request, combined)
           if (!valid() || combined.aborted) throw new Error('Account changed')
-          return { text: JSON.stringify(result).replaceAll(record.credentials.authorizationCode, '[redacted]'), isError: false }
+          return { text: JSON.stringify(result).replaceAll(record.credentials.authorizationCode, '[redacted]'),
+            isError: mutating && recipientRejections.safeParse(result).success }
         } catch (error) {
           const failure = qqMailFailure(error)
           if (failure.kind === 'auth' && valid()) {

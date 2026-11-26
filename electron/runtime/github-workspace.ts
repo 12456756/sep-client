@@ -5,7 +5,7 @@ import type { ConnectorStore } from '../data/connector-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { WriteChain } from '../data/write-chain'
 import { ConnectorInputError, type ConnectorBinding, type ConnectorRuntimePort } from '../domain/connectors'
-import { GITHUB_ENDPOINT, gitHubHttpFailure, gitHubMcpFetch, gitHubTools, verifyGitHub } from './github-api'
+import { GITHUB_ENDPOINT, GITHUB_READ_TOOLS, gitHubHttpFailure, gitHubMcpFetch, gitHubTools, verifyGitHub } from './github-api'
 
 const recordSchema = z.object({ revision: z.uuid(), connectedAt: z.number(), credentials: gitHubCredentialsSchema, login: z.string().min(1).max(39).regex(/^[A-Za-z0-9-]+$/), tools: z.array(z.string()).max(32) })
 const key = (scope: TaskOwnerScope): string => JSON.stringify([scope.enterpriseId, scope.memberId])
@@ -83,7 +83,9 @@ export class GitHubWorkspaceRuntime implements ConnectorRuntimePort {
     const request = gitHubMcpFetch(record.credentials, signal, this.options.request ?? fetch)
     return {
       revision: record.revision,
-      servers: [{ name: 'github', transport: { type: 'streamable-http', url: GITHUB_ENDPOINT }, enabledTools: gitHubTools(record.credentials.readOnly).filter(name => record.tools.includes(name)) }],
+      servers: [{ name: 'github', transport: { type: 'streamable-http', url: GITHUB_ENDPOINT },
+        enabledTools: gitHubTools(record.credentials.readOnly).filter(name => record.tools.includes(name)) }],
+      remoteReadOnlyTools: { github: GITHUB_READ_TOOLS },
       fetch: async (input, init) => {
         if (!valid()) throw new ConnectorInputError('GitHub 连接不可用，请重新连接。')
         const response = await request(input, init)

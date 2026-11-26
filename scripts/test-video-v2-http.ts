@@ -39,11 +39,11 @@ export async function runVideoV2Http(env: NodeJS.ProcessEnv = process.env): Prom
   const fromImage = operation === 'image-to-video'
   const png = Buffer.from(SEP_MEDIA_MOCK_PNG_BASE64, 'base64')
   const pngSha256 = createHash('sha256').update(png).digest('hex')
-  let referenceApproved = false, referenceRead = false, uploadedReferenceId: string | undefined
+  let referenceRead = false, uploadedReferenceId: string | undefined
   const root = await mkdtemp(join(await realpath(tmpdir()), 'sep-video-v2-http-'))
   const nativeFetch = globalThis.fetch
   const counts = { profiles: 0, references: 0, quote: 0, submit: 0, findReceipt: 0, query: 0, content: 0,
-    runtime: 0, approvals: 0, revoke: 0, restore: 0, corruptedDownloads: 0, lostSubmitResponses: 0, opened: 0 }
+    runtime: 0, revoke: 0, restore: 0, corruptedDownloads: 0, lostSubmitResponses: 0, opened: 0 }
   let dropSubmitResponse = true, corruptDownload = true, revision = 0
   const owner = { enterpriseId: 'enterprise-1', memberId: 'member-1' }
   const scope = { ...owner, subscriptionId: 'sub-1' }
@@ -125,32 +125,10 @@ export async function runVideoV2Http(env: NodeJS.ProcessEnv = process.env): Prom
       },
       gateway: actual => { assert.deepEqual(actual, scope); return gateway },
       readReference: async (actual, id, localAssetId) => {
-        assert.ok(fromImage && referenceApproved, 'Local PNG must not be read before upload approval.')
+        assert.ok(fromImage && !referenceRead, 'Only the selected reference should be read once.')
         assert.deepEqual(actual, scope); assert.equal(id, taskId); assert.equal(localAssetId, 'asset-v2-png')
         referenceRead = true
         return { bytes: png, sha256: pngSha256 }
-      },
-      requestApproval: async approval => {
-        counts.approvals++
-        assert.equal(approval.taskId, taskId)
-        assert.equal(approval.subscriptionId, scope.subscriptionId)
-        assert.equal(approval.toolName, fromImage ? 'video_from_image' : 'video_generate')
-        if ((approval.input as { operation?: string }).operation === 'upload-references') {
-          assert.ok(fromImage && !referenceApproved && !referenceRead)
-          assert.equal(counts.references, 0)
-          assert.deepEqual(approval.input, { operation: 'upload-references', referenceCount: 1, mock: false })
-          referenceApproved = true
-          return true
-        }
-        if (fromImage) assert.ok(referenceApproved && referenceRead && uploadedReferenceId)
-        const value = approval.input as { mock: boolean; parameters: unknown; quote: { currency: string; amount: string; expiresAt: number } }
-        assert.equal(value.mock, false)
-        assert.deepEqual(value.parameters, parameters)
-        assert.equal(value.quote.currency, 'CNY')
-        assert.match(value.quote.amount, /^\d+\.\d{6}$/)
-        assert.ok(Number(value.quote.amount) > 0, 'Synthetic paid-mode quote must not masquerade as free mock.')
-        assert.ok(value.quote.expiresAt > Date.now())
-        return true
       },
       openOutput: async (actual, id, jobId, outputId, signal, validate) => {
         signal.throwIfAborted(); validate(); assert.deepEqual(actual, scope); assert.equal(id, taskId)
@@ -180,7 +158,7 @@ export async function runVideoV2Http(env: NodeJS.ProcessEnv = process.env): Prom
     assert.equal(generated.generationStatus, 'SUBMISSION_UNKNOWN')
     const [frozen] = await current.store.listJobs(scope)
     assert.ok(frozen); assert.equal(frozen.executionMode, 'real'); assert.equal(frozen.submission, 'MAYBE_SENT')
-    assert.equal(frozen.quote.currency, 'CNY'); assert.equal(counts.approvals, fromImage ? 2 : 1)
+    assert.equal(frozen.quote.currency, 'CNY'); assert.ok(Number(frozen.quote.amount) > 0)
     assert.equal(frozen.taskId, taskId); assert.equal(frozen.request.operation, operation)
     assert.deepEqual(frozen.request.referenceIds, fromImage ? [uploadedReferenceId] : [])
     await current.host.stopAll()
@@ -260,10 +238,10 @@ export async function runVideoV2Http(env: NodeJS.ProcessEnv = process.env): Prom
     const preview = await current.host.preview(taskId, generated.jobId, metadata.outputId)
     assert.equal(preview.opened, true); assert.equal('bytes' in preview, false)
     assert.equal(counts.content, before.content); assert.equal(counts.query, before.query)
-    assert.equal(counts.references, 1); assert.equal(counts.approvals, fromImage ? 2 : 1)
+    assert.equal(counts.references, 1)
     assert.equal(counts.quote, 1); assert.equal(counts.submit, 1); assert.ok(counts.findReceipt >= 1)
     return { mock: false, realModels: false, realBilling: false, syntheticScope: true, operation,
-      referenceUploadApproved: referenceApproved, sameTaskSaved: true,
+      selectedReferenceRead: referenceRead, sameTaskSaved: true,
       profileId: profile.profileId, configVersion: profile.configVersion, saveStatus: 'SAVED', billingStatus: saved.receipt?.billingStatus,
       sha256: metadata.sha256, byteLength: metadata.byteLength, width: metadata.width, height: metadata.height,
       durationSeconds: metadata.durationSeconds, frameRate: metadata.frameRate,

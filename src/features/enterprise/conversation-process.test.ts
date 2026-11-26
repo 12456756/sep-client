@@ -69,6 +69,25 @@ test('renders a persisted schedule receipt in the correct reply without requirin
   assert.match(html, /查看任务/)
 })
 
+test('timed-out schedule actions are shown only while the corresponding draft remains open', () => {
+  const draft = { id: '11111111-1111-4111-8111-111111111111', revision: 3 }
+  const work = { id: 'task', currentEmployeeName: '员工', messages: [
+    { id: 'u1', role: 'user', content: '昨天的请求', runId: 'run-a', createdAt: 1 },
+    { id: 'u2', role: 'user', content: '今天的回复', runId: 'run-b', createdAt: 2 },
+  ] } as WorkItem
+  const expired: transcript.ConversationRunTranscript = { runId: 'run-a', entries: [],
+    scheduleReceipt: { status: 'needs_confirmation', message: '上次确认已超时，任务未启用，草稿已保留。', draft } }
+  const render = (runs: transcript.ConversationRunTranscript[]) => renderWithFeedback(React.createElement(ConversationMessagesView, {
+    work, employees: [], preparing: false, loading: false, error: null, onReload() {}, runs, onScheduleAction: async () => true,
+  }))
+  assert.match(render([expired]), /重新确认/)
+  assert.match(render([expired]), /修改时间/)
+  assert.match(render([expired]), /放弃草稿/)
+  assert.doesNotMatch(render([expired, { runId: 'run-b', entries: [], scheduleReceipt: {
+    status: 'discarded', message: '已放弃草稿。', draft: { ...draft, revision: 4 },
+  } }]), />重新确认<|>修改时间<|>放弃草稿</)
+})
+
 test('conversation process and every thinking block start folded, with tool names and states visible after expansion', () => {
   const events: TaskExecutionEvent[] = [
     { taskId: 'task', runId: 'run', subscriptionId: 'employee', sequence: 1, type: 'thinking_delta', occurredAt: 1, data: { text: '先检查资料' } },

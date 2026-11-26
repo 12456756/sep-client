@@ -13,6 +13,7 @@ import * as composerConnectors from './composer-connectors'
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant'
 import type { ConversationQueueView } from '../../shared/conversation-queue'
 import * as mediaRetry from '../../shared/media-retry'
+import * as scheduledCreation from '../../shared/scheduled-creation'
 import { AttachmentDropZone } from '../../components/enterprise/attachments/AttachmentDropZone'
 import type { WorkItem } from './types'
 import type { EnterpriseWorkspace } from './useEnterpriseWorkspace'
@@ -41,6 +42,7 @@ const dependencies: Record<string, unknown> = {
   './ConversationEmployeePicker': { ConversationEmployeePicker: ({ label, disabled, employees }: { label: string; disabled: boolean; employees: { id: string }[] }) => React.createElement('button', { 'aria-label': label, disabled, 'data-employees': employees.map(item => item.id).join(',') }) },
   '../../shared/knowledge-selection': { noKnowledgeSelection: () => ({ mode: 'none', knowledgeBaseIds: [] }) },
   '../../shared/media-retry': mediaRetry,
+  '../../shared/scheduled-creation': scheduledCreation,
   '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {}, async prioritize() {} }) },
   './ConversationMessages': { ConversationMessages: empty },
   '../workspace/ContextUsageIndicator': { ContextUsageIndicator: empty },

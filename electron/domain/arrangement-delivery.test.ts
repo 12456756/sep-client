@@ -12,6 +12,23 @@ const submission = { nodeId: node.id, summary: 'Research complete', finalDeliver
 const submissionCorrection = '当前节点尚未通过最终交付校验。请承接已有上下文和工具结果，继续完成尚未完成的任务。\n\n保留并复用已经完成的工作、有效文件和已收集的信息，不要从头重做，不要重复创建已有有效文件或重复收集已有信息；允许按需补写、修改和修复未完成的文件。\n\n以实际工具执行结果和文件状态为准，不要把此前描述的计划当作已经执行。需要操作时实际调用工具，不要只说明接下来要做什么。\n\n如果工作已经完成，只需按要求提交最终 JSON；否则先完成剩余工作，再提交。'
 
 describe('node final delivery protocol', () => {
+  it('accepts actual scheduled filenames without changing directory, format, or deliverable identity', () => {
+    const contract: ArrangementNode = { ...node, deliverables: [{ ...node.deliverables![0]!, path: 'deliverables/report-dd-HH-mm.txt', scheduledFilenameTime: 'scheduled' }] }
+    const path = 'deliverables/report-26-09-05.txt'
+    const reply = (path: string) => JSON.stringify({ ...submission, finalDeliverables: [{ id: 'report', path }] })
+    assert.deepEqual(deliveryPlanIssues([contract]), [])
+    assert.equal(parseDeliverySubmission(contract, reply(path), 'stop', true).ok, true)
+    assert.equal(parseDeliverySubmission(contract, reply(path), 'stop').ok, false)
+    for (const bad of ['other/report-26-09-05.txt', 'deliverables/../report.txt', 'C:\\report.txt', 'deliverables/report.md', 'deliverables/CON.txt']) {
+      assert.equal(parseDeliverySubmission(contract, reply(bad), 'stop', true).ok, false, bad)
+    }
+    const record = { id: 'report', path, format: 'txt', size: 120, sha256: 'a'.repeat(64), nodeRunId: 'run-1', validatedAt: 10 }
+    assert.equal(parseRecordedDeliverySubmission(contract, [record], undefined, true).ok, true)
+    const twoFiles = { ...contract, deliverables: [...contract.deliverables!, { ...contract.deliverables![0]!, id: 'second', path: 'deliverables/second.txt' }] }
+    const duplicate = JSON.stringify({ ...submission, finalDeliverables: [{ id: 'report', path }, { id: 'second', path: 'deliverables\\REPORT-26-09-05.txt' }] })
+    assert.equal(parseDeliverySubmission(twoFiles, duplicate, 'stop', true).ok, false)
+  })
+
   it('retains validation counts beyond five without imposing a correction limit', () => {
     assert.equal(nodeDeliveryProgressSchema.parse({ validationAttempts: 20, issues: [], finalFiles: [] }).validationAttempts, 20)
     assert.doesNotMatch(buildDeliveryCorrection([{ code: 'FILE_MISSING', message: 'missing' }], node), /最多|上限|停止自动修正/)

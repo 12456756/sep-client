@@ -104,6 +104,61 @@ async function fixture() {
 }
 
 describe('background browser and manual window', () => {
+  it('submits a form using the regular scheduled browser tools and does not submit the same click twice', { timeout: 40_000 }, async t => {
+    const origin = 'https://scheduled-form.test'
+    let posts = 0
+    const installed = new WeakSet<object>()
+    const getContext = BrowserModeSession.prototype.getContext
+    t.mock.method(BrowserModeSession.prototype, 'getContext', async function (this: BrowserModeSession) {
+      const context = await getContext.call(this)
+      if (!installed.has(context)) {
+        installed.add(context)
+        await context.route(`${origin}/**`, async route => {
+          if (new URL(route.request().url()).pathname === '/unavailable') return route.abort()
+          if (route.request().method() === 'POST') {
+            posts++
+            assert.equal(route.request().postData(), 'name=Alice')
+            return route.fulfill({ contentType: 'text/plain', body: 'Saved' })
+          }
+          return route.fulfill({ contentType: 'text/html', body: `<form method="POST" onsubmit="event.preventDefault(); fetch(location.href, {method:'POST',body:new URLSearchParams(new FormData(this))}).then(r=>r.text()).then(text=>document.querySelector('output').textContent=text)">
+            <label>Name <input name="name"></label><button>Send</button></form><output></output>` })
+        })
+      }
+      return context
+    })
+    const seen = new Set<string>()
+    let asks = 0
+    const runtime = await createHostMcpRuntime([createPlaywrightMcpServer()], tmpdir(), true, undefined, async () => { asks++; return false },
+      undefined, undefined, undefined, { issue: async () => undefined, submit: async (tool, operation, _signal, invoke) => {
+        const key = JSON.stringify([tool, operation.identity])
+        if (seen.has(key)) return { text: 'Duplicate', isError: false }
+        seen.add(key)
+        return invoke()
+      } })
+    try {
+      const call = (name: string, input: Record<string, unknown>) => runtime.tools.find(tool => tool.name === `mcp__playwright__${name}`)!.execute(name, input, undefined)
+      const page = await call('browser_navigate', { url: `${origin}/intake` })
+      assert.equal(page.details.isError, false, page.content[0].text)
+      const snapshot = (await call('browser_snapshot', {})).content[0].text
+      const name = /textbox "Name" \[ref=(e\d+)\]/.exec(snapshot)?.[1]
+      const send = /button "Send" \[ref=(e\d+)\]/.exec(snapshot)?.[1]
+      assert.ok(name && send, snapshot)
+      assert.equal((await call('browser_fill_form', { fields: [{ name: 'Name', type: 'textbox', target: name, value: 'Alice' }] })).details.isError, false)
+      const click = await call('browser_click', { target: send })
+      assert.equal(click.details.isError, false, click.content[0].text)
+      assert.equal(click.details.scheduledReadOnly, undefined)
+      const saved = await call('browser_wait_for', { text: 'Saved' })
+      assert.equal(saved.details.isError, false, saved.content[0].text)
+      assert.match((await call('browser_click', { target: send })).content[0].text, /Duplicate/)
+      assert.equal(posts, 1)
+      assert.equal(asks, 0)
+      const failedRead = await call('browser_navigate', { url: `${origin}/unavailable` })
+      assert.equal(failedRead.details.isError, true)
+      assert.equal(failedRead.details.scheduledReadOnly, true)
+      assert.equal(seen.size, 1)
+    } finally { await runtime.dispose() }
+  })
+
   it('skips a duplicate navigation on the same background tab but allows reopening after leaving', { timeout: 40_000 }, async () => {
     const http = await fixture()
     let runtime: McpRuntime | undefined

@@ -304,6 +304,38 @@ test('denied, stale, and unclear conversation requests cannot enable a schedule'
   }
 })
 
+test('legacy cancellation is reissued as a new draft only from verified same-conversation user text', async () => {
+  const h = harness()
+  const signal = new AbortController().signal, receivedAt = Date.parse('2026-10-21T08:00:00Z')
+  const retry = { ...request, requestId: '22222222-2222-4222-8222-222222222222', message: '重新发起确认，并把时间改为14:13' }
+  const review = { signal, receivedAt, conversationId: 'chat', continuation: 'review' as const }
+  try {
+    const old = await h.creation.submitConversation(request, { signal, receivedAt, approve: async () => false })
+    assert.equal(old.status, 'cancelled')
+    const previous = structuredClone(h.data.creations![0])
+    const forbidden = async () => assert.fail('unverified history must not request approval')
+    assert.equal((await h.creation.submitConversation(retry, { ...review, approve: forbidden })).status, 'blocked')
+    assert.equal((await h.creation.submitConversation(retry, { ...review, approve: forbidden,
+      legacySources: new Map([[request.requestId, `> ${request.message}`]]) })).status, 'blocked')
+    h.setInterpret(async input => {
+      assert.deepEqual(input.messages.map(item => item.content), [request.message])
+      return interpretation
+    })
+    const next = await h.creation.submitConversation(retry, { ...review, legacySources: new Map([[request.requestId, request.message]]),
+      approve: async input => { assert.equal(input.recurrence?.frequency === 'cron' && input.recurrence.expression, '13 14 * * *'); return 'timeout' } })
+    assert.equal(next.status, 'needs_confirmation')
+    assert.deepEqual(h.data.creations![0], previous)
+    assert.equal(h.data.creations![1].reissuedFrom, previous.id)
+    assert.notEqual(next.draft.id, previous.id)
+    const action = { kind: 'discard' as const, draft: next.draft }
+    const discard = { ...retry, requestId: '33333333-3333-4333-8333-333333333333', message: '放弃定时草稿' }
+    assert.equal((await h.creation.submitConversation(discard, { signal, receivedAt, conversationId: 'other', draftAction: action, approve: forbidden })).status, 'blocked')
+    assert.equal((await h.creation.submitConversation(discard, { signal, receivedAt, conversationId: 'chat', draftAction: action, approve: forbidden })).status, 'discarded')
+    assert.equal(await h.creation.hasConversationDrafts('chat'), false)
+    assert.deepEqual(h.data.definitions, [])
+  } finally { h.stop() }
+})
+
 test('clarification continues the same persisted creation and automatic mode reuses arrangement planning', async () => {
   const h = harness()
   try {

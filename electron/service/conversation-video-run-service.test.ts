@@ -38,7 +38,7 @@ async function setup(scenario: MockVideoScenario = 'success', waitBudgetMs?: num
         sha256: createHash('sha256').update(bytes).digest('hex'), width: 1, height: 1, expiresAt: new Date(Date.now() + 60_000).toISOString() }),
     }),
     readReference: async () => { const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2S5cAAAAASUVORK5CYII=', 'base64'); return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') } },
-    requestApproval: async () => true, tracker: { floorMs: 1, maxAttempts: 1, budgetMs: 5000 },
+    tracker: { floorMs: 1, maxAttempts: 1, budgetMs: 5000 },
   }
   const ipc = new MockVideoHostService(options)
   const base = new VideoRunService(options, ipc)
@@ -48,7 +48,6 @@ async function setup(scenario: MockVideoScenario = 'success', waitBudgetMs?: num
   const run: Parameters<VideoRunPort['prepareRun']>[0] = {
     taskId: 'task-a', runId: 'run-a', subscriptionId: owner.subscriptionId,
     employee: { subscriptionId: owner.subscriptionId, modelId: 'model-a', gatewayUrl: 'http://unused', video: runtime },
-    requestApproval: async () => true,
   }
   return { root, store, gateway, state, options, base, video, run, ipc }
 }
@@ -96,7 +95,7 @@ test('conversation video has one wait budget across tracker rounds and can resum
   assert.equal(f.gateway.calls.submit, 1)
 })
 
-for (const stopped of [false, true]) test(`conversation confirms a fresh video and keeps later turns usable (old tracking stopped=${stopped})`, { timeout: 10_000 }, async context => {
+for (const stopped of [false, true]) test(`conversation automatically submits an explicitly requested fresh video and keeps later turns usable (old tracking stopped=${stopped})`, { timeout: 10_000 }, async context => {
   const f = await setup()
   const requests: VideoRequest[] = []
   const submit = f.gateway.submit.bind(f.gateway)
@@ -115,18 +114,10 @@ for (const stopped of [false, true]) test(`conversation confirms a fresh video a
   if (stopped) await f.store.updateJob(owner, 'task-a', original.jobId, job => ({ ...job, trackingStatus: 'STOPPED' }))
   f.options.policy = async () => ({ preset: 'full-local', approvalMode: 'auto-approve', allowedTools: [],
     allowedPaths: [], deniedPaths: [], commandPolicy: 'restricted', workspaceDir: '/unused' })
-  let decisions = 0
-  const tools = await f.video.prepareRun({ ...f.run, autoApproveMedia: true, requestApproval: async request => {
-    decisions++
-    assert.deepEqual(request.input, { operation: 'confirm-new-generation', unconfirmedJobCount: 1 })
-    assert.equal(f.gateway.calls.quote, 1)
-    assert.equal(f.gateway.calls.submit, 1)
-    return true
-  } })
+  const tools = await f.video.prepareRun(f.run)
   assert.ok(tools)
   const result = await tools.execute('video_from_image', { ...input, creativeBrief: 'User explicitly requests a new product video' }) as VideoJobView
   await f.video.waitForRun('task-a', f.run.runId)
-  assert.equal(decisions, 1)
   assert.notEqual(result.jobId, original.jobId)
   assert.equal(result.saveStatus, 'SAVED')
   assert.equal(f.gateway.calls.submit, 2)

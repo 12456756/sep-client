@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import { basename, join, matchesGlob, relative, resolve } from 'node:path'
 import { createFindToolDefinition, createGrepToolDefinition, createLsToolDefinition, createReadToolDefinition, defineTool } from '@earendil-works/pi-coding-agent'
-import { externalFileCandidate, isManagedReadException, managedFilePath } from '../../../pi-extension/guard'
+import { externalFileCandidate, isManagedReadException, isMissingScheduledWorkspacePath, managedFilePath } from '../../../pi-extension/guard'
 import type { PiAgentSessionConfig } from './pi-agent-runtime'
 import { decodeToolText } from './pi-text-encoding'
 import { isScheduledSkillAlias, type bindScheduledSkills } from './pi-scheduled-skill-read'
@@ -11,10 +11,9 @@ import { isScheduledSkillAlias, type bindScheduledSkills } from './pi-scheduled-
 export function managedReadTools(config: PiAgentSessionConfig, resolveSkill?: ReturnType<typeof bindScheduledSkills>['resolve']) {
   const cwd = config.workspaceDir
   const policy = config.toolPolicy!
-  function checked(input: string, fileException = false, selected = false) {
-    const path = managedFilePath(input, selected ? { ...policy, fileAccess: 'local' } : policy)
+  function checked(input: string) {
+    const path = managedFilePath(input, policy)
     if (path) return path
-    if (fileException && isManagedReadException(input, policy)) return resolve(cwd, input)
     throw new Error('File access denied by task policy.')
   }
   async function contents(path: string, limit: number, requireCanonical = false) {
@@ -81,10 +80,18 @@ export function managedReadTools(config: PiAgentSessionConfig, resolveSkill?: Re
     const approved = outside ? await config.authorizeTool({ toolName: 'file_select_original', input: { path: outside } }) : false
     if (outside && !approved) throw new Error('The original file was not selected.')
     signal?.throwIfAborted()
-    const path = checked(input.path, exception, approved)
+    const readPolicy = approved ? { ...policy, fileAccess: 'local' as const } : policy
+    const checkedRead = () => {
+      const path = managedFilePath(input.path, readPolicy)
+      if (path) return path
+      if (exception && isManagedReadException(input.path, policy)) return resolve(cwd, input.path)
+      if (isMissingScheduledWorkspacePath(input.path, policy)) throw new Error('File not found in the task workspace.')
+      throw new Error('File access denied by task policy.')
+    }
+    const path = checkedRead()
     const tool = createReadToolDefinition(cwd, { operations: {
-      access: async () => { checked(input.path, exception, approved) },
-      readFile: async () => contents(checked(input.path, exception, approved), 24 * 1024 * 1024),
+      access: async () => { checkedRead() },
+      readFile: async () => contents(checkedRead(), 24 * 1024 * 1024),
     } })
     return tool.execute(id, { ...input, path }, signal, onUpdate, ctx)
   } }), defineTool(createLsToolDefinition(cwd, { operations: {

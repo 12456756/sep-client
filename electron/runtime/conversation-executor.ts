@@ -50,10 +50,10 @@ import { withTimeout } from '../common/with-timeout'
 import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
-import { bindConversationSchedule, conversationScheduleContext, conversationScheduleDrafts, conversationScheduleReceipt, isConversationScheduleTimeReply, precedingConversationUser, type SubmitConversationSchedule } from './conversation-schedule'
-import { bindConversationScheduleManagement } from './conversation-schedule-management'
-import type { ScheduledTaskService } from '../service/scheduled-task-service'
-import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL, REVISE_CONVERSATION_SCHEDULE_TIME } from '../../src/shared/scheduled-creation'
+import { bindConversationSchedule, conversationScheduleContext, conversationScheduleDrafts, conversationScheduleReceipt, isConversationScheduleTimeReply, legacyConversationScheduleSources, precedingConversationUser, type SubmitConversationSchedule } from './conversation-schedule'
+import { conversationScheduleRetry } from '../domain/scheduled-creation'
+import { bindConversationScheduleManagement, type ScheduleManagementServices } from './conversation-schedule-management'
+import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL, REVISE_CONVERSATION_SCHEDULE_TIME, type ConversationScheduleDraftAction } from '../../src/shared/scheduled-creation'
 import { redactText, redactValue } from '../common/redact'
 import { LOCAL_MEDIA_TOOL } from '../domain/local-media-tools'
 import type { LocalMediaRuntime } from './local-media-runtime'
@@ -101,7 +101,10 @@ export interface ConversationExecutorOptions {
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   submitConversationSchedule?: SubmitConversationSchedule
-  scheduledTaskManagement?: Pick<ScheduledTaskService, 'list' | 'updateConversationSchedule' | 'pause'>
+  hasConversationScheduleDrafts?: (taskId: string, legacySources?: ReadonlyMap<string, string>) => Promise<boolean>
+  scheduledTaskManagement?: ScheduleManagementServices['service']
+  scheduledCreationManagement?: ScheduleManagementServices['creations']
+  selectScheduledOutputDirectory?: ScheduleManagementServices['selectOutputDirectory']
 }
 
 export class ConversationExecutor {
@@ -119,7 +122,7 @@ export class ConversationExecutor {
   async continue(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number; scheduleDraftAction?: ConversationScheduleDraftAction } = {},
   ): Promise<void> {
     await this.continueAs(taskId, prompt, undefined, recovery)
   }
@@ -292,7 +295,6 @@ export class ConversationExecutor {
       })
       const rawVideoTools = await this.options.video?.prepareRun({
         taskId, runId: runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
-        requestApproval: request => this.options.approvals.request(request),
       })
       if (active.control !== 'none') {
         // stopTask may have won before prepareRun published its tracking state.
@@ -317,9 +319,11 @@ export class ConversationExecutor {
       const runStore = this.options.taskRunStore
       const workDir = task.workDir
       const canManageSchedules = scope && queued.conversation && !task.scheduledOrigin &&
-        (!queued.arrangement || queued.arrangement.mode === 'conversation') && toolPolicy?.preset !== 'read-only'
-      const canSchedule = canManageSchedules && submitSchedule && workDir
+        (!queued.arrangement || queued.arrangement.mode === 'conversation')
+      const readOnlySchedules = toolPolicy?.preset === 'read-only'
+      const canSchedule = canManageSchedules && !readOnlySchedules && submitSchedule && workDir
       const clockReply = !queued.attachmentRefs?.length && isConversationScheduleTimeReply(queued.prompt)
+      const retrySchedule = !queued.attachmentRefs?.length && !!conversationScheduleRetry(queued.prompt)
       const management = this.options.scheduledTaskManagement
       const messages = canManageSchedules && (canSchedule || management) && runStore && queued.messageId ? await this.conversationStore(scope, taskId).listMessages() : []
       const previousUser = precedingConversationUser(taskId, runId, messages)
@@ -331,12 +335,21 @@ export class ConversationExecutor {
       const previousSchedule = scheduleTimeline && previousUser && (clockReply || previousWasClock)
         ? await conversationScheduleReceipt(previousUser, scheduleTimeline) : undefined
       const draft = clockReply && previousSchedule?.status === 'needs_input' ? previousSchedule.draft : undefined
+      const explicitClockCorrection = /^(?:改成|改为|调整为|调整到|提前到|推迟到|设为)/u.test(queued.prompt.trim())
+      const legacySources = retrySchedule || queued.scheduleDraftAction ? legacyConversationScheduleSources(taskId, runId, messages) : undefined
+      const canRetrySchedule = canSchedule && retrySchedule && (await this.options.hasConversationScheduleDrafts?.(taskId, legacySources) ?? true)
+      const scheduleContinuation = canRetrySchedule ? 'review' : canSchedule && clockReply &&
+        (explicitClockCorrection || previousSchedule?.status === 'needs_input' || previousSchedule?.status === 'needs_confirmation') &&
+        await this.options.hasConversationScheduleDrafts?.(taskId) ? 'clock' : undefined
       const isCurrentScheduleTurn = () => {
         const current = this.options.taskManager.getCurrentUserScope()
         return !!active && active.control === 'none' && this.options.workers.isCurrent(active) && !!scope && scope.enterpriseId === current?.enterpriseId && scope.memberId === current.memberId
       }
       const conversationScheduleManagement = canManageSchedules && management ? bindConversationScheduleManagement({
         service: management, signal: mediaSignal, isCurrent: isCurrentScheduleTurn,
+        creations: this.options.scheduledCreationManagement, selectOutputDirectory: this.options.selectScheduledOutputDirectory,
+        readOnly: readOnlySchedules, context: { key: `${taskId}:${queued.messageId ?? runId}`, modelId: employee.modelId,
+          subscriptionId: employee.subscriptionId, workDir: workDir ?? undefined },
         conversationIds: async () => {
           if (!scheduleTimeline) return new Set<string>()
           const users = messages.filter(message => message.taskId === taskId && message.role === 'user')
@@ -348,20 +361,28 @@ export class ConversationExecutor {
           toolName, registeredTool: true, input: { ...input, title: redactText(input.title),
             ...(input.newTitle === undefined ? {} : { newTitle: redactText(input.newTitle) }),
             ...(input.newGoal === undefined ? {} : { newGoal: redactText(input.newGoal, Infinity) }) } })).approved,
+        approveAction: async (toolName, input) => (await this.options.approvals.requestDecision({ taskId, runId, subscriptionId: queued.subscriptionId,
+          toolName, registeredTool: true, input })).approved,
       }) : undefined
       const conversationSchedule = canSchedule
         ? bindConversationSchedule({
           submit: submitSchedule, taskId, messageId: queued.messageId ? `message:${queued.messageId}` : 'initial', userMessage: queued.prompt,
           parserSubscriptionId: employee.subscriptionId,
           receivedAt: queued.messageReceivedAt ?? (queued.messageId ? startedAt : task.createdAt), modelId: employee.modelId, workDir, signal: mediaSignal, draft,
-          resumeDrafts: scheduleTimeline ? () => conversationScheduleDrafts(taskId, runId, messages, scheduleTimeline) : undefined,
+          continuation: scheduleContinuation, draftAction: queued.scheduleDraftAction,
+          legacySources,
+          resumeDrafts: scheduleTimeline ? async () => await this.options.hasConversationScheduleDrafts?.(taskId) ? []
+            : conversationScheduleDrafts(taskId, runId, messages, scheduleTimeline) : undefined,
           isCurrent: isCurrentScheduleTurn,
           approve: async input => {
             const decision = await this.options.approvals.requestDecision({ taskId, runId, subscriptionId: queued.subscriptionId, toolName: CREATE_SCHEDULED_TASK_TOOL,
               input: redactValue({ title: input.name, goal: input.goal, timezone: input.timezone, firstRunAt: input.scheduledAt,
                 executor: input.mode === 'general' ? '通用助手' : input.mode === 'auto' ? '多员工编排' : `指定员工：${input.subscriptionId}`,
                 recurrence: input.recurrence?.frequency === 'cron' ? input.recurrence.expression : null }) })
-            return decision.approved || (decision.reason === REVISE_CONVERSATION_SCHEDULE_TIME ? 'revise_time' : false)
+            if (decision.approved) return true
+            if (decision.reason === REVISE_CONVERSATION_SCHEDULE_TIME) return 'revise_time'
+            if (decision.reason === 'timeout') return 'timeout'
+            return decision.reason === 'user_response' || decision.reason === 'user_denied' ? 'dismissed' : 'interrupted'
           },
           receipt: async receipt => {
             await this.options.events.enqueue({ taskId, runId, subscriptionId: queued.subscriptionId, sequence: 0,
@@ -453,7 +474,7 @@ export class ConversationExecutor {
         if (artifactDirectory.status !== 'unsafe') workerPrompt += `\n本会话成果目录相对于工作区是“${artifactDirectory.relativePath}”，可用于查找先前的普通成果，也是其他文件工具的默认交付位置，不是用户上传的原件。`
       }
       if (mediaTools?.names.length || videoTools?.names.length) workerPrompt += `\n\n${CONVERSATION_MEDIA_DELIVERY_PROMPT}`
-      if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
+      if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；图片和视频生成由主进程上传选中的参考图并自动校验报价和权限；其他工具遵守各自的审批规则。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
       workerPrompt += originals.prompt
       if (resolvedAttachments.length && /（本轮附件 \d+）/u.test(queued.prompt)) workerPrompt += `\n\n【本轮附件编号】按此目录解析正文中的本轮附件编号，不使用历史目录的序号：\n${JSON.stringify(resolvedAttachments.map((file, index) => ({ number: index + 1, name: file.displayName, attachmentId: file.attachmentId })))}`
@@ -463,7 +484,7 @@ export class ConversationExecutor {
         ? [{ name: item.displayName, path: item.readPath }] : [])
       if (legacyWordSources.length) workerPrompt += `\n\n【旧版 Word 附件只读路径】\n${JSON.stringify(legacyWordSources)}\n仅当用户明确要求编辑该附件时，通过 Office 工具 import-doc 将对应路径导入工作区中的新 DOCX 副本。导入前需要确认，不修改附件原件；要交付 DOC 时用 export-doc 生成新文件。`
       if (mediaTools?.names.includes('media_generate_image') && this.options.conversationMedia) workerPrompt += '\n\n【图片参考素材】需要修改上传图片或本任务已生成的图片时，先查询 media_get_capabilities({})。referenceSources 将本会话附件名称、attachmentId 或已生成图片 sourceArtifactId 对应到可用参考图 localAssetId。调用 media_generate_image 时指定 operation="edit" 和 localAssetIds=[按用户指定顺序排列的参考图ID]，只传用户选中的图片，不得超过当前能力返回的上限；候选来源不明确时先询问，不默认选择第一张。新建图片使用 operation="generate"、localAssetIds=[]，不得因为有附件就自动编辑，也不得将编辑请求降级为文生图。'
-      if (mediaTools?.names.includes('media_replace_images')) workerPrompt += '\n\n【图片提交未确认】同轮有多张独立图片时，某张提交结果不明，不要重提那张，但继续生成其他图片。“补图”先区分未提交的新图和已有任务；只有用户明确要求重做指定旧图时，才从 unconfirmedJobs 选择对应且可替换的原任务 ID，一次提交整批给 media_replace_images。已拒绝、已处理或不能确认对应关系的原任务，不改用普通生图绕过。'
+      if (mediaTools?.names.includes('media_replace_images')) workerPrompt += '\n\n【图片提交未确认】同轮有多张独立图片时，某张提交结果不明，不要重提那张，但继续生成其他图片。“补图”先区分未提交的新图和已有任务；只有用户明确要求重做指定旧图时，才从 unconfirmedJobs 选择对应且可替换的原任务 ID，一次提交整批给 media_replace_images，由主进程自动校验报价并执行；原任务可能仍受理，新旧可能分别计费。已拒绝、已处理或不能确认对应关系的原任务，不改用普通生图绕过。'
       if (videoTools?.names.includes('video_from_image') && this.options.conversationMedia) workerPrompt += '\n\n【视频参考图片】需要使用上传图片或本任务已生成的图片制作视频时，先查询 video_get_job({})。referenceSources 将本会话附件名称、attachmentId、已生成图片的 sourceArtifactId 与可用参考图 localAssetId 对应起来；使用用户指定的真实图片，不得因为图片以附件上传就改用文生视频。存在多张候选图且来源不明确时先询问，不默认选择第一张。'
       const selection = queued.knowledge ?? queued.arrangement?.knowledge
       let trustedNames: string[] = []
@@ -489,7 +510,11 @@ export class ConversationExecutor {
         return
       }
       diagnosticPhase = 'model-execution'
-      if (draft && conversationSchedule) await conversationSchedule()
+      if ((draft || scheduleContinuation || queued.scheduleDraftAction) && conversationSchedule) await conversationSchedule()
+      else if (queued.scheduleDraftAction) {
+        await this.options.events.enqueue({ taskId, runId, subscriptionId: queued.subscriptionId, sequence: 0,
+          type: CONVERSATION_SCHEDULE_EVENT, occurredAt: Date.now(), data: { status: 'blocked', message: '当前会话不允许继续定时草稿。' } })
+      }
       else await worker.run(workerPrompt)
       await waitForMedia()
       diagnosticPhase = 'run-persistence'
@@ -620,7 +645,7 @@ export class ConversationExecutor {
     taskId: string,
     prompt: string,
     employeeOverride: string | undefined,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number },
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number; scheduleDraftAction?: ConversationScheduleDraftAction },
   ): Promise<void> {
     recovery.signal?.throwIfAborted()
     const scope = this.options.taskManager.getCurrentUserScope()
@@ -697,6 +722,7 @@ export class ConversationExecutor {
       prompt: prompt.trim(),
       messageId: recovery.messageId ?? runId,
       messageReceivedAt: recovery.messageReceivedAt,
+      scheduleDraftAction: recovery.scheduleDraftAction,
       conversation: true,
       signal: recovery.signal,
       arrangement: arrangement ?? undefined,

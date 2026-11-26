@@ -35,6 +35,11 @@ import * as generalAssistant from '../../features/enterprise/general-assistant';
 import * as workSkillModel from '../../features/enterprise/work-skills';
 import { InlineFileApproval, InlineFileApprovals, isInlineFileApproval } from '../../components/enterprise/InlineFileApproval';
 import { ORIGINAL_DOCUMENT_REPLACE_TOOL } from '../../shared/python-tool';
+import { ScheduledOperationResults } from '../../components/enterprise/scheduled/ScheduledOperationResults';
+import * as scheduledTaskModel from '../../features/enterprise/scheduled-task-model';
+import type { ScheduledOccurrence } from '../../shared/scheduled-tasks';
+
+let scheduledRecord: Pick<ScheduledOccurrence, 'id' | 'definitionId' | 'taskId' | 'status' | 'finishedAt' | 'error' | 'operations'> | undefined;
 
 const cardFilename = fileURLToPath(new URL('../../components/workspace/ResultFileCard.tsx', import.meta.url));
 const cardSource = ts.transpileModule(readFileSync(cardFilename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
@@ -61,7 +66,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/WorkPlanDrawer': { WorkPlanDrawer: () => null },
   '../../components/enterprise/WorkTalkDrawer': { WorkConversation: () => null, WorkTalkDrawer: () => null },
   '../../components/enterprise/IconHint': { IconHint: ({ children, label }: { children: React.ReactNode; label: string }) => React.createElement('span', { 'data-hint': label }, children) },
-  '../../components/enterprise/WorkIndicators': { WorkStatusIcon: () => null, WorkTypeTag: () => null },
+  '../../components/enterprise/WorkIndicators': { WorkStatusIcon: ({ work }: { work: WorkItem }) => <span data-work-status={work.status} />, WorkTypeTag: () => null },
   '../../components/enterprise/WorkSkills': { WorkSkills: () => null },
   '../../components/enterprise/InlineFileApproval': { InlineFileApproval: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
@@ -74,6 +79,8 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/attachments/FileMentionEditor': { FileMentionEditor: React.forwardRef<HTMLTextAreaElement, React.ComponentPropsWithoutRef<'textarea'> & { mention: unknown }>(({ mention: _mention, ...props }, ref) => React.createElement('textarea', { ...props, ref })) },
   '../../components/enterprise/attachments/use-text-reference-composer': { useTextReferenceComposer: () => ({ mention: {} }) },
   '../../components/feedback/use-operation-feedback': { useOperationFeedback },
+  '../../features/enterprise/use-scheduled-tasks': { useScheduledTasks: () => ({ data: scheduledRecord ? { occurrences: [scheduledRecord] } : null, error: null, loading: !scheduledRecord }) },
+  '../../features/enterprise/scheduled-task-model': scheduledTaskModel,
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
   '../../features/enterprise/vocabulary': vocabulary,
@@ -101,6 +108,29 @@ const work: WorkItem = {
   sharedContext: { goal: '制作商品图片', confirmedInputs: [], previousResults: [], userNotes: [] },
   stopReason: null, workDir: null,
 };
+
+it('shows scheduled exceptions before collapsed successes without inventing missing historical details', () => {
+  const previousReact = Reflect.get(globalThis, 'React');
+  Object.defineProperty(globalThis, 'React', { configurable: true, value: React });
+  try {
+    const genericSuccesses: NonNullable<ScheduledOccurrence['operations']> = [
+      { key: '4'.repeat(64), tool: 'dingtalk_execute', status: 'succeeded' },
+      { key: '5'.repeat(64), tool: 'qqmail_execute', status: 'succeeded' },
+    ];
+    assert.equal(renderToStaticMarkup(<ScheduledOperationResults run={{ status: 'completed', operations: genericSuccesses }} />), '');
+    const html = renderToStaticMarkup(<ScheduledOperationResults run={{ status: 'failed', operations: [...genericSuccesses,
+      { key: '1'.repeat(64), tool: 'dingtalk_execute', status: 'succeeded', dingTalkAction: 'aitable field list' },
+      { key: '2'.repeat(64), tool: 'dingtalk_execute', status: 'failed', dingTalkAction: 'aitable record group-stats', reason: 'resource-not-found' },
+      { key: '3'.repeat(64), tool: 'dingtalk_execute', status: 'failed', reason: 'platform-rejected' },
+      { key: '6'.repeat(64), tool: 'scheduled_file_publish', status: 'succeeded', target: '销售报告.md' },
+    ] }} />);
+    assert.match(html, /<li value="4"><strong>钉钉 · 按组统计记录.*钉钉未找到目标资源/);
+    assert.match(html, /<li value="5">.*未记录具体钉钉动作.*未记录更具体的原因/);
+    assert.match(html, /<details class="ent-sch-operation-successes"><summary>成功操作（2 项）<\/summary>.*<li value="3"><strong>钉钉 · 列出字段.*<li value="6">.*销售报告\.md.*已交付/);
+    assert.doesNotMatch(html, /<li value="[12]">/);
+    assert.ok(html.indexOf('按组统计记录') < html.indexOf('成功操作'));
+  } finally { Object.defineProperty(globalThis, 'React', { configurable: true, value: previousReact }); }
+});
 
 it('shows the document and backup location before allowing an original replacement', () => {
   const toolName = ORIGINAL_DOCUMENT_REPLACE_TOOL;
@@ -591,6 +621,44 @@ describe('WorkDetailPage media entry', () => {
       assert.match(html, /查看产出结果/);
     }
     assert.match(renderDetail(completed), /20261120-1659\.txt/);
+  });
+
+  it('keeps operation details in scheduled history and displays the actual run status in the work header', () => {
+    const scheduledWork: WorkItem = { ...work, kind: 'flow', workType: { state: 'resolved', kind: 'arrangement' },
+      scheduledOrigin: { definitionId: 'schedule', occurrenceId: 'occurrence' } };
+    const record = { id: 'occurrence', definitionId: 'schedule', taskId: work.id, finishedAt: null, error: null };
+    try {
+      scheduledRecord = { ...record, status: 'running', operations: [
+        { key: '0'.repeat(64), tool: 'dingtalk_execute', status: 'succeeded' },
+      ] };
+      const activeHtml = renderDetail({ ...scheduledWork, status: 'running', isActive: true });
+      assert.match(activeHtml, /data-work-status="running"/);
+      assert.doesNotMatch(activeHtml, /操作执行记录|钉钉操作|定时执行异常/);
+      const settlingHtml = renderDetail(scheduledWork);
+      assert.match(settlingHtml, /正在核对执行结果/);
+      assert.doesNotMatch(settlingHtml, /data-work-status="completed"/);
+      scheduledRecord = { ...record, status: 'failed', finishedAt: 5,
+        error: { code: 'SCHEDULED_OUTPUT_NOT_DELIVERED', action: 'blocked', message: '未能交付报表' },
+        operations: [{ key: '0'.repeat(64), tool: 'scheduled_file_publish', target: 'report.txt', status: 'not-executed', reason: 'file-not-published' }] };
+      const html = renderDetail(scheduledWork);
+      assert.match(html, /data-work-status="failed"/);
+      assert.match(html, /aria-label="定时执行异常".*未能交付报表.*aria-label="查看执行记录"/);
+      assert.doesNotMatch(html, /操作执行记录|report\.txt|重试此节点|定时计划已完成|全部工作已完成/);
+      const routes: unknown[] = [];
+      const mounted = mountDetail(scheduledWork, { navigate: route => { routes.push(route); } });
+      const history = mounted.find(element => element.type === 'button' && element.props['aria-label'] === '查看执行记录');
+      (history.props.onClick as () => void)();
+      assert.deepEqual(routes, [{ name: 'scheduled', taskId: 'schedule', runId: 'occurrence', view: 'history' }]);
+      scheduledRecord = { ...record, status: 'completed', finishedAt: 5 };
+      assert.match(renderDetail(scheduledWork), />已完成</);
+    } finally { scheduledRecord = undefined; }
+  });
+
+  it('keeps the failure reason visible while the scheduled record is loading', () => {
+    const html = renderDetail({ ...work, kind: 'flow', workType: { state: 'resolved', kind: 'arrangement' },
+      scheduledOrigin: { definitionId: 'schedule', occurrenceId: 'occurrence' }, status: 'failed', stopReason: '交付物路径不符' });
+    assert.match(html, /data-work-status="failed"/);
+    assert.match(html, /aria-label="定时执行异常".*交付物路径不符/);
   });
 
   it('keeps deletion behind work information and an explicit confirmation', () => {

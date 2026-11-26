@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { attachmentImportLimits, attachmentRefSchema } from '../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../src/shared/knowledge-selection'
 import { conversationQueueInputSchema } from '../../src/shared/conversation-queue'
+import { conversationScheduleDraftActionSchema, conversationScheduleDraftActionText } from '../../src/shared/scheduled-creation'
 import { FEEDBACK_OPERATION_BY_CHANNEL, INVOKE_CHANNELS } from './channels'
 import { AppError } from '../errors/app-error'
 import { toEnvelope } from '../errors/error-mapper'
@@ -23,6 +24,7 @@ const dependencies: Record<string, unknown> = {
   '../../../src/shared/attachment-contracts': { attachmentImportLimits, attachmentRefSchema },
   '../../../src/shared/knowledge-selection': { knowledgeSelectionSchema },
   '../../../src/shared/conversation-queue': { conversationQueueInputSchema },
+  '../../../src/shared/scheduled-creation': { conversationScheduleDraftActionSchema, conversationScheduleDraftActionText },
 }
 const loaded = { exports: {} as { conversationRoutes?: Route[] } }
 compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => {
@@ -56,6 +58,17 @@ test('conversation accepts 128 attachment references and rejects 129', () => {
   const input = { taskId: 'task', prompt: 'Inspect attachments', attachmentRefs: Array.from({ length: 128 }, (_, index) => ({ attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) })) }
   assert.equal(route.schema.safeParse(input).success, true)
   assert.equal(route.schema.safeParse({ ...input, attachmentRefs: [...input.attachmentRefs, input.attachmentRefs[0]] }).success, false)
+})
+
+test('conversation accepts only the exact display text and valid version for a draft action', async () => {
+  const scheduleDraftAction = { kind: 'review', draft: { id: '11111111-1111-4111-8111-111111111111', revision: 3 }, time: '14:13' } as const
+  const input = { taskId: 'chat', prompt: conversationScheduleDraftActionText(scheduleDraftAction), scheduleDraftAction }
+  const context = { conversations: { async continue(value: Record<string, unknown>) {
+    assert.deepEqual(value.scheduleDraftAction, scheduleDraftAction); return { queued: false }
+  } } } as unknown as RequestContext
+  assert.deepEqual(await route.handle(context, route.schema.parse(input) as never), { success: true, queued: false })
+  assert.equal(route.schema.safeParse({ ...input, prompt: 'other request' }).success, false)
+  assert.equal(route.schema.safeParse({ ...input, scheduleDraftAction: { ...scheduleDraftAction, time: '24:15' } }).success, false)
 })
 
 test('conversation queue accepts a validated priority action and rejects unrelated fields', () => {

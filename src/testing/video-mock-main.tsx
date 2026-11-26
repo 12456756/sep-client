@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ToolApprovalDialog } from '../components/ToolApprovalDialog'
+import { FeedbackProvider } from '../components/feedback/FeedbackProvider'
 import { VideoTaskPanel } from '../components/workspace/VideoArtifactsPanel'
 import { VideoCreationForm } from './VideoCreationForm'
 import { MediaCreationForm } from '../components/workspace/MediaArtifactsPanel'
@@ -86,7 +87,7 @@ function VideoMockWindow() {
   </main>
 }
 
-createRoot(document.getElementById('root')!).render(<VideoMockWindow />)
+createRoot(document.getElementById('root')!).render(<FeedbackProvider><VideoMockWindow /></FeedbackProvider>)
 
 function ManualVideoFixture() {
   const [view, setView] = useState<Awaited<ReturnType<typeof window.electronAPI.getTaskVideo>>['data']>(null)

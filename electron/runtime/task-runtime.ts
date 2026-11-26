@@ -83,6 +83,7 @@ function filePathFromInput(input: unknown): string | null {
 }
 
 export interface TaskRuntimeOptions {
+  scheduledOperations?: { bind: import('../domain/connectors').BindScheduledTools }
   beforeArtifact?: ConversationExecutorOptions['beforeArtifact']
   onArtifact?: ConversationExecutorOptions['onArtifact']
   beforeNodeCompletion?: ArrangementExecutionOptions['beforeNodeCompletion']
@@ -115,7 +116,10 @@ export interface TaskRuntimeOptions {
   arrangementDiagnostics?: import('../service/arrangement-diagnostic-service').WorkFailureCapture
   conversationMedia?: ConversationMediaPort
   submitConversationSchedule?: ConversationExecutorOptions['submitConversationSchedule']
+  hasConversationScheduleDrafts?: ConversationExecutorOptions['hasConversationScheduleDrafts']
   scheduledTaskManagement?: ConversationExecutorOptions['scheduledTaskManagement']
+  scheduledCreationManagement?: ConversationExecutorOptions['scheduledCreationManagement']
+  selectScheduledOutputDirectory?: ConversationExecutorOptions['selectScheduledOutputDirectory']
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   findEmployeeReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
@@ -132,6 +136,8 @@ export class TaskRuntime {
   private readonly authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   private readonly authorizeScheduledEmployee: (subscriptionId: string, modelId: string) => Promise<EmployeeRuntimeConfig>
   private readonly authorizeScheduledModel: NonNullable<TaskRuntimeOptions['authorizeScheduledModel']>
+  private readonly scheduledOperations: TaskRuntimeOptions['scheduledOperations']
+  private readonly connectorBinding: TaskRuntimeOptions['connectorBinding']
   private readonly authorizeModel: TaskRuntimeOptions['authorizeModel']
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
@@ -176,6 +182,8 @@ export class TaskRuntime {
     this.onAuthenticationRequired = options.onAuthenticationRequired
     this.onEvent = options.onEvent
     this.beforeNodeCompletion = options.beforeNodeCompletion
+    this.scheduledOperations = options.scheduledOperations
+    this.connectorBinding = options.connectorBinding
     this.resolveEmployee = options.resolveEmployee
     this.authorizeModel = options.authorizeModel
     this.authorizeScheduledModel = options.authorizeScheduledModel ?? (async () => { throw new AppError('MODEL_NOT_ALLOWED') })
@@ -194,7 +202,8 @@ export class TaskRuntime {
         title: context.taskTitle ?? '对话任务', phase: context.tracePhase ?? (context.arrangementNodeId ? `节点：${context.nodeTitle ?? context.arrangementNodeId}` : '对话执行') })
       const owner = this.taskManager.getCurrentUserScope()
       const tracedOptions = { ...workerOptions, context: { ...context, modelTrace,
-        resolveConnectorBinding: owner && options.connectorBinding ? () => options.connectorBinding!(owner) : undefined,
+        resolveConnectorBinding: context.toolPolicy?.unattended ? context.resolveConnectorBinding
+          : owner && options.connectorBinding ? () => options.connectorBinding!(owner) : undefined,
       } }
       return options.createWorker?.(tracedOptions) ?? new PiTaskWorker(tracedOptions)
     }
@@ -270,7 +279,10 @@ export class TaskRuntime {
       video: options.conversationVideo ?? this.video,
       conversationMedia: options.conversationMedia,
       submitConversationSchedule: options.submitConversationSchedule,
+      hasConversationScheduleDrafts: options.hasConversationScheduleDrafts,
       scheduledTaskManagement: options.scheduledTaskManagement,
+      scheduledCreationManagement: options.scheduledCreationManagement,
+      selectScheduledOutputDirectory: options.selectScheduledOutputDirectory,
       workDiagnostics: this.arrangementDiagnostics,
       createModelTrace: this.createModelTrace,
       knowledgeSearch: this.knowledgeSearch,
@@ -339,7 +351,7 @@ export class TaskRuntime {
     }
     const arrangement = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
     if (arrangement?.scheduledOrigin?.execution === 'empty-text') throw new AppError('INVALID_STATE')
-    if (arrangement?.scheduledOrigin?.execution && (task.scheduledOrigin?.occurrenceId !== arrangement.scheduledOrigin.occurrenceId
+    if (arrangement?.scheduledOrigin && (task.scheduledOrigin?.occurrenceId !== arrangement.scheduledOrigin.occurrenceId
       || task.scheduledOrigin.definitionId !== arrangement.scheduledOrigin.definitionId || !options.beforeAdmission)) throw new AppError('INVALID_STATE')
     const taskKnowledge = arrangement?.mode === 'conversation'
       ? options.knowledge ?? arrangement.knowledge
@@ -490,7 +502,8 @@ export class TaskRuntime {
   async continueConversation(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; runId?: string; signal?: AbortSignal; messageId?: string; messageReceivedAt?: number;
+      scheduleDraftAction?: import('../../src/shared/scheduled-creation').ConversationScheduleDraftAction } = {},
   ): Promise<void> {
     this.startLifecycleAudit()
     const knowledge = recovery.knowledge ?? await this.latestKnowledgeSelection(taskId)
@@ -1000,6 +1013,7 @@ export class TaskRuntime {
     const completion = createRunCompletion()
     let parentCreated = false
     let arrangement: ArrangementExecutor | null = null
+    let scheduledOperationDenied = false
     try {
       if (scope && this.taskRunStore) {
         const modelId = queued.employee?.modelId ?? 'local'
@@ -1016,8 +1030,17 @@ export class TaskRuntime {
         })
         parentCreated = true
       }
+      const origin = plan.scheduledOrigin
+      const scheduledTools = scope && origin
+        ? this.scheduledOperations?.bind(scope, origin, taskId, plan.planHash) : undefined
       arrangement = new ArrangementExecutor({
         fullFileAccess: queued.fullFileAccess,
+        scheduledTools,
+        resolveConnectorBinding: scheduledTools && scope && origin?.connectorRevision && this.connectorBinding ? async () => {
+          const binding = await this.connectorBinding!(scope)
+          if (binding && binding.revision === origin.connectorRevision) return binding
+          return undefined
+        } : undefined,
         createModelTrace: this.createModelTrace,
         scope,
         taskManager: this.taskManager,
@@ -1026,8 +1049,15 @@ export class TaskRuntime {
         createWorker: this.createWorker,
         getRefreshToken: this.getRefreshToken,
         onAuthenticationRequired: this.onAuthenticationRequired,
-        onApprovalRequest: (request, detection) => this.approvals.requestTaskTool(request, detection, !!plan.scheduledOrigin),
-        onEvent: event => this.enqueueEvent(event),
+        onApprovalRequest: (request, detection) => {
+          if (!plan.scheduledOrigin) return this.approvals.requestTaskTool(request, detection)
+          scheduledOperationDenied = true
+          return Promise.resolve(false)
+        },
+        onEvent: event => {
+          if (origin && (event.type === 'scheduled_operation_failed' || event.type === 'unknown_tool_blocked')) scheduledOperationDenied = true
+          return this.enqueueEvent(event)
+        },
         beforeNodeCompletion: this.beforeNodeCompletion,
         authorizeEmployee: (subscriptionId, modelId) => plan.scheduledOrigin?.execution === 'general'
           ? this.authorizeScheduledModel(modelId ?? '', subscriptionId)
@@ -1063,7 +1093,16 @@ export class TaskRuntime {
       })
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.reportMonitorStarted({ taskId, runId, startedAt: Date.now() })
-      const result = await arrangement.execute(plan, taskId, runId)
+      let result = await arrangement.execute(plan, taskId, runId)
+      if (origin) {
+        const issue = await scheduledTools?.issue()
+        if (issue?.action === 'review' && (result.status === 'completed' || result.status === 'failed')) {
+          result = { ...result, status: 'interrupted', error: issue.message }
+        } else if (result.status === 'completed') {
+          if (issue) result = { ...result, status: 'failed', error: issue.message }
+          else if (scheduledOperationDenied) result = { ...result, status: 'failed', error: '至少一项定时业务操作未成功，请查看执行记录。' }
+        }
+      }
       await this.events.drain(taskId)
       if (scope && this.arrangementCheckpointStore) await this.saveArrangementCheckpoint(scope, taskId, plan.planHash, null, result.state, runId)
       const arrangementOutput = this.arrangementOutput(plan, result.state)

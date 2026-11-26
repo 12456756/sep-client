@@ -18,6 +18,7 @@ import { BROWSER_SAVE_ASSETS, BrowserPageAssets, createBrowserPageTools } from '
 import { handoffCompletionSchema, prepareHandoffDetection } from './pi-browser-handoff'
 import { BrowserAccessGuard, browserRateLimitMessage } from './pi-browser-access-guard'
 import { isOrdinaryBrowserOrigin, isRoutineBrowserCall } from './pi-playwright-mcp'
+import type { ScheduledToolExecution } from '../../domain/connectors'
 
 export const BROWSER_MODE_TOOL = 'mcp__playwright__browser_set_mode'
 const BROWSER_SNAPSHOT_TOOL = 'mcp__playwright__browser_snapshot'
@@ -75,7 +76,8 @@ export class BrowserModeSession {
   private readonly lifetime = new AbortController()
   private closingResources: Promise<void> = Promise.resolve()
 
-  constructor(private readonly createWindow = createBrowserWindowController, private readonly taskStateDir?: string) {}
+  constructor(private readonly createWindow = createBrowserWindowController, private readonly taskStateDir?: string,
+    private readonly unattended = false) {}
 
   enablePersistent(): void {
     if (!this.taskStateDir || this.disposed || this.lost || (!this.persistent && (this.context || this.opening))) {
@@ -143,8 +145,12 @@ export class BrowserModeSession {
         server = await playwright.chromium.launchServer({ channel, headless: false, host: '127.0.0.1', timeout: 20_000 })
         pid = server.process().pid
         browser = await playwright.chromium.connect(server.wsEndpoint())
-        context = await browser.newContext()
+        context = await browser.newContext(this.unattended ? { serviceWorkers: 'block' } : {})
       }
+      if (this.unattended) await context.route('**/*', async route => {
+        if (ordinaryPage(route.request().url())) await route.continue()
+        else await route.abort('blockedbyclient')
+      })
       if (!pid) throw new Error('Dedicated browser process is unavailable.')
       window = this.createWindow(pid)
       this.accessGuard.observe(context)
@@ -242,6 +248,7 @@ export async function createHostMcpRuntime(
   owner?: SharedBrowserOwner,
   browserArtifactTaskId?: string,
   browserTaskStateDir?: string,
+  scheduledExecution?: ScheduledToolExecution,
 ): Promise<McpRuntime> {
   if (!builtinBrowser) return createMcpRuntime(servers, workspaceDir, fetches)
   if (owner) {
@@ -256,7 +263,7 @@ export async function createHostMcpRuntime(
         dispose: async () => { try { await other.dispose() } finally { await browser.dispose() } } }
     } catch (error) { await browser.dispose(); throw error }
   }
-  const browser = new BrowserModeSession(undefined, browserTaskStateDir)
+  const browser = new BrowserModeSession(undefined, browserTaskStateDir, !!scheduledExecution)
   const server = await createConnection({ browser: { isolated: false }, imageResponses: 'omit',
     snapshot: { mode: 'full' }, codegen: 'none', webmcp: false,
     timeouts: { navigation: 20_000, action: 5_000 },
@@ -336,6 +343,7 @@ export async function createHostMcpRuntime(
       reset: () => linkClaims.clear(),
     }
     const listTabs = active.tools.find(tool => tool.name === 'mcp__playwright__browser_tabs')
+    const inputVersions = new WeakMap<Page, number>()
     const currentPage = async (id: string, signal: AbortSignal) => {
       const tabs = await listTabs?.execute(id, { action: 'list' }, signal)
       const matches = tabs?.content.flatMap(item => [...item.text.matchAll(/^- (\d+): \(current\) (.*)$/gm)])
@@ -452,6 +460,10 @@ export async function createHostMcpRuntime(
         details: { serverName: 'playwright', toolName: name, isError: true, browserSessionClosed: true as const },
       }
       const signal = args[2] ? AbortSignal.any([args[2], lifetime.signal]) : lifetime.signal
+      if (scheduledExecution?.isActive && !await scheduledExecution.isActive(signal)) return {
+        content: [{ type: 'text' as const, text: '本次定时任务已停止，未执行浏览器操作。' }],
+        details: { serverName: 'playwright', toolName: name, isError: true },
+      }
       if (name !== 'browser_close' && await checkRateLimit(signal)) return rateLimited(name)
       signal.throwIfAborted()
       if (claim && (claim !== currentSnapshotGrant() || !inlineSnapshotSchema.safeParse(args[1]).success)) return snapshotScopeChanged()
@@ -469,7 +481,28 @@ export async function createHostMcpRuntime(
           details: { serverName: 'playwright', toolName: name, isError: true } }
       }
       signal.throwIfAborted()
-      const result = link && navigate ? await navigate.execute(args[0], { url: link.href }, signal) : await tool.execute(...args)
+      const input = args[1]
+      const updateInput = name === 'browser_fill_form' || name === 'browser_select_option' || name === 'browser_type' && input.submit !== true
+      const maySubmit = name === 'browser_click' || name === 'browser_press_key' || name === 'browser_handle_dialog' ||
+        name === 'browser_type' && input.submit === true
+      const pageBefore = scheduledExecution && (maySubmit || updateInput) ? await currentPage(args[0], signal).catch(() => undefined) : undefined
+      const invoke = () => link && navigate ? navigate.execute(args[0], { url: link.href }, signal) : tool.execute(args[0], input, signal)
+      let result: McpToolResult
+      if (scheduledExecution && maySubmit && !link) {
+        const identity = [pageBefore?.url(), pageBefore && inputVersions.get(pageBefore) || 0,
+          Object.entries(input).filter(([key]) => key !== 'element').sort(([left], [right]) => left.localeCompare(right))]
+        let raw: McpToolResult | undefined
+        const outcome = await scheduledExecution.submit(tool.name, { identity }, signal, async () => {
+          raw = await invoke()
+          return { text: raw.content.map(item => item.text).join('\n'), isError: raw.details.isError,
+            ...(raw.details.executionUncertain ? { executionUncertain: true } : {}) }
+        })
+        result = raw && !outcome.executionUncertain ? raw : { content: [{ type: 'text', text: outcome.text }], details: {
+          serverName: 'playwright', toolName: name, isError: outcome.isError,
+          ...(outcome.executionUncertain ? { executionUncertain: true as const } : {}),
+        } }
+      } else result = await invoke()
+      if (pageBefore && updateInput && !result.details.isError) inputVersions.set(pageBefore, (inputVersions.get(pageBefore) ?? 0) + 1)
       // A cancelled upstream action may still run. Close this isolated browser before another call.
       if (result.details.executionUncertain) await browser.dispose()
       else if (tool.name === 'mcp__playwright__browser_close' && !result.details.isError) await browser.close()
@@ -483,7 +516,8 @@ export async function createHostMcpRuntime(
         result.content.push({ type: 'text', text: 'Browser visibility is not confirmed hidden. Do not claim the window is hidden; use browser_set_mode when visibility matters.' })
       }
       return result
-    }) : tool.execute(...args) }))
+    }).then(result => scheduledExecution && isRoutineBrowserCall(tool.name, args[1])
+      ? { ...result, details: { ...result.details, scheduledReadOnly: true as const } } : result) : tool.execute(...args) }))
     const pageTools = listTabs ? createBrowserPageTools({
       currentPage: () => currentPage('current-tab', lifetime.signal),
       assets: browser.pageAssets,
@@ -495,6 +529,7 @@ export async function createHostMcpRuntime(
       },
     }) : []
     return { builtinBrowser: true, browserRoutineAccess, browserSnapshotApproval, tools: [...tools, modeTool, ...pageTools], permissions: new Map([...active.permissions,
-      [BROWSER_MODE_TOOL, 'confirm-each' as const], ...pageTools.map(tool => [tool.name, tool.name === BROWSER_SAVE_ASSETS ? 'confirm-each' : 'auto-approve'] as const)]), dispose }
+      [BROWSER_MODE_TOOL, 'confirm-each' as const],
+      ...pageTools.map(tool => [tool.name, tool.name === BROWSER_SAVE_ASSETS ? 'confirm-each' : 'auto-approve'] as const)]), dispose }
   } catch (error) { await dispose(); throw error }
 }

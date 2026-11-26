@@ -36,7 +36,6 @@ async function setup(scenario: MockVideoScenario = 'success') {
   const store = new VideoStore(root), gateway = new MockVideoMediaGateway(scenario)
   const state = { revision: 0, runtime: videoRuntimeSchema.parse(fixture.runtime), granted: true, subscriptionId: scope.subscriptionId,
     policy: undefined as Parameters<VideoRunPort['prepareRun']>[0]['toolPolicy'], uploads: 0, authorizations: 0 }
-  const approvals: Parameters<MockVideoHostOptions['requestApproval']>[0][] = []
   const options: MockVideoHostOptions = {
     mock: true, scope: { currentScope: () => ({ enterpriseId: scope.enterpriseId, memberId: scope.memberId }) }, store,
     authorizationRevision: () => state.revision,
@@ -51,14 +50,13 @@ async function setup(scenario: MockVideoScenario = 'success') {
         sha256: createHash('sha256').update(value).digest('hex'), width: 1, height: 1, expiresAt: new Date(Date.now() + 60_000).toISOString() } },
     } },
     readReference: async (_owner, taskId, id) => { assert.equal(taskId, 'task-a'); assert.equal(id, 'asset-a'); return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') } },
-    requestApproval: async request => { approvals.push(request); return true }, tracker: { floorMs: 1, maxAttempts: 4, budgetMs: 5000 },
+    tracker: { floorMs: 1, maxAttempts: 4, budgetMs: 5000 },
   }
   const runInput: Parameters<VideoRunPort['prepareRun']>[0] = {
     taskId: 'task-a', runId: 'run-a', subscriptionId: scope.subscriptionId,
     employee: { subscriptionId: scope.subscriptionId, modelId: 'model-a', gatewayUrl: 'http://mock', video: state.runtime },
-    requestApproval: options.requestApproval,
   }
-  return { root, options, state, store, gateway, approvals, runInput, service: new VideoRunService(options) }
+  return { root, options, state, store, gateway, runInput, service: new VideoRunService(options) }
 }
 
 test('arrangement automatically retries the original video download without a second quote or submission', async () => {
@@ -188,13 +186,12 @@ test('real SDK handoff and finishRun preserve pending video output saving withou
   }
 })
 
-test('run facade binds two host approvals to real run and awaits original output save', async () => {
+test('run facade binds the job to its run and awaits original output save', async () => {
   const f = await setup(), tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)
   const job = await tools.execute('video_from_image', input()) as { jobId: string }
-  assert.equal(f.approvals.length, 2)
-  assert.ok(f.approvals.every(request => request.runId === 'run-a' && request.subscriptionId === scope.subscriptionId))
   await f.service.waitForRun('task-a', 'run-a')
+  assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.runId, 'run-a')
   assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus, 'SAVED')
   assert.equal(f.gateway.calls.submit, 1)
   assert.equal(f.gateway.calls.quote, 1)
@@ -233,21 +230,10 @@ test('generation tool waits for terminal video status and local save before retu
   }
 })
 
-test('arrangement media mode auto-approves upload and quote without approval requests', async () => {
-  const f = await setup(), tools = await f.service.prepareRun({ ...f.runInput, autoApproveMedia: true })
-  assert.ok(tools)
-  const job = await tools.execute('video_from_image', input()) as { jobId: string }
-  assert.equal(typeof job.jobId, 'string')
-  assert.equal(f.approvals.length, 0)
-  await f.service.waitForRun('task-a', 'run-a')
-  assert.equal(f.gateway.calls.submit, 1)
-  await f.service.finishRun('task-a', 'run-a')
-})
-
-for (const [preset, approvalMode, expected] of [
-  ['full-local', 'auto-approve', 0],
-  ['full-local', 'confirm-each', 2],
-  ['workspace-edit', 'auto-approve', 2],
+for (const [preset, approvalMode] of [
+  ['full-local', 'auto-approve'],
+  ['full-local', 'confirm-each'],
+  ['workspace-edit', 'auto-approve'],
 ] as const) test(`video upload and generation respect ${preset}/${approvalMode}`, async () => {
   const f = await setup()
   const toolPolicy = { preset, approvalMode, allowedTools: ['video_from_image', 'video_generate', 'video_get_job'],
@@ -257,30 +243,8 @@ for (const [preset, approvalMode, expected] of [
   try {
     const result = await tools.execute('video_from_image', input()) as { saveStatus: string }
     assert.equal(result.saveStatus, 'SAVED')
-    assert.equal(f.approvals.length, expected)
     assert.equal(f.state.uploads, 1)
     assert.equal(f.gateway.calls.quote, 1)
-    assert.equal(f.gateway.calls.submit, 1)
-  } finally { await f.service.stopAll() }
-})
-
-test('video checks current approval mode again after quoting', async () => {
-  const f = await setup()
-  const policy = { preset: 'full-local' as const, approvalMode: 'auto-approve' as 'auto-approve' | 'confirm-each',
-    allowedTools: [], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled' as const, workspaceDir: f.root }
-  f.state.policy = policy
-  const quote = f.gateway.quote.bind(f.gateway)
-  f.gateway.quote = async (...args) => {
-    const result = await quote(...args)
-    policy.approvalMode = 'confirm-each'
-    return result
-  }
-  const tools = await f.service.prepareRun({ ...f.runInput, toolPolicy: policy })
-  assert.ok(tools)
-  try {
-    await tools.execute('video_from_image', input())
-    assert.equal(f.approvals.length, 1)
-    assert.ok('quote' in (f.approvals[0]!.input as Record<string, unknown>))
     assert.equal(f.gateway.calls.submit, 1)
   } finally { await f.service.stopAll() }
 })
@@ -294,10 +258,9 @@ test('run resolves the authorized profile while requiring explicit model-supplie
     const stored = await f.store.getJob(scope, 'task-a', job.jobId)
     assert.equal(stored?.request.profileId, f.state.runtime.defaultProfileId)
     assert.deepEqual(stored?.request.parameters, input().parameters)
-    assert.equal(f.approvals.length, 2)
     await f.service.waitForRun('task-a', 'run-a')
     assert.equal(f.gateway.calls.submit, 1)
-    assert.equal(f.state.authorizations, 3, 'Missing-spec preflight and successful quote preparation each refresh runtime, then approval refreshes it again')
+    assert.equal(f.state.authorizations, 3, 'Missing-spec preflight and successful quote preparation each refresh runtime, then the final authorization recheck refreshes it again')
   } finally { await f.service.finishRun('task-a', 'run-a') }
 })
 
@@ -309,7 +272,6 @@ test('unsupported explicit specifications fail before quoting, approval or uploa
     await assert.rejects(tools.execute('video_from_image', { creativeBrief: 'Product video', localAssetIds: ['asset-a'], parameters: { durationSeconds: 'invalid' } }), { code: 'INVALID_ARGUMENT' })
     assert.equal(f.gateway.calls.quote, 0)
     assert.equal(f.state.uploads, 0)
-    assert.equal(f.approvals.length, 0)
   } finally { await f.service.finishRun('task-a', 'run-a') }
 })
 
@@ -677,31 +639,10 @@ test('real rejection keeps its business code at run completion and does not pois
     assert.equal(deniedSubmissions, 1)
     assert.equal(f.gateway.calls.submit, 1)
     assert.equal(f.gateway.calls.quote, 2)
-    assert.equal(f.approvals.length, 4)
   } finally { await service.stopAll() }
 })
 
-test('new run cannot quote or submit again when the user declines the unresolved-submission risk', async context => {
-  const f = await setup('submission-unknown')
-  const original = await new MockVideoHostService(f.options).generate('task-a', input())
-  assert.equal(original.generationStatus, 'SUBMISSION_UNKNOWN')
-  context.mock.method(f.gateway, 'findReceipt', async () => null)
-  const tools = await f.service.prepareRun({ ...f.runInput, autoApproveMedia: true, requestApproval: async request => {
-    f.approvals.push(request)
-    assert.equal((request.input as { operation: string }).operation, 'confirm-new-generation')
-    return false
-  } })
-  assert.ok(tools)
-  try {
-    await assert.rejects(tools.execute('video_from_image', input()), { code: 'PERMISSION_DENIED' })
-    assert.equal(f.gateway.calls.quote, 1)
-    assert.equal(f.gateway.calls.submit, 1)
-    assert.equal(f.state.uploads, 1)
-    assert.equal(f.approvals.length, 3)
-  } finally { await f.service.stopAll() }
-})
-
-test('the same video run cannot turn an uncertain response into another upload, quote or approval', async context => {
+test('the same video run cannot turn an uncertain response into another upload, quote or submission', async context => {
   const f = await setup('submission-unknown')
   context.mock.method(f.gateway, 'findReceipt', async () => null)
   const tools = await f.service.prepareRun(f.runInput)
@@ -712,20 +653,17 @@ test('the same video run cannot turn an uncertain response into another upload, 
     assert.equal(f.gateway.calls.quote, 1)
     assert.equal(f.gateway.calls.submit, 1)
     assert.equal(f.state.uploads, 1)
-    assert.equal(f.approvals.length, 2)
   } finally { await f.service.stopAll() }
 })
 
-test('declining a new generation retains an unknown receipt for explicit original recovery', async context => {
+test('an unknown receipt remains available for original recovery without another submission', async context => {
   const f = await setup('submission-unknown'), ipc = new MockVideoHostService(f.options)
   const original = await ipc.generate('task-a', input())
   await ipc.resume('task-a', original.jobId)
   const receipt = (await f.store.getJob(scope, 'task-a', original.jobId))!.receipt!
   assert.equal(receipt.status, 'SUBMISSION_UNKNOWN')
   const stalled = context.mock.method(f.gateway, 'getReceipt', async () => receipt)
-  const tools = await f.service.prepareRun({ ...f.runInput, requestApproval: async () => false })
   try {
-    await assert.rejects(tools!.execute('video_from_image', input()), { code: 'PERMISSION_DENIED' })
     assert.equal(f.gateway.calls.quote, 1)
     assert.equal(f.gateway.calls.submit, 1)
     assert.equal(f.state.uploads, 1)
@@ -742,7 +680,9 @@ test('actual run facade and IPC host share the in-flight submission gate', async
   let entered!: () => void, release!: () => void
   const waiting = new Promise<void>(resolve => { entered = resolve })
   const gate = new Promise<void>(resolve => { release = resolve })
-  const tools = await f.service.prepareRun({ ...f.runInput, requestApproval: async () => { entered(); await gate; return true } })
+  const quote = f.gateway.quote.bind(f.gateway)
+  f.gateway.quote = async (...args) => { entered(); await gate; return quote(...args) }
+  const tools = await f.service.prepareRun(f.runInput)
   const pending = tools!.execute('video_from_image', input())
   await waiting
   try {
@@ -752,32 +692,37 @@ test('actual run facade and IPC host share the in-flight submission gate', async
   assert.equal(f.gateway.calls.submit, 1)
 })
 
-test('revocation revision after approval prevents upload and submit', async () => {
+test('revocation during the reference read prevents upload and submit', async () => {
   const f = await setup()
-  const tools = await f.service.prepareRun({ ...f.runInput, requestApproval: async () => { f.state.revision++; return true } })
+  const read = f.options.readReference
+  f.options.readReference = async (...args) => { f.state.revision++; return read(...args) }
+  const tools = await f.service.prepareRun(f.runInput)
   await assert.rejects(tools!.execute('video_from_image', input()), { code: 'AUTH_REQUIRED' })
   assert.equal(f.state.uploads, 0)
   assert.equal(f.gateway.calls.submit, 0)
   await f.service.stopAll()
 })
 
-test('policy change after quote blocks submission even after approval', async () => {
+test('policy change after quote blocks submission', async () => {
   const f = await setup()
-  let approvals = 0
-  const tools = await f.service.prepareRun({ ...f.runInput, requestApproval: async () => {
-    if (++approvals === 2) f.state.policy = { preset: 'read-only', allowedTools: [], allowedPaths: [], deniedPaths: [], workspaceDir: '/unused', commandPolicy: 'disabled', approvalMode: 'confirm-each' }
-    return true
-  } })
+  const quote = f.gateway.quote.bind(f.gateway)
+  f.gateway.quote = async (...args) => {
+    const result = await quote(...args)
+    f.state.policy = { preset: 'read-only', allowedTools: [], allowedPaths: [], deniedPaths: [], workspaceDir: '/unused', commandPolicy: 'disabled', approvalMode: 'confirm-each' }
+    return result
+  }
+  const tools = await f.service.prepareRun(f.runInput)
   await assert.rejects(tools!.execute('video_from_image', input()), { code: 'PERMISSION_DENIED' })
   assert.equal(f.gateway.calls.submit, 0)
   await f.service.stopAll()
 })
 
-test('stopTask interrupts an unresponsive approval and invalidates captured facade', async () => {
+test('stopTask interrupts an unresponsive quote and invalidates captured facade', async () => {
   const f = await setup()
   let entered!: () => void
   const waiting = new Promise<void>(resolve => { entered = resolve })
-  const tools = await f.service.prepareRun({ ...f.runInput, requestApproval: async () => { entered(); return new Promise<boolean>(() => undefined) } })
+  f.gateway.quote = async () => { entered(); return new Promise<never>(() => undefined) }
+  const tools = await f.service.prepareRun(f.runInput)
   const rejected = assert.rejects(tools!.execute('video_from_image', input()))
   await waiting
   await f.service.stopTask('task-a')
@@ -806,7 +751,6 @@ test('node employee owns authorization even when task primary subscription diffe
   f.state.subscriptionId = 'task-primary-subscription'
   const tools = await f.service.prepareRun(f.runInput)
   await tools!.execute('video_from_image', input())
-  assert.ok(f.approvals.every(request => request.subscriptionId === scope.subscriptionId))
   f.state.subscriptionId = 'new-task-primary'
   await assert.rejects(f.service.waitForRun('task-a', 'run-a'), { code: 'AUTH_REQUIRED' })
   assert.equal(f.gateway.calls.submit, 1)
@@ -873,7 +817,8 @@ test('runtime stopTask also interrupts direct IPC host generation', async () => 
   const f = await setup()
   let entered!: () => void
   const waiting = new Promise<void>(resolve => { entered = resolve })
-  const ipcHost = new MockVideoHostService({ ...f.options, requestApproval: async () => { entered(); return new Promise<boolean>(() => undefined) } })
+  f.gateway.quote = async () => { entered(); return new Promise<never>(() => undefined) }
+  const ipcHost = new MockVideoHostService(f.options)
   const service = new VideoRunService(f.options, ipcHost)
   const rejected = assert.rejects(ipcHost.generate('task-a', input()))
   await waiting

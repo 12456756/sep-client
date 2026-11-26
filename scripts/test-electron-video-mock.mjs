@@ -51,7 +51,6 @@ async function waitJob(predicate, timeout = 20_000) {
   }
   throw new Error('Timed out waiting for mock video job')
 }
-async function approve() { await page.getByRole('button', { name: '允许工具执行', exact: true }).click({ timeout: 20_000 }) }
 async function form() {
   if (!await page.getByLabel('视频参考图 1', { exact: true }).count()) {
     const importer = page.getByRole('button', { name: /从系统选择视频参考图/ })
@@ -64,7 +63,6 @@ async function form() {
 async function submit() {
   await form()
   await page.getByRole('button', { name: '提交视频生成', exact: true }).click()
-  await approve(); await approve()
 }
 function article(job) { return page.getByRole('article', { name: `视频任务 ${job.jobId}`, exact: true }) }
 async function waitArticle(job, text) { await article(job).getByText(text, { exact: true }).waitFor({ timeout: 20_000 }) }
@@ -123,17 +121,13 @@ try {
   server.state.phase = 'initial'
   await launch(); await form()
   await page.screenshot({ path: join(output, '01-video-form.png'), fullPage: true })
-  await page.getByRole('button', { name: '提交视频生成', exact: true }).click()
-  await page.getByRole('button', { name: '拒绝工具执行', exact: true }).click()
-  await page.getByRole('button', { name: '提交视频生成', exact: true }).waitFor({ state: 'visible' })
   assert.equal(server.state.counts.submit, 0); assert.equal(server.state.counts.references, 0)
-  evidence.phases.push({ name: 'deny-reference-approval', submitted: 0, uploaded: 0 })
+  evidence.phases.push({ name: 'selection-alone-does-not-upload', submitted: 0, uploaded: 0 })
 
-  // Actual Pi SDK → host tools → existing UI approvals; no model network.
+  // Actual Pi SDK → host uploads, quotes and submits; no model network or UI approval.
   const refs = (await ipc('getVideoReferences', 'video-task-a')).data
   const input = { profileId: 'mock-video-from-image', operation: 'image-to-video', localAssetIds: [refs[0].localAssetId], creativeBrief: 'Pi 商品视频 mock', parameters: fixture.quoteRequest.parameters }
   await control((_, input) => globalThis.__sepVideoTest.startPi(input), input)
-  await approve(); await approve()
   const first = await waitJob(job => job.saveStatus === 'SAVED')
   await page.waitForFunction(async () => (await window.electronAPI.getTaskVideo('video-task-a')).data?.jobs.some(job => job.saveStatus === 'SAVED'))
   await waitArticle(first, '已保存到本地')
@@ -142,6 +136,9 @@ try {
   do { pi = await control(() => globalThis.__sepVideoTest.evidence()); if (pi.piStatus === 'complete' || pi.piStatus === 'failed') break; await page.waitForTimeout(100) } while (Date.now() < piDeadline)
   assert.equal(pi.piStatus, 'complete'); assert.equal(pi.piModel.generationCount, 1); assert.equal(pi.piModel.steps.video_get_job, 1)
   assert.equal(server.state.counts.submit, 1)
+  assert.equal(server.state.counts.references, 1)
+  assert.equal(pi.pendingApprovals, 0)
+  assert.equal(await page.getByRole('button', { name: '允许上传', exact: true }).count(), 0)
   await article(first).getByRole('button', { name: '预览视频成果 1', exact: true }).click()
   await page.getByRole('dialog', { name: '本地视频预览' }).waitFor()
   await page.waitForFunction(() => { const video = document.querySelector('video'); return video?.readyState >= 2 && video.videoWidth === 720 && video.videoHeight === 1280 })
@@ -162,7 +159,7 @@ try {
   await page.getByText('视频已导出', { exact: true }).first().waitFor()
   assert.equal(createHash('sha256').update(await readFile(exported)).digest('hex'), fixture.mediaFixture.sha256)
   await page.getByRole('button', { name: '关闭视频预览' }).click()
-  evidence.phases.push({ name: 'actual-pi-approval-playback-export', jobId: first.jobId, pi, decoding, sha256: fixture.mediaFixture.sha256 })
+  evidence.phases.push({ name: 'actual-pi-automatic-generation-playback-export', jobId: first.jobId, pi, decoding, sha256: fixture.mediaFixture.sha256 })
 
   // Restart actual Electron while an original receipt is queued; parent fixture lives on.
   server.state.holdQueries = true; server.state.phase = 'before-restart'

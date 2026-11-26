@@ -47,11 +47,37 @@ describe('arrangement transcript projection', () => {
       event(3, 'b', 'tool_execution_start', { toolId: 'office', toolName: 'mcp__officecli__officecli' }),
       event(4, 'b', 'tool_execution_end', { toolId: 'office', success: false })]
     const result = buildArrangementTranscript(steps, events)
-    assert.equal(result[0].entries[0].text, '正在读取文件')
+    assert.equal(result[0].entries[0].text, '执行工具操作')
+    assert.equal(result[0].entries[0].toolName, 'read')
     assert.equal(result[0].entries[0].state, 'completed')
-    assert.equal(result[1].entries[0].text, '正在使用 OfficeCLI 处理文档')
+    assert.equal(result[1].entries[0].text, '执行工具操作')
+    assert.equal(result[1].entries[0].toolName, 'mcp__officecli__officecli')
     assert.equal(result[1].entries[0].state, 'failed')
     assert.doesNotMatch(JSON.stringify(result), /SECRET|token/)
+  })
+
+  it('identifies connector and extension calls from live or saved events without exposing inputs or results', () => {
+    const savedNode = { ...event(1, 'b', ''), type: 'arrangement_node_started', data: { nodeId: 'b', nodeRunId: 'run-b' } }
+    const savedTool = { ...event(5, 'b', ''), runId: 'run-b', type: 'tool_execution_end',
+      data: { toolId: 'search', toolName: 'mcp__example__search', success: true, result: 'PRIVATE RESULT' } }
+    const unnamedTool = event(6, 'a', 'tool_execution_start', { toolId: 'malformed', toolName: 'PRIVATE INPUT\n' })
+    const events = [savedNode,
+      event(2, 'a', 'tool_execution_start', { toolId: 'ding', toolName: 'dingtalk_schema', input: 'PRIVATE INPUT' }),
+      event(3, 'a', 'tool_execution_start', { toolId: 'send' }),
+      event(4, 'a', 'tool_execution_end', { toolId: 'send', toolName: 'dingtalk_execute', success: false }),
+      savedTool, unnamedTool,
+      event(7, 'a', 'tool_execution_start', { toolId: 'custom', toolName: 'toString' }),
+    ].flatMap(event => { const selected = selectTranscriptEvent(event); return selected ? [selected] : [] })
+    const [live, history] = buildArrangementTranscript(steps, events)
+    assert.deepEqual(live.entries.map(entry => [entry.text, entry.state]), [
+      ['执行工具操作', 'running'],
+      ['执行工具操作', 'failed'],
+      ['工具名称未记录', 'running'],
+      ['执行工具操作', 'running'],
+    ])
+    assert.deepEqual(live.entries.map(entry => entry.toolName), ['dingtalk_schema', 'dingtalk_execute', undefined, 'toString'])
+    assert.deepEqual(history.entries.map(entry => [entry.text, entry.toolName, entry.state]), [['执行工具操作', 'mcp__example__search', 'completed']])
+    assert.doesNotMatch(JSON.stringify([live, history]), /PRIVATE INPUT|PRIVATE RESULT/)
   })
 
   it('merges history and live events by run and sequence without dropping parallel events', () => {

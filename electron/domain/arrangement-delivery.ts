@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { resultSaveIntentSchema } from '../../src/shared/result-files'
-import { arrangementMediaArtifactIdSchema, arrangementMediaMimeByFormat, arrangementNodeWorkContractSchema, type ArrangementNode } from './arrangement-plan'
+import { arrangementMediaArtifactIdSchema, arrangementMediaMimeByFormat, arrangementNodeWorkContractSchema, isSafeDeliveryPath, type ArrangementNode } from './arrangement-plan'
 
 export const deliveryIssueSchema = z.object({
   code: z.string().min(1).max(80),
@@ -56,7 +56,8 @@ const submissionSchema = z.object({
     artifactId: arrangementMediaArtifactIdSchema,
   }).strict()).max(32).optional(),
 }).strict()
-export type DeliverySubmission = z.infer<typeof submissionSchema>
+const scheduledSubmissionSchema = submissionSchema.extend({ externalWorkBlocked: z.literal(true).optional() })
+export type DeliverySubmission = z.infer<typeof scheduledSubmissionSchema>
 export type DeliverySubmissionResult = { ok: true; submission: DeliverySubmission } | { ok: false; issues: DeliveryIssue[] }
 
 export const nodeDeliveryProgressSchema = z.object({
@@ -66,7 +67,7 @@ export const nodeDeliveryProgressSchema = z.object({
   correctionStopped: z.literal(true).optional(),
   finalFiles: z.array(finalDeliveryFileSchema).max(32),
   summary: z.string().max(4_000).optional(),
-  pendingSubmission: submissionSchema.optional(),
+  pendingSubmission: scheduledSubmissionSchema.optional(),
   mediaPhase: z.enum(['waiting-media', 'materializing', 'delivered']).optional(),
   mediaWaitStartedAt: z.number().int().nonnegative().optional(),
   materializeMs: z.number().int().nonnegative().optional(),
@@ -75,6 +76,18 @@ export const nodeDeliveryProgressSchema = z.object({
 export type NodeDeliveryProgress = z.infer<typeof nodeDeliveryProgressSchema>
 
 export function deliveryPathKey(path: string): string { return path.replace(/\\/g, '/').normalize('NFC').toLowerCase() }
+
+type PlannedDelivery = NonNullable<ArrangementNode['deliverables']>[number]
+
+export function usesActualDeliveryFilename(file: PlannedDelivery, scheduled: boolean): boolean {
+  return scheduled && file.artifact?.kind !== 'image' && file.artifact?.kind !== 'video'
+}
+
+export function matchesDeliveryPath(planned: PlannedDelivery, actual: string, scheduled: boolean): boolean {
+  if (!usesActualDeliveryFilename(planned, scheduled)) return actual === planned.path
+  const directory = (path: string) => path.replaceAll('\\', '/').split('/').slice(0, -1).join('/')
+  return isSafeDeliveryPath(actual) && directory(actual) === directory(planned.path) && deliveryPathKey(actual).endsWith(`.${planned.format.toLowerCase()}`)
+}
 
 export function deliveryPlanIssues(nodes: readonly ArrangementNode[]): DeliveryIssue[] {
   const paths = new Set<string>()
@@ -102,7 +115,7 @@ export function deliveryPlanIssues(nodes: readonly ArrangementNode[]): DeliveryI
   return issues
 }
 
-export function parseDeliverySubmission(node: ArrangementNode, text: string, stopReason?: string): DeliverySubmissionResult {
+export function parseDeliverySubmission(node: ArrangementNode, text: string, stopReason?: string, scheduled = false): DeliverySubmissionResult {
   const issue = (code: string, message: string, submissionStage?: DeliveryIssue['submissionStage']): DeliverySubmissionResult =>
     ({ ok: false, issues: [{ code, message, ...(submissionStage ? { submissionStage } : {}) }] })
   if (!node.deliverables?.length) return issue('MISSING_DELIVERY_CONTRACT', '节点缺少规定的交付物清单，不能确认最终成果。')
@@ -113,7 +126,7 @@ export function parseDeliverySubmission(node: ArrangementNode, text: string, sto
     if (text.length > 128_000) return issue('INVALID_SUBMISSION', '结束 JSON 过长，请只提交简要说明及最终文件清单。')
     value = JSON.parse(text)
   } catch { return issue('INVALID_SUBMISSION', '节点结束时必须提交严格 JSON；不要使用 Markdown、普通文字或代码围栏。', 'json') }
-  const parsed = submissionSchema.safeParse(value)
+  const parsed = (scheduled ? scheduledSubmissionSchema : submissionSchema).safeParse(value)
   if (!parsed.success) return { ok: false, issues: parsed.error.issues.slice(0, 128).map(error => ({
     code: 'INVALID_SUBMISSION', submissionStage: 'fields', message: describeSubmissionField(error, value),
   })) }
@@ -121,6 +134,7 @@ export function parseDeliverySubmission(node: ArrangementNode, text: string, sto
     `你提交的 nodeId：${JSON.stringify(parsed.data.nodeId)}\n当前节点要求的 nodeId：${JSON.stringify(node.id)}`, 'node')
   const byId = new Map(node.deliverables.map(file => [file.id, file]))
   const submitted = new Set<string>()
+  const submittedPaths = new Set<string>()
   const issues: DeliveryIssue[] = []
   for (const file of parsed.data.finalDeliverables) {
     const expected = byId.get(file.id)
@@ -130,9 +144,17 @@ export function parseDeliverySubmission(node: ArrangementNode, text: string, sto
     } else {
       if (submitted.has(file.id)) issues.push({ code: 'DELIVERY_MANIFEST_MISMATCH', submissionStage: 'manifest', deliverableId: file.id, path: file.path,
         message: `重复交付物：${JSON.stringify(file.id)}。finalDeliverables 中每个规定 ID 只能出现一次。` })
-      if (file.path !== expected.path) issues.push({ code: 'DELIVERY_MANIFEST_MISMATCH', submissionStage: 'manifest', deliverableId: file.id, path: expected.path,
-        message: `交付物 ${JSON.stringify(file.id)} 路径不符。提交路径：${displaySubmissionValue(file.path)}；规定路径：${displaySubmissionValue(expected.path)}。请修正回复中的 path，不要仅因该字段错误重新生成文件。` })
+      if (!matchesDeliveryPath(expected, file.path, scheduled)) {
+        if (usesActualDeliveryFilename(expected, scheduled)) issues.push({ code: 'DELIVERY_MANIFEST_MISMATCH', submissionStage: 'manifest', deliverableId: file.id, path: file.path,
+          message: `交付物 ${JSON.stringify(file.id)} 必须提交计划目录内、扩展名为 .${expected.format} 的安全相对路径。文件名主体以实际保存结果为准。` })
+        else issues.push({ code: 'DELIVERY_MANIFEST_MISMATCH', submissionStage: 'manifest', deliverableId: file.id, path: expected.path,
+          message: `交付物 ${JSON.stringify(file.id)} 路径不符。提交路径：${displaySubmissionValue(file.path)}；规定路径：${displaySubmissionValue(expected.path)}。请修正回复中的 path，不要仅因该字段错误重新生成文件。` })
+      }
     }
+    const pathKey = deliveryPathKey(file.path)
+    if (scheduled && submittedPaths.has(pathKey)) issues.push({ code: 'DELIVERY_MANIFEST_MISMATCH', submissionStage: 'manifest', deliverableId: file.id, path: file.path,
+      message: '多个交付物不能提交同一个文件。' })
+    submittedPaths.add(pathKey)
     submitted.add(file.id)
   }
   for (const file of node.deliverables) {
@@ -189,7 +211,7 @@ function describeSubmissionField(issue: z.ZodIssue, value: unknown): string {
   return `${field}：${reason}`.slice(0, 2_000)
 }
 
-export function parseRecordedDeliverySubmission(node: ArrangementNode, files: readonly FinalDeliveryFile[], summary = 'verified'): DeliverySubmissionResult {
+export function parseRecordedDeliverySubmission(node: ArrangementNode, files: readonly FinalDeliveryFile[], summary = 'verified', scheduled = false): DeliverySubmissionResult {
   for (const file of files) {
     const expected = node.deliverables?.find(deliverable => deliverable.id === file.id)
     if (!finalDeliveryFileSchema.safeParse(file).success || (file.sourceArtifact && file.sourceArtifact.kind !== expected?.artifact?.kind)) {
@@ -202,17 +224,22 @@ export function parseRecordedDeliverySubmission(node: ArrangementNode, files: re
     nodeId: node.id, summary,
     finalDeliverables,
     ...(mediaDeliverables.length ? { mediaDeliverables } : {}),
-  }))
+  }), undefined, scheduled)
 }
 
 export class DeliveryExecutionError extends Error {
   constructor(message: string) { super(message); this.name = 'DeliveryExecutionError' }
 }
 
-export function buildDeliveryCorrection(issues: readonly DeliveryIssue[], node: ArrangementNode): string {
+export function buildDeliveryCorrection(issues: readonly DeliveryIssue[], node: ArrangementNode, scheduled = false): string {
+  const correction = buildDeliveryCorrectionText(issues, node, scheduled)
+  return scheduled ? correction + '\n\n定时任务的普通文件：计划中的文件名仅供参考。保持交付物 ID、目录和文件格式，path 填实际保存的相对路径，不要为匹配示例而重命名。宿主保存的图片和视频仍使用计划交付路径。' : correction
+}
+
+function buildDeliveryCorrectionText(issues: readonly DeliveryIssue[], node: ArrangementNode, scheduled: boolean): string {
   const replyIssue = issues.find(issue => issue.submissionStage !== undefined ||
     ['INVALID_SUBMISSION', 'WRONG_NODE', 'DELIVERY_MANIFEST_MISMATCH', 'MISSING_DELIVERY'].includes(issue.code))
-  if (replyIssue) return buildSubmissionCorrection(issues, node, replyIssue)
+  if (replyIssue) return buildSubmissionCorrection(issues, node, replyIssue, scheduled)
   const mediaMapping = issues.some(issue => ['DUPLICATE_MEDIA_DELIVERY', 'MEDIA_DELIVERY_MANIFEST_MISMATCH', 'MISSING_MEDIA_DELIVERY'].includes(issue.code))
   if (mediaMapping || issues.some(issue => !['MISSING_DELIVERY_CONTRACT', 'OUTPUT_TRUNCATED', 'NODE_NOT_SETTLED'].includes(issue.code))) {
     return [
@@ -238,14 +265,14 @@ export function buildDeliveryCorrection(issues: readonly DeliveryIssue[], node: 
     : '你的提交格式已通过校验，但实际交付文件未通过校验，当前节点尚未完成。请检查规定的交付文件是否已经保存、能够正常读取、内容非空，并且符合要求的文件格式和保存位置。\n\n修复存在问题的文件，保留其他有效成果，不要重复已完成的工作。完成保存后，按照当前节点要求重新提交完整结果，包含全部规定交付文件，不要只提交修复的部分，也不要只回复“已修复”。'
 }
 
-function buildSubmissionCorrection(issues: readonly DeliveryIssue[], node: ArrangementNode, replyIssue: DeliveryIssue): string {
+function buildSubmissionCorrection(issues: readonly DeliveryIssue[], node: ArrangementNode, replyIssue: DeliveryIssue, scheduled: boolean): string {
   const stage = replyIssue.submissionStage ?? (replyIssue.code === 'WRONG_NODE' ? 'node'
     : ['DELIVERY_MANIFEST_MISMATCH', 'MISSING_DELIVERY'].includes(replyIssue.code) ? 'manifest' : undefined)
   const descriptions = {
     json: '你的最终回复不是合法的 JSON，当前提交未通过检查。\n字段、节点 ID、交付清单和实际文件检查尚未执行。\n\n请将最终回复改为一个完整、合法的 JSON 对象：\n使用英文双引号，不添加注释，不使用 Markdown 代码围栏，\n不在 JSON 前后添加解释文字，不在最后一个字段后添加逗号。',
     fields: '你的最终回复已成功解析为 JSON，但字段检查未通过。\n\n请修正下面列出的字段。nodeId 必须是字符串，summary 必须是非空字符串，\nfinalDeliverables 必须是非空数组，每项只能包含 id、path 两个字符串字段。\n需要媒体资产映射时，使用规定的 mediaDeliverables 字段。\n不要增加提交结构之外的字段。\n节点 ID、交付清单匹配和实际文件检查尚未执行。',
     node: '你的最终回复已通过 JSON 解析和字段检查，但 nodeId 不属于当前节点。\n\n请将 nodeId 修改为下面列出的正确值，不要修改节点计划或执行其他节点的工作。\n交付清单匹配和实际文件检查尚未执行。',
-    manifest: '你的最终回复已通过 JSON、字段和节点 ID 检查，但交付清单不符合计划。\n\n请使 finalDeliverables 与下面的规定清单完全一致：\n补齐遗漏项、删除重复项和计划外项目、纠正不匹配的路径。\n不要修改交付计划，也不要把过程文件加入最终清单。\n实际文件检查尚未执行；清单错误不代表文件生成失败。',
+    manifest: `你的最终回复已通过 JSON、字段和节点 ID 检查，但交付清单不符合计划。\n\n补齐遗漏的交付物 ID，删除重复和计划外项目。${scheduled ? '普通文件填写实际保存的相对路径；目录和格式必须符合计划。' : '路径须与规定清单完全一致。'}\n不要修改交付计划，也不要把过程文件加入最终清单。\n实际文件检查尚未执行；清单错误不代表文件生成失败。`,
   }
   const media = (node.deliverables ?? []).filter(file =>
     (file.artifact?.kind === 'image' || file.artifact?.kind === 'video') && file.artifact.source === 'media-output')

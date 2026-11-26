@@ -97,7 +97,6 @@ test('current V3 video checks operation minimum, file size and format before upl
   const request: VideoGenerationInput = { ...input(), profileId: 'video_example', protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 }, parameterSources: { durationSeconds: 'user' }, specRevision: 1, localAssetIds: ['first', 'second'] }
   try {
     await assert.rejects(host.generate('task-a', { ...request, localAssetIds: ['first'] }), { code: 'INVALID_ARGUMENT' })
-    assert.equal(f.approvals.length, 0)
     await assert.rejects(host.generate('task-a', request), { code: 'INVALID_ARGUMENT' })
     const profile = f.state.runtime.profiles[0]!
     assert.ok('referenceSupport' in profile && profile.referenceSupport)
@@ -133,22 +132,28 @@ async function realSetup() {
   return { ...f, options, host: new MockVideoHostService(options) }
 }
 
-test('real host keeps an existing video mode prefix and shows the frozen prompt for approval', async t => {
+function afterQuote(f: Awaited<ReturnType<typeof setup>>, change: () => void) {
+  const source = f.options.gateway(scope)
+  return new MockVideoHostService({ ...f.options, gateway: () => ({ ...source, quote: async (...args) => {
+    const quote = await source.quote(...args)
+    change()
+    return quote
+  } }) })
+}
+
+test('real host keeps an existing video mode prefix and freezes the submitted prompt', async t => {
   const f = await realSetup()
   t.after(() => f.host.stopAll())
   const creativeBrief = 'Animate the provided image(s) according to the following instructions.\n\nSlow product movement'
   const job = await f.host.generate('task-a', { ...input(), creativeBrief })
-  assert.deepEqual(f.approvals.map(approval => approval.toolName), ['video_from_image', 'video_from_image'])
-  assert.equal((f.approvals[1]?.input as { creativeBrief?: string } | undefined)?.creativeBrief, creativeBrief)
   assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.request.creativeBrief, creativeBrief)
 })
 
-test('real host rejects a prefixed brief over the limit before approvals or media requests', async t => {
+test('real host rejects a prefixed brief over the limit before any media requests', async t => {
   const f = await realSetup()
   t.after(() => f.host.stopAll())
   await assert.rejects(f.host.generate('task-a', { ...input(), creativeBrief: 'a'.repeat(4000) }),
     { code: 'INVALID_ARGUMENT', message: '视频创作提示过长，请缩短正文，为自动添加的模式说明留出空间。' })
-  assert.equal(f.approvals.length, 0)
   assert.equal(f.state.uploads, 0)
   assert.equal(f.gateway.calls.quote, 0)
   assert.equal(f.gateway.calls.submit, 0)
@@ -178,25 +183,24 @@ test('real host reuses a same-run legacy text-to-video job without changing its 
     receipt: realReceipt(videoReceiptSchema.parse({ ...fixture.receipt,
       clientRequestId: original.clientRequestId, profileId: original.profileId, configVersion: original.configVersion, operation: original.operation,
     })) }))
-  const retried = await f.host.generate('task-a', request, undefined, { runId, requestApproval: async () => assert.fail('Duplicate must not ask for approval') })
+  const retried = await f.host.generate('task-a', request, undefined, { runId })
   assert.equal(retried.jobId, jobId)
   assert.equal(f.gateway.calls.quote, 0)
   assert.equal(f.gateway.calls.submit, 0)
   assert.deepEqual((await f.store.getJob(scope, 'task-a', jobId))?.request, original)
 })
 
-test('real host approves actual CNY quote, freezes mode, saves and reopens without byte IPC', async () => {
+test('real host validates actual CNY quote, freezes mode, saves and reopens without byte IPC', async () => {
   const f = await realSetup()
   const opened: string[] = []
   const host = new MockVideoHostService({ ...f.options, openOutput: async (_scope, _task, jobId, _output, _signal, validate) => { validate(); opened.push(jobId) } })
   const job = await host.generate('task-a', input())
   assert.equal(job.billingStatus, 'RESERVED'); assert.equal(job.amountCny, '0.900000')
-  const approval = f.approvals[1].input as { mock: boolean; quote: { amount: string; currency: string; amountUsd: string } }
-  assert.equal(approval.mock, false); assert.equal(approval.quote.amount, '0.900000'); assert.equal(approval.quote.currency, 'CNY'); assert.equal(approval.quote.amountUsd, '0.12')
   await host.resume('task-a', job.jobId)
   const saved = await host.resume('task-a', job.jobId)
   assert.equal(saved.saveStatus, 'SAVED'); assert.equal(saved.billingStatus, 'SETTLED'); assert.equal(saved.actualCostCny, '0.800000')
   const [stored] = await f.store.listJobs(scope)
+  assert.equal(stored.quote.currency, 'CNY'); assert.equal(stored.quote.amount, '0.900000'); assert.equal(stored.quote.amountUsd, '0.12')
   assert.equal(stored.executionMode, 'real'); assert.equal(stored.receipt?.mock, false)
   await host.stopAll()
   const reopened = new MockVideoHostService({ ...f.options, openOutput: async (_scope, _task, id) => { opened.push(id) } })
@@ -273,7 +277,6 @@ test('real host exposes definitive rejection and skips original lookup on restar
     assert.notEqual(next.jobId, job.jobId)
     assert.equal(submissions, 2)
     assert.equal(f.gateway.calls.quote, 2)
-    assert.equal(f.approvals.length, 4)
   } finally { await restored.stopAll(); await f.host.stopAll() }
 })
 
@@ -294,10 +297,9 @@ test('local history stays mode isolated regardless of current runtime mode', asy
   await f.host.stopAll(); await real.stopAll()
 })
 
-test('mode revoked during real approval prevents dispatch and leaves frozen unsubmitted evidence', async () => {
+test('mode revoked after the real quote prevents dispatch and leaves frozen unsubmitted evidence', async () => {
   const f = await realSetup()
-  let count = 0
-  const host = new MockVideoHostService({ ...f.options, requestApproval: async () => { if (++count === 2) f.state.runtime.executionMode = 'mock'; return true } })
+  const host = afterQuote(f, () => { f.state.runtime.executionMode = 'mock' })
   await assert.rejects(host.generate('task-a', input()), { code: 'PERMISSION_DENIED' })
   assert.equal(f.gateway.calls.submit, 0)
   assert.equal((await f.store.listJobs(scope))[0].executionMode, 'real')
@@ -320,8 +322,7 @@ async function setup(overrides: Partial<MockVideoHostOptions> = {}) {
   const store = new VideoStore(root)
   const gateway = new MockVideoMediaGateway()
   const state = { scope: { enterpriseId: scope.enterpriseId, memberId: scope.memberId } as { enterpriseId: string; memberId: string } | null,
-    runtime: videoRuntimeSchema.parse(fixture.runtime), subscriptionId: scope.subscriptionId, approve: true, uploads: 0, authorizations: 0 }
-  const approvals: Parameters<MockVideoHostOptions['requestApproval']>[0][] = []
+    runtime: videoRuntimeSchema.parse(fixture.runtime), subscriptionId: scope.subscriptionId, uploads: 0, authorizations: 0 }
   const options: MockVideoHostOptions = {
     mock: true, scope: { currentScope: () => state.scope }, store, authorizationRevision: () => 0,
     getTask: async () => ({ subscriptionId: state.subscriptionId }),
@@ -338,10 +339,9 @@ async function setup(overrides: Partial<MockVideoHostOptions> = {}) {
         return { mock: true, referenceId: 'reference-a', expiresAt: new Date(Date.now() + 60_000).toISOString(), mimeType: 'image/png', byteLength: bytes.length, sha256, width: 1, height: 1 }
       },
     }),
-    requestApproval: async value => { approvals.push(structuredClone(value)); return state.approve },
     ...overrides,
   }
-  return { root, state, store, gateway, approvals, options, host: new MockVideoHostService(options) }
+  return { root, state, store, gateway, options, host: new MockVideoHostService(options) }
 }
 
 for (const phase of ['query', 'download'] as const) test(`recovery delivers another original video while one ${phase} is throttled`, async t => {
@@ -374,7 +374,7 @@ for (const phase of ['query', 'download'] as const) test(`recovery delivers anot
 
 async function arrangementOutput(real: boolean, overrides: Partial<ArrangementMediaLink> = {}) {
   const f = await (real ? realSetup() : setup())
-  const job = await f.host.generate('task-a', input(), undefined, { runId: 'video-node-run', requestApproval: f.options.requestApproval })
+  const job = await f.host.generate('task-a', input(), undefined, { runId: 'video-node-run' })
   await f.host.resume('task-a', job.jobId)
   const saved = await f.host.resume('task-a', job.jobId)
   const outputId = saved.outputs[0].outputId
@@ -492,13 +492,9 @@ for (const change of ['owner', 'revision', 'task', 'stop'] as const) test(`arran
   } finally { await host.stopAll() }
 })
 
-test('mock host approves upload and durable zero quote, then submits only once and projects safe views', async () => {
+test('mock host automatically uploads and validates a durable zero quote, then submits only once and projects safe views', async () => {
   const f = await setup()
   const view = await f.host.generate('task-a', input())
-  assert.equal(f.approvals.length, 2)
-  assert.equal((f.approvals[0].input as Record<string, unknown>).operation, 'upload-references')
-  assert.equal(f.approvals[1].toolName, 'video_from_image')
-  assert.deepEqual((f.approvals[1].input as Record<string, unknown>).quote, { amount: '0.000000', currency: 'MOCK', expiresAt: (await f.store.listJobs(scope))[0].quote.expiresAt })
   assert.equal(f.gateway.calls.submit, 1)
   assert.equal(f.state.uploads, 1)
   assert.equal(view.generationStatus, 'QUEUED')
@@ -512,9 +508,9 @@ test('mock host approves upload and durable zero quote, then submits only once a
   await f.host.stopAll()
 })
 
-test('reference transmission denial prevents reads, uploads, quotes and submissions', async () => {
-  const f = await setup({ readReference: async () => { throw new Error('must not read unapproved bytes') } })
-  f.state.approve = false
+test('a disallowed video tool cannot read references, upload, quote or submit', async () => {
+  const f = await setup({ readReference: async () => assert.fail('Disallowed video must not access bytes'),
+    policy: async () => ({ preset: 'read-only', allowedTools: [], workspaceDir: '/unused', allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled', approvalMode: 'confirm-each' }) })
   await assert.rejects(f.host.generate('task-a', input()), { code: 'PERMISSION_DENIED' })
   assert.equal(f.state.uploads, 0)
   assert.equal(f.gateway.calls.quote, 0)
@@ -522,44 +518,37 @@ test('reference transmission denial prevents reads, uploads, quotes and submissi
   assert.deepEqual(await f.store.listJobs(scope), [])
 })
 
-test('generation denial leaves durable NOT_SENT and recovery cannot submit it', async () => {
+test('invalid quote currency fails before publishing a job or submitting it', async () => {
   const f = await setup()
-  let count = 0
-  const host = new MockVideoHostService({ ...f.options, requestApproval: async () => ++count === 1 })
-  await assert.rejects(host.generate('task-a', input()), { code: 'PERMISSION_DENIED' })
-  const [job] = await f.store.listJobs(scope)
-  assert.equal(job.submission, 'NOT_SENT')
-  const reopened = new MockVideoHostService(f.options)
-  assert.equal((await reopened.resume('task-a', job.jobId)).trackingStatus, 'STOPPED')
+  const source = f.options.gateway(scope)
+  const host = new MockVideoHostService({ ...f.options, gateway: () => ({ ...source, quote: async (...args) => ({ ...await source.quote(...args), currency: 'CNY' }) }) })
+  await assert.rejects(host.generate('task-a', input()))
+  assert.deepEqual(await f.store.listJobs(scope), [])
   assert.equal(f.gateway.calls.submit, 0)
 })
 
 for (const change of ['logout', 'member', 'subscription', 'config', 'disabled'] as const) {
-  test(`rejects ${change} changed during generation approval`, async () => {
+  test(`rejects ${change} changed after quoting`, async () => {
     const f = await setup()
-    let count = 0
-    const host = new MockVideoHostService({ ...f.options, requestApproval: async () => {
-      if (++count === 2) {
-        if (change === 'logout') f.state.scope = null
-        if (change === 'member') f.state.scope = { enterpriseId: scope.enterpriseId, memberId: 'other' }
-        if (change === 'subscription') f.state.subscriptionId = 'other'
-        if (change === 'config') f.state.runtime.profiles[0].configVersion = 'changed-version'
-        if (change === 'disabled') f.state.runtime = { ...f.state.runtime, executionAvailable: false, tools: [] }
-      }
-      return true
-    } })
+    const host = afterQuote(f, () => {
+      if (change === 'logout') f.state.scope = null
+      if (change === 'member') f.state.scope = { enterpriseId: scope.enterpriseId, memberId: 'other' }
+      if (change === 'subscription') f.state.subscriptionId = 'other'
+      if (change === 'config') f.state.runtime.profiles[0].configVersion = 'changed-version'
+      if (change === 'disabled') f.state.runtime = { ...f.state.runtime, executionAvailable: false, tools: [] }
+    })
     await assert.rejects(host.generate('task-a', input()), error => error instanceof AppError)
     assert.equal(f.gateway.calls.submit, 0)
-    assert.equal((await f.store.listJobs(scope))[0].submission, 'NOT_SENT')
+    assert.ok((await f.store.listJobs(scope)).every(job => job.submission === 'NOT_SENT'))
   })
 }
 
-test('uses a frozen generation input while approvals are pending and deduplicates concurrent clicks', async () => {
+test('uses a frozen generation input while reading the selected reference and deduplicates concurrent clicks', async () => {
   const f = await setup()
   let entered!: () => void, release!: () => void
   const waiting = new Promise<void>(resolve => { entered = resolve })
   const gate = new Promise<void>(resolve => { release = resolve })
-  const host = new MockVideoHostService({ ...f.options, requestApproval: async () => { entered(); await gate; return true } })
+  const host = new MockVideoHostService({ ...f.options, readReference: async (...args) => { entered(); await gate; return f.options.readReference(...args) } })
   const mutable = input()
   const pending = host.generate('task-a', mutable)
   await waiting
@@ -573,14 +562,14 @@ test('uses a frozen generation input while approvals are pending and deduplicate
   assert.equal(f.gateway.calls.submit, 1)
 })
 
-test('stopAll aborts an unresponsive approval without sending a request and supports a new session', async () => {
+test('stopAll aborts an unresponsive reference read without sending a request and supports a new session', async () => {
   const f = await setup()
   let entered!: () => void
   const waiting = new Promise<void>(resolve => { entered = resolve })
   let stalled = true
-  const host = new MockVideoHostService({ ...f.options, requestApproval: async () => {
-    if (stalled) { entered(); return new Promise<boolean>(() => undefined) }
-    return true
+  const host = new MockVideoHostService({ ...f.options, readReference: async (...args) => {
+    if (stalled) { entered(); return new Promise<never>(() => undefined) }
+    return f.options.readReference(...args)
   } })
   const pending = host.generate('task-a', input())
   const rejected = assert.rejects(pending)
@@ -681,17 +670,16 @@ test('stopping host tracking aborts a stalled query and preserves the original d
   await reopened.stopAll()
 })
 
-test('rechecks policy after generation approval and at the actual upload boundary', async () => {
+test('rechecks policy after quote and before upload', async () => {
   for (const stage of ['upload', 'generation'] as const) {
     const f = await setup()
-    let approvals = 0
+    let revoked = false
     const host = new MockVideoHostService({ ...f.options,
-      policy: async () => ({ preset: approvals >= (stage === 'upload' ? 1 : 2) ? 'read-only' : 'full-local', allowedTools: [], workspaceDir: '/unused', allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled', approvalMode: 'confirm-each' }),
-      requestApproval: async () => { approvals++; return true },
+      policy: async () => ({ preset: revoked ? 'read-only' : 'full-local', allowedTools: [], workspaceDir: '/unused', allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled', approvalMode: 'confirm-each' }),
+      readReference: async (...args) => { if (stage === 'upload') revoked = true; return f.options.readReference(...args) },
+      gateway: () => { const source = f.options.gateway(scope); return { ...source, quote: async (...args) => { const quote = await source.quote(...args); revoked = true; return quote } } },
     })
-    // A denied submit is conservatively MAYBE_SENT, but the source is never called.
-    if (stage === 'upload') await assert.rejects(host.generate('task-a', input()), { code: 'PERMISSION_DENIED' })
-    else assert.equal((await host.generate('task-a', input())).trackingStatus, 'AUTH_REQUIRED')
+    await assert.rejects(host.generate('task-a', input()), { code: 'PERMISSION_DENIED' })
     assert.equal(f.gateway.calls.submit, 0)
     assert.equal(f.state.uploads, stage === 'upload' ? 0 : 1)
   }
@@ -710,27 +698,27 @@ test('checks policy after a delayed task binding, before the actual side effect'
 
 test('rejects changes during final policy lookup using the synchronous host revision', async () => {
   const f = await setup()
-  let revision = 0, approvals = 0
+  let revision = 0, revoked = false
   const host = new MockVideoHostService({ ...f.options,
     authorizationRevision: () => revision,
-    requestApproval: async () => { approvals++; return true },
+    gateway: () => { const source = f.options.gateway(scope); return { ...source, quote: async (...args) => { const quote = await source.quote(...args); revoked = true; return quote } } },
     policy: async () => {
-      if (approvals === 2) { f.state.subscriptionId = 'subscription-b'; revision++ }
+      if (revoked) { f.state.subscriptionId = 'subscription-b'; revision++ }
       return undefined
     },
   })
-  await host.generate('task-a', input())
+  await assert.rejects(host.generate('task-a', input()), { code: 'AUTH_REQUIRED' })
   assert.equal(f.gateway.calls.submit, 0)
-  assert.equal((await f.store.listJobs(scope))[0].trackingStatus, 'AUTH_REQUIRED')
+  assert.equal((await f.store.listJobs(scope))[0].submission, 'NOT_SENT')
 })
 
 test('a task rebound during final runtime authorization cannot reach the submit adapter', async () => {
   const f = await setup()
-  let approvals = 0
+  let revoked = false
   const host = new MockVideoHostService({ ...f.options,
-    requestApproval: async () => { approvals++; return true },
+    gateway: () => { const source = f.options.gateway(scope); return { ...source, quote: async (...args) => { const quote = await source.quote(...args); revoked = true; return quote } } },
     authorize: async () => {
-      if (approvals === 2) f.state.subscriptionId = 'subscription-b'
+      if (revoked) f.state.subscriptionId = 'subscription-b'
       return f.state.runtime
     },
   })
@@ -817,12 +805,15 @@ for (const change of ['disabled', 'empty-tools', 'missing-runtime'] as const) {
   })
 }
 
-test('stopTask cancels only its own approval and leaves sibling tracking and receipts intact', async () => {
+test('stopTask cancels only its own reference read and leaves sibling tracking and receipts intact', async () => {
   const f = await setup()
   let entered!: () => void
   const waiting = new Promise<void>(resolve => { entered = resolve })
   const host = new MockVideoHostService({ ...f.options, tracker: { floorMs: 1 },
-    requestApproval: async request => { if (request.taskId === 'stalled-task') { entered(); return new Promise<boolean>(() => undefined) }; return true },
+    readReference: async (...args) => {
+      if (args[1] === 'stalled-task') { entered(); return new Promise<never>(() => undefined) }
+      return f.options.readReference(...args)
+    },
   })
   const job = await host.generate('task-a', input())
   const rejected = assert.rejects(host.generate('stalled-task', input()))
@@ -859,7 +850,7 @@ test('separate run and IPC hosts cannot concurrently submit for the same task', 
   let entered!: () => void, release!: () => void
   const waiting = new Promise<void>(resolve => { entered = resolve })
   const gate = new Promise<void>(resolve => { release = resolve })
-  const first = new MockVideoHostService({ ...f.options, requestApproval: async () => { entered(); await gate; return true } })
+  const first = new MockVideoHostService({ ...f.options, readReference: async (...args) => { entered(); await gate; return f.options.readReference(...args) } })
   const second = new MockVideoHostService(f.options)
   const pending = first.generate('task-a', input())
   await waiting
@@ -1120,7 +1111,7 @@ test('legacy video tools require complete explicit specifications and reject V3 
   await f.host.stopAll()
 })
 
-test('V3 submit failures retain diagnostics and block new generation when risk confirmation is declined', async () => {
+test('V3 submit failures retain diagnostics without a same-run retry', async () => {
   const f = await realSetup()
   f.state.runtime = videoRuntimeSchema.parse({ ...fixture.runtime, protocolVersion: 3, executionMode: 'real',
     profiles: fixture.runtime.profiles.map(profile => ({ ...profile, operations: ['text-to-video'], capabilities: { ...profile.capabilities, supportsTextToVideo: true } })),
@@ -1133,22 +1124,23 @@ test('V3 submit failures retain diagnostics and block new generation when risk c
       alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved',
       message: 'Unsupported resolution', apiKey: 'private-secret', detail: 'Rejected test-token' } }), { status: 422, headers: { 'Content-Type': 'application/json' } })
   } })
-  const options: MockVideoHostOptions = { ...f.options, requestApproval: async request =>
-    (request.input as { operation?: string }).operation !== 'confirm-new-generation', gateway: () => ({ ...f.options.gateway(scope),
+  const options: MockVideoHostOptions = { ...f.options, gateway: () => ({ ...f.options.gateway(scope),
     quote: async () => { quotes++; return { protocolVersion: 3, specRevision: 2, effectiveSpec: spec, quoteId: 'v3-quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.900000', currency: 'CNY' } },
     submit: remote.submit.bind(remote), findReceipt: async () => null,
   }) }
   const raw = { creativeBrief: 'cinematic product story', protocolVersion: 3, specRevision: 2, requestedSpec: spec, parameterSources: { resolution: 'user' } }
   const host = new MockVideoHostService(options)
-  const first = await host.generateTool('task-a', 'video_generate', raw)
+  const run = { runId: 'video-diagnostics' }
+  const first = await host.generateTool('task-a', 'video_generate', raw, undefined, run)
   assert.equal(first.generationStatus, 'SUBMISSION_UNKNOWN'); assert.equal(first.billingStatus, 'RECONCILING')
   assert.equal(first.specFailure?.requestedValue, '8k'); assert.deepEqual(first.specFailure?.alternatives, [{ resolution: '1080p' }])
-  await assert.rejects(host.generateTool('task-a', 'video_generate', raw), { code: 'PERMISSION_DENIED' })
+  const duplicate = await host.generateTool('task-a', 'video_generate', raw, undefined, run)
+  assert.equal(duplicate.jobId, first.jobId)
   await host.stopAll()
   const reopened = new MockVideoHostService(options)
   const saved = (await reopened.getTaskVideo('task-a')).jobs.find(job => job.jobId === first.jobId)!
   assert.deepEqual(saved.specFailure, first.specFailure)
-  await assert.rejects(reopened.generateTool('task-a', 'video_generate', { ...raw, specRevision: 3, requestedSpec: { resolution: '1080p' } }), { code: 'PERMISSION_DENIED' })
+  await assert.rejects(reopened.generateTool('task-a', 'video_generate', { ...raw, specRevision: 3, requestedSpec: { resolution: '1080p' } }, undefined, run), { code: 'CONFLICT' })
   assert.equal(quotes, 1); assert.equal(submissions, 1)
   assert.equal((saved.failure?.diagnostic?.body as { error: { message: string } }).error.message, 'Unsupported resolution')
   assert.doesNotMatch(JSON.stringify(saved), /private-secret|test-token/)

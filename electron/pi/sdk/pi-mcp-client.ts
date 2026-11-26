@@ -26,7 +26,7 @@ const PUBLIC_RUNTIME_ENV = new Map([['ELECTRON_RUN_AS_NODE', '1'], ['OFFICECLI_S
 
 export interface McpToolResult {
   content: Array<{ type: 'text'; text: string }>
-  details: { serverName: string; toolName: string; isError: boolean; executionUncertain?: true; browserSessionClosed?: true }
+  details: { serverName: string; toolName: string; isError: boolean; executionUncertain?: true; browserSessionClosed?: true; scheduledReadOnly?: true }
 }
 
 function safeText(text: string, config: McpServerConfig, maxLength?: number): string {
@@ -99,6 +99,8 @@ function createTool(config: McpServerConfig, client: Client, tool: Tool) {
 
 export interface McpRuntime {
   readonly evaluateConnectorCommand?: (toolName: string, input: unknown) => import('../../domain/connectors').ConnectorCommandDecision | undefined
+  /** Executors with a host-side scheduled authorization boundary. Never sourced from MCP discovery. */
+  readonly scheduledConnectorExecutors?: ReadonlySet<string>
   /** Set only by the host browser facade; its handoff owns the completion prompt. */
   readonly builtinBrowser?: true
   readonly browserRoutineAccess?: {

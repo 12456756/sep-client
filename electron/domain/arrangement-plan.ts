@@ -164,7 +164,8 @@ export function isSafeDeliveryPath(value: string): boolean {
       !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))
 }
 
-export const scheduledFilenamePattern = /(^|[\\/])yyyyMMdd-HHmm(?=\.[A-Za-z0-9_+-]+$)/
+// Match the filename stem only, not directory names or the last extension.
+export const scheduledFilenamePattern = /yyyyMMdd(?:-HHmm)?(?=[^\\/]*\.[A-Za-z0-9_+-]+$)/g
 
 export const arrangementNodeWorkContractSchema = z.object({
   knowledge: knowledgeSelectionSchema.optional(),
@@ -181,8 +182,7 @@ export const arrangementNodeWorkContractSchema = z.object({
     scheduledFilenameTime: z.enum(['scheduled', 'started']).optional(),
     artifact: arrangementDeliverableArtifactSchema.optional(),
   }).strict().refine(value => value.path.toLowerCase().endsWith(`.${value.format.toLowerCase()}`))
-    .refine(value => !value.contentPolicy || value.format.toLowerCase() === 'txt' && (!value.artifact || value.artifact.source === 'workspace' && ['document', 'data', 'other'].includes(value.artifact.kind)))
-    .refine(value => !value.scheduledFilenameTime || scheduledFilenamePattern.test(value.path)))
+    .refine(value => !value.contentPolicy || value.format.toLowerCase() === 'txt' && (!value.artifact || value.artifact.source === 'workspace' && ['document', 'data', 'other'].includes(value.artifact.kind))))
     .min(1).max(32).optional(),
   mediaRequirements: z.array(arrangementMediaRequirementSchema).min(1).superRefine((requirements, context) => {
     const requirementIds = new Set<string>()
@@ -294,7 +294,9 @@ export interface ArrangementDraft {
 }
 
 export interface WorkPlan {
-  scheduledOrigin?: import('../../src/shared/scheduled-tasks').ScheduledOrigin & { execution?: 'general' | 'empty-text' }
+  scheduledOrigin?: import('../../src/shared/scheduled-tasks').ScheduledOrigin & {
+    execution?: 'general' | 'empty-text'; requestedGoal?: string; connectorRevision?: string | null
+  }
   knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1 | 2

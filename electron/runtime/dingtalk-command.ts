@@ -1,6 +1,7 @@
 import { runConnectorProcess, type ConnectorProcessOptions } from './connector-process'
 import { normalizeConnectorJsonArgs } from './connector-command'
-import { ConnectorInputError, type ConnectorCommandDecision } from '../domain/connectors'
+import { ConnectorInputError, type ConnectorCommandDecision, type ConnectorCommandResult, type ScheduledExternalOperation } from '../domain/connectors'
+import { scheduledDingTalkActionLabels } from '../../src/shared/scheduled-tasks'
 import { toolApprovalSummarySchema } from '../../src/shared/tool-approval'
 
 export const DINGTALK_PRODUCTS = new Set(['aisearch', 'aitable', 'attendance', 'calendar', 'chat', 'contact', 'dev', 'devapp', 'devdoc', 'ding', 'doc', 'drive', 'event', 'hrbrain', 'html', 'live', 'mail', 'markdown', 'mind', 'minutes', 'oa', 'report', 'log', 'sheet', 'sport', 'todo', 'wiki', 'whiteboard', 'agoal', 'contract', 'dingtalk-tag', 'pat'])
@@ -31,13 +32,33 @@ const readCommands: readonly ReadCommand[] = [
   ['chat message list-all', ['--start', '--end'], [], ['--page-all', '--no-reactions']],
 ]
 
-function readFlags(args: string[], required: readonly string[], optional: readonly string[] = [], switches: readonly string[] = []): Map<string, string> | undefined {
+const tableScope = ['--base-id', '--table-id']
+const recordQueryFlags = ['--cursor', '--field-ids', '--filters', '--limit', '--page-limit', '--query', '--record-ids', '--sort', '--view-id']
+const recordStatsFlags = ['--data-version', '--filters', '--limit', '--sort']
+// Scheduled classification does not change the interactive approval allowlist.
+const scheduledTableReads: readonly ReadCommand[] = [
+  ['aitable base search', ['--query'], ['--cursor']],
+  ['aitable base list', [], ['--cursor', '--limit']],
+  ['aitable base get', ['--base-id']],
+  ['aitable table get', ['--base-id'], ['--table-ids']],
+  ['aitable table list', ['--base-id'], ['--table-ids']],
+  ['aitable field get', tableScope, ['--field-ids']],
+  ['aitable record get', [...tableScope, '--record-ids'], ['--field-ids']],
+  ['aitable record list', tableScope, recordQueryFlags, ['--all']],
+  ['aitable record query', tableScope, recordQueryFlags, ['--all']],
+  ['aitable record stats', [...tableScope, '--stats'], [...recordStatsFlags, '--keyword', '--search-field-ids']],
+  ['aitable record group-stats', [...tableScope, '--stats'], [...recordStatsFlags, '--group']],
+]
+const psqlAliases: Readonly<Record<string, string>> = { '-d': '--database', '-c': '--command', '-t': '--table', '-l': '--list', '-x': '--expanded' }
+
+function readFlags(args: string[], required: readonly string[], optional: readonly string[] = [], switches: readonly string[] = [], aliases?: Readonly<Record<string, string>>): Map<string, string> | undefined {
   const fields = new Map<string, string>()
   for (let index = 0; index < args.length; index++) {
     // Accept the same literal values in --flag value and --flag=value form.
     const arg = args[index]
     const separator = arg.indexOf('=')
-    const key = separator < 0 ? arg : arg.slice(0, separator)
+    const flag = separator < 0 ? arg : arg.slice(0, separator)
+    const key = aliases && Object.hasOwn(aliases, flag) ? aliases[flag] : flag
     if (fields.has(key)) return
     if (separator < 0 && switches.includes(key)) { fields.set(key, ''); continue }
     if (!required.includes(key) && !optional.includes(key)) return
@@ -46,6 +67,22 @@ function readFlags(args: string[], required: readonly string[], optional: readon
     fields.set(key, value)
   }
   if (required.every(key => fields.has(key))) return fields
+}
+
+export function isScheduledDingTalkReadOnly(input: string[]): boolean {
+  let args: string[]
+  try { args = validateDingTalkArgs(input).slice(0, -3) } catch { return false }
+  if (args[0] !== 'aitable') return false
+  if (args[1] === 'psql') {
+    const fields = readFlags(args.slice(2), ['--database'], ['--command', '--table', '--limit', '--timeout'], ['--list', '--expanded', '--all-properties'], psqlAliases)
+    if (!fields || ['--command', '--table', '--list'].filter(flag => fields.has(flag)).length !== 1) return false
+    // DWS psql accepts only read queries; keep this allowlist to documented SELECT usage.
+    return !fields.has('--command') || /^\s*SELECT\b/i.test(fields.get('--command')!)
+  }
+  return scheduledTableReads.some(([path, required, optional, switches]) => {
+    const parts = path.split(' ')
+    return parts.every((part, index) => args[index] === part) && !!readFlags(args.slice(parts.length), required, optional, switches)
+  })
 }
 
 export function evaluateDingTalkCommand(input: string[]): ConnectorCommandDecision | undefined {
@@ -64,6 +101,31 @@ export function evaluateDingTalkCommand(input: string[]): ConnectorCommandDecisi
   const summary = toolApprovalSummarySchema.safeParse({ kind: 'dingtalk-message', targetType,
     target: fields.get(targetKey), body: fields.get('--content') })
   if (summary.success) return { kind: 'approval', summary: summary.data }
+}
+
+export function describeScheduledDingTalkOperation(args: string[]): ScheduledExternalOperation {
+  const dingTalkAction = (Object.keys(scheduledDingTalkActionLabels) as (keyof typeof scheduledDingTalkActionLabels)[])
+    .find(path => path.split(' ').every((part, index) => args[index] === part))
+  const description = dingTalkAction ? { dingTalkAction } : {}
+  const decision = evaluateDingTalkCommand(args)
+  if (decision?.kind === 'approval' && decision.summary.kind === 'dingtalk-message') {
+    const { target, body, targetType } = decision.summary
+    return { identity: ['message', targetType, target, body], target, ...description }
+  }
+  return { identity: ['command', args], ...description }
+}
+
+export function dingTalkFailureReason(text: string): ConnectorCommandResult['scheduledReason'] {
+  try {
+    const value: unknown = JSON.parse(text)
+    if (!value || typeof value !== 'object') return
+    if ('error' in value && value.error && typeof value.error === 'object') {
+      const error = value.error
+      if ('category' in error && (error.category === 'auth' || error.category === 'authentication')) return 'authentication-required'
+    }
+    if ('summary' in value && typeof value.summary === 'string' &&
+      /^(?:base|table|field|record|view) not found$/i.test(value.summary.trim())) return 'resource-not-found'
+  } catch { /* Unstructured connector output is not safe to retain in history. */ }
 }
 
 export function dingTalkSchemaArgs(path: string): string[] {

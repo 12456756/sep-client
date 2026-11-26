@@ -9,7 +9,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import { WriteChain } from '../data/write-chain'
 import { withTimeout } from '../common/with-timeout'
-import { ScheduledDispatcher, type ScheduledRunnerPort } from './scheduled-dispatcher'
+import { ScheduledDispatcher, type ScheduledRunnerPort, type ScheduledRunIntent } from './scheduled-dispatcher'
 import { ScheduledTimer } from './scheduled-timer'
 import { logger } from '../common/logger'
 import { createWorkScheduleSchema, editWorkScheduleSchema, type CreateWorkSchedule, type EditWorkSchedule, type WorkScheduleContext } from '../../src/shared/scheduled-tasks'
@@ -29,6 +29,7 @@ export interface ScheduledServiceOptions {
   arrangementPlanner?(input: ScheduleInput, signal: AbortSignal): Promise<ArrangementWorkPlan | { status: 'blocked'; reasons: string[] }>
   timeInterpreter?(input: ScheduleTimeRequest, signal: AbortSignal): Promise<ScheduleTimeResult>
   runner: ScheduledRunnerPort
+  connectorRevision?(scope: TaskOwnerScope): Promise<string | null>
   now?: () => number
 }
 export const TERMINAL_SCHEDULE_STATUSES = new Set(['completed', 'failed', 'cancelled', 'timed_out', 'missed'])
@@ -75,13 +76,16 @@ export class ScheduledTaskService {
     this.assertScope(scope, generation)
     return { ...data, schedulerState: this.timer.state }
   }
-  async interpretTime(raw: ScheduleTimeRequest): Promise<ScheduleTimeResult> {
+  async interpretTime(raw: ScheduleTimeRequest, signal?: AbortSignal): Promise<ScheduleTimeResult> {
+    signal?.throwIfAborted()
     const input = scheduleTimeRequestSchema.parse(raw)
     const scope = this.scope(), generation = this.generation
     const key = `time:${input.requestId}`
     if (!this.options.timeInterpreter) throw new AppError('INVALID_STATE')
     if (this.planning.has(key) || [...this.planning.keys()].filter(value => value.startsWith('time:')).length >= 2) throw new AppError('CONFLICT')
     const controller = new AbortController()
+    const abort = () => controller.abort()
+    signal?.addEventListener('abort', abort, { once: true })
     this.planning.set(key, controller)
     const timeout = setTimeout(() => controller.abort(), 45000)
     try {
@@ -93,6 +97,7 @@ export class ScheduledTaskService {
       return scheduleTimeResultSchema.parse(result)
     } finally {
       clearTimeout(timeout)
+      signal?.removeEventListener('abort', abort)
       this.planning.delete(key)
     }
   }
@@ -107,7 +112,7 @@ export class ScheduledTaskService {
     }
     return chosen
   }
-  async create(requestId: string, raw: ScheduleInput, creation?: { id: string; revision: number; guard?: () => void }, select?: SelectOutputDirectory): Promise<ScheduledDefinition> {
+  async create(requestId: string, raw: ScheduleInput, creation?: { id: string; revision: number; guard?: () => void }, select?: SelectOutputDirectory, guard?: () => void): Promise<ScheduledDefinition> {
     const scope = this.scope()
     const generation = this.generation
     const parsed = scheduleInputSchema.parse(raw)
@@ -118,6 +123,7 @@ export class ScheduledTaskService {
     const id = occurrenceId(`definition:${requestId}`, 0)
     const result = await this.options.repository.update(scope, data => {
       this.assertScope(scope, generation)
+      guard?.()
       const existing = data.definitions.find(value => value.id === id)
       if (existing) {
         if ((existing.plan?.kind === 'arrangement' && existing.plan.source) || JSON.stringify(existing.input) !== JSON.stringify(input) || existing.deleted) throw new AppError('CONFLICT')
@@ -143,7 +149,7 @@ export class ScheduledTaskService {
     log.info('scheduled definition created', { scheduledTaskId: result.id, revision: result.revision })
     return result
   }
-  async edit(id: string, revision: number, raw: ScheduleInput, creation?: { id: string; revision: number; guard?: () => void }, select?: SelectOutputDirectory): Promise<ScheduledDefinition> {
+  async edit(id: string, revision: number, raw: ScheduleInput, creation?: { id: string; revision: number; guard?: () => void }, select?: SelectOutputDirectory, guard?: () => void): Promise<ScheduledDefinition> {
     const scope = this.scope()
     const generation = this.generation
     const parsed = scheduleInputSchema.parse(raw)
@@ -153,6 +159,7 @@ export class ScheduledTaskService {
     const input = { ...parsed, ...(outputDirectory ? { outputDirectory } : {}) }
     const result = await this.options.repository.update(scope, data => {
       this.assertScope(scope, generation)
+      guard?.()
       const item = this.definition(data, id, revision)
       if (item.plan?.kind === 'arrangement' && item.plan.source) throw new AppError('INVALID_STATE', { message: '从工作复制的定时任务只能修改标题和时间。' })
       if (data.occurrences.some(run => run.definitionId === id && !TERMINAL_SCHEDULE_STATUSES.has(run.status))) throw new AppError('INVALID_STATE', { message: '请先处理或停止当前执行，再修改任务。' })
@@ -161,6 +168,8 @@ export class ScheduledTaskService {
       const normalized = { ...input, recurrence: input.recurrence ?? { frequency: 'once' as const, interval: 1 } }
       if (planInputKey(normalized) !== item.planInputKey) { item.plan = null; item.planInputKey = null }
       Object.assign(item, { input: normalized, enabled: false, nextRunAt: null, pausedAt: null, revision: item.revision + 1, updatedAt: this.now() })
+      delete item.actionGrant
+      delete item.connectorRevision
       this.linkCreation(data, item, creation)
       return item
     })
@@ -169,16 +178,19 @@ export class ScheduledTaskService {
     log.info('scheduled definition edited', { scheduledTaskId: id, revision: result.revision })
     return result
   }
-  async plan(id: string, revision: number, signal?: AbortSignal): Promise<ScheduledDefinition> {
+  async plan(id: string, revision: number, signal?: AbortSignal, guard?: () => void): Promise<ScheduledDefinition> {
     const scope = this.scope()
     const generation = this.generation
     const snapshot = this.definition(await this.options.repository.read(scope), id, revision)
+    this.assertScope(scope, generation)
+    guard?.()
     if (snapshot.enabled) throw new AppError('INVALID_STATE')
     if (snapshot.plan && snapshot.planInputKey === planInputKey(snapshot.input)) return snapshot
     return this.withPlanning(id, signal, async planningSignal => {
       const plan = await this.generatePlan(snapshot.input, scope, generation, planningSignal)
       return this.options.repository.update(scope, data => {
         this.assertScope(scope, generation)
+        guard?.()
         planningSignal.throwIfAborted()
         const item = this.definition(data, id, revision)
         if (item.enabled) throw new AppError('INVALID_STATE')
@@ -236,8 +248,8 @@ export class ScheduledTaskService {
     if (result.status === 'blocked') throw new AppError('INVALID_ARGUMENT', { message: result.reasons.join('；') })
     return result
   }
-  async confirm(id: string, revision: number): Promise<ScheduledDefinition> {
-    return this.enable(id, revision)
+  async confirm(id: string, revision: number, guard?: () => void): Promise<ScheduledDefinition> {
+    return this.enable(id, revision, undefined, guard)
   }
   async workSource(taskId: string): Promise<WorkScheduleContext> {
     const scope = this.scope(), generation = this.generation
@@ -246,11 +258,11 @@ export class ScheduledTaskService {
     this.assertScope(scope, generation)
     return result
   }
-  async createFromWork(raw: CreateWorkSchedule): Promise<ScheduledDefinition> {
+  async createFromWork(raw: CreateWorkSchedule, turnGuard?: () => void): Promise<ScheduledDefinition> {
     const request = createWorkScheduleSchema.parse(raw)
     const scope = this.scope(), generation = this.generation, source = this.options.source
     if (!source) throw new AppError('INVALID_STATE')
-    const guard = () => this.assertScope(scope, generation)
+    const guard = () => { this.assertScope(scope, generation); turnGuard?.() }
     const id = occurrenceId(`definition:${request.requestId}`, 0), requestKey = sourceFingerprint(request)
     const existing = (await this.options.repository.read(scope)).definitions.find(item => item.id === id)
     guard()
@@ -274,6 +286,7 @@ export class ScheduledTaskService {
       permissions: { preset: template.permissions.preset, approvalMode: template.permissions.approvalMode ?? 'confirm-each' },
       scheduledAt: request.scheduledAt, timezone: request.timezone, recurrence: request.recurrence })
     const plan = source.view(template, request.taskId, requestKey)
+    const connectorRevision = await this.options.connectorRevision?.(scope) ?? null
     const created = await this.options.repository.update(scope, data => {
       guard()
       const repeated = data.definitions.find(item => item.id === id)
@@ -283,7 +296,7 @@ export class ScheduledTaskService {
       }
       if (input.scheduledAt <= this.now()) throw new AppError('INVALID_ARGUMENT', { message: '保存过程中执行时间已过，请重新设置时间。' })
       const definition: ScheduledDefinition = { id, revision: 1, input, plan, planInputKey: planInputKey(input), enabled: true, deleted: false,
-        nextRunAt: input.scheduledAt, pausedAt: null, createdAt: this.now(), updatedAt: this.now() }
+        nextRunAt: input.scheduledAt, pausedAt: null, createdAt: this.now(), updatedAt: this.now(), connectorRevision }
       data.definitions.push(definition)
       return definition
     })
@@ -291,10 +304,11 @@ export class ScheduledTaskService {
     log.info('========== [SCHEDULED TASK] WORK COPIED AND ENABLED ==========', { scheduledTaskId: id, sourceTaskId: request.taskId, nextRunAt: created.nextRunAt, nodeCount: template.nodes.length })
     return created
   }
-  async editFromWork(raw: EditWorkSchedule): Promise<ScheduledDefinition> {
+  async editFromWork(raw: EditWorkSchedule, guard?: () => void): Promise<ScheduledDefinition> {
     const request = editWorkScheduleSchema.parse(raw), scope = this.scope(), generation = this.generation
     const result = await this.options.repository.update(scope, data => {
       this.assertScope(scope, generation)
+      guard?.()
       const item = this.definition(data, request.id, request.expectedRevision)
       if (item.plan?.kind !== 'arrangement' || !item.plan.source) throw new AppError('INVALID_STATE')
       if (data.occurrences.some(run => run.definitionId === item.id && !TERMINAL_SCHEDULE_STATUSES.has(run.status))) throw new AppError('INVALID_STATE', { message: '请先处理或停止当前执行，再修改时间。' })
@@ -310,19 +324,25 @@ export class ScheduledTaskService {
   async confirmCreation(id: string, revision: number, creationId: string, creationRevision: number, guard?: () => void): Promise<ScheduledDefinition> {
     return this.enable(id, revision, { id: creationId, revision: creationRevision, guard })
   }
-  private async enable(id: string, revision: number, creation?: { id: string; revision: number; guard?: () => void }): Promise<ScheduledDefinition> {
+  private async enable(id: string, revision: number, creation?: { id: string; revision: number; guard?: () => void }, guard?: () => void): Promise<ScheduledDefinition> {
     const scope = this.scope()
     const generation = this.generation
     const snapshot = this.definition(await this.options.repository.read(scope), id, revision)
     this.assertScope(scope, generation)
+    guard?.()
     creation?.guard?.()
     if (snapshot.input.mode === 'empty-text') throw new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage })
+    if (snapshot.input.actions) throw new AppError('INVALID_STATE', { message: '旧版附加发送已停用。请编辑任务，将收件人和正文写入工作目标后重新启用。' })
+    const connectorRevision = await this.options.connectorRevision?.(scope) ?? null
+    this.assertScope(scope, generation)
+    creation?.guard?.()
     if (snapshot.plan && snapshot.input.mode === 'general') {
       if (!this.options.authorizeModel) throw new AppError('MODEL_NOT_ALLOWED')
       await withTimeout(this.options.authorizeModel(snapshot.input.modelId), 60000, 'scheduled-enable-model-authorization')
     }
     const result = await this.options.repository.update(scope, data => {
       this.assertScope(scope, generation)
+      guard?.()
       creation?.guard?.()
       const preparation = creation ? data.creations?.find(item => item.id === creation.id) : undefined
       if (creation && (!preparation || preparation.revision !== creation.revision || preparation.stage !== 'enabling' || preparation.definitionId !== id)) throw new AppError('DRAFT_REVISION_CONFLICT')
@@ -334,7 +354,7 @@ export class ScheduledTaskService {
       let nextRunAt: number | null = item.input.scheduledAt
       if (recurrence.frequency === 'once') {
         if (data.occurrences.some(run => run.definitionId === id && run.scheduledAt === item.input.scheduledAt)) throw new AppError('INVALID_STATE')
-        if (item.input.scheduledAt <= this.now()) throw new AppError('INVALID_ARGUMENT')
+        if (item.input.scheduledAt <= this.now()) throw new AppError('INVALID_ARGUMENT', { message: '单次任务的计划时间已过，请先改到未来时间再启用。' })
       } else if (recurrence.frequency === 'cron') {
         nextRunAt = item.input.scheduledAt > this.now() ? item.input.scheduledAt : nextScheduledAt(this.now(), recurrence, item.input.timezone)
       } else {
@@ -343,7 +363,7 @@ export class ScheduledTaskService {
         }
         if (nextRunAt === null || nextRunAt <= this.now()) throw new AppError('INVALID_STATE', { message: 'Unable to determine next recurring execution' })
       }
-      Object.assign(item, { enabled: true, nextRunAt, pausedAt: null, revision: item.revision + 1, updatedAt: this.now() })
+      Object.assign(item, { enabled: true, nextRunAt, pausedAt: null, revision: item.revision + 1, updatedAt: this.now(), connectorRevision })
       if (preparation) { preparation.stage = 'completed'; preparation.error = null; preparation.revision++; preparation.updatedAt = this.now() }
       return item
     })
@@ -358,6 +378,7 @@ export class ScheduledTaskService {
       guard()
       const item = this.definition(data, id, revision)
       if (item.input.mode === 'empty-text') throw new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage })
+      if (item.input.actions) throw new AppError('INVALID_STATE', { message: '此任务含已配置的业务操作，请在定时任务中编辑并重新启用。' })
       if (data.occurrences.some(run => run.definitionId === id && !TERMINAL_SCHEDULE_STATUSES.has(run.status))) {
         throw new AppError('INVALID_STATE', { message: '请先处理或停止当前执行，再修改任务。' })
       }
@@ -407,33 +428,43 @@ export class ScheduledTaskService {
     log.info('scheduled definition updated from conversation', { scheduledTaskId: id, revision: result.revision })
     return result
   }
-  async pause(id: string, revision: number, remove = false, guard?: () => void): Promise<void> {
+  async pause(id: string, revision: number, remove = false, guard?: () => void): Promise<ScheduledDefinition> {
     const scope = this.scope()
     const generation = this.generation
-    await this.options.repository.update(scope, data => {
+    const result = await this.options.repository.update(scope, data => {
       this.assertScope(scope, generation)
       guard?.()
       const item = this.definition(data, id, revision)
       if (remove && data.occurrences.some(run => run.definitionId === id && !TERMINAL_SCHEDULE_STATUSES.has(run.status))) throw new AppError('INVALID_STATE', { message: '请先停止并核查当前执行，再删除任务。' })
       item.pausedAt = remove ? null : item.enabled ? this.now() : item.pausedAt ?? null
       item.enabled = false; item.nextRunAt = null; item.deleted = remove; item.revision++; item.updatedAt = this.now()
+      return item
     })
     this.planning.get(id)?.abort()
     this.timer.request()
     log.info(remove ? 'scheduled definition archived' : 'scheduled definition paused', { scheduledTaskId: id })
+    return result
   }
-  async check(runId: string, acknowledgeReview = false): Promise<void> {
-    const scope = this.scope()
+  async check(runId: string, acknowledgeReview = false, intent?: ScheduledRunIntent): Promise<void> {
+    const scope = this.scope(), generation = this.generation
+    const checkIntent = (run: ScheduledOccurrence | undefined) => {
+      this.assertScope(scope, generation)
+      intent?.guard()
+      if (intent && (run?.status !== intent.expectedStatus || run.attempts.at(-1)?.id !== intent.expectedAttemptId)) {
+        throw new AppError('CONFLICT', { message: '执行状态已变化，请重新查看后再操作。' })
+      }
+    }
     const snapshot = (await this.options.repository.read(scope)).occurrences.find(run => run.id === runId)
+    checkIntent(snapshot)
     if (acknowledgeReview && snapshot?.status !== 'review') throw new AppError('INVALID_STATE', { message: '执行状态已变化，请刷新记录后再核查。' })
     if (snapshot?.status === 'review') {
       if (!acknowledgeReview) throw new AppError('INVALID_STATE', { message: '请先核查已有文件和外部操作，再明确确认关闭本次执行。' })
       const result = await withTimeout(this.options.runner.inspect(snapshot), 15000, 'scheduled-review')
-      this.assertScope(scope)
+      checkIntent(snapshot)
       if (['running', 'pending', 'waiting_approval'].includes(result.state)) throw new AppError('INVALID_STATE', { message: '执行仍在运行或等待审批，请先停止后再关闭记录。' })
       await this.options.repository.update(scope, data => {
-        this.assertScope(scope)
         const run = data.occurrences.find(item => item.id === runId)
+        checkIntent(run)
         if (!run || run.status !== 'review') throw new AppError('INVALID_STATE')
         run.status = 'cancelled'; run.finishedAt = this.now(); run.nextRetryAt = null
         run.error = { code: 'REVIEW_ACKNOWLEDGED', action: 'blocked', message: '用户已核查并关闭本次执行，未重新执行任务。请保留并确认已有文件及外部操作结果。' }
@@ -444,14 +475,18 @@ export class ScheduledTaskService {
       return
     }
     await this.options.repository.update(scope, data => {
-      this.assertScope(scope)
       const run = data.occurrences.find(value => value.id === runId)
+      checkIntent(run)
       if (!run || !['blocked', 'waiting_auth'].includes(run.status)) throw new AppError('INVALID_STATE')
       run.status = 'pending'; run.nextRetryAt = null
     })
     this.timer.request()
   }
-  async cancel(runId: string): Promise<void> { await this.dispatcher.cancel(this.scope(), runId); this.timer.request() }
+  async cancel(runId: string, intent?: ScheduledRunIntent): Promise<void> {
+    const scope = this.scope(), generation = this.generation
+    await this.dispatcher.cancel(scope, runId, intent && { ...intent, guard: () => { this.assertScope(scope, generation); intent.guard() } })
+    this.timer.request()
+  }
   async scan(): Promise<void> {
     const scope = this.options.scope.currentScope()
     if (!scope) return
@@ -502,6 +537,7 @@ export class ScheduledTaskService {
             } })
             const run: ScheduledOccurrence = { id, definitionId: item.id, revision: item.revision, scheduledAt, taskId: randomUUID(),
               input: structuredClone(item.input), plan: structuredClone(item.plan), status: missed ? 'missed' : 'pending',
+              connectorRevision: item.connectorRevision ?? null,
               firstEligibleAt: this.now(), startDeadline: Math.min(this.now() + 3600000, scheduledAt + 86400000), startedAt: null,
               finishedAt: missed ? this.now() : null, nextRetryAt: null,
               error: missed ? { code: 'MISFIRE_WINDOW_EXCEEDED', message: '已错过执行时间超过 24 小时，本次不补执行。', action: 'blocked' } : null, attempts: [], stopReason: null }
@@ -522,8 +558,10 @@ export class ScheduledTaskService {
     await this.dispatcher.recover(scope)
     log.info('========== [SCHEDULED TASK] RECOVERY SCAN COMPLETE ==========')
   }
-  async resume(): Promise<void> {
+  async resume(guard?: () => void, expectedState?: ScheduledSnapshot['schedulerState']): Promise<void> {
     const scope = this.scope()
+    guard?.()
+    if (expectedState !== undefined && expectedState !== this.timer.state) throw new AppError('CONFLICT', { message: '调度器状态已变化，请重新查看。' })
     this.timer.stop()
     const generation = ++this.generation
     await this.scans.run('scan', async () => { this.assertScope(scope, generation); await this.recover() })

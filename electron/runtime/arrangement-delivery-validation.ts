@@ -1,5 +1,5 @@
 import { validateDeliveryFiles, type DeliveryFileOptions } from '../data/arrangement-delivery-files'
-import { buildDeliveryCorrection, DeliveryExecutionError, parseDeliverySubmission,
+import { buildDeliveryCorrection, DeliveryExecutionError, parseDeliverySubmission, usesActualDeliveryFilename,
   type DeliveryIssue, type DeliverySubmission, type DeliverySubmissionResult, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
 import { ArrangementMediaRecoveryError, ArrangementMediaSubmissionError, type ArrangementMediaSession } from '../domain/arrangement-media-runtime'
 import type { ArrangementNode } from '../domain/arrangement-plan'
@@ -38,10 +38,10 @@ export interface ArrangementDeliveryValidationOptions {
   onChecked(check: ArrangementDeliveryCheck): Promise<void>
 }
 
-export function buildArrangementDeliveryCorrection(issues: readonly DeliveryIssue[], node: ArrangementNode, mediaAssets?: MediaAssets): string {
+export function buildArrangementDeliveryCorrection(issues: readonly DeliveryIssue[], node: ArrangementNode, mediaAssets?: MediaAssets, scheduled = false): string {
   const artifacts = mediaAssets === undefined ? ''
     : `\n【主进程已核验的媒体资产】\n${JSON.stringify(mediaAssets)}\n仅从这些原任务资产选择交付，不等待、不重新生成。`
-  return buildDeliveryCorrection(issues, node) + artifacts
+  return buildDeliveryCorrection(issues, node, scheduled) + artifacts
 }
 
 export function resolveArrangementNodeFailure(error: unknown, interrupted: boolean, terminalMediaFailure: boolean): { message: string; terminal: boolean } {
@@ -71,7 +71,7 @@ export class ArrangementDeliveryValidation {
       const priorIssues = this.progress.issues
       await this.save({ ...this.progress, validationAttempts: this.progress.validationAttempts + 1, finalFiles: [], summary: undefined })
       this.stage = 'submission'
-      let parsed = parseDeliverySubmission(this.options.node, response.text, response.stopReason)
+      let parsed = parseDeliverySubmission(this.options.node, response.text, response.stopReason, this.options.scheduled)
       if (!parsed.ok && this.options.mediaSession && (!response.stopReason || response.stopReason === 'stop')) {
         const automatic = await this.options.mediaSession.automaticSubmission()
         if (automatic) parsed = parseDeliverySubmission(this.options.node, JSON.stringify(automatic))
@@ -101,7 +101,7 @@ export class ArrangementDeliveryValidation {
       this.stage = 'submission'
       const submission = this.progress.pendingSubmission ?? await this.options.mediaSession?.automaticSubmission()
       if (!submission) return { status: 'pending' }
-      const parsed = parseDeliverySubmission(this.options.node, JSON.stringify(submission))
+      const parsed = parseDeliverySubmission(this.options.node, JSON.stringify(submission), undefined, this.options.scheduled)
       await this.savePendingSubmission(parsed)
       const checked = await this.inspect(parsed)
       if (!checked.result.ok || !parsed.ok) {
@@ -151,10 +151,14 @@ export class ArrangementDeliveryValidation {
           ? await retryFileOperation(() => this.options.mediaSession!.materialize(parsed.submission), this.options.signal) : undefined
         this.stage = 'files'
         validationStartedAt = Date.now()
-        return parsed.ok
-          ? await validateDeliveryFiles(this.options.workspaceDir, this.options.node, parsed.submission, this.options.nodeRunId,
-            this.options.signal, { ...this.options.fileOptions, mediaFiles })
-          : parsed
+        if (!parsed.ok) return parsed
+        const node = this.options.node
+        // The submission has already been checked against the approved directory and format.
+        const paths = new Map(parsed.submission.finalDeliverables.map(file => [file.id, file.path]))
+        const actualNode = this.options.scheduled ? { ...node, deliverables: node.deliverables?.map(file =>
+          usesActualDeliveryFilename(file, true) ? { ...file, path: paths.get(file.id)! } : file) } : node
+        return await validateDeliveryFiles(this.options.workspaceDir, actualNode, parsed.submission, this.options.nodeRunId,
+          this.options.signal, { ...this.options.fileOptions, mediaFiles })
       } catch (error) {
         if (!(error instanceof ArrangementMediaSubmissionError)) {
           this.checkControl()
@@ -193,6 +197,6 @@ export class ArrangementDeliveryValidation {
       return { status: 'failed', stage: 'decision', error: new ScheduledDeliveryValidationError(`已停止自动纠错。${reason}`) }
     }
     const mediaAssets = await this.options.mediaSession?.artifactSummary()
-    return { status: 'correction', continueWith: buildArrangementDeliveryCorrection(this.progress.issues, this.options.node, mediaAssets) }
+    return { status: 'correction', continueWith: buildArrangementDeliveryCorrection(this.progress.issues, this.options.node, mediaAssets, this.options.scheduled) }
   }
 }

@@ -9,7 +9,6 @@ import { missingImageTargetFailure } from '../domain/media'
 import type { MediaHostTools, MediaJobCreated, MediaToolName } from '../domain/media-tools'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
 import { mediaReplacementInputSchema, mediaToolGenerationInputSchema } from '../../src/shared/media-host'
-import { toolApprovalTimeoutMs } from '../../src/shared/tool-approval'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
 import { realMediaParameters, realMediaSemanticHash } from '../common/platform/real-media-semantics'
 import { imageAspectRatio } from '../../src/shared/media-spec'
@@ -367,7 +366,7 @@ export class MediaService {
     await this.prepareRun({ taskId, runId, subscriptionId, employee, toolPolicy, requestApproval: this.options.requestApproval })
     this.assert(initialScope, initialEpoch)
     if (stopVersion !== (this.taskStops.get(stopKey) ?? 0)) throw new AppError('INVALID_STATE')
-    return this.generate(taskId, parseMediaInput(raw), { runId, subscriptionId, toolPolicy, capabilities, requestApproval: this.options.requestApproval })
+    return this.generate(taskId, parseMediaInput(raw), { runId, subscriptionId, toolPolicy, capabilities })
   }
 
   private async listUnconfirmedImages(scope: TaskOwnerScope, input: RunInput) {
@@ -404,17 +403,12 @@ export class MediaService {
       check()
       const eligible = originals.filter(job => !decisions.has(job.jobId) && job.runId !== runId &&
         job.generationStatus === 'SUBMISSION_UNKNOWN' && imageSubmissionUnconfirmed(job))
-      if (!eligible.length) throw new AppError('CONFLICT', { message: '没有可替换的图片任务。已处理或本轮刚提交的任务不会重复请求确认，请查看原任务。' })
+      if (!eligible.length) throw new AppError('CONFLICT', { message: '没有可替换的图片任务。已处理或本轮刚提交的任务不会重复提交，请查看原任务。' })
 
-      const request = { taskId, runId, subscriptionId, toolName: 'media_generate_image',
-        input: { operation: 'confirm-new-generation', unconfirmedJobCount: eligible.length } }
-      const accepted = await this.network(scope, parent, () => binding.requestApproval(request), toolApprovalTimeoutMs(request) + 1_000)
-      check()
-      // Consume this decision before any paid submission. It is never a reusable grant.
-      const recorded = await this.options.store.recordImageReplacement(scope, taskId, eligible.map(job => job.jobId), accepted ? 'approved' : 'declined', check)
+      // Consume the explicit replacement request before any paid submission.
+      const recorded = await this.options.store.recordImageReplacement(scope, taskId, eligible.map(job => job.jobId), 'approved', check)
       check()
       if (!recorded) throw new AppError('CONFLICT')
-      if (!accepted) throw new AppError('PERMISSION_DENIED', { message: '未确认重新生成，原图片任务已保留。' })
 
       const eligibleIds = new Set(eligible.map(job => job.jobId))
       const replacements = []
@@ -436,7 +430,7 @@ export class MediaService {
     }
   }
 
-  private async generate(taskId: string, originalInput: MediaGenerationInput, binding: { runId: string; subscriptionId: string; toolPolicy?: TaskToolPolicy; capabilities: MediaCapabilities; requestApproval: Approval; onJobCreated?: RunInput['onJobCreated'] }, signal?: AbortSignal, replacesJobId?: string): Promise<MediaJobView> {
+  private async generate(taskId: string, originalInput: MediaGenerationInput, binding: { runId: string; subscriptionId: string; toolPolicy?: TaskToolPolicy; capabilities: MediaCapabilities; onJobCreated?: RunInput['onJobCreated'] }, signal?: AbortSignal, replacesJobId?: string): Promise<MediaJobView> {
     const epoch = this.epoch, initialScope = this.scope(), stopKey = this.key(initialScope, taskId)
     const stopVersion = this.taskStops.get(stopKey) ?? 0
     const { scope, subscriptionId } = await this.task(taskId)
@@ -535,7 +529,6 @@ export class MediaService {
           ...(input.parameters.size ? { size: input.parameters.size } : {}), ...(input.parameters.quality ? { quality: input.parameters.quality } : {}) } }
       const requestHash = gateway.quoteRequiresUploadedReferences ? realMediaSemanticHash(semantic)
         : createHash('sha256').update(JSON.stringify(semantic)).digest('hex')
-      const automatic = binding.toolPolicy?.preset === 'full-local' && binding.toolPolicy.approvalMode === 'auto-approve'
       const uploadReferences = async () => {
         for (const id of input.localAssetIds) {
           const asset = await this.options.store.getAsset(scope, taskId, id)
@@ -547,16 +540,8 @@ export class MediaService {
           referenceIds.push(uploaded.referenceId)
         }
       }
-      // SEP quotes bind uploaded references. Approve transmission before sending any image bytes.
-      if (gateway.quoteRequiresUploadedReferences && input.localAssetIds.length) {
-        if (!automatic) {
-          const allowed = await this.network(scope, parent, () => binding.requestApproval({ taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
-            toolName: 'media_generate_image', input: { operation: 'upload-references', referenceCount: input.localAssetIds.length,
-              transmission: '参考图片将上传到 SEP 图片网关；尚未提交生成，报价后另行确认。' } }))
-          if (!allowed) throw new AppError('PERMISSION_DENIED')
-        }
-        await uploadReferences()
-      }
+      // SEP quotes bind the IDs returned from uploading the selected references.
+      if (gateway.quoteRequiresUploadedReferences) await uploadReferences()
       const quoteRequest = { ...semantic, referenceIds, requestHash }
       const readQuote = async () => {
         const next = mediaQuoteSchema.parse(await this.network(scope, parent, s => gateway.quote(binding.subscriptionId, quoteRequest, s)))
@@ -567,33 +552,14 @@ export class MediaService {
         return next
       }
       let quote = await readQuote()
-      let approvalAccepted = automatic
-      const approve = async () => {
-        const allowed = await this.network(scope, parent, () => binding.requestApproval({ taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
-          toolName: 'media_generate_image', input: { profile: profile.displayName, operation: input.operation, referenceCount: input.localAssetIds.length,
-            transmission: '参考图片将上传到 SEP 图片网关', parameters: input.parameters, creativeBrief: input.creativeBrief,
-            quote: { status: quote.status, amount: quote.amount, currency: quote.currency, expiresAt: quote.expiresAt } } }))
-        if (!allowed) throw new AppError('PERMISSION_DENIED')
-        approvalAccepted = true
-      }
-      if (!automatic) await approve()
-      // Human approval can outlive a short quote. Re-quote at most once using the
-      // same semantic hash; a price/currency change requires fresh approval.
-      if (quote.expiresAt <= Date.now()) {
-        const previous = quote
-        quote = await readQuote()
-        if (quote.amount !== previous.amount || quote.currency !== previous.currency) {
-          approvalAccepted = automatic
-          if (!automatic) await approve()
-        }
-      }
-      if (!approvalAccepted || quote.expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED', { message: '报价授权已过期，请重新发起。' })
+      if (quote.expiresAt <= Date.now()) quote = await readQuote()
+      if (quote.expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED', { message: '报价授权已过期，请重新发起。' })
       if (!gateway.quoteRequiresUploadedReferences) await uploadReferences()
       if (replacesJobId) await assertOriginalUnconfirmed(replacesJobId)
       const now = Date.now(), clientRequestId = randomUUID()
       job = { version: 1, owner: scope, jobId, taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
         clientRequestId, requestHash, input, profile, request: { ...semantic, referenceIds, requestHash, quoteId: quote.quoteId, clientRequestId },
-        quote, approval: automatic ? 'automatic' : 'manual', receiptId: null, submission: 'NOT_SENT', generationStatus: 'SUBMITTING',
+        quote, approval: 'automatic', receiptId: null, submission: 'NOT_SENT', generationStatus: 'SUBMITTING',
         trackingStatus: 'ACTIVE', saveStatus: 'PENDING', outputs: [], billingStatus: 'UNKNOWN', nextPollAt: now, attempts: 0, error: null, createdAt: now, updatedAt: now }
       this.assert(scope, epoch); parent.throwIfAborted()
       await this.options.store.saveJob(scope, job)

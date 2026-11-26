@@ -44,7 +44,8 @@ export interface TaskExecutionPort {
   continueConversation(
     taskId: string,
     prompt: string,
-    recovery?: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal },
+    recovery?: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal;
+      scheduleDraftAction?: import('../../src/shared/scheduled-creation').ConversationScheduleDraftAction },
   ): Promise<void>
   switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void>
   pauseTask(taskId: string): Promise<void>

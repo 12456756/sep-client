@@ -126,7 +126,7 @@ export class SharedPiSession {
   }
 
   private browserPolicy(config: PiAgentSessionConfig): string | undefined {
-    if (!config.browserArtifactTaskId) return undefined
+    if (!config.browserArtifactTaskId && !config.conversationScheduleManagement) return undefined
     const policy = config.toolPolicy
     return JSON.stringify([config.workspaceDir, config.disableTools, policy?.preset, policy?.approvalMode,
       policy?.allowedTools, policy?.allowedPaths, policy?.deniedPaths])

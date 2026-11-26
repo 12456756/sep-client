@@ -78,7 +78,7 @@ export async function seedConversationResults(root: string, owner: TaskOwnerScop
   const rejectOnline = () => { throw new Error('Result fixture must not execute media operations') }
   const media = new MediaService({ scope, getTask, store: new MediaStore(root), authorize: rejectOnline, requestApproval: rejectOnline })
   const videoHost = new MockVideoHostService({ mock: true, scope, getTask, store: videos,
-    localRuntime: () => fixture.runtime, authorize: rejectOnline, requestApproval: rejectOnline, authorizationRevision: () => 0,
+    localRuntime: () => fixture.runtime, authorize: rejectOnline, authorizationRevision: () => 0,
     readReference: rejectOnline, gateway: () => ({ quote: rejectOnline, submit: rejectOnline, getReceipt: rejectOnline,
       findReceipt: rejectOnline, content: rejectOnline, uploadReference: rejectOnline }),
   })

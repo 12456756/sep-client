@@ -76,7 +76,7 @@ export class ManagedConnector implements ConnectorRuntimePort {
     return { ...binding, commands: binding.commands?.map(command => ({ ...command,
       reference: async (path, source) => { await ensure(source); return command.reference(path, source) },
       schema: async (path, source) => { await ensure(source); return command.schema(path, source) },
-      execute: async (args, workspace, source) => { await ensure(source); return command.execute(args, workspace, source) },
+      execute: async (args, workspace, source) => { await ensure(source); return command.execute(args, workspace, source ? AbortSignal.any([signal, source]) : signal) },
     })) }
   }
   cancel(): void {

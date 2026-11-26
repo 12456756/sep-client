@@ -1,7 +1,7 @@
 /** 会话显示对话，编排显示实时节点消息；结果和工作信息按需查看。 */
 
 import {
-  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, Inbox, Info, LoaderCircle,
+  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, History, Inbox, Info, LoaderCircle,
   RotateCcw, Sparkles, StopCircle, Trash2, X, XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -22,6 +22,8 @@ import { FileMentionChips, FileMentionPicker } from '../../components/enterprise
 import { FileMentionEditor } from '../../components/enterprise/attachments/FileMentionEditor';
 import { useTextReferenceComposer } from '../../components/enterprise/attachments/use-text-reference-composer';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
+import { useScheduledTasks } from '../../features/enterprise/use-scheduled-tasks';
+import { RUN_LABELS, TERMINAL_RUNS } from '../../features/enterprise/scheduled-task-model';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
@@ -61,14 +63,31 @@ type Panel = 'results' | 'process' | 'skills' | 'info' | null;
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   const isConversation = work.kind === 'conversation';
   const team = useTeam(work, workspace);
-  const finished = work.status === 'completed';
+  const origin = work.scheduledOrigin;
+  const schedule = useScheduledTasks(undefined, workspace.attachmentScopeKey, !!origin);
+  const scheduledRun = origin ? schedule.data?.occurrences.find(item => item.id === origin.occurrenceId && item.definitionId === origin.definitionId && item.taskId === work.id) : undefined;
+  const scheduledStatus = !origin ? undefined : scheduledRun?.status === 'running' && !work.isActive && work.status === 'completed'
+    ? '正在核对执行结果' : scheduledRun ? RUN_LABELS[scheduledRun.status]
+    : schedule.error || !schedule.loading ? '暂时无法读取本次定时执行记录' : '正在读取本次定时执行记录';
+  const finished = origin ? scheduledRun?.status === 'completed' : work.status === 'completed';
+  const headingStatus = scheduledRun?.status === 'failed' || scheduledRun?.status === 'timed_out' ? 'failed'
+    : scheduledRun?.status === 'cancelled' ? 'paused'
+    : scheduledRun?.status === 'review' || scheduledRun?.status === 'blocked' ? 'waiting-user'
+    : origin && finished ? 'completed'
+    : origin && work.status === 'completed' ? scheduledRun?.status === 'running' ? 'running' : 'waiting-user'
+    : work.status;
+  const scheduledIssue = scheduledRun?.error?.message || (origin && work.status === 'failed' ? work.stopReason || work.nextUserAction || '执行失败' : undefined);
+  const openScheduledHistory = origin ? () => {
+    workspace.navigate({ name: 'scheduled', taskId: origin.definitionId, runId: origin.occurrenceId, view: 'history' });
+  } : undefined;
   /** 这项工作已经不会自己往前走了。耗时、结束时间、能不能终止都按它算。 */
-  const over = finished || work.status === 'paused' || work.status === 'failed';
+  const over = origin ? !!scheduledRun && (TERMINAL_RUNS.has(scheduledRun.status) || scheduledRun.status === 'review')
+    : finished || work.status === 'paused' || work.status === 'failed';
   const percent = Math.round(work.progress);
   const runStartedAt = work.isActive
     ? work.currentRunStartedAt ?? null
     : over ? work.lastRunId ? work.lastRunStartedAt ?? null : work.lastRunStartedAt ?? work.startedAt : null;
-  const runEndedAt = work.lastRunEndedAt ?? work.completedAt;
+  const runEndedAt = origin ? scheduledRun?.finishedAt ?? null : work.lastRunEndedAt ?? work.completedAt;
   const mediaPhase = work.kind === 'flow' ? work.arrangementExecution?.media?.find(item => !['ready', 'blocked'].includes(item.phase))?.phase ?? null : null;
   const mediaPhaseLabel = mediaPhase === 'preparing' ? '正在准备媒体请求' : mediaPhase === 'awaiting-approval' ? '等待确认媒体请求' : mediaPhase === 'submitted' ? '媒体已提交，等待供应商' : mediaPhase === 'tracking' ? '供应商正在生成媒体' : mediaPhase === 'saving' ? '正在下载并保存媒体' : mediaPhase === 'materializing' ? '正在整理媒体交付结果' : null;
   const [panel, setPanel] = useState<Panel>(null);
@@ -125,7 +144,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
       <span className="ent-wk-infobar-progress">
         <span className={`ent-bar${finished ? ' complete' : ''}${mediaPhaseLabel ? ' media-waiting' : ''}`}>
           <span><i className={over ? 'full' : undefined} style={{ width: mediaPhaseLabel ? '38%' : `${Math.min(100, Math.max(2, percent))}%` }} /></span>
-          <b>{mediaPhaseLabel ?? `${percent}%`}</b>
+          <b>{scheduledStatus ?? mediaPhaseLabel ?? `${percent}%`}</b>
         </span>
       </span>
     ),
@@ -144,7 +163,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
       </button>
 
       <div className="ent-wk-head">
-        <WorkStatusIcon work={work} />
+        <WorkStatusIcon work={headingStatus === work.status ? work : { ...work, status: headingStatus }} />
         <WorkTypeTag workType={work.workType} />
         <h1>{work.title}</h1>
         <div className="ent-wk-head-actions">
@@ -190,14 +209,25 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
       <div className="ent-wk-detail">
         {/* 主轴：两种工作类型都以内容为主体，内部滚动 */}
         <div className="ent-wk-detail-main">
-          <NeedsYou work={work} workspace={workspace} mediaRetryState={isConversation ? mediaSummary.retryState : 'clear'} conversationSkipped={conversationSkipped} onViewResults={() => openInspector('results')} />
-          {work.kind === 'flow' ? <FailedNodeActions work={work} busy={workspace.busy} onRetry={workspace.retryWork} /> : null}
+          {!origin && <NeedsYou work={work} workspace={workspace} mediaRetryState={isConversation ? mediaSummary.retryState : 'clear'} conversationSkipped={conversationSkipped} onViewResults={() => openInspector('results')} />}
+          {!origin && work.kind === 'flow' ? <FailedNodeActions work={work} busy={workspace.busy} onRetry={workspace.retryWork} /> : null}
+          {scheduledIssue && <section className="ent-flow-act danger ent-failure-notice" aria-label="定时执行异常">
+            <div className="ent-failure-row">
+              <p className="ent-failure-reason" role="status" title={scheduledIssue}>{scheduledIssue}</p>
+              {openScheduledHistory && !work.isActive && <IconHint label="查看执行记录" side="top">
+                <button type="button" className="ent-icon-btn ent-failure-retry" aria-label="查看执行记录" onClick={openScheduledHistory}>
+                  <History size={15} aria-hidden />
+                </button>
+              </IconHint>}
+            </div>
+          </section>}
 
           {isConversation ? <section className="ent-chat-panel" aria-label="工作对话">
             <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} onSkippedChange={setConversationSkipped} addFileRef={addToConversation} />
           </section> : <ArrangementTranscript work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey}
+            scheduledStatus={scheduledStatus} onScheduledHistory={scheduledIssue ? undefined : openScheduledHistory}
             busy={workspace.busy} onStop={workspace.stopWork} onResults={() => openInspector('results')} />}
-          <InlineFileApproval taskId={work.id} />
+          {!origin && <InlineFileApproval taskId={work.id} />}
         </div>
 
         {/* 原生模态面板悬浮在工作空间上方，查询组件在关闭时仍保持挂载。 */}

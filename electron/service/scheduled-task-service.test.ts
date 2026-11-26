@@ -23,7 +23,7 @@ test('retires stored local schedules without discarding records or blocking ordi
   t.after(() => rm(root, { recursive: true, force: true }))
   const scope = { memberId: 'm', enterpriseId: 'e' }
   const store = new ScheduledTaskStore(root)
-  const { subscriptionId: _subscription, modelId: _model, ...base } = input
+  const { subscriptionId: _subscription, modelId: _model, actions: _actions, ...base } = input
   const legacy: ScheduleInput = { ...base, workDir: root, mode: 'empty-text', emptyText: { naming: 'fixed', filename: 'empty.txt' },
     permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
   const admitted: string[] = []
@@ -153,6 +153,122 @@ function harness(overrides: Partial<ScheduledRunnerPort> = {}, serviceOverrides:
   })
   return { service, get data() { return data }, get starts() { return starts }, get plans() { return plans }, advance(value: number) { now = value } }
 }
+
+test('conversation can query, change time, enable, and pause the same definition', async t => {
+  const h = harness()
+  t.after(() => h.service.stop())
+  const created = await h.service.create('conversation-lifecycle', input)
+  const id = created.id
+  const target = { id }
+  const planned = await h.service.plan(id, created.revision)
+  const labels: string[] = []
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal, now: () => 1000,
+    isCurrent: () => true, conversationIds: async () => new Set([id]), approve: async () => true,
+    approveAction: async (_tool, data) => { labels.push(data.label); return true } })
+  assert.equal((await manage({ tool: 'query_scheduled_tasks', input: { view: 'task', target: { fromConversation: true } } })).status, 'ok')
+  assert.deepEqual(labels, [])
+  const update = await manage({ tool: UPDATE_SCHEDULED_TASK_TOOL, input: { target, expectedRevision: planned.revision,
+    time: { kind: 'once', localDateTime: '2026-11-26T13:24' } } })
+  assert.equal(update.status, 'updated')
+  assert.equal(update.enabled, false)
+  const confirmed = await manage({ tool: 'enable_scheduled_task', input: { target } })
+  assert.equal(confirmed.status, 'applied')
+  assert.deepEqual(h.data.definitions.map(item => [item.id, item.enabled, item.nextRunAt]), [[id, true, Date.parse('2026-11-26T05:24:00Z')]])
+  assert.equal((await manage({ tool: 'enable_scheduled_task', input: { target } })).status, 'unchanged')
+  assert.equal((await manage({ tool: 'pause_scheduled_task', input: { target } })).status, 'applied')
+  assert.equal(h.data.definitions[0]?.enabled, false)
+  assert.equal(h.data.definitions[0]?.nextRunAt, null)
+  assert.deepEqual(labels, ['启用任务', '暂停任务'])
+  assert.equal(h.starts, 0)
+})
+
+test('conversation enable rejects missing plans, past times, ambiguous names and stale approvals', async t => {
+  const h = harness()
+  t.after(() => h.service.stop())
+  const task = await h.service.create('revision', input)
+  const target = { id: task.id }
+  let approvals = 0
+  let accept = false
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal, now: () => now,
+    isCurrent: () => true, conversationIds: async () => new Set(), approve: async () => true,
+    approveAction: async () => { approvals++; if (accept) await h.service.pause(task.id, h.data.definitions[0]!.revision); return accept } })
+  let now = 1000
+  const enableTask = () => manage({ tool: 'enable_scheduled_task', input: { target } })
+  assert.equal((await enableTask()).status, 'needs_input')
+  await h.service.plan(task.id, task.revision)
+  await h.service.create('same-name', input)
+  assert.equal((await manage({ tool: 'enable_scheduled_task', input: { target: { title: input.name } } })).status, 'needs_input')
+  now = 2500
+  assert.equal((await enableTask()).status, 'needs_input')
+  assert.equal(approvals, 0)
+  now = 1000
+  assert.equal((await enableTask()).status, 'cancelled')
+  accept = true
+  assert.equal((await enableTask()).status, 'failed')
+  assert.equal(approvals, 2)
+  assert.equal(h.data.definitions[0]?.enabled, false)
+})
+
+test('schedule query paginates safe data and read-only sessions cannot write', async t => {
+  const h = harness()
+  t.after(() => h.service.stop())
+  const task = await h.service.create('private', { ...input, goal: 'Bearer sensitive-fixture\nProduce report' })
+  await h.service.create('public', { ...input, name: 'Daily' })
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal, readOnly: true,
+    isCurrent: () => true, conversationIds: async () => new Set(), approve: async () => assert.fail('no write approvals') })
+  const page = await manage({ tool: 'query_scheduled_tasks', input: { view: 'tasks', limit: 1 } })
+  assert.equal(page.status, 'ok')
+  assert.match(JSON.stringify(page), /"nextOffset":1/)
+  const detail = await manage({ tool: 'query_scheduled_tasks', input: { view: 'task', target: { id: task.id }, includeGoal: true } })
+  assert.equal(detail.status, 'ok')
+  assert.doesNotMatch(JSON.stringify(detail), /sensitive-fixture|D:\/reports|permissions|planInputKey/)
+  assert.equal((await manage({ tool: DELETE_SCHEDULED_TASK_TOOL, input: { target: { id: task.id } } })).status, 'failed')
+})
+
+test('a structured schedule stays disabled when saved and when its plan is generated', async t => {
+  const h = harness()
+  t.after(() => h.service.stop())
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal,
+    context: { key: 'turn', modelId: 'model', subscriptionId: 'sub', workDir: input.workDir },
+    isCurrent: () => true, conversationIds: async () => new Set(), approve: async () => false, approveAction: async () => true })
+  const request = { tool: 'create_scheduled_task_definition', input: { configuration: { name: input.name, goal: input.goal,
+    executor: { mode: 'employee', modelId: 'model', subscriptionId: 'sub' }, scheduledAt: input.scheduledAt, timezone: input.timezone,
+    recurrence: { frequency: 'once', interval: 1 } } } } as const
+  assert.equal((await manage(request)).status, 'applied')
+  assert.equal((await manage(request)).status, 'applied')
+  assert.equal(h.data.definitions.length, 1)
+  const item = h.data.definitions[0]!
+  assert.equal(item.enabled, false)
+  assert.equal(item.plan, null)
+  const result = await manage({ tool: 'plan_scheduled_task', input: { target: { id: item.id }, expectedRevision: item.revision } })
+  assert.equal(result.status, 'applied')
+  assert.equal(h.data.definitions[0]?.enabled, false)
+  assert.equal(h.plans, 1)
+  assert.equal(h.starts, 0)
+})
+
+test('run tools report the persisted outcome of requeueing, cancelling and closing review', async t => {
+  const h = harness({ async inspect() { return { state: 'missing' } }, async cancel() { throw new Error('cancel not verified') } })
+  t.after(() => h.service.stop())
+  const definition = await enable(h, 'run-management', { ...input, recurrence: { frequency: 'daily', interval: 1 } })
+  await h.service.scan()
+  const runId = h.data.occurrences[0]!.id
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal,
+    isCurrent: () => true, conversationIds: async () => new Set(), approve: async () => false, approveAction: async () => true })
+  h.data.occurrences[0]!.status = 'blocked'
+  const resumed = await manage({ tool: 'resume_scheduled_run', input: { runId } })
+  assert.equal(resumed.status, 'applied')
+  assert.match(JSON.stringify(resumed), /"status":"pending"/)
+  h.data.occurrences[0]!.status = 'running'
+  const cancelled = await manage({ tool: 'cancel_scheduled_run', input: { runId } })
+  assert.equal(cancelled.status, 'applied')
+  assert.match(JSON.stringify(cancelled), /"status":"review"/)
+  const closed = await manage({ tool: 'acknowledge_scheduled_run_review', input: { runId } })
+  assert.equal(closed.status, 'applied')
+  assert.match(JSON.stringify(closed), /"status":"cancelled"/)
+  assert.equal(h.data.definitions.find(item => item.id === definition.id)?.enabled, true)
+  assert.equal(h.starts, 1)
+})
 test('only the native selection can authorize a scheduled output directory', async t => {
   const first = await realpath(await mkdtemp(join(tmpdir(), 'csep-output-auth-')))
   const other = await realpath(await mkdtemp(join(tmpdir(), 'csep-output-other-')))
@@ -162,9 +278,13 @@ test('only the native selection can authorize a scheduled output directory', asy
   await assert.rejects(h.service.create('never', raw), { code: 'INVALID_ARGUMENT' })
   await assert.rejects(h.service.create('mismatch', raw, undefined, async () => other), { code: 'INVALID_ARGUMENT' })
   assert.equal(h.data.definitions.length, 0)
-  const created = await h.service.create('chosen', raw, undefined, async path => { assert.equal(path, first); return path })
+  const created = await h.service.create('chosen', raw, undefined, async path => {
+    assert.equal(path, first)
+    return path
+  })
   assert.equal(created.input.outputDirectory?.path, first)
   assert.notEqual(created.input.outputDirectory?.identity, raw.outputDirectory.identity)
+  assert.equal(created.input.outputDirectory?.replaceWithBackup, undefined)
 })
 
 test('conversation rescheduling updates the original task atomically without changing what it runs', async t => {
@@ -606,16 +726,19 @@ test('stopping a service while preflight awaits never admits the late result', a
   assert.equal(h.data.occurrences[0].status, 'pending')
 })
 
-test('approval transitions remain in the same occurrence and never trigger a second admission', async () => {
+test('scheduled execution stops instead of waiting for legacy runtime approval or replaying the occurrence', async () => {
   let state: 'running' | 'waiting_approval' | 'completed' = 'running'
-  const h = harness({ async inspect() { return { state } } })
+  let cancelled = 0
+  const h = harness({ async inspect() { return { state } }, async cancel() { cancelled++ } })
   await enable(h); await h.service.scan()
   state = 'waiting_approval'; await h.service.scan()
-  assert.equal(h.data.occurrences[0].status, 'waiting_approval')
+  assert.equal(h.data.occurrences[0].status, 'review')
+  assert.equal(h.data.occurrences[0].error?.code, 'SCHEDULED_INTERACTION_UNAVAILABLE')
+  assert.equal(cancelled, 1)
   state = 'running'; await h.service.scan()
-  assert.equal(h.data.occurrences[0].status, 'running')
+  assert.equal(h.data.occurrences[0].status, 'review')
   state = 'completed'; await h.service.scan()
-  assert.equal(h.data.occurrences[0].status, 'completed')
+  assert.equal(h.data.occurrences[0].status, 'review')
   assert.equal(h.starts, 1); h.service.stop()
 })
 

@@ -5,7 +5,7 @@ import type { ScheduledTasksModel } from '../../../features/enterprise/use-sched
 import { useFeedback } from '../../feedback/FeedbackProvider'
 
 const LABELS: Record<ScheduledCreation['stage'], string> = {
-  parsing: '正在理解任务', needs_input: '需要补充信息', blocked: '需要调整', planning: '正在生成工作计划',
+  parsing: '正在理解任务', needs_input: '需要补充信息', needs_confirmation: '待重新确认', blocked: '需要调整', planning: '正在生成工作计划',
   enabling: '正在启用', completed: '已创建并启用', failed: '创建未完成', cancelled: '已取消创建',
 }
 

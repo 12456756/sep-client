@@ -94,6 +94,21 @@ test('a content-only schedule change shows the full replacement before approval'
   } finally { ui.cleanup() }
 })
 
+test('schedule actions use the host summary and fail closed without it', async () => {
+  const enabled = mount('enable_scheduled_task', { label: '启用任务', message: '启用「日报」？到达执行时间后会自动执行。' })
+  const malformed = mount('pause_scheduled_task', { target: { id: 'task' } })
+  try {
+    const dialog = enabled.feedback.getSnapshot()!
+    assert.equal(dialog.actionLabel, '启用任务')
+    assert.match(dialog.message, /到达执行时间后会自动执行/)
+    assert.equal(malformed.feedback.getSnapshot(), null)
+    assert.deepEqual(malformed.decisions, [false])
+    await enabled.feedback.accept(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(enabled.decisions, [true])
+  } finally { enabled.cleanup(); malformed.cleanup() }
+})
+
 test('browser snapshots describe reading or saving without skipping approval', () => {
   for (const [input, message] of [
     [{}, '允许读取当前网页内容？'],
@@ -242,77 +257,26 @@ test('the schedule approval describes an all-wildcard cron as every minute', () 
   } finally { ui.cleanup() }
 })
 
-test('quoted image and video generation proceeds once without a confirmation dialog', () => {
-  for (const [toolName, input] of [
-    ['media_generate_image', { quote: { amount: '1.25', currency: 'CNY' } }],
-    ['video_generate', { mock: false, quote: { amount: '28.800000', currency: 'CNY' } }],
-    ['video_from_image', { mock: false, quote: { amount: '28.800000', currency: 'CNY' } }],
-    ['video_generate', { mock: true }],
-  ] as const) {
-    const ui = mount(toolName, input)
-    try {
-      assert.deepEqual(ui.decisions, [true])
-      assert.equal(ui.feedback.getSnapshot(), null)
-      ui.replay()
-      assert.deepEqual(ui.decisions, [true])
-    } finally { ui.cleanup() }
-  }
-})
-
-test('expired approvals and invalid paid video quotes are denied without a dialog', () => {
-  for (const ui of [
-    mount('video_generate', { mock: false, quote: { amount: 'unknown', currency: 'CNY' } }),
-    mount('video_generate', { mock: false }),
-    mount('media_generate_image', { quote: { amount: '1', currency: 'CNY' } }, Date.now() - 1),
-  ]) {
-    try {
-      assert.deepEqual(ui.decisions, [false])
-      assert.equal(ui.feedback.getSnapshot(), null)
-    } finally { ui.cleanup() }
-  }
-})
-
-test('new generation after an unknown submission always requires an explicit risk decision', async () => {
+test('stale generation approvals cannot authorize a request or open a dialog', () => {
   for (const toolName of ['media_generate_image', 'video_generate', 'video_from_image']) {
-    for (const accepted of [true, false]) {
-      const ui = mount(toolName, { operation: 'confirm-new-generation', unconfirmedJobCount: 4,
-        mock: false, quote: { amount: '1.000000', currency: 'CNY' } })
+    for (const input of [
+      { quote: { amount: '1.250000', currency: 'CNY' }, mock: false },
+      { operation: 'upload-references', referenceCount: 1 },
+      { operation: 'confirm-new-generation', unconfirmedJobCount: 1 },
+    ]) {
+      const ui = mount(toolName, input)
       try {
-        const dialog = ui.feedback.getSnapshot()!
-        assert.equal(dialog.tone, 'confirm')
-        assert.match(dialog.message, toolName === 'media_generate_image'
-          ? /4 个原图片任务.*尚未确认.*分别计费.*原任务仍会保留/
-          : /是否受理及计费尚未确认.*分别生成并计费.*原任务状态仍会保留/)
-        assert.equal(dialog.actionLabel, '仍然生成')
-        assert.deepEqual(ui.decisions, [])
-        if (accepted) await ui.feedback.accept(dialog.id)
-        else ui.feedback.dismiss(dialog.id)
-        await new Promise<void>(resolve => setImmediate(resolve))
-        assert.deepEqual(ui.decisions, [accepted])
+        assert.equal(ui.feedback.getSnapshot(), null)
+        assert.deepEqual(ui.decisions, [false])
         ui.replay()
-        assert.deepEqual(ui.decisions, [accepted])
+        assert.deepEqual(ui.decisions, [false])
       } finally { ui.cleanup() }
     }
   }
 })
 
-test('expired or cleared new-generation confirmations cannot approve another submission', async () => {
-  const input = { operation: 'confirm-new-generation', unconfirmedJobCount: 1 }
-  const expired = mount('video_generate', input, Date.now() - 1)
-  const cleared = mount('media_generate_image', input)
-  try {
-    assert.deepEqual(expired.decisions, [false])
-    assert.equal(expired.feedback.getSnapshot(), null)
-    cleared.feedback.clear()
-    await new Promise<void>(resolve => setImmediate(resolve))
-    assert.deepEqual(cleared.decisions, [false])
-  } finally { expired.cleanup(); cleared.cleanup() }
-})
-
-test('reference uploads, local commands and other tools retain explicit approval', async () => {
+test('local commands and other tools retain explicit approval', async () => {
   for (const [toolName, input] of [
-    ['media_generate_image', { operation: 'upload-references' }],
-    ['video_from_image', { operation: 'upload-references', mock: false }],
     ['bash', { command: 'example' }],
     ['media_cancel_job', { quote: { amount: '1', currency: 'CNY' } }],
     ['unknown', {}],

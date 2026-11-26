@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, CalendarClock, Copy, LoaderCircle, Maximize, Paperclip, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { ArrowRight, CalendarClock, Clock, Copy, LoaderCircle, Maximize, Paperclip, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { SiliconEmployee, WorkItem, WorkMessage } from '../../features/enterprise/types'
 import { useArrangementTranscript } from '../../features/enterprise/use-arrangement-transcript'
 import { buildConversationReplies, buildConversationTranscript, type ConversationRunTranscript } from '../../features/enterprise/conversation-transcript'
@@ -15,7 +15,7 @@ import { DocumentPreviewButton } from '../workspace/DocumentPreviewButton'
 import { SaveWordCopyButton } from '../workspace/SaveWordCopyButton'
 import { useFileMenuCommands } from '../workspace/file-menu-actions'
 import '../workspace/result-file-card.css'
-import { formatScheduleReceiptTime, type ConversationScheduleReceipt } from '../../shared/scheduled-creation'
+import { formatScheduleReceiptTime, type ConversationScheduleDraft, type ConversationScheduleDraftAction, type ConversationScheduleReceipt } from '../../shared/scheduled-creation'
 import { RUNTIME_FAILURE_MESSAGES } from '../../shared/runtime-feedback'
 
 interface Props {
@@ -25,21 +25,24 @@ interface Props {
   preparing: boolean
   mediaState: { results: ConversationResult[]; error: string | null; retry: () => void }
   onOpenSchedule?: (id: string) => void
+  onScheduleAction?: (action: ConversationScheduleDraftAction) => Promise<boolean>
+  scheduleActionDisabled?: boolean
 }
 
 export const ConversationMessages = React.memo(function ConversationMessages(props: Props) {
   return <ConversationMessagesContent key={`${props.scopeKey}:${props.work.id}`} {...props} />
 })
 
-function ConversationMessagesContent({ work, employees, scopeKey, preparing, mediaState: media, onOpenSchedule }: Props) {
+function ConversationMessagesContent({ work, employees, scopeKey, preparing, mediaState: media, onOpenSchedule, onScheduleAction, scheduleActionDisabled }: Props) {
   const transcript = useArrangementTranscript(work.id, scopeKey)
   const runs = useMemo(() => buildConversationTranscript(transcript.events), [transcript.events])
   return <><ConversationMessagesView work={work} employees={employees} preparing={preparing} runs={runs} media={media.results} onOpenSchedule={onOpenSchedule}
+    onScheduleAction={onScheduleAction} scheduleActionDisabled={scheduleActionDisabled}
     loading={transcript.loading} error={transcript.error} onReload={transcript.reload} onExportDiagnostic={window.electronAPI?.exportWorkDiagnostic} />
     {media.error ? <div className="ent-conversation-results-error" role="alert"><span>{media.error}</span><button type="button" className="ent-btn sm ghost" onClick={media.retry}><RotateCcw size={14} />重新读取</button></div> : null}</>
 }
 
-export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, onExportDiagnostic, onOpenSchedule, media = [] }: Omit<Props, 'scopeKey' | 'mediaState'> & {
+export function ConversationMessagesView({ work, employees, preparing, runs, loading, error, onReload, onExportDiagnostic, onOpenSchedule, onScheduleAction, scheduleActionDisabled, media = [] }: Omit<Props, 'scopeKey' | 'mediaState'> & {
   media?: ConversationResult[]
   runs: readonly ConversationRunTranscript[]
   loading: boolean
@@ -51,8 +54,14 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
   const items = buildConversationReplies(work, preparing)
   const results = groupConversationResults(work, items, media)
   const byRun = new Map(runs.map(run => [run.runId, run]))
+  const latestDrafts = new Map<string, number>()
+  for (const [index, item] of items.entries()) {
+    if (item.kind !== 'reply' || !item.runId) continue
+    const receipt = byRun.get(item.runId)?.scheduleReceipt
+    if (receipt && 'draft' in receipt && receipt.draft) latestDrafts.set(receipt.draft.id, index)
+  }
   const lastReply = [...items].reverse().find(item => item.kind === 'reply')
-  return <>{items.map(item => {
+  return <>{items.map((item, index) => {
     if (item.kind === 'message') {
       const message = item.message
       if (message.role === 'system') return <p className="ent-talk-sys" key={item.id}>{message.content}</p>
@@ -81,7 +90,9 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
     return <div className="ent-say ent-conversation-reply" key={item.id} data-conversation-reply={item.id} data-run-id={item.runId}>
       <span className="ent-say-who"><EmployeeFace employee={employees.find(employee => employee.id === employeeId)} name={employeeName} size="sm" round />{employeeName}</span>
       {item.runId && (entries.length > 0 || loading || processError) ? <ConversationProcessView entries={entries} active={item.active} loading={loading} error={processError} onReload={onReload} /> : null}
-      {run?.scheduleReceipt ? <ScheduleReceipt receipt={run.scheduleReceipt} active={item.active} onOpen={onOpenSchedule} /> : null}
+      {run?.scheduleReceipt ? <ScheduleReceipt receipt={run.scheduleReceipt} active={item.active} onOpen={onOpenSchedule}
+        onAction={onScheduleAction} disabled={scheduleActionDisabled} isCurrent={draft => latestDrafts.get(draft.id) === index}
+        canChoose={draft => (latestDrafts.get(draft.id) ?? -1) <= index} /> : null}
       {failureMessage || (!run?.scheduleReceipt && !hasContent && !replyResults?.length && (!entries.length || !item.active)) ? <div className="ent-conversation-reply-status" role="status">
         {item.active ? <LoaderCircle size={14} className="ent-spin" aria-hidden /> : null}
         {failureMessage ?? (item.active ? '正在进行…' : run?.diagnosticAvailable ? '本轮执行失败' : '本轮未返回回复')}
@@ -97,7 +108,11 @@ export function ConversationMessagesView({ work, employees, preparing, runs, loa
   </>
 }
 
-function ScheduleReceipt({ receipt, active, onOpen }: { receipt: ConversationScheduleReceipt; active: boolean; onOpen?: (id: string) => void }) {
+function ScheduleReceipt({ receipt, active, onOpen, onAction, disabled, isCurrent, canChoose }: {
+  receipt: ConversationScheduleReceipt; active: boolean; onOpen?: (id: string) => void
+  onAction?: (action: ConversationScheduleDraftAction) => Promise<boolean>; disabled?: boolean
+  isCurrent: (draft: ConversationScheduleDraft) => boolean; canChoose: (draft: ConversationScheduleDraft) => boolean
+}) {
   const pending = receipt.status === 'pending' && active
   return <div className="ent-conversation-schedule-receipt">
     <div className="ent-conversation-schedule-copy" role="status">
@@ -106,6 +121,31 @@ function ScheduleReceipt({ receipt, active, onOpen }: { receipt: ConversationSch
         : receipt.status === 'pending' ? pending ? '正在准备定时任务…' : '创建结果未确认，请前往「定时任务」查看。' : receipt.message}</span>
     </div>
     {receipt.status === 'created' && onOpen ? <button type="button" className="ent-btn sm ghost" onClick={() => onOpen(receipt.id)}>查看任务<ArrowRight size={14} aria-hidden /></button> : null}
+    {onAction && !active && (receipt.status === 'needs_confirmation' || receipt.status === 'needs_input') && receipt.draft && isCurrent(receipt.draft)
+      ? <ScheduleDraftControls key={`${receipt.draft.id}:${receipt.draft.revision}`} draft={receipt.draft} onAction={onAction} disabled={disabled}
+          review={receipt.status === 'needs_confirmation'} editTime={receipt.status === 'needs_confirmation' || receipt.timeOnly === true} /> : null}
+    {onAction && !active && receipt.status === 'choose_draft' ? <div className="ent-conversation-schedule-actions">
+      {receipt.drafts.filter(({ draft }) => canChoose(draft)).map(({ draft, title }) => <button key={draft.id} type="button" className="ent-btn sm" disabled={disabled}
+        onClick={() => void onAction({ kind: 'review', draft, ...(receipt.time ? { time: receipt.time } : {}) })}>{title}<ArrowRight size={14} aria-hidden /></button>)}
+    </div> : null}
+  </div>
+}
+
+function ScheduleDraftControls({ draft, onAction, review, editTime, disabled }: { draft: ConversationScheduleDraft; review: boolean; editTime: boolean;
+  onAction: (action: ConversationScheduleDraftAction) => Promise<boolean>; disabled?: boolean }) {
+  const [editing, setEditing] = useState(false)
+  const [time, setTime] = useState('')
+  const [withDate, setWithDate] = useState(false)
+  const submit = async (action: ConversationScheduleDraftAction) => { if (await onAction(action)) setEditing(false) }
+  return <div className="ent-conversation-schedule-actions">
+    {review ? <button type="button" className="ent-btn sm" disabled={disabled} onClick={() => void submit({ kind: 'review', draft })}><RotateCcw size={14} aria-hidden />重新确认</button> : null}
+    {editTime ? <button type="button" className="ent-btn sm ghost" disabled={disabled} aria-expanded={editing} onClick={() => setEditing(open => !open)}><Clock size={14} aria-hidden />修改时间</button> : null}
+    <button type="button" className="ent-btn sm ghost" disabled={disabled} onClick={() => void submit({ kind: 'discard', draft })}><X size={14} aria-hidden />放弃草稿</button>
+    {editing ? <form className="ent-conversation-schedule-actions" onSubmit={event => { event.preventDefault(); if (!disabled && time) void submit({ kind: 'review', draft, time }) }}>
+      <input aria-label="新的执行时间" required type={withDate ? 'datetime-local' : 'time'} value={time} disabled={disabled} onChange={event => setTime(event.target.value)} />
+      <label><input type="checkbox" checked={withDate} disabled={disabled} onChange={event => { setWithDate(event.target.checked); setTime('') }} />指定日期</label>
+      <button type="submit" className="ent-btn sm" disabled={disabled || !time}>重新确认</button>
+    </form> : null}
   </div>
 }
 

@@ -11,6 +11,9 @@ import { withTimeout } from '../common/with-timeout'
 const log = logger.child('scheduled-dispatcher')
 const active = new Set<ScheduledRunStatus>(['preparing', 'launching', 'running', 'waiting_approval', 'cancelling'])
 const terminal = new Set<ScheduledRunStatus>(['completed', 'failed', 'cancelled', 'timed_out', 'missed'])
+const interactionUnavailable: ScheduledIssue = {
+  code: 'SCHEDULED_INTERACTION_UNAVAILABLE', action: 'review', message: '本次执行遇到需要人工确认的步骤，已停止等待且不会自动重跑。请核查已完成的步骤。',
+}
 export interface ScheduledRunnerPort {
   prepare(run: ScheduledOccurrence, guard: () => void): Promise<void>
   launch(run: ScheduledOccurrence, guard: () => void): Promise<void>
@@ -18,6 +21,7 @@ export interface ScheduledRunnerPort {
   cancel(run: ScheduledOccurrence): Promise<void>
   conflicts?(left: ScheduledOccurrence, right: ScheduledOccurrence): Promise<boolean>
 }
+export interface ScheduledRunIntent { expectedStatus: ScheduledRunStatus; expectedAttemptId?: string; guard(): void }
 /** Only the adapter can certify that the failed call never admitted an Agent. */
 export class BeforeScheduledAdmissionError extends Error {
   constructor(readonly failure: unknown) { super('Scheduled execution was not admitted'); this.name = 'BeforeScheduledAdmissionError' }
@@ -63,7 +67,9 @@ export class ScheduledDispatcher {
         if (run.status === 'launching') {
           const result = await this.runner.inspect(run)
           if (result.state === 'completed') await this.finish(scope, run.id, 'completed')
-          else await this.review(scope, run.id)
+          else if (result.state === 'failed') await this.finish(scope, run.id, run.stopReason ?? 'failed', result.error)
+          else if (result.state === 'waiting_approval') await this.stopForInteraction(scope, run)
+          else await this.review(scope, run.id, result.error)
         } else await this.reconcile(scope, run)
       }
     }
@@ -176,23 +182,32 @@ export class ScheduledDispatcher {
     } else if (result.state === 'failed') {
       await this.finish(scope, run.id, run.stopReason ?? 'failed', result.error)
     } else if (result.state === 'interrupted' || result.state === 'missing') {
-      await this.review(scope, run.id)
+      await this.review(scope, run.id, result.error)
+    } else if (result.state === 'waiting_approval' && run.status !== 'cancelling') {
+      await this.stopForInteraction(scope, run)
     } else if (run.status === 'cancelling') {
       if (result.state === 'pending') await this.finish(scope, run.id, run.stopReason ?? 'cancelled')
       else if (this.now() - (run.nextRetryAt ?? this.now()) > 15000) await this.review(scope, run.id)
     } else if ((run.startedAt !== null && this.now() - run.startedAt >= 3600000) || (run.startedAt === null && this.now() >= run.startDeadline)) {
       const stopping = await this.change(scope, run.id, item => { item.status = 'cancelling'; item.stopReason = 'timed_out'; item.nextRetryAt = this.now() })
       await withTimeout(this.runner.cancel(stopping), 15000, 'scheduled-stop').catch(() => this.review(scope, run.id))
-    } else if (result.state === 'waiting_approval' && run.status !== 'waiting_approval') {
-      await this.change(scope, run.id, item => { item.status = 'waiting_approval' })
     } else if (result.state === 'running' && run.status === 'waiting_approval') {
       await this.change(scope, run.id, item => { item.status = 'running' })
     }
   }
-  private async review(scope: TaskOwnerScope, id: string): Promise<void> {
+  private async stopForInteraction(scope: TaskOwnerScope, run: ScheduledOccurrence): Promise<void> {
+    const stopping = await this.change(scope, run.id, item => {
+      if (!active.has(item.status) || item.stopReason) return
+      item.status = 'cancelling'; item.stopReason = 'cancelled'; item.error = interactionUnavailable; item.nextRetryAt = this.now()
+    })
+    if (stopping.error?.code !== interactionUnavailable.code) return
+    await withTimeout(this.runner.cancel(stopping), 15000, 'scheduled-interaction-stop').catch(() => undefined)
+    await this.review(scope, run.id, interactionUnavailable)
+  }
+  private async review(scope: TaskOwnerScope, id: string, issue?: ScheduledIssue): Promise<void> {
     const run = await this.change(scope, id, item => {
       if (terminal.has(item.status)) return
-      item.status = 'review'; item.nextRetryAt = null; item.error = { code: 'EXECUTION_UNCERTAIN', action: 'review', message: '执行已中断或状态不确定。已禁止自动重跑，请核查已有文件和操作结果。' }
+      item.status = 'review'; item.nextRetryAt = null; item.error = issue ?? { code: 'EXECUTION_UNCERTAIN', action: 'review', message: '执行已中断或状态不确定。已禁止自动重跑，请核查已有文件和操作结果。' }
     })
     log.error('========== [SCHEDULED TASK] EXECUTION STATE UNCERTAIN ==========', {
       scheduledTaskId: run.definitionId, occurrenceId: run.id, taskId: run.taskId,
@@ -207,11 +222,15 @@ export class ScheduledDispatcher {
       if (attempt && !attempt.finishedAt) { attempt.finishedAt = this.now(); attempt.status = status === 'completed' ? 'completed' : 'failed'; attempt.error = error ?? null }
     })
   }
-  async cancel(scope: TaskOwnerScope, id: string): Promise<void> {
-    const admission = this.admissions.get(id)
-    if (admission) admission.cancelled = true
+  async cancel(scope: TaskOwnerScope, id: string, intent?: ScheduledRunIntent): Promise<void> {
     const run = await this.change(scope, id, item => {
+      intent?.guard()
+      if (intent && (item.status !== intent.expectedStatus || item.attempts.at(-1)?.id !== intent.expectedAttemptId)) {
+        throw new AppError('CONFLICT', { message: '执行状态已变化，请重新查看后再取消。' })
+      }
       if (['completed', 'cancelled', 'timed_out', 'failed', 'missed'].includes(item.status)) throw new AppError('INVALID_STATE')
+      const admission = this.admissions.get(id)
+      if (admission) admission.cancelled = true
       if (['pending', 'waiting_retry', 'waiting_auth', 'blocked', 'preparing'].includes(item.status)) {
         item.status = 'cancelled'; item.finishedAt = this.now(); item.nextRetryAt = null
         const attempt = item.attempts.at(-1)

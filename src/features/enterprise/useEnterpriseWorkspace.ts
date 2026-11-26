@@ -230,7 +230,8 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   goBack: () => void;
   startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>;
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<boolean>;
-  sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string, knowledge?: KnowledgeSelection, messageId?: string) => Promise<boolean>;
+  sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string, knowledge?: KnowledgeSelection, messageId?: string,
+    scheduleDraftAction?: import('../../shared/scheduled-creation').ConversationScheduleDraftAction) => Promise<boolean>;
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
   switchModel: (workId: string, modelId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
@@ -861,12 +862,14 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     }
   }, [myEmployees, navigate, captureFeedback, defaultModelId]);
 
-  const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string, knowledge?: KnowledgeSelection, messageId: string = crypto.randomUUID()): Promise<boolean> => {
+  const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string, knowledge?: KnowledgeSelection, messageId: string = crypto.randomUUID(),
+    scheduleDraftAction?: import('../../shared/scheduled-creation').ConversationScheduleDraftAction): Promise<boolean> => {
     const prompt = text.trim();
     if (!prompt || attachments.length && !attachmentSessionId) return false;
     const notice = captureFeedback();
     try {
-      const result = await window.electronAPI.continueTask({ taskId: workId, messageId, prompt, knowledge, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) });
+      const result = await window.electronAPI.continueTask({ taskId: workId, messageId, prompt, knowledge, ...(scheduleDraftAction ? { scheduleDraftAction } : {}),
+        ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) });
       if (!notice.isCurrent()) return false;
       if (!result.success) throw responseError(result, 'workSend');
       if (result.queued === true) notice.show('任务已加入队列', 'success', `conversation-queued:${workId}:${messageId}`);

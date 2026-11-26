@@ -105,6 +105,20 @@ test('mail errors redact upstream details, distinguish auth, preserve uncertaint
   assert.equal((await broken.state(owner)).status, 'disconnected')
 })
 
+test('mail reports explicit recipient rejections without requiring a message ID', async t => {
+  const f = await fixture(); t.after(() => f.runtime.cancel())
+  await f.runtime.connect(owner, credentials)
+  const command = (await f.runtime.binding(owner))!.commands![0]
+  const args = argv('message.send', { to: ['a@example.com', 'b@example.com'], subject: 'Test', text: 'Body' })
+  f.api.execute = async () => ({ accepted: ['a@example.com'], rejected: ['b@example.com'], status: 'submitted' })
+  const partial = await command.execute(args, '.')
+  assert.equal(partial.isError, true)
+  assert.equal(partial.executionUncertain, undefined)
+  assert.deepEqual(JSON.parse(partial.text).rejected, ['b@example.com'])
+  f.api.execute = async () => ({ accepted: ['a@example.com', 'b@example.com'], rejected: [], status: 'submitted' })
+  assert.equal((await command.execute(args, '.')).isError, false)
+})
+
 async function wireServer(greeting: string, handler: (line: string, socket: Socket) => void) {
   const sockets = new Set<Socket>()
   const server = createServer(socket => {

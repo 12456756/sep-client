@@ -61,21 +61,7 @@ export function verifyPiTimeline(events, { taskId, runId, subscriptionId, scenar
   }
   const requested = events.filter(event => event.type === 'approval_requested')
   const resolved = events.filter(event => event.type === 'approval_resolved')
-  equal(requested.map(event => event.data.input.operation), scenario === 'SYNC' ? ['upload-references', 'edit'] : ['generate'], 'APPROVAL_ORDER')
-  check(resolved.length === requested.length && new Set(requested.map(event => event.data.requestId)).size === requested.length, 'APPROVAL_PAIR_COUNT')
-  requested.forEach((request, index) => {
-    const matches = resolved.filter(event => event.data.requestId === request.data.requestId)
-    check(matches.length === 1 && request.data.toolName === 'media_generate_image', 'APPROVAL_PAIR')
-    const result = matches[0]
-    check(result.data.toolName === request.data.toolName && result.data.approved === (scenario !== 'DENY'), 'APPROVAL_DECISION')
-    // Host approvals and buffered worker events have separate producers; sequence is persistence order.
-    const generationEnd = ends.find(end => end.data.toolId === starts[2].data.toolId)
-    check(request.occurredAt >= starts[2].occurredAt && result.occurredAt >= request.occurredAt
-      && result.occurredAt <= generationEnd.occurredAt && result.sequence > request.sequence
-      && result.sequence < generationEnd.sequence, 'APPROVAL_TOOL_ORDER')
-    check(!requested[index + 1] || result.sequence < requested[index + 1].sequence, 'APPROVAL_SERIAL_ORDER')
-    check(request.data.input.referenceCount === (scenario === 'SYNC' ? 1 : 0), 'APPROVAL_REFERENCES')
-  })
+  check(!requested.length && !resolved.length, 'UNEXPECTED_MEDIA_APPROVAL')
   const finished = events.filter(event => event.type === 'agent_end')
   check(finished.length === 1 && !finished[0].data?.willRetry && finished[0].sequence > ends.at(-1).sequence, 'PI_FINAL_MISSING')
   check(events.some(event => event.type === 'text_delta' && typeof event.data?.text === 'string' && event.data.text.trim()), 'PI_FINAL_TEXT_MISSING')
@@ -84,8 +70,7 @@ export function verifyPiTimeline(events, { taskId, runId, subscriptionId, scenar
     taskId, runId, scenario, finalTextObserved: true,
     tools: starts.map(start => ({ toolName: start.data.toolName, toolId: start.data.toolId,
       success: ends.find(end => end.data.toolId === start.data.toolId).data.success })),
-    approvals: requested.map(request => ({ requestId: request.data.requestId,
-      operation: request.data.input.operation, approved: scenario !== 'DENY' })),
+    approvalCount: 0,
     profileId: generation.profileId, operation: generation.operation, referenceCount: generation.localAssetIds.length,
   }
 }
@@ -166,7 +151,7 @@ export function verifyPersistedJobIdentity(job, task, jobId, runId) {
 
 export function verifyFailureJobIdentity(job, task, jobId, runId) {
   const identity = verifyPersistedJobIdentity(job, task, jobId, runId)
-  check(job.approval === 'manual' && job.quote?.quoteId === job.request?.quoteId
+  check(job.approval === 'automatic' && job.quote?.quoteId === job.request?.quoteId
     && job.quote?.requestHash === job.requestHash, 'PERSISTED_APPROVAL_IDENTITY')
   return { ...identity, requestSha256: hash(Buffer.from(JSON.stringify(job.request))),
     quoteSha256: hash(Buffer.from(JSON.stringify(job.quote))), approval: job.approval }
@@ -344,26 +329,6 @@ export async function main() {
     check(runs.length === 1 && runs[0].subscriptionId === task.subscriptionId, 'INDEPENDENT_PI_RUN_REQUIRED')
     return { run: runs[0], events: (await ipc('getTaskTimeline', task.id, runs[0].id)).events }
   }
-  async function decide(task, operation, approved, name) {
-    evidence.step = `${operation}-approval`
-    const pending = await poll(async () => {
-      const state = await timeline(task)
-      if (!state) return false
-      return state.events.find(event => event.type === 'approval_requested'
-        && !state.events.some(result => result.type === 'approval_resolved' && result.data.requestId === event.data.requestId))
-    }, 'APPROVAL_TIMEOUT')
-    check(pending.data.toolName === 'media_generate_image' && pending.data.input.operation === operation, 'UNEXPECTED_UI_APPROVAL')
-    const button = page.getByRole('button', { name: approved ? '允许工具执行' : '拒绝工具执行', exact: true })
-    await button.waitFor({ timeout: 20_000 })
-    await shot(name)
-    await button.click()
-    await poll(async () => {
-      const state = await timeline(task)
-      const result = state.events.find(event => event.type === 'approval_resolved' && event.data.requestId === pending.data.requestId)
-      if (result) check(result.data.approved === approved, 'UI_APPROVAL_NOT_APPLIED')
-      return result
-    }, 'UI_APPROVAL_RESOLUTION_TIMEOUT')
-  }
   async function completedTimeline(task, scenario, prepared, jobId, referenceId) {
     evidence.step = `${scenario.toLowerCase()}-verify-timeline`
     const state = await poll(async () => {
@@ -456,7 +421,6 @@ export async function main() {
       await control((_, kind) => globalThis.__sepMediaTest.fault(kind), scenario.fault)
       const beforePosts = await submitted()
       await ipc('executeTask', task.id)
-      await decide(task, 'generate', true, `${label}-approval`)
       evidence.step = `${label}-wait-persisted-failure`
       const failed = await poll(async () => {
         const view = (await ipc('getTaskMedia', task.id)).data
@@ -577,18 +541,7 @@ export async function main() {
       return evidence
     }
 
-    const denied = await create('DENY', selected.subscriptionId)
-    await ipc('executeTask', denied.id)
-    await decide(denied, 'generate', false, 'deny-approval')
-    const denial = await completedTimeline(denied, 'DENY', prepared)
-    const denialView = (await ipc('getTaskMedia', denied.id)).data
-    check(denialView.jobs.length === 0 && denialView.assets.length === 0 && await submitted() === 0, 'DENIAL_SUBMITTED')
-    await shot('deny-result')
-    evidence.phases.push({ name: 'deny-no-submission', timeline: denial.evidence, snapshot: await snapshot(denied, denial.runId, prepared), submissions: 0 })
-
-    // Runtime retains the real auth throttle (10/minute). Independent scenarios must not share its window.
-    evidence.step = 'wait-sync-auth-window'
-    await new Promise(done => setTimeout(done, 62_000))
+    // The runtime authorization throttle separates subsequent independent scenarios.
     const sync = await create('SYNC', selected.subscriptionId)
     evidence.step = 'sync-native-reference-import'
     const fixturePath = join(output, 'reference.png')
@@ -600,9 +553,6 @@ export async function main() {
     check(references.length === 1, 'NATIVE_REFERENCE_IMPORT')
     await shot('sync-reference-import')
     await ipc('executeTask', sync.id)
-    await decide(sync, 'upload-references', true, 'sync-upload-approval')
-    check(await submitted() === 0, 'SUBMITTED_BEFORE_GENERATION_APPROVAL')
-    await decide(sync, 'edit', true, 'sync-generation-approval')
     const saved = await savedJob(sync, 'mock-sync')
     const syncRun = await completedTimeline(sync, 'SYNC', prepared, saved.job.jobId, references[0].localAssetId)
     check(saved.job.runId === syncRun.runId && saved.job.operation === 'edit' && await submitted() === 1, 'SYNC_SUBMISSION_BINDING')
@@ -613,9 +563,8 @@ export async function main() {
     await new Promise(done => setTimeout(done, 62_000))
     const asyncTask = await create('ASYNC', selected.subscriptionId)
     check((await ipc('getTaskMedia', asyncTask.id)).data.assets.length === 0, 'ASYNC_HAS_REFERENCES')
-    await ipc('executeTask', asyncTask.id)
     evidence.step = 'async-queued-disconnect'
-    // Arm before the UI decision; capture and disconnect in one main-process turn.
+    // Arm before generation; capture and disconnect in one main-process turn.
     const queuedPromise = poll(() => control(async (_, taskId) => {
       const view = await globalThis.__sepMediaTest.inspect(taskId)
       if (!view.jobs.length) return false
@@ -627,7 +576,7 @@ export async function main() {
       return { job, referenceCount: view.assets.filter(asset => asset.source === 'reference').length }
     }, asyncTask.id), 'QUEUED_CAPTURE_TIMEOUT', { interval: 20 })
     void queuedPromise.catch(() => undefined)
-    await decide(asyncTask, 'generate', true, 'async-generation-approval')
+    await ipc('executeTask', asyncTask.id)
     const queued = await queuedPromise
     check(!queued.invalid && queued.referenceCount === 0 && queued.job.profileId === 'mock-async'
       && queued.job.operation === 'generate' && queued.job.billingStatus === 'MOCK_NOT_CHARGED', 'EXACT_QUEUED_REQUIRED')

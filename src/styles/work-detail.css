@@ -165,9 +165,10 @@
 .ent-transcript-reply .ent-markdown { max-width: 100%; }
 .ent-transcript-reply .ent-markdown :is(h1, h2, h3) { font-size: 15px; line-height: 1.6; }
 .ent-transcript-reply .ent-markdown pre { max-width: 100%; overflow: auto; }
-.ent-transcript-operation { display: flex; align-items: flex-start; gap: 8px; padding: 7px 0; color: var(--ent-ink-2); font-size: 12px; line-height: 1.7; }
+.ent-transcript-operation { display: flex; align-items: flex-start; gap: 8px; padding: 7px 0; color: var(--ent-ink-2); font-size: 12px; line-height: 1.6; }
 .ent-transcript-operation > svg { flex-shrink: 0; margin-top: 3px; }
 .ent-transcript-operation > span { flex: 1; min-width: 0; }
+.ent-transcript-operation code { display: block; color: var(--ent-ink-3); font-size: 11px; overflow-wrap: anywhere; }
 .ent-transcript-operation > small { flex-shrink: 0; color: var(--ent-ink-3); font-size: 11px; }
 .ent-transcript-operation.failed, .ent-transcript-failed { color: var(--ent-danger); }
 .ent-transcript-diagnostic { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 4px 0 8px; }

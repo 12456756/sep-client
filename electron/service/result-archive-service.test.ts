@@ -14,6 +14,8 @@ import { describeConversationResult, ResultFileStore, type CommittedResultSave }
 import { DocumentPreviewStore } from '../data/document-preview-store'
 import { WorkPlanStore } from '../data/work-plan-store'
 import { ArrangementCheckpointStore } from '../data/arrangement-checkpoint-store'
+import { validateDeliveryFiles } from '../data/arrangement-delivery-files'
+import type { WorkPlan } from '../domain/arrangement-plan'
 import { TaskManager } from '../runtime/task-manager'
 import { ResultArchiveService } from './result-archive-service'
 import { ResultFileService } from './result-file-service'
@@ -328,6 +330,59 @@ test('resumes the persisted intent when the original committed but its saved cal
   assert.deepEqual(await restarted.archiveStatus(file), { state: 'saved' })
   await restarted.reveal(file)
   assert.equal(await readFile(f.reveal.at(-1)!, 'utf8'), '原件')
+})
+
+test('retries a failed scheduled report copy from its verified snapshot using the actual filename', async t => {
+  const f = await fixture(t)
+  const scope = { currentScope: () => owner }
+  const manager = new TaskManager(f.profile)
+  await manager.initialize()
+  await manager.setCurrentUser(owner.memberId, owner.enterpriseId)
+  const task = await manager.createTask('Daily report', 'Generate a daily report')
+  const workspace = task.workDir!
+  const plans = new WorkPlanStore(f.profile), checkpoints = new ArrangementCheckpointStore(f.profile)
+  const previews = new DocumentPreviewStore(f.profile, plans, checkpoints)
+  const store = new ResultFileStore(f.profile, previews, async () => ({ ...task, workType: { state: 'resolved', kind: 'arrangement' } }))
+  const files = new ResultFileService({ scope, archive: f.archive, store, reveal: path => { f.reveal.push(path) } })
+  const ref = { taskId: task.id, nodeId: 'node', deliverableId: 'report' }
+  const actual = 'Sales-2026-11-26.md'
+  const plan: WorkPlan = { id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1,
+    owner, mode: 'auto', title: task.title, goal: 'Daily report', conversation: null,
+    scheduledOrigin: { definitionId: 'definition', occurrenceId: 'occurrence' },
+    nodes: [{ id: ref.nodeId, subscriptionId: 'sub', modelId: 'model', title: 'Report', instruction: 'Write', expectedOutput: 'Report',
+      dependsOn: [], skillIds: [], requiresUserConfirmation: false,
+      deliverables: [{ id: ref.deliverableId, name: 'Report', path: 'Sales-YYYY-MM-DD.md', format: 'md', contentOutline: ['Report'], acceptanceCriteria: ['Report'] }] }],
+    workspace: { mode: 'shared', path: workspace }, permissions: { preset: 'workspace-edit', allowedTools: [], allowedPaths: [], deniedPaths: [], requireApprovalFor: [], commandPolicy: 'disabled' },
+    confirmedInputs: [], planHash: 'scheduled-hash', createdAt: 1 }
+  await plans.save(owner, plan)
+  await f.archive.configure(async () => f.root)
+  const startedAt = Date.now()
+  await mkdir(workspace, { recursive: true })
+  await writeFile(join(workspace, actual), '# Verified report')
+  const node = plan.nodes[0]!
+  const accepted = await validateDeliveryFiles(workspace, { ...node, deliverables: [{ ...node.deliverables![0]!, path: actual }] },
+    { nodeId: node.id, summary: 'Done', finalDeliverables: [{ id: ref.deliverableId, path: actual }] }, 'node-run', undefined,
+    { taskDirectory: new ScopePath(f.profile).taskDir(owner, task.id) })
+  assert.ok(accepted.ok)
+  const original = accepted.files[0]!
+  const version = `${original.nodeRunId}:${original.sha256}:${original.path}`
+  const intent = await files.queueArchive(owner, ref, task.title, Date.now(), startedAt, async () => ({ name: actual, version }))
+  assert.ok(intent)
+  // Emulate the earlier lookup failure recorded before this fix.
+  await f.store.fail(owner, task.id, JSON.stringify(['delivery', ref.nodeId, ref.deliverableId]), version, () => {}, 'source')
+  await checkpoints.save(owner, { version: 1, taskId: task.id, owner, planHash: plan.planHash, activeRunId: 'run', updatedAt: 1,
+    state: { status: 'completed', failureNodeIds: [], interruptionReason: null,
+      nodes: [{ nodeId: node.id, status: 'completed', attempt: 1, error: null, output: null,
+        delivery: { validationAttempts: 1, issues: [], finalFiles: [{ ...original, saveIntent: intent }] } }] } })
+  assert.equal((await files.archiveStatus(ref)).state, 'failed')
+  await files.retryArchive(ref)
+  assert.deepEqual(await files.archiveStatus(ref), { state: 'saved' })
+  await files.reveal(ref)
+  const copy = f.reveal.at(-1)!
+  assert.notEqual(copy, join(workspace, actual))
+  assert.equal(basename(copy), actual)
+  assert.equal(await readFile(copy, 'utf8'), '# Verified report')
+  assert.equal(await readFile(join(workspace, actual), 'utf8'), '# Verified report')
 })
 
 test('legacy duplicate paths do not renumber original files or their archived copies after restart', async t => {

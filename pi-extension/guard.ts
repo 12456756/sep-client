@@ -99,7 +99,7 @@ export function evaluateToolCall(
     const path = toolName === 'write' && requestedPath ? managedWriteTarget(requestedPath, policy) : requestedPath
     const writing = toolName === 'write' || toolName === 'edit'
     if (path && (writing ? policy.preset !== 'read-only' && (boundOriginal(path, policy) || managedFilePath(path, policy, true) || externalEditCandidate(path, policy)) :
-      managedFilePath(path, policy) || toolName === 'read' && (isManagedReadException(path, policy) || externalFileCandidate(path, policy)))) {
+      managedFilePath(path, policy) || toolName === 'read' && (isMissingScheduledWorkspacePath(path, policy) || isManagedReadException(path, policy) || externalFileCandidate(path, policy)))) {
       return { allowed: true, requiresApproval: false }
     }
     return { allowed: false, requiresApproval: false, reason: 'path-not-allowed' }
@@ -176,6 +176,15 @@ export function isManagedReadException(path: string, policy: ToolPolicy): boolea
 }
 
 export function managedFilePath(candidate: string, policy: ToolPolicy, writing = false): string | null {
+  return resolveManagedFilePath(candidate, policy, writing ? 'write' : 'read')
+}
+
+// Distinguish a missing workspace file from denial without granting access to any file.
+export function isMissingScheduledWorkspacePath(candidate: string, policy: ToolPolicy): boolean {
+  return policy.unattended === true && resolveManagedFilePath(candidate, { ...policy, fileAccess: 'workspace' }, 'missing') !== null
+}
+
+function resolveManagedFilePath(candidate: string, policy: ToolPolicy, mode: 'read' | 'write' | 'missing'): string | null {
   const target = normalizedManagedPath(candidate, policy)
   if (!target) return null
   try {
@@ -188,10 +197,13 @@ export function managedFilePath(candidate: string, policy: ToolPolicy, writing =
       try {
         const info = lstatSync(current)
         if (info.isSymbolicLink() || realpathSync(current) !== current || (info.isFile() && info.nlink !== 1)) return null
-        if (current === target) return writing ? info.isFile() ? target : null : info.isFile() || info.isDirectory() ? target : null
+        if (current === target) {
+          if (mode === 'missing') return null
+          return info.isFile() || (mode === 'read' && info.isDirectory()) ? target : null
+        }
         return info.isDirectory() ? target : null
       } catch (error) {
-        if (!writing || (error as NodeJS.ErrnoException).code !== 'ENOENT') return null
+        if (mode === 'read' || (error as NodeJS.ErrnoException).code !== 'ENOENT') return null
         const parent = dirname(current)
         if (parent === current) return null
         current = parent

@@ -102,6 +102,7 @@ import { ScheduledTaskStore } from '../data/scheduled-task-store'
 import { ScheduledTaskService } from '../service/scheduled-task-service'
 import { ScheduledCreationService } from '../service/scheduled-creation-service'
 import { ScheduledTaskRunner } from '../service/scheduled-task-runner'
+import { ScheduledOperations } from '../service/scheduled-operations'
 import { runtimeFileToolPolicy } from '../runtime/file-tool-policy'
 import { ScheduledWorkSource } from '../service/scheduled-work-source'
 import { validateArrangementNodes, type ArrangementDraft, type RequestedTaskPermissionPolicy } from '../domain/arrangement-plan'
@@ -114,6 +115,7 @@ export const AUTH_CLEANUP_BUDGET_MS = 5_000
 
 export interface BackendOptions {
   skillImport?: SkillImportService
+  selectScheduledOutputDirectory?: (path: string) => Promise<string | null>
   /** Electron 的 userData 目录。所有持久化路径都从它派生。 */
   userDataDir: string
   /** 推给渲染进程的唯一出口，由 bootstrap/renderer-bridge.ts 实现。 */
@@ -130,7 +132,9 @@ export interface BackendOptions {
  * 用 `createBackend()` 创建——这个类不导出，避免出现第二个装配入口。
  */
 class BackendRuntime {
+  private readonly selectScheduledOutputDirectory: BackendOptions['selectScheduledOutputDirectory']
   readonly connectors: ConnectorService
+  private readonly scheduledOperations: ScheduledOperations
   private readonly connectorRuntime: LazyAsync<ConnectorRegistryPort>
   readonly skillImport?: SkillImportService
   readonly knowledge: KnowledgeService
@@ -183,7 +187,8 @@ class BackendRuntime {
   private authenticationCleanup: Promise<void> | null = null
   private readonly sessionRecovery: SessionRecovery
 
-  constructor({ userDataDir, renderer, isEncryptionAvailable = () => true, mediaGateway, mediaCapabilities, skillImport }: BackendOptions) {
+  constructor({ userDataDir, renderer, isEncryptionAvailable = () => true, mediaGateway, mediaCapabilities, skillImport, selectScheduledOutputDirectory }: BackendOptions) {
+    this.selectScheduledOutputDirectory = selectScheduledOutputDirectory
     this.skillImport = skillImport
     this.userDataDir = userDataDir
     this.modelTraces = new ModelTraceStore(join(userDataDir, 'model-logs'))
@@ -362,7 +367,6 @@ class BackendRuntime {
           const error = await shell.openPath(path)
           if (error) throw new Error('Local video player unavailable.')
         }),
-        requestApproval: async input => (await this.getTaskRuntime()).requestMediaApproval(input),
         policy: async taskId => {
           const scope = this.currentScope()
           if (!scope) return undefined
@@ -455,7 +459,7 @@ class BackendRuntime {
         const runtime = await this.getTaskRuntime()
         signal.throwIfAborted()
         await runtime.continueConversation(taskId, entry.prompt, { runId: entry.runId, messageId: entry.id, messageReceivedAt: entry.createdAt, signal, mode: entry.mode, confirmed: entry.confirmed,
-          knowledge: entry.knowledge, attachmentRefs: entry.attachmentRefs })
+          knowledge: entry.knowledge, attachmentRefs: entry.attachmentRefs, scheduleDraftAction: entry.scheduleDraftAction })
       },
       retry: async (taskId, signal) => {
         const runtime = await this.getTaskRuntime()
@@ -683,7 +687,9 @@ class BackendRuntime {
         nodes: generated.nodes.map(node => ({ ...node, deliverables: node.deliverables ?? [], requiresUserConfirmation: node.requiresUserConfirmation ?? false })),
         intentAnalysis: generated.intentAnalysis ?? null }
     }
+    this.scheduledOperations = new ScheduledOperations(scheduledStorage, () => this.currentScope())
     this.scheduledTasks = new ScheduledTaskService({
+      connectorRevision: async scope => (await this.connectors.binding(scope))?.revision ?? null,
       repository: scheduledStorage, scope: this, employee: validateScheduledEmployee, planner: employeePlanner, source: scheduledWorkSource,
       arrangementPlanner: arrangeScheduledWork, authorizeModel: authorizeScheduledModel,
       timeInterpreter: async (input, signal) => {
@@ -880,6 +886,7 @@ class BackendRuntime {
     const runtime = new TaskRuntime({
       localMedia,
       connectorBinding: owner => this.connectors.binding(owner),
+      scheduledOperations: this.scheduledOperations,
       onConversationSettled: (taskId, runId, owner) => this.conversationQueue.settled(taskId, runId, owner),
       createModelTrace: this.createModelTrace,
       taskManager: this.taskManager,
@@ -949,7 +956,10 @@ class BackendRuntime {
       arrangementDiagnostics: this.arrangementDiagnostics,
       conversationMedia: this.conversationMedia,
       submitConversationSchedule: (request, review) => this.scheduledCreations.submitConversation(request, review),
+      hasConversationScheduleDrafts: (taskId, legacySources) => this.scheduledCreations.hasConversationDrafts(taskId, legacySources),
       scheduledTaskManagement: this.scheduledTasks,
+      scheduledCreationManagement: this.scheduledCreations,
+      selectScheduledOutputDirectory: this.selectScheduledOutputDirectory,
       attachmentInputs: this.attachments,
     })
     log.info('task runtime loaded')

@@ -40,6 +40,29 @@ export function conversationScheduleClock(message: string): { hour: number; minu
   return { hour, minute }
 }
 
+const reviewRequest = /^(?:请\s*)?(?:重新(?:发起确认|确认(?:定时任务)?)|再次发起确认|再发一次确认)$/u
+
+export function conversationScheduleRetry(message: string): { clock?: NonNullable<ReturnType<typeof conversationScheduleClock>> } | undefined {
+  const clauses = message.trim().normalize('NFKC').replace(/[。!]$/u, '').split(/\s*[,、;]\s*/u)
+  if (clauses.length === 1 && reviewRequest.test(clauses[0]!)) return {}
+  if (clauses.length !== 2) return undefined
+  const index = clauses.findIndex(part => reviewRequest.test(part))
+  if (index === -1) return undefined
+  const time = clauses[1 - index]!.replace(/^(?:(?:并|请)\s*)*(?:(?:把|将)\s*(?:执行)?时间\s*)?/u, '')
+  const clock = conversationScheduleClock(time)
+  return clock ? { clock } : undefined
+}
+
+export function applyConversationScheduleTime(previous: ScheduleInterpretation, time: string): ScheduleInterpretation | undefined {
+  const clock = conversationScheduleClock(time)
+  if (clock) return reviseConversationScheduleClock(previous, clock)
+  if (previous.task.schedule.kind !== 'once') return undefined
+  const questions = previous.questions.filter(item => item.field !== 'schedule')
+  const parsed = scheduleInterpretationSchema.safeParse({ ...previous, status: questions.length ? 'needs_input' : 'ready', questions, reasons: [],
+    task: { ...previous.task, schedule: { ...previous.task.schedule, localDateTime: time, description: null } } })
+  return parsed.success ? parsed.data : undefined
+}
+
 /** Keep the calendar fields and timezone when the user only gives a new time of day. */
 export function reviseConversationScheduleClock(previous: ScheduleInterpretation, clock: { hour: number; minute: number }): ScheduleInterpretation | undefined {
   const { hour, minute } = clock

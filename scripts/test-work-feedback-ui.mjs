@@ -7,6 +7,7 @@ import { log } from 'node:console'
 import { chromium } from 'playwright-core'
 
 const origin = process.env.SEP_PREVIEW_ORIGIN ?? 'http://127.0.0.1:5184'
+const referenceUploadOnly = process.argv.includes('--reference-upload-only')
 const main = await (await fetch(origin + '/main.tsx')).text()
 const react = main.match(/from "([^"]*react\.js[^"]*)"/)[1]
 const dom = main.match(/from "([^"]*react-dom_client[^"]*)"/)[1]
@@ -18,6 +19,7 @@ const {FeedbackProvider,useFeedback}=await import('/components/feedback/Feedback
 const {useEnterpriseWorkspace}=await import('/features/enterprise/useEnterpriseWorkspace.ts');
 const {MediaArtifactsPanel}=await import('/components/workspace/MediaArtifactsPanel.tsx');
 const {ToolApprovalDialog}=await import('/components/ToolApprovalDialog.tsx');
+const {InlineFileApproval,InlineFileApprovals,isInlineFileApproval}=await import('/components/enterprise/InlineFileApproval.tsx');
 const {default:DocumentPreviewDialog}=await import('/components/workspace/DocumentPreviewDialog.tsx');
 const task={id:'task-a',title:'工作名称',prompt:'测试',status:'completed',createdAt:1,updatedAt:1,completedAt:2,activeRunId:null,ownerId:'member',ownerEnterpriseId:'enterprise',subscriptionId:'sub',files:[],logs:[],workType:{state:'resolved',kind:'conversation'}};
 const asset={localAssetId:'asset-a',taskId:'task-a',source:'output',status:'SAVED',mime:'image/png',width:20,height:20};
@@ -38,11 +40,12 @@ exportMediaAsset:async()=>{window.calls.export++;return {success:true,cancelled:
 function Harness(){const workspace=useEnterpriseWorkspace({userId:'member',userName:'用户',enterpriseId:'enterprise',enterpriseName:'企业',instances:[],employeeStatuses:[]});
 window.workspace=workspace;window.feedback=useFeedback();const [mode,setMode]=React.useState('actions');const [approval,setApproval]=React.useState(null);window.setMode=setMode;window.setApproval=setApproval;
 const approve=React.useCallback(()=>{window.calls.approve++;setApproval(null)},[]);const deny=React.useCallback(()=>{window.calls.deny++;setApproval(null)},[]);
+const inline=approval&&isInlineFileApproval(approval.toolName);
 return React.createElement('main',null,
 mode==='actions'?React.createElement('div',null,React.createElement('button',{onClick:()=>workspace.renameWork('task-a')},'重命名'),React.createElement('button',{onClick:()=>workspace.deleteWork('task-a')},'删除工作'),React.createElement('button',{onClick:()=>workspace.stopWork('task-a','用户终止')},'终止工作')):null,
 mode==='media'?React.createElement(MediaArtifactsPanel,{taskId:'task-a'}):null,
 mode==='document'?React.createElement(DocumentPreviewDialog,{taskId:'task-a',nodeId:'node',deliverableId:'doc',name:'测试文档',onClose:()=>setMode('actions')}):null,
-approval?React.createElement(ToolApprovalDialog,{request:approval,onApprove:approve,onDeny:deny}):null);}
+inline?React.createElement(InlineFileApprovals.Provider,{value:{requests:[approval],resolve:(id,accepted)=>{if(id===approval.requestId)(accepted?approve:deny)()}}},React.createElement(InlineFileApproval,{taskId:'task-a'})):approval?React.createElement(ToolApprovalDialog,{request:approval,onApprove:approve,onDeny:deny}):null);}
 createRoot(document.getElementById('root')).render(React.createElement(React.StrictMode,null,React.createElement(FeedbackProvider,null,React.createElement(Harness))));
 </script></body></html>`
 const browser = await chromium.launch({ channel: process.env.SEP_BROWSER_CHANNEL || 'chrome', headless: true })
@@ -66,6 +69,21 @@ try {
       return dialog
     }
     const dismiss = () => page.getByRole('button', { name: '知道了', exact: true }).click()
+
+    await reset()
+    for (const [index, toolName] of ['video_from_image', 'media_generate_image', 'video_generate'].entries()) {
+      await page.evaluate(toolName => window.setApproval({ taskId: 'task-a', requestId: 'upload', toolName,
+        input: { mock: false, operation: 'upload-references', referenceCount: 1 }, timestamp: Date.now(), expiresAt: Date.now() + 60_000 }), toolName)
+      await page.waitForFunction(expected => window.calls.deny === expected, index + 1)
+      assert.equal(await page.getByRole('region', { name: '参考图上传审批' }).count(), 0)
+      assert.equal(await page.locator('.feedback-dialog, .feedback-overlay').count(), 0)
+      assert.equal(await page.evaluate(() => window.calls.approve), 0); checks++
+    }
+    if (referenceUploadOnly) {
+      assert.deepEqual(errors, [])
+      await page.close()
+      continue
+    }
 
     await reset()
     await page.getByRole('button', { name: '删除工作', exact: true }).click()
@@ -118,21 +136,16 @@ try {
     assert.equal(await page.locator('.feedback-dialog').count(), 0)
     assert.equal(await page.evaluate(() => window.calls.approve), 0); checks++
     await page.evaluate(() => window.setApproval({requestId:'paid',toolName:'video_generate',input:{mock:false,quote:{amount:'1.230000',currency:'CNY'}},timestamp:Date.now(),expiresAt:Date.now()+60_000}))
-    await notice('本次报价 ¥1.230000')
-    await page.getByRole('button', { name: '同意并生成', exact: true }).click()
-    await page.waitForFunction(() => window.calls.approve === 1); checks++
-    await page.evaluate(() => window.setApproval({requestId:'bad-price',toolName:'video_generate',input:{mock:false,quote:{amount:'bad',currency:'CNY'}},timestamp:Date.now(),expiresAt:Date.now()+60_000}))
     await page.waitForFunction(() => window.calls.deny === 2)
     assert.equal(await page.locator('.feedback-dialog').count(), 0); checks++
-    await page.evaluate(() => window.setApproval({requestId:'upload',toolName:'video_from_image',input:{mock:false,operation:'upload-references',referenceCount:1},timestamp:Date.now(),expiresAt:Date.now()+60_000}))
-    await notice('允许上传所选参考图')
-    await page.getByRole('button', { name: '允许', exact: true }).click()
-    await page.waitForFunction(() => window.calls.approve === 2); checks++
+    await page.evaluate(() => window.setApproval({requestId:'bad-price',toolName:'video_generate',input:{mock:false,quote:{amount:'bad',currency:'CNY'}},timestamp:Date.now(),expiresAt:Date.now()+60_000}))
+    await page.waitForFunction(() => window.calls.deny === 3)
+    assert.equal(await page.locator('.feedback-dialog').count(), 0); checks++
 
     await reset()
     await page.evaluate(() => document.documentElement.dataset.theme = 'dark')
     await page.getByRole('button', { name: '终止工作', exact: true }).click()
-    await notice('确认终止当前工作')
+    await notice('确认终止当前对话任务')
     await page.screenshot({ path: join(tmpdir(), 'sep-work-feedback-dark-' + width + '.png') })
     await page.keyboard.press('Escape'); await frames()
     assert.equal(await page.evaluate(() => window.calls.stop), 0); checks++
