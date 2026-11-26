@@ -34,6 +34,7 @@ export class ConnectorRegistry implements ConnectorRegistryPort {
     return {
       revision: JSON.stringify(bindings.map(({ id, binding }) => [id, binding!.revision])),
       servers: bindings.flatMap(({ binding }) => binding!.servers),
+      remoteReadOnlyTools: Object.fromEntries(bindings.flatMap(({ binding }) => Object.entries(binding!.remoteReadOnlyTools ?? {}))),
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : String(input)).href
         const binding = endpoints.get(url)

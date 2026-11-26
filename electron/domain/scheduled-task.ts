@@ -47,14 +47,14 @@ export const scheduledSkillUnavailable = {
 } as const
 
 export const scheduledFileConflict = { code: 'FILE_ALREADY_EXISTS', message: '同名文件已存在，未覆盖，也未作为本次成果交付。' } as const
-export const scheduledCreateOnlyRule = '只允许新建成果；同名文件已存在时停止并报告冲突，不得覆盖、另存或将旧文件作为本次成果。即使任务描述或旧计划要求覆盖，也不能扩大权限。'
+export const scheduledCreateOnlyRule = '执行器仅在本次独立工作目录内新建成果；不得修改运行前已存在的文件，不得把旧文件作为本次成果。产出目录只由客户端按用户授权发布，执行器不得直接读写。'
 
 export const scheduledOutputNotDelivered: ScheduledIssue = {
-  code: 'SCHEDULED_OUTPUT_NOT_DELIVERED', message: '未交付：无法向已授权的产出目录保存全部成果，原成果已保留。', action: 'blocked',
+  code: 'SCHEDULED_OUTPUT_NOT_DELIVERED', message: '未能向已授权的产出目录保存全部成果。请核查产出目录及其中的原件副本；本次工作文件已保留。', action: 'blocked',
 }
 
 export class ScheduledPathDeniedError extends Error {
-  constructor(readonly issue: typeof scheduledPathDenied | typeof scheduledSkillUnavailable | typeof scheduledFileConflict = scheduledPathDenied) { super(issue.message) }
+  constructor(readonly issue: Pick<ScheduledIssue, 'code' | 'message'> = scheduledPathDenied) { super(issue.message) }
 }
 
 /** Catch explicit I/O requests before planning or admission; the tool policy remains authoritative. */
@@ -71,7 +71,7 @@ export function scheduledWorkspaceGoal(input: ScheduleInput): string {
   const output = /(?:写入|保存|存放|输出|导出|交付)(?:到|至|进|于|目录\s*[:：]?)?\s*$|\b(?:save|export|deliver|write)(?:\s+(?:the\s+)?(?:file|report|results?))?\s+(?:to|in)\s*$/i
   const replaced = input.goal.replace(new RegExp(`["“'\u0060]?${literal}["”'\u0060]?(?=$|[\\s,，。；;！!？?、])`, 'gi'), (match: string, offset: number) =>
     output.test(input.goal.slice(0, offset)) ? '已授权的产出目录' : match)
-  return `${replaced}\n交付文件请在工作目录内生成并提交验收。客户端负责发布到用户授权的产出目录，不要直接访问该目录。`
+  return `${replaced}\n交付文件请在工作目录内生成并提交验收。客户端按成果文件名发布到已授权的产出目录，遇同名时先备份再替换。不要在计划中直接读写原件。`
 }
 
 function requestsWindowsSchedulePathAccess(text: string): boolean {
@@ -93,12 +93,12 @@ function requestsWindowsSchedulePathAccess(text: string): boolean {
 
 export const scheduledDeliveryPlanningRules = [
   scheduledCreateOnlyRule,
-  '若需求必须修改已有文件才可完成，说明与定时任务权限冲突，不得生成可执行的覆盖计划。',
+  '产出目录授权不能用于读取或编辑原件。客户端发布时默认先备份再替换同名文件；计划只需在独立工作目录内生成完整新成果。',
   '定时任务的「工作目录」「当前目录」默认指本次运行的独立工作目录，也是交付清单相对路径的基准。客户端在每次启动时分配目录，规划时不需要知道实际路径。',
   '例如「在工作目录生成 验收.md」的交付路径是「验收.md」。不要把「工作目录」解释为多次运行共用的父目录，不要推断用户禁止独立工作目录，也不要为默认目录追问或阻塞。保留用户明确要求的相对子目录。',
   '只有用户明确要求其他保存位置时，才区分外部交付：执行仍在独立工作目录内，客户端负责将已验收文件发布到已授权的产出目录。没有授权时明确指出需要配置，不能静默改存或让执行器直接写外部目录。',
   '定时交付物默认使用固定相对路径。「文件名你自己定」表示规划时选一个合适的固定名称；每次运行使用独立目录，重复运行不是擅自改名或添加时间戳的理由。',
-  '只有明确要求按 yyyyMMdd-HHmm 命名时，path 的文件名主体才填 yyyyMMdd-HHmm，并设置 scheduledFilenameTime：以原计划时间命名填 scheduled（未指定时默认），明确以实际启动时间命名填 started。',
+  '用户指定文件名或日期格式时，在执行指令中原样保留要求。path 的文件名供普通文件执行参考，不是验收条件；实际文件须保持计划目录和格式。需要用时间命名时，默认使用原计划时间，用户明确要求时使用实际启动时间，均按任务时区计算。',
   '只有用户明确要求空白 .txt 文件时才设置 contentPolicy="empty"，表示必须恰好为 0 字节；其他交付物省略该字段。无需员工自行计算交付文件名。',
 ].join('\n')
 
@@ -109,15 +109,15 @@ export function resolveScheduledDeliveryNodes(nodes: readonly ArrangementNode[],
   return nodes.map(node => {
     const bindings: string[] = []
     const deliverables = node.deliverables?.map(file => {
-      const legacyTemplate = legacy && scheduledFilenamePattern.test(file.path)
-      const time = file.scheduledFilenameTime ?? (legacyTemplate
-        ? /(?:实际启动|实际运行|运行开始|执行开始|actual start|run start)/i.test([node.instruction, ...file.acceptanceCriteria].join('\n')) ? 'started' : 'scheduled'
+      const hasTemplate = file.path.search(scheduledFilenamePattern) !== -1
+      const time = file.scheduledFilenameTime ?? (hasTemplate
+        ? legacy && /(?:实际启动|实际运行|运行开始|执行开始|actual start|run start)/i.test([node.instruction, ...file.acceptanceCriteria].join('\n')) ? 'started' : 'scheduled'
         : undefined)
       const { scheduledFilenameTime: _templateTime, ...delivery } = file
-      if (time) {
+      if (time && hasTemplate) {
         const parts = new Map(formatter.formatToParts(time === 'started' ? times.startedAt : times.scheduledAt).map(part => [part.type, part.value]))
-        const stamp = `${parts.get('year')!.padStart(4, '0')}${parts.get('month')}${parts.get('day')}-${parts.get('hour')}${parts.get('minute')}`
-        delivery.path = file.path.replace(scheduledFilenamePattern, (_match, prefix: string) => prefix + stamp)
+        const date = `${parts.get('year')!.padStart(4, '0')}${parts.get('month')}${parts.get('day')}`
+        delivery.path = file.path.replace(scheduledFilenamePattern, token => token === 'yyyyMMdd' ? date : `${date}-${parts.get('hour')}${parts.get('minute')}`)
         bindings.push(`${JSON.stringify(file.path)} → ${JSON.stringify(delivery.path)}`)
       }
       if (!delivery.contentPolicy && legacy && file.format.toLowerCase() === 'txt' && !file.artifact &&
@@ -130,7 +130,7 @@ export function resolveScheduledDeliveryNodes(nodes: readonly ArrangementNode[],
       return delivery
     })
     return { ...node, deliverables, instruction: node.instruction + (bindings.length
-      ? `\n【本次交付路径】以下是宿主已经计算的路径，以此及交付清单为准。不要自行重新计算，也不要创建模板同名文件。\n${bindings.join('\n')}` : '') }
+      ? `\n【本次交付路径】以下是宿主已展开的路径。普通文件以用户命名要求及实际保存为准，提交真实相对路径，不要创建模板同名文件。\n${bindings.join('\n')}` : '') }
   })
 }
 
@@ -144,6 +144,8 @@ export function occurrenceId(id: string, scheduledAt: number): string {
 export function planInputKey(input: ScheduleInput): string {
   const values = [input.mode ?? 'employee', input.goal, input.subscriptionId, input.modelId, input.timezone]
   if (input.outputDirectory) values.push(input.outputDirectory.path, input.outputDirectory.identity)
+  // Keep the key for already confirmed plans from the previous opt-in implementation.
+  if (input.outputDirectory?.replaceWithBackup) values.push('replaceWithBackup')
   return createHash('sha256').update(JSON.stringify(input.mode === 'empty-text' ? [...values, input.emptyText] : values)).digest('hex')
 }
 type ZonedParts = { year: number; month: number; day: number; hour: number; minute: number; second: number }
@@ -294,6 +296,7 @@ ${general ? '缺少执行必需输入' : '需求超出职责或缺少执行必�
 否则返回严格 JSON：{"status":"ready","objective":"工作目标","instruction":"完整执行指令","expectedOutput":"最终成果","deliverables":[{"id":"report","name":"报告","format":"docx","path":"report.docx","contentOutline":["章节要求"],"acceptanceCriteria":["验收要求"]}]}。
 必须实际生成可用文件，不得仅提供聊天正文。交付路径必须相对于本次运行的独立工作目录，不得包含绝对路径或 ..。交付物 ID、路径不得重复。
 ${scheduledDeliveryPlanningRules}
+用户明确要求发送消息时，必须把在工作节点内实际调用已连接业务工具发送纳入 instruction；保留原收件人、渠道和正文，不要把发送改写为拟稿、文件交付或任务完成后的独立操作。
 优先使用用户要求的格式，未指定时根据目标选择适用格式。不得要求每次执行重新规划。运行时将提供原计划执行时间、时区、实际启动时间；当日、上周等相对时间必须以原计划执行时间和时区为准，在 instruction 中明确时间计算规则。
 ${general ? '不得依赖员工技能、扩大权限或绕过审批。' : 'instruction 必须要求读取员工当前装配的相关 SKILL.md 并按其执行；不得绑定技能版本、扩大职责或绕过审批。'}不明确的非必要信息可以说明合理假设，必要输入缺失则阻塞。
 ${general ? '' : `员工资料：${JSON.stringify(employee)}`}

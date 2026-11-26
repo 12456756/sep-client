@@ -9,11 +9,46 @@ import { DingTalkWorkspaceStore } from '../data/dingtalk-workspace-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { ConnectorRuntimePort } from '../domain/connectors'
 import { DingTalkWorkspaceRuntime } from './dingtalk-workspace'
-import { validateDingTalkArgs, runDingTalk, type DingTalkRunner } from './dingtalk-command'
+import { describeScheduledDingTalkOperation, dingTalkFailureReason, evaluateDingTalkCommand, isScheduledDingTalkReadOnly, validateDingTalkArgs, runDingTalk, type DingTalkRunner } from './dingtalk-command'
 import { prepareDingTalkBinary } from './dingtalk-assets'
 
 const owner = { enterpriseId: 'e', memberId: 'a' }
 const other = { enterpriseId: 'e', memberId: 'b' }
+
+test('scheduled operation descriptions use known command tokens, never arbitrary positional text', () => {
+  const args = ['aitable', 'record', 'group-stats', '--base-id', 'private-base', '--stats', 'private-formula']
+  assert.deepEqual(describeScheduledDingTalkOperation(args), { identity: ['command', args], dingTalkAction: 'aitable record group-stats' })
+  for (const unknown of [['aitable', 'record group-stats'], ['aitable', 'record', 'private-command']]) {
+    assert.deepEqual(describeScheduledDingTalkOperation(unknown), { identity: ['command', unknown] })
+  }
+  assert.equal(dingTalkFailureReason('{"status":"error","summary":"table not found"}'), 'resource-not-found')
+  assert.equal(dingTalkFailureReason('{"error":{"category":"authentication","message":"sensitive payload"}}'), 'authentication-required')
+  assert.equal(dingTalkFailureReason('{"summary":"record not found: private record"}'), undefined)
+  assert.equal(dingTalkFailureReason('raw connector output'), undefined)
+})
+
+test('scheduled AI table reads require a known command and exact flags without changing interactive approval', () => {
+  const scope = ['--base-id', 'base', '--table-id=table']
+  const reads = [
+    ['base', 'search', '--query', 'Sales', '--cursor', 'next'], ['base', 'list'], ['base', 'get', '--base-id', 'base'],
+    ['table', 'get', '--base-id', 'base'], ['table', 'list', '--base-id', 'base'], ['field', 'get', ...scope],
+    ['record', 'list', ...scope, '--all'], ['record', 'query', ...scope, '--cursor=next', '--limit', '20'],
+    ['record', 'get', ...scope, '--record-ids', 'record'], ['record', 'stats', ...scope, '--stats', '[]'],
+    ['record', 'group-stats', ...scope, '--stats', '[]'], ['psql', '-d', 'base', '-c', 'SELECT * FROM sales'],
+    ['psql', '--database=base', '-l'], ['psql', '-d', 'base', '-t', 'table', '--all-properties'],
+  ]
+  for (const args of reads) {
+    assert.equal(isScheduledDingTalkReadOnly(['aitable', ...args]), true, args.join(' '))
+    assert.equal(evaluateDingTalkCommand(['aitable', ...args]), undefined)
+  }
+  for (const args of [
+    ['base', 'search', '--query', 'Sales', '--profile', 'other'], ['base', 'search', '--query', 'Sales', '--query=Other'],
+    ['record', 'query', '--base-id', 'base'], ['record', 'query', ...scope, '--unknown'], ['record', 'update', ...scope],
+    ['field', 'delete', ...scope], ['psql', '-d', 'base', '--database', 'other', '-l'],
+    ['psql', '-d', 'base', '-c', 'DELETE FROM sales'], ['psql', '-d', 'base', '-l', '-t', 'table'],
+  ]) assert.equal(isScheduledDingTalkReadOnly(['aitable', ...args]), false, args.join(' '))
+})
+
 async function fixture() {
   const base = process.env.CSEP_TEST_TEMP ?? tmpdir()
   await mkdir(base, { recursive: true })
@@ -40,6 +75,9 @@ async function fixture() {
     if (options.args[0] === 'auth') return { text: '{"authenticated":true}', isError: false }
     if (authenticationFailed) return { text: '{"error":{"category":"authentication"}}', isError: true }
     assert.equal(await readFile(join(options.directory, 'account.json'), 'utf8'), 'private-account-fixture')
+    if (options.args[0] === 'chat' && options.args[1] === '+dm') {
+      return { text: '{"data":{"openTaskId":"outgoing"}}', isError: false }
+    }
     return { text: '{"items":[],"nextCursor":"next-page"}', isError: false }
   }
   const legacy: ConnectorRuntimePort = { state: async () => ({ id: 'dingtalk', status: 'connected' }), connect: async () => {}, disconnect: async () => {}, binding: async () => undefined, cancel: () => {} }
@@ -72,6 +110,12 @@ test('DWS login is private, complete tools survive transient directories, and di
   assert.deepEqual(f.calls.at(-1)?.args, ['calendar', 'list', '--format', 'json', '--yes'])
   const reference = await binding.commands[0].reference('SKILL.md')
   assert.match(reference, /[Dd][Ww][Ss]/)
+  await assert.rejects(binding.commands[0].schema('profile list'), /profile/)
+  assert.equal((await f.runtime.state(owner)).status, 'connected')
+  const callsBeforeSend = f.calls.length
+  const submitted = await binding.commands[0].execute(['chat', '+dm', '--to', 'Example', '--content', 'test'], f.root)
+  assert.deepEqual(submitted, { text: '{"data":{"openTaskId":"outgoing"}}', isError: false })
+  assert.equal(f.calls.length, callsBeforeSend + 1)
   await assert.rejects(binding.commands[0].reference('references/../../secret.md'))
   const scopeRoot = join(f.root, 'task-data', 'v3', 'ZQ', 'YQ', 'connectors')
   assert.deepEqual(await readdir(join(scopeRoot, 'dws-runtime')), [])

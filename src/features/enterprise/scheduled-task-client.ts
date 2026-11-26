@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { scheduledIssueSchema as issue, scheduleInputSchema, scheduledWorkSourceSchema, type ScheduledDefinition, type ScheduledSnapshot } from '../../shared/scheduled-tasks'
+import { scheduledIssueSchema as issue, scheduleInputSchema, scheduledActionResultSchema, scheduledOperationSchema, scheduledWorkSourceSchema, type ScheduledDefinition, type ScheduledSnapshot } from '../../shared/scheduled-tasks'
 import type { IpcCommandResult } from '../../shared/ipc'
 import { scheduledCreationSchema, type ScheduledCreation, type ScheduledCreationRequest } from '../../shared/scheduled-creation'
 
@@ -26,6 +26,8 @@ const snapshotSchema = z.object({
     status: z.enum(['pending', 'preparing', 'launching', 'running', 'waiting_approval', 'waiting_retry', 'waiting_auth', 'blocked', 'review', 'cancelling', 'completed', 'failed', 'cancelled', 'timed_out', 'missed']),
     firstEligibleAt: time, startDeadline: time, startedAt: time.nullable(), finishedAt: time.nullable(), nextRetryAt: time.nullable(), error: issue.nullable(),
     stopReason: z.enum(['cancelled', 'timed_out']).nullable(),
+    operations: z.array(scheduledOperationSchema).max(256).optional(),
+    actionResults: z.array(scheduledActionResultSchema).max(50).optional(),
     attempts: z.array(z.object({ id, number: z.number().int().positive(), startedAt: time, finishedAt: time.nullable(), status: z.enum(['preparing', 'admitted', 'failed', 'completed', 'interrupted']), error: issue.nullable() })),
   })),
   schedulerState: z.enum(['running', 'stopped', 'error']).optional(),

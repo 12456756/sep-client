@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { access, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { z } from 'zod'
-import { scheduledIssueSchema as issue, scheduleInputSchema, type ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
+import { scheduledIssueSchema as issue, scheduleInputSchema, scheduledActionGrantSchema, scheduledActionResultSchema, scheduledOperationSchema, type ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
 import { scheduledCreationSchema } from '../../src/shared/scheduled-creation'
 import { scheduledPlanSchema } from '../domain/scheduled-task'
 import { AppError } from '../errors/app-error'
@@ -24,6 +24,8 @@ const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const time = z.number().int().nonnegative()
 const definition = z.object({
   id, revision: z.number().int().positive(), input: scheduleInputSchema, plan: scheduledPlanSchema.nullable(),
+  actionGrant: scheduledActionGrantSchema.optional(),
+  connectorRevision: z.string().max(4096).nullable().optional(),
   planInputKey: z.string().nullable(), enabled: z.boolean(), deleted: z.boolean(), nextRunAt: time.nullable(), pausedAt: time.nullable().optional(), createdAt: time, updatedAt: time,
 }).strict()
 const occurrence = z.object({
@@ -31,6 +33,10 @@ const occurrence = z.object({
   status: z.enum(['pending', 'preparing', 'launching', 'running', 'waiting_approval', 'waiting_retry', 'waiting_auth', 'blocked', 'review', 'cancelling', 'completed', 'failed', 'cancelled', 'timed_out', 'missed']),
   firstEligibleAt: time, startDeadline: time, startedAt: time.nullable(), finishedAt: time.nullable(), nextRetryAt: time.nullable(), error: issue.nullable(),
   stopReason: z.enum(['cancelled', 'timed_out']).nullable(),
+  actionGrant: scheduledActionGrantSchema.optional(),
+  actionResults: z.array(scheduledActionResultSchema).max(50).optional(),
+  operations: z.array(scheduledOperationSchema).max(256).optional(),
+  connectorRevision: z.string().max(4096).nullable().optional(),
   attempts: z.array(z.object({ id, number: z.number().int().positive(), startedAt: time, finishedAt: time.nullable(), status: z.enum(['preparing', 'admitted', 'failed', 'completed', 'interrupted']), error: issue.nullable() }).strict()),
 }).strict()
 const envelope = z.object({ version: z.literal(1), owner: z.object({ memberId: z.string(), enterpriseId: z.string() }).strict(), definitions: z.array(definition), occurrences: z.array(occurrence), creations: z.array(scheduledCreationSchema).optional() }).strict()

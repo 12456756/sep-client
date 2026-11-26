@@ -54,6 +54,7 @@ export interface PiTaskWorkerContext {
   toolPolicy?: PiAgentSessionConfig['toolPolicy']
   registerWrittenFile?: PiAgentSessionConfig['registerWrittenFile']
   disableTools?: boolean
+  scheduledTools?: PiAgentSessionConfig['scheduledTools']
   /** Images injected into the first user prompt only; host-owned and already validated. */
   inputImages?: readonly { data: string; mimeType: string }[]
 }
@@ -159,6 +160,7 @@ export class PiTaskWorker {
         runId: this.context.runId,
         modelId: this.context.modelId,
         connectorBinding: await this.context.resolveConnectorBinding?.(),
+        scheduledTools: this.context.scheduledTools,
         vision: this.context.vision,
         gatewayUrl: this.context.gatewayUrl,
         workspaceDir: this.context.workspaceDir,

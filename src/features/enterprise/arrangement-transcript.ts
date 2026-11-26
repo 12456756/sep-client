@@ -2,12 +2,12 @@ import type { TaskExecutionEvent } from '../../shared/types'
 import { RUNTIME_FAILURE_MESSAGES } from '../../shared/runtime-feedback'
 import { LOCAL_MEDIA_TOOL, localMediaProgressSchema } from '../../shared/local-media-progress'
 import type { WorkStep } from './types'
-import { processActivityLabel } from './work-process'
 
 export interface TranscriptEntry {
   id: string
   kind: 'thinking' | 'text' | 'tool' | 'status'
   text: string
+  toolName?: string
   state?: 'running' | 'completed' | 'failed' | 'waiting-user'
   at: number
 }
@@ -160,12 +160,14 @@ export function buildArrangementTranscript(steps: readonly WorkStep[], source: r
       if (typeof data.toolId !== 'string') continue
       const id = `${runId}:tool:${data.toolId}`
       let entry = entries.get(id)
+      const toolName = data.toolName
       if (!entry) {
-        const toolName = typeof data.toolName === 'string' ? data.toolName : undefined
-        const label = toolName === 'mcp__officecli__officecli' ? '使用 OfficeCLI 处理文档'
-          : processActivityLabel({ id, runId, toolName, text: '处理任务', state: 'running', startedAt: at })
-        entry = { id, kind: 'tool', text: `正在${label}`, at, state: 'running' }
+        entry = { id, kind: 'tool', text: '工具名称未记录', at, state: 'running' }
         entries.set(id, entry); node.entries.push(entry)
+      }
+      if (typeof toolName === 'string' && toolName.length > 0 && toolName.length <= 64 && !/[^a-zA-Z0-9_-]/.test(toolName)) {
+        entry.text = '执行工具操作'
+        entry.toolName = toolName
       }
       if (type === 'tool_execution_end') entry.state = data.success === false ? 'failed' : 'completed'
     } else if (type === 'auto_retry_start' || type === 'approval_requested') {

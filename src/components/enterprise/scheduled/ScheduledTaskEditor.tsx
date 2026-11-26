@@ -51,7 +51,6 @@ export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, m
   const [draftSettings, setSettings] = useState<RunSettings>(() => ({ ...defaultRunSettings(), workDir: original?.input.workDir ?? prefill?.settings.workDir ?? '', modelId: original?.input.modelId ?? prefill?.settings.modelId ?? '', permissions: original?.input.permissions ?? prefill?.settings.permissions ?? { preset: 'workspace-edit', approvalMode: 'confirm-each' } }))
   const [error, setError] = useState<string | null>(null)
   const [outputDirectory, setOutputDirectory] = useState(original?.input.outputDirectory?.path ?? '')
-  const [outputConfirmed, setOutputConfirmed] = useState(false)
   const employee = workspace.myEmployees.find(item => item.id === employeeId)
   const available = workspace.myEmployees.filter(item => item.assignedToMe && !['unavailable', 'needs-auth'].includes(item.availability))
   const general = mode === 'general'
@@ -70,7 +69,6 @@ export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, m
     if (generalUnavailable) { setError(scheduledGeneralUnavailable); return }
     if (!general && (!available.some(item => item.id === employeeId) || !employee?.allowedModels.includes(settings.modelId))) { setError('请选择可用的员工及其允许使用的模型。'); return }
     const { scheduledAt, recurrence } = configuration
-    if (outputDirectory && !outputConfirmed) { setError('请确认本任务的产出目录授权。'); return }
     const base = { mode, name, workDir: settings.workDir, scheduledAt, timezone: timing.timezone, recurrence,
       ...(outputDirectory ? { outputDirectory: { path: outputDirectory } } : {}) }
     const input = scheduleInputSchema.safeParse({ ...base, goal, permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' }, modelId: settings.modelId, ...(general ? {} : { subscriptionId: employeeId }) })
@@ -94,10 +92,10 @@ export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, m
         <ScheduledExecutionFields value={{ goal, mode, subscriptionId: employeeId, settings }} employees={workspace.myEmployees} onChange={patch => { if (patch.mode) setMode(patch.mode); if (patch.subscriptionId !== undefined) setEmployeeId(patch.subscriptionId); if (patch.settings) setSettings(value => ({ ...value, ...patch.settings })) }} action={<ComposerResizeHandle inputRef={input} />} onChooseFolder={async path => { try { return await workspace.chooseFolder(path) } catch { setError('无法选择目录，请重试。'); return null } }} />
       </div>
       {retired && <p className="ent-sch-help">{retiredScheduledExecutionMessage}</p>}
+      {original?.input.actions?.length ? <p className="ent-sch-help">旧版附加发送已停用。请将仍需发送的对象和正文写入工作目标。</p> : null}
       {(generalUnavailable || !available.length) ? <p className="ent-sch-modal-error" role="status">{general ? scheduledGeneralUnavailable : '当前没有可用员工，请先检查员工授权。'}</p> : null}
-      <div className="ent-sch-time-row"><span>产出目录</span><button type="button" className="ent-btn" onClick={() => void workspace.chooseFolder(outputDirectory || settings.workDir).then(path => { if (path) { setOutputDirectory(path); setOutputConfirmed(false) } }, () => setError('无法选择产出目录。'))}>{outputDirectory || '选择产出目录'}</button>
-        {outputDirectory && <button type="button" className="ent-btn" onClick={() => { setOutputDirectory(''); setOutputConfirmed(false) }}>清除</button>}</div>
-      {outputDirectory && <label><input type="checkbox" checked={outputConfirmed} onChange={event => setOutputConfirmed(event.target.checked)} /> 允许此定时任务每次将成果保存到该目录，不覆盖已有文件</label>}
+      <div className="ent-sch-time-row"><span>产出目录</span><button type="button" className="ent-btn" onClick={() => void workspace.chooseFolder(outputDirectory || settings.workDir).then(path => { if (path) setOutputDirectory(path) }, () => setError('无法选择产出目录。'))}>{outputDirectory || '选择产出目录'}</button>
+        {outputDirectory && <button type="button" className="ent-btn" onClick={() => setOutputDirectory('')}>清除</button>}</div>
       <ScheduledTimeSettings value={timing} onChange={setTiming} employeeId={employeeId} modelId={settings.modelId} model={model} allowTimeInterpretation={!general} onParsingChange={onParsingChange} />
     </fieldset>
     {original && <p className="ent-sch-help">保存后任务不会自动调度，请在任务配置中确认计划并启用。</p>}

@@ -47,6 +47,49 @@ test('preview joins owner-local planned deliveries with node completion, indepen
   assert.equal(await store.getDelivery(owner, 'task', 'node', 'report'), null)
 })
 
+test('scheduled delivery preview and save intents use the verified actual filename for ordinary files', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-preview-scheduled-name-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const owner = { memberId: 'member', enterpriseId: 'enterprise' }
+  const plans = new WorkPlanStore(root), checkpoints = new ArrangementCheckpointStore(root)
+  const store = new DocumentPreviewStore(root, plans, checkpoints)
+  const plan: WorkPlan = { id: 'task', schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1,
+    owner, mode: 'auto', title: '日报', goal: '日报', conversation: null,
+    scheduledOrigin: { definitionId: 'definition', occurrenceId: 'occurrence' },
+    nodes: [{ id: 'node', subscriptionId: 'sub', modelId: 'model', title: '日报', instruction: 'Write', expectedOutput: 'Report',
+      dependsOn: [], skillIds: [], requiresUserConfirmation: false,
+      deliverables: [{ id: 'report', name: 'Report', path: 'reports/report-dd-HH-mm.md', format: 'md', contentOutline: ['Report'], acceptanceCriteria: ['Report'] }] }],
+    workspace: { mode: 'shared', path: root }, permissions: { preset: 'workspace-edit', allowedTools: [], allowedPaths: [], deniedPaths: [], requireApprovalFor: [], commandPolicy: 'disabled' },
+    confirmedInputs: [], planHash: 'scheduled-hash', createdAt: 1 }
+  const actual = 'reports/report-26-11-26.md'
+  const sha256 = createHash('sha256').update('hello').digest('hex')
+  const file = { id: 'report', path: actual, format: 'md', size: 5, sha256, nodeRunId: 'node-run', validatedAt: 1,
+    saveIntent: { startedAt: 1, when: 1, title: '日报', name: 'report-26-11-26.md', version: `node-run:${sha256}:${actual}` } }
+  const checkpoint: ArrangementCheckpoint = { version: 1, taskId: 'task', owner, planHash: 'scheduled-hash', activeRunId: 'run', updatedAt: 1,
+    state: { status: 'completed', failureNodeIds: [], interruptionReason: null,
+      nodes: [{ nodeId: 'node', status: 'completed', attempt: 1, error: null, output: null,
+        delivery: { validationAttempts: 1, issues: [], finalFiles: [file] } }] } }
+  await plans.save(owner, plan); await checkpoints.save(owner, checkpoint)
+  await mkdir(join(root, 'reports'))
+  await writeFile(join(root, actual), 'hello')
+  assert.equal((await store.getDelivery(owner, 'task', 'node', 'report'))?.file.path, actual)
+  assert.equal(await store.getDeliveryPath(owner, 'task', 'node', 'report'), await realpath(join(root, actual)))
+  assert.equal((await store.read(owner, 'task', file, root)).bytes.toString(), 'hello')
+  assert.deepEqual(await store.deliverySaveIntents(owner, 'task'), [{ nodeId: 'node', deliverableId: 'report', intent: file.saveIntent }])
+  await plans.save(owner, { ...plan, scheduledOrigin: undefined })
+  assert.equal(await store.getDelivery(owner, 'task', 'node', 'report'), null)
+  assert.deepEqual(await store.deliverySaveIntents(owner, 'task'), [])
+  await plans.save(owner, plan)
+  for (const path of ['other/report.md', 'reports/../report.md', 'reports/report.txt']) {
+    const node = checkpoint.state.nodes[0]!
+    await checkpoints.save(owner, { ...checkpoint, state: { ...checkpoint.state, nodes: [
+      { ...node, delivery: { ...node.delivery!, finalFiles: [{ ...file, path }] } },
+    ] } })
+    assert.equal(await store.getDelivery(owner, 'task', 'node', 'report'), null, path)
+    assert.deepEqual(await store.deliverySaveIntents(owner, 'task'), [], path)
+  }
+})
+
 async function conversationFixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'sep-conv-preview-'))
   t.after(() => rm(root, { recursive: true, force: true }))

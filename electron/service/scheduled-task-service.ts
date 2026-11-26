@@ -29,6 +29,7 @@ export interface ScheduledServiceOptions {
   arrangementPlanner?(input: ScheduleInput, signal: AbortSignal): Promise<ArrangementWorkPlan | { status: 'blocked'; reasons: string[] }>
   timeInterpreter?(input: ScheduleTimeRequest, signal: AbortSignal): Promise<ScheduleTimeResult>
   runner: ScheduledRunnerPort
+  connectorRevision?(scope: TaskOwnerScope): Promise<string | null>
   now?: () => number
 }
 export const TERMINAL_SCHEDULE_STATUSES = new Set(['completed', 'failed', 'cancelled', 'timed_out', 'missed'])
@@ -167,6 +168,8 @@ export class ScheduledTaskService {
       const normalized = { ...input, recurrence: input.recurrence ?? { frequency: 'once' as const, interval: 1 } }
       if (planInputKey(normalized) !== item.planInputKey) { item.plan = null; item.planInputKey = null }
       Object.assign(item, { input: normalized, enabled: false, nextRunAt: null, pausedAt: null, revision: item.revision + 1, updatedAt: this.now() })
+      delete item.actionGrant
+      delete item.connectorRevision
       this.linkCreation(data, item, creation)
       return item
     })
@@ -283,6 +286,7 @@ export class ScheduledTaskService {
       permissions: { preset: template.permissions.preset, approvalMode: template.permissions.approvalMode ?? 'confirm-each' },
       scheduledAt: request.scheduledAt, timezone: request.timezone, recurrence: request.recurrence })
     const plan = source.view(template, request.taskId, requestKey)
+    const connectorRevision = await this.options.connectorRevision?.(scope) ?? null
     const created = await this.options.repository.update(scope, data => {
       guard()
       const repeated = data.definitions.find(item => item.id === id)
@@ -292,7 +296,7 @@ export class ScheduledTaskService {
       }
       if (input.scheduledAt <= this.now()) throw new AppError('INVALID_ARGUMENT', { message: '保存过程中执行时间已过，请重新设置时间。' })
       const definition: ScheduledDefinition = { id, revision: 1, input, plan, planInputKey: planInputKey(input), enabled: true, deleted: false,
-        nextRunAt: input.scheduledAt, pausedAt: null, createdAt: this.now(), updatedAt: this.now() }
+        nextRunAt: input.scheduledAt, pausedAt: null, createdAt: this.now(), updatedAt: this.now(), connectorRevision }
       data.definitions.push(definition)
       return definition
     })
@@ -328,6 +332,10 @@ export class ScheduledTaskService {
     guard?.()
     creation?.guard?.()
     if (snapshot.input.mode === 'empty-text') throw new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage })
+    if (snapshot.input.actions) throw new AppError('INVALID_STATE', { message: '旧版附加发送已停用。请编辑任务，将收件人和正文写入工作目标后重新启用。' })
+    const connectorRevision = await this.options.connectorRevision?.(scope) ?? null
+    this.assertScope(scope, generation)
+    creation?.guard?.()
     if (snapshot.plan && snapshot.input.mode === 'general') {
       if (!this.options.authorizeModel) throw new AppError('MODEL_NOT_ALLOWED')
       await withTimeout(this.options.authorizeModel(snapshot.input.modelId), 60000, 'scheduled-enable-model-authorization')
@@ -355,7 +363,7 @@ export class ScheduledTaskService {
         }
         if (nextRunAt === null || nextRunAt <= this.now()) throw new AppError('INVALID_STATE', { message: 'Unable to determine next recurring execution' })
       }
-      Object.assign(item, { enabled: true, nextRunAt, pausedAt: null, revision: item.revision + 1, updatedAt: this.now() })
+      Object.assign(item, { enabled: true, nextRunAt, pausedAt: null, revision: item.revision + 1, updatedAt: this.now(), connectorRevision })
       if (preparation) { preparation.stage = 'completed'; preparation.error = null; preparation.revision++; preparation.updatedAt = this.now() }
       return item
     })
@@ -370,6 +378,7 @@ export class ScheduledTaskService {
       guard()
       const item = this.definition(data, id, revision)
       if (item.input.mode === 'empty-text') throw new AppError('INVALID_STATE', { message: retiredScheduledExecutionMessage })
+      if (item.input.actions) throw new AppError('INVALID_STATE', { message: '此任务含已配置的业务操作，请在定时任务中编辑并重新启用。' })
       if (data.occurrences.some(run => run.definitionId === id && !TERMINAL_SCHEDULE_STATUSES.has(run.status))) {
         throw new AppError('INVALID_STATE', { message: '请先处理或停止当前执行，再修改任务。' })
       }
@@ -528,6 +537,7 @@ export class ScheduledTaskService {
             } })
             const run: ScheduledOccurrence = { id, definitionId: item.id, revision: item.revision, scheduledAt, taskId: randomUUID(),
               input: structuredClone(item.input), plan: structuredClone(item.plan), status: missed ? 'missed' : 'pending',
+              connectorRevision: item.connectorRevision ?? null,
               firstEligibleAt: this.now(), startDeadline: Math.min(this.now() + 3600000, scheduledAt + 86400000), startedAt: null,
               finishedAt: missed ? this.now() : null, nextRetryAt: null,
               error: missed ? { code: 'MISFIRE_WINDOW_EXCEEDED', message: '已错过执行时间超过 24 小时，本次不补执行。', action: 'blocked' } : null, attempts: [], stopReason: null }

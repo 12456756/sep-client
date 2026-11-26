@@ -23,7 +23,7 @@ test('retires stored local schedules without discarding records or blocking ordi
   t.after(() => rm(root, { recursive: true, force: true }))
   const scope = { memberId: 'm', enterpriseId: 'e' }
   const store = new ScheduledTaskStore(root)
-  const { subscriptionId: _subscription, modelId: _model, ...base } = input
+  const { subscriptionId: _subscription, modelId: _model, actions: _actions, ...base } = input
   const legacy: ScheduleInput = { ...base, workDir: root, mode: 'empty-text', emptyText: { naming: 'fixed', filename: 'empty.txt' },
     permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
   const admitted: string[] = []
@@ -278,9 +278,13 @@ test('only the native selection can authorize a scheduled output directory', asy
   await assert.rejects(h.service.create('never', raw), { code: 'INVALID_ARGUMENT' })
   await assert.rejects(h.service.create('mismatch', raw, undefined, async () => other), { code: 'INVALID_ARGUMENT' })
   assert.equal(h.data.definitions.length, 0)
-  const created = await h.service.create('chosen', raw, undefined, async path => { assert.equal(path, first); return path })
+  const created = await h.service.create('chosen', raw, undefined, async path => {
+    assert.equal(path, first)
+    return path
+  })
   assert.equal(created.input.outputDirectory?.path, first)
   assert.notEqual(created.input.outputDirectory?.identity, raw.outputDirectory.identity)
+  assert.equal(created.input.outputDirectory?.replaceWithBackup, undefined)
 })
 
 test('conversation rescheduling updates the original task atomically without changing what it runs', async t => {
@@ -722,16 +726,19 @@ test('stopping a service while preflight awaits never admits the late result', a
   assert.equal(h.data.occurrences[0].status, 'pending')
 })
 
-test('approval transitions remain in the same occurrence and never trigger a second admission', async () => {
+test('scheduled execution stops instead of waiting for legacy runtime approval or replaying the occurrence', async () => {
   let state: 'running' | 'waiting_approval' | 'completed' = 'running'
-  const h = harness({ async inspect() { return { state } } })
+  let cancelled = 0
+  const h = harness({ async inspect() { return { state } }, async cancel() { cancelled++ } })
   await enable(h); await h.service.scan()
   state = 'waiting_approval'; await h.service.scan()
-  assert.equal(h.data.occurrences[0].status, 'waiting_approval')
+  assert.equal(h.data.occurrences[0].status, 'review')
+  assert.equal(h.data.occurrences[0].error?.code, 'SCHEDULED_INTERACTION_UNAVAILABLE')
+  assert.equal(cancelled, 1)
   state = 'running'; await h.service.scan()
-  assert.equal(h.data.occurrences[0].status, 'running')
+  assert.equal(h.data.occurrences[0].status, 'review')
   state = 'completed'; await h.service.scan()
-  assert.equal(h.data.occurrences[0].status, 'completed')
+  assert.equal(h.data.occurrences[0].status, 'review')
   assert.equal(h.starts, 1); h.service.stop()
 })
 

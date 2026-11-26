@@ -102,6 +102,7 @@ import { ScheduledTaskStore } from '../data/scheduled-task-store'
 import { ScheduledTaskService } from '../service/scheduled-task-service'
 import { ScheduledCreationService } from '../service/scheduled-creation-service'
 import { ScheduledTaskRunner } from '../service/scheduled-task-runner'
+import { ScheduledOperations } from '../service/scheduled-operations'
 import { runtimeFileToolPolicy } from '../runtime/file-tool-policy'
 import { ScheduledWorkSource } from '../service/scheduled-work-source'
 import { validateArrangementNodes, type ArrangementDraft, type RequestedTaskPermissionPolicy } from '../domain/arrangement-plan'
@@ -133,6 +134,7 @@ export interface BackendOptions {
 class BackendRuntime {
   private readonly selectScheduledOutputDirectory: BackendOptions['selectScheduledOutputDirectory']
   readonly connectors: ConnectorService
+  private readonly scheduledOperations: ScheduledOperations
   private readonly connectorRuntime: LazyAsync<ConnectorRegistryPort>
   readonly skillImport?: SkillImportService
   readonly knowledge: KnowledgeService
@@ -685,7 +687,9 @@ class BackendRuntime {
         nodes: generated.nodes.map(node => ({ ...node, deliverables: node.deliverables ?? [], requiresUserConfirmation: node.requiresUserConfirmation ?? false })),
         intentAnalysis: generated.intentAnalysis ?? null }
     }
+    this.scheduledOperations = new ScheduledOperations(scheduledStorage, () => this.currentScope())
     this.scheduledTasks = new ScheduledTaskService({
+      connectorRevision: async scope => (await this.connectors.binding(scope))?.revision ?? null,
       repository: scheduledStorage, scope: this, employee: validateScheduledEmployee, planner: employeePlanner, source: scheduledWorkSource,
       arrangementPlanner: arrangeScheduledWork, authorizeModel: authorizeScheduledModel,
       timeInterpreter: async (input, signal) => {
@@ -882,6 +886,7 @@ class BackendRuntime {
     const runtime = new TaskRuntime({
       localMedia,
       connectorBinding: owner => this.connectors.binding(owner),
+      scheduledOperations: this.scheduledOperations,
       onConversationSettled: (taskId, runId, owner) => this.conversationQueue.settled(taskId, runId, owner),
       createModelTrace: this.createModelTrace,
       taskManager: this.taskManager,

@@ -263,6 +263,13 @@
 .ent-sch-attempts li { padding: 6px 0 16px 4px; }
 .ent-sch-attempts strong, .ent-sch-attempts small { display: block; }
 .ent-sch-attempts small { color: var(--ent-ink-3); margin-top: 8px; overflow-wrap: anywhere; }
+.ent-sch-operations { list-style: decimal; padding-inline-start: 28px; }
+.ent-sch-operations li { padding-block: 6px; overflow-wrap: anywhere; }
+.ent-sch-operations small { margin-block-start: 3px; }
+.ent-sch-operation-successes { margin-block: 8px 12px; font-size: 12px; }
+.ent-sch-operation-successes summary { cursor: pointer; width: fit-content; }
+.ent-sch-operation-status.is-failed { color: var(--ent-danger); }
+.ent-sch-operation-status:is(.is-not-executed, .is-unknown) { color: var(--ent-attention); }
 .ent-sch-confirm { border: 1px solid var(--ent-brand-border); border-radius: 8px; padding: 18px 24px; background: var(--ent-panel); font-size: var(--ent-fs-body); }
 .ent-sch-confirm p { margin-top: 0; }
 @media (max-width: 760px) { .ent-sch-history { grid-template-columns: minmax(0, 1fr); } .ent-sch-timepoints { max-height: 220px; } .ent-sch-overview { grid-template-columns: 1fr 1fr; } .ent-sch-card { padding: 18px 0; } .ent-sch-run { border-left: 0; padding: 18px 0; } .ent-sch-fields { grid-template-columns: minmax(0, 1fr); gap: 0; } .ent-sch-detail-head h2 { font-size: 18px; } .ent-sch-facts > div { grid-template-columns: 70px minmax(0, 1fr); gap: 10px; } }

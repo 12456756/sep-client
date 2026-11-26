@@ -34,6 +34,8 @@ test('refresh accepts terminal failure issues on both scheduled occurrences and 
       deliverables: [{ id: 'report', name: 'Report', format: 'txt', path: 'report.txt', contentOutline: [], acceptanceCriteria: [] }] },
     status: 'failed', scheduledAt: 2000, firstEligibleAt: 2000, startDeadline: 3000, startedAt: 2000, finishedAt: 2001,
     nextRetryAt: null, stopReason: null, error,
+    operations: [{ key: 'a'.repeat(64), tool: 'dingtalk_execute', target: '测试帐号', status: 'not-executed', reason: 'target-unverified' }],
+    actionResults: [{ index: 0, status: 'unknown' }],
     attempts: [{ id: 'attempt', number: 1, startedAt: 2000, finishedAt: 2001, status: 'failed', error }],
   }] }
   const client = new ScheduledTaskClient(async () => ({ success: true, data }))

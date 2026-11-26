@@ -85,6 +85,7 @@ export interface PiAgentSessionConfig {
   authorizeTool: (request: Pick<import('../../../src/shared/types').ToolAuthorizationRequest, 'toolName' | 'input' | 'registeredTool' | 'summary'>,
     detection?: import('../../domain/browser-handoff').BrowserHandoffDetection) => Promise<boolean>
   reportPolicyEvent?: (type: string, data: unknown) => Promise<void> | void
+  scheduledTools?: import('../../domain/connectors').ScheduledToolExecution
   /** 任务级策略；缺省表示兼容旧的普通任务审批行为。 */
   toolPolicy?: import('../../../pi-extension/guard').ToolPolicy
   registerWrittenFile?: (path: string, external?: import('../../../src/shared/result-files').ExternalResultReceipt) => Promise<void>

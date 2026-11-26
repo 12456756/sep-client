@@ -4,8 +4,8 @@ import { unzipSync, strFromU8 } from 'fflate'
 import type { ConnectorState } from '../../src/shared/connectors'
 import type { DingTalkWorkspaceStore } from '../data/dingtalk-workspace-store'
 import type { TaskOwnerScope } from '../data/scope-path'
-import type { ConnectorBinding, ConnectorRuntimePort, ConnectorCommandResult, ConnectorCommandBinding } from '../domain/connectors'
-import { runDingTalk, validateDingTalkArgs, evaluateDingTalkCommand, dingTalkSchemaArgs, DINGTALK_PRODUCTS, type DingTalkRunner } from './dingtalk-command'
+import { ConnectorInputError, type ConnectorBinding, type ConnectorRuntimePort, type ConnectorCommandResult, type ConnectorCommandBinding } from '../domain/connectors'
+import { runDingTalk, validateDingTalkArgs, evaluateDingTalkCommand, isScheduledDingTalkReadOnly, describeScheduledDingTalkOperation, dingTalkFailureReason, dingTalkSchemaArgs, DINGTALK_PRODUCTS, type DingTalkRunner } from './dingtalk-command'
 
 const key = (scope: TaskOwnerScope): string => JSON.stringify([scope.enterpriseId, scope.memberId])
 interface Attempt { controller: AbortController; done: Promise<void>; state: ConnectorState }
@@ -129,22 +129,21 @@ export class DingTalkWorkspaceRuntime implements ConnectorRuntimePort {
     const invoke = async (args: string[], cwd?: string, source?: AbortSignal): Promise<ConnectorCommandResult> => {
       const combined = source ? AbortSignal.any([signal, source]) : signal
       try {
-        const result = await this.options.store.run(scope, () => valid() && !combined.aborted, async (directory, _snapshot, keychainDirectory) => ({ result: await this.runner({ binary: this.options.binary, directory, keychainDirectory, cwd: cwd ?? directory, args, signal: combined }) }))
-        if (result.isError && valid()) {
-          try {
-            const error: unknown = JSON.parse(result.text)
-            if (error && typeof error === 'object' && 'error' in error && error.error && typeof error.error === 'object' && 'category' in error.error && ['auth', 'authentication'].includes(String(error.error.category))) {
-              this.needsReconnect.add(key(scope)); this.versions.set(key(scope), randomUUID()); this.leases.get(key(scope))?.abort()
-            }
-          } catch { /* Non-JSON errors retain their original uncertain result. */ }
+        const result = await this.options.store.run(scope, () => valid() && !combined.aborted, async (directory, snapshot, keychainDirectory) => {
+          if (snapshot?.revision !== record.revision) throw new Error('DingTalk credential snapshot changed.')
+          return { result: await this.runner({ binary: this.options.binary, directory, keychainDirectory, cwd: cwd ?? directory, args, signal: combined }) }
+        })
+        const scheduledReason = result.isError && !result.executionUncertain ? dingTalkFailureReason(result.text) : undefined
+        if (scheduledReason === 'authentication-required' && valid()) {
+          this.needsReconnect.add(key(scope)); this.versions.set(key(scope), randomUUID()); this.leases.get(key(scope))?.abort()
         }
-        return result
+        return scheduledReason ? { ...result, scheduledReason } : result
       } catch { return { text: '钉钉调用未完成，请检查连接状态；有副作用的操作请先核实结果。', isError: true, executionUncertain: true } }
     }
     const commands: ConnectorCommandBinding = {
         id: 'dingtalk', name: '钉钉', instructions: {
           reference: 'Read official DingTalk DWS instructions. Start with SKILL.md, then relevant references/*.md. Use dingtalk_execute instead of bash. Do not guess commands or IDs; follow business confirmation rules.',
-          schema: 'Read the official compact DWS schema for a product or exact leaf command path, e.g. calendar or calendar event create. This returns command contracts, not business data.',
+          schema: 'Read the official compact DWS schema for a product or exact leaf command path, e.g. calendar or calendar event create. This returns command contracts, not business data or account status. The client supplies the bound account; do not call profile or auth commands.',
           execute: 'Execute a DingTalk business command as the connected user. args is argv without dws. Read relevant reference and leaf schema first. Client manages identity, format and yes flags. Execute ordinary work within the connected account without asking again in chat. For a simple message to a unique person or group, call chat +dm --to NAME --content TEXT or chat +send-to-group --group NAME --content TEXT directly. Clarify ambiguous recipients before sending. Never automatically retry uncertain writes. Obtain explicit approval for batch/permanent PAT grants including scope, grant type and expiry. Preserve pagination and partial failures; verify writes with one read.',
         },
         reference: async path => {
@@ -156,10 +155,12 @@ export class DingTalkWorkspaceRuntime implements ConnectorRuntimePort {
           return strFromU8(bytes)
         },
         schema: async (path, source) => {
-          if (!/^[\w+ -]{1,160}$/.test(path) || !DINGTALK_PRODUCTS.has(path.split(' ')[0])) throw new Error('Invalid DingTalk schema path.')
+          if (!/^[\w+ -]{1,160}$/.test(path) || !DINGTALK_PRODUCTS.has(path.split(' ')[0])) throw new ConnectorInputError('仅支持钉钉业务命令的 Schema，不提供账号或 profile 查询。客户端使用已绑定的账号。')
           return invoke(dingTalkSchemaArgs(path), undefined, source)
         },
         evaluateCommand: evaluateDingTalkCommand,
+        isScheduledReadOnly: isScheduledDingTalkReadOnly,
+        scheduledOperation: describeScheduledDingTalkOperation,
         execute: (args, workspaceDir, source) => invoke(validateDingTalkArgs(args), workspaceDir, source),
     }
     return { revision: record.revision, servers: [], fetch, commands: [commands] }

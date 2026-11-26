@@ -26,6 +26,7 @@ test('a configured destination is recognized only in an exact output clause', ()
   const base = { permissions, outputDirectory: { path: 'D:\\客户资料\\报告成果', identity: 'verified' } } as ReturnType<typeof scheduleInputSchema.parse>
   const outgoing = scheduledWorkspaceGoal({ ...base, goal: '生成报告，保存到 D:/客户资料/报告成果。' })
   assert.match(outgoing, /保存到 已授权的产出目录/)
+  assert.match(outgoing, /遇同名时先备份再替换/)
   assert.equal(requestsRestrictedWindowsSchedulePath(permissions, outgoing), false)
   for (const goal of ['读取 D:/客户资料/报告成果。', '保存到 D:/客户资料/报告成果/子目录。', '保存到 D:/其他目录。']) {
     assert.equal(requestsRestrictedWindowsSchedulePath(permissions, scheduledWorkspaceGoal({ ...base, goal })), true, goal)
@@ -68,6 +69,15 @@ test('scheduled delivery binds timestamps in the configured timezone without cha
   assert.equal(node.deliverables![0]!.path, 'out/yyyyMMdd-HHmm.txt')
   node.deliverables![0]!.scheduledFilenameTime = 'started'
   assert.equal(resolveScheduledDeliveryNodes([node], times, false)[0]?.deliverables?.[0]?.path, 'out/20261121-0002.txt')
+  const daily = { ...node, instruction: '按实际启动时间命名', deliverables: [
+    { ...node.deliverables![0]!, path: 'yyyyMMdd/销售1每日统计-yyyyMMdd.md', format: 'md', scheduledFilenameTime: undefined },
+    { ...node.deliverables![0]!, id: 'fixed', path: 'yyyyMMdd/fixed.yyyyMMdd', format: 'yyyyMMdd', scheduledFilenameTime: undefined },
+  ] }
+  assert.deepEqual(resolveScheduledDeliveryNodes([daily], times, false)[0]?.deliverables?.map(file => file.path),
+    ['yyyyMMdd/销售1每日统计-20261120.md', 'yyyyMMdd/fixed.yyyyMMdd'])
+  assert.equal(resolveScheduledDeliveryNodes([daily], times, true)[0]?.deliverables?.[0]?.path, 'yyyyMMdd/销售1每日统计-20261121.md')
+  daily.deliverables.push({ ...daily.deliverables[0], id: 'collision', path: 'yyyyMMdd/销售1每日统计-20261120.md' })
+  assert.throws(() => resolveScheduledDeliveryNodes([daily], times, false), error => classifyScheduledError(error).code === 'DELIVERY_CONTRACT_INVALID')
   node.deliverables!.push({ ...node.deliverables![0]!, id: 'collision', path: 'OUT/20261121-0002.txt', scheduledFilenameTime: undefined })
   assert.throws(() => resolveScheduledDeliveryNodes([node], times, false), error => classifyScheduledError(error).code === 'DELIVERY_CONTRACT_INVALID')
 })

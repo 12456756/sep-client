@@ -7,7 +7,7 @@ import type { WorkPlanStorePort } from './work-plan-store'
 import type { ArrangementCheckpointStorePort } from './arrangement-checkpoint-store'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 import { readDeliveryPreviewFile, readWorkspaceFile } from './arrangement-delivery-files'
-import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
+import { matchesDeliveryPath, type FinalDeliveryFile } from '../domain/arrangement-delivery'
 import { AppError } from '../errors/app-error'
 import { resultFileSystemError } from '../errors/result-file-path-error'
 import { resolveWorkspaceResult } from './workspace-result-path'
@@ -36,7 +36,7 @@ export class DocumentPreviewStore {
     const planned = plan.nodes.find(node => node.id === nodeId)?.deliverables?.find(file => file.id === deliverableId)
     const node = checkpoint.state.nodes.find(node => node.nodeId === nodeId)
     const file = node?.delivery?.finalFiles.find(file => file.id === deliverableId)
-    if (!planned || !node || !file || file.path !== planned.path || file.format !== planned.format) return null
+    if (!planned || !node || !file || file.format !== planned.format || !matchesDeliveryPath(planned, file.path, !!plan.scheduledOrigin)) return null
     return { status: node.status, file, workspace: plan.workspace.path ?? '' }
   }
 
@@ -45,7 +45,7 @@ export class DocumentPreviewStore {
     if (!plan || plan.mode === 'conversation' || !checkpoint || checkpoint.planHash !== plan.planHash) return []
     return checkpoint.state.nodes.flatMap(node => node.status !== 'completed' ? [] : (node.delivery?.finalFiles ?? []).flatMap(file => {
       const planned = plan.nodes.find(item => item.id === node.nodeId)?.deliverables?.find(item => item.id === file.id)
-      return file.saveIntent && planned?.path === file.path && planned.format === file.format
+      return file.saveIntent && planned && file.format === planned.format && matchesDeliveryPath(planned, file.path, !!plan.scheduledOrigin)
         ? [{ nodeId: node.nodeId, deliverableId: file.id, intent: file.saveIntent }] : []
     }))
   }

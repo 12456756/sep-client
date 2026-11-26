@@ -54,12 +54,15 @@ describe('arrangement process interface', () => {
       { eventType: 'thinking_delta', text: 'Thinking '.repeat(30) },
       { eventType: 'text_delta', text: '{"nodeId":"a","finalDeliverables":[]}' },
       { eventType: 'tool_execution_start', toolId: 'read', toolName: 'read' },
+      { eventType: 'tool_execution_start', toolId: 'ding', toolName: 'dingtalk_execute' },
+      { eventType: 'tool_execution_end', toolId: 'ding', success: false },
     ].map((data, sequence) => ({ taskId: 'task', runId: 'parent', subscriptionId: 'owner', sequence, occurredAt: sequence,
       type: 'arrangement_node_progress', data: { ...data, nodeId: 'a', nodeRunId: 'run-a' } }))
     const html = render(events)
     assert.match(html, /<details class="ent-transcript-thinking">/)
     assert.doesNotMatch(html, /<details[^>]*open|finalDeliverables|nodeId/)
-    assert.match(html, /正在读取文件/)
+    assert.match(html, /<span>执行工具操作<code>read<\/code><\/span>/)
+    assert.match(html, /<span>执行工具操作<code>dingtalk_execute<\/code><\/span><small>失败<\/small>/)
     assert.match(html, /进行中/)
   })
 
