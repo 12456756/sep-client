@@ -98,7 +98,7 @@ export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, m
       <div className="ent-sch-time-row"><span>产出目录</span><button type="button" className="ent-btn" onClick={() => void workspace.chooseFolder(outputDirectory || settings.workDir).then(path => { if (path) { setOutputDirectory(path); setOutputConfirmed(false) } }, () => setError('无法选择产出目录。'))}>{outputDirectory || '选择产出目录'}</button>
         {outputDirectory && <button type="button" className="ent-btn" onClick={() => { setOutputDirectory(''); setOutputConfirmed(false) }}>清除</button>}</div>
       {outputDirectory && <label><input type="checkbox" checked={outputConfirmed} onChange={event => setOutputConfirmed(event.target.checked)} /> 允许此定时任务每次将成果保存到该目录，不覆盖已有文件</label>}
-      <ScheduledTimeSettings value={timing} onChange={setTiming} employeeId={employeeId} modelId={settings.modelId} model={model} manualCron={general} onParsingChange={onParsingChange} />
+      <ScheduledTimeSettings value={timing} onChange={setTiming} employeeId={employeeId} modelId={settings.modelId} model={model} allowTimeInterpretation={!general} onParsingChange={onParsingChange} />
     </fieldset>
     {original && <p className="ent-sch-help">保存后任务不会自动调度，请在任务配置中确认计划并启用。</p>}
     {error || model.error ? <p className="ent-sch-modal-error" role="alert">{error || model.error}</p> : null}</div>

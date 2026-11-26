@@ -75,6 +75,17 @@ test('new editor defaults to the general assistant, hides the picker for orchest
     assert.match(existing, /title="通用助手" aria-label="执行员工"/)
     assert.match(existing, /id="scheduled-goal"[^>]*>[^<]*existing\.txt/)
     assert.match(existing, /空白文本本地动作已停用/)
+    const generalInput = { mode: 'general', name: 'Report', goal: 'Create a report', workDir: 'C:/work', scheduledAt, timezone: 'Asia/Shanghai', modelId: 'model-a', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } } as const
+    const generalDefinition = { id: 'general', revision: 1, enabled: false, deleted: false, plan: null, planInputKey: null, nextRunAt: null, createdAt: 1, updatedAt: 1 }
+    const renderSchedule = (expression: string) => renderToStaticMarkup(React.createElement(ScheduledTaskEditorForm, { ...props, definition: {
+      ...generalDefinition, input: { ...generalInput, recurrence: { frequency: 'cron', interval: 1, preset: 'custom', expression, description: expression } },
+    } }))
+    const daily = renderSchedule('00 16 * * *')
+    assert.match(daily, /<option value="daily" selected="">每天<\/option>/)
+    assert.match(daily, /<input[^>]+id="schedule-clock"[^>]+type="time"[^>]+value="16:00"/)
+    const legacy = renderSchedule('0 9,16 * * *')
+    assert.match(legacy, /<option value="custom" selected="">保留原有规则<\/option>/)
+    for (const markup of [daily, legacy]) assert.doesNotMatch(markup, /schedule-cron|>Cron<|00 16 \*|0 9,16 \*/)
   } finally {
     hooks.deregister()
     if (previous) Object.defineProperty(globalThis, 'React', previous)
