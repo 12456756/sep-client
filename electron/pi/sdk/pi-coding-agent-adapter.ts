@@ -76,7 +76,7 @@ import { localMediaTool } from './pi-local-media'
 import { localMediaProgressSchema } from '../../../src/shared/local-media-progress'
 import { conversationScheduleManagementTools, conversationScheduleToolDefinition } from './pi-conversation-schedule'
 import { CREATE_SCHEDULED_TASK_TOOL } from '../../../src/shared/scheduled-creation'
-import { SCHEDULE_MANAGEMENT_TOOLS } from '../../../src/shared/scheduled-management'
+import { SCHEDULE_MANAGEMENT_TOOLS, SCHEDULE_READ_TOOLS } from '../../../src/shared/scheduled-management'
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
@@ -496,7 +496,7 @@ export function sessionToolOptions(
     ...(attachmentsEnabled ? [CONVERSATION_ATTACHMENT_TOOL] : []),
     ...(localMediaEnabled ? [LOCAL_MEDIA_TOOL] : []),
     ...(conversationScheduleEnabled ? [CREATE_SCHEDULED_TASK_TOOL] : []),
-    ...(scheduleManagementEnabled && toolPolicy?.preset !== 'read-only' ? SCHEDULE_MANAGEMENT_TOOLS : []),
+    ...(scheduleManagementEnabled ? SCHEDULE_MANAGEMENT_TOOLS.filter(name => toolPolicy?.preset !== 'read-only' || SCHEDULE_READ_TOOLS.has(name)) : []),
     ...(pythonEnabled && pythonToolAllowed({ disableTools }) ? [RUN_PYTHON_TOOL] : []),
   ])] }
 }
@@ -780,8 +780,8 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime, p
     if (conversationAttachmentsEnabled(config) && config.conversationAttachments) pi.registerTool(conversationAttachmentTool(config.conversationAttachments))
     if (!config.disableTools && config.localMedia) pi.registerTool(localMediaTool(config.localMedia))
     if (!config.disableTools && config.conversationSchedule) pi.registerTool(conversationScheduleToolDefinition(config.conversationSchedule))
-    if (!config.disableTools && config.toolPolicy?.preset !== 'read-only' && config.conversationScheduleManagement) {
-      for (const tool of conversationScheduleManagementTools(config.conversationScheduleManagement)) pi.registerTool(tool)
+    if (!config.disableTools && config.conversationScheduleManagement) {
+      for (const tool of conversationScheduleManagementTools(config.conversationScheduleManagement, config.toolPolicy?.preset === 'read-only')) pi.registerTool(tool)
     }
     if (pythonExecutable && pythonToolAllowed(config)) pi.registerTool(pythonTool(config, pythonExecutable))
     pi.on('tool_result', event => {
@@ -859,7 +859,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime, p
       }
       if (scheduleManagementNames.has(toolName)) {
         // The turn-bound host asks for approval using the resolved task and exact change, not the raw model input.
-        return !config.disableTools && config.toolPolicy?.preset !== 'read-only' && config.conversationScheduleManagement && pi.getActiveTools().includes(toolName)
+        return !config.disableTools && (config.toolPolicy?.preset !== 'read-only' || SCHEDULE_READ_TOOLS.has(toolName)) && config.conversationScheduleManagement && pi.getActiveTools().includes(toolName)
           ? { block: false } : { block: true, reason: 'Scheduled task management is not available in this run.' }
       }
       if (toolName === LOCAL_MEDIA_TOOL) {

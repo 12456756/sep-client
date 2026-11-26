@@ -116,6 +116,8 @@ export interface TaskRuntimeOptions {
   conversationMedia?: ConversationMediaPort
   submitConversationSchedule?: ConversationExecutorOptions['submitConversationSchedule']
   scheduledTaskManagement?: ConversationExecutorOptions['scheduledTaskManagement']
+  scheduledCreationManagement?: ConversationExecutorOptions['scheduledCreationManagement']
+  selectScheduledOutputDirectory?: ConversationExecutorOptions['selectScheduledOutputDirectory']
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   findEmployeeReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
@@ -271,6 +273,8 @@ export class TaskRuntime {
       conversationMedia: options.conversationMedia,
       submitConversationSchedule: options.submitConversationSchedule,
       scheduledTaskManagement: options.scheduledTaskManagement,
+      scheduledCreationManagement: options.scheduledCreationManagement,
+      selectScheduledOutputDirectory: options.selectScheduledOutputDirectory,
       workDiagnostics: this.arrangementDiagnostics,
       createModelTrace: this.createModelTrace,
       knowledgeSearch: this.knowledgeSearch,

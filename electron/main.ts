@@ -87,6 +87,12 @@ if (deepLinks.primary) app.whenReady().then(async () => {
       userDataDir: app.getPath('userData'),
       renderer: bridge,
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+      selectScheduledOutputDirectory: async path => {
+        const window = bridge.currentWindow();
+        if (!window) return null;
+        const result = await dialog.showOpenDialog(window, { title: '授权定时任务的产出目录（同名时先备份再覆盖）', defaultPath: path, properties: ['openDirectory'] });
+        return result.canceled ? null : result.filePaths[0] ?? null;
+      },
       skillImport,
     });
 

@@ -5,7 +5,9 @@ import { test } from 'node:test'
 import * as ts from 'typescript'
 import { z } from 'zod'
 import { scheduleInputSchema, scheduleTimeRequestSchema, createWorkScheduleSchema, editWorkScheduleSchema } from '../../src/shared/scheduled-tasks'
-import { scheduledCreationRequestSchema } from '../../src/shared/scheduled-creation'
+import { CREATE_SCHEDULED_TASK_TOOL, scheduledCreationRequestSchema } from '../../src/shared/scheduled-creation'
+import { SCHEDULE_MANAGEMENT_TOOLS, SCHEDULE_READ_TOOLS, type ScheduleManagementToolName } from '../../src/shared/scheduled-management'
+import { conversationScheduleManagementTools } from '../pi/sdk/pi-conversation-schedule'
 import { INVOKE_CHANNELS } from './channels'
 import type { Route } from './router'
 import type { RequestContext } from './request-context'
@@ -22,6 +24,25 @@ const loaded = { exports: {} as { scheduledRoutes?: Route[] } }
 compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => { assert.ok(Object.hasOwn(dependencies, id)); return dependencies[id] }, loaded.exports, loaded)
 const routes = loaded.exports.scheduledRoutes!
 const entry = (channel: string) => { const result = routes.find(item => item.channel === channel); assert.ok(result); return result }
+
+test('every schedule route has a corresponding registered conversation operation', () => {
+  const tools = {
+    SCHEDULE_WORK_SOURCE: 'get_schedule_work_source', SCHEDULE_CREATE_FROM_WORK: 'create_scheduled_task_from_work',
+    SCHEDULE_EDIT_FROM_WORK: 'edit_scheduled_task_from_work', SCHEDULE_SUBMIT_CREATION: CREATE_SCHEDULED_TASK_TOOL,
+    SCHEDULE_CANCEL_CREATION: 'cancel_scheduled_creation', SCHEDULE_DELETE_CREATION: 'delete_scheduled_creation',
+    SCHEDULE_INTERPRET_TIME: 'interpret_schedule_time', SCHEDULE_LIST: 'query_scheduled_tasks',
+    SCHEDULE_CREATE: 'create_scheduled_task_definition', SCHEDULE_EDIT: 'update_scheduled_task', SCHEDULE_PLAN: 'plan_scheduled_task',
+    SCHEDULE_CONFIRM: 'enable_scheduled_task', SCHEDULE_PAUSE: 'pause_scheduled_task', SCHEDULE_DELETE: 'delete_scheduled_task',
+    SCHEDULE_CHECK: 'resume_scheduled_run', SCHEDULE_ACKNOWLEDGE: 'acknowledge_scheduled_run_review',
+    SCHEDULE_CANCEL: 'cancel_scheduled_run', SCHEDULE_RESUME_SCHEDULER: 'resume_scheduled_scheduler',
+  } satisfies Record<Extract<keyof typeof INVOKE_CHANNELS, `SCHEDULE_${string}`>, ScheduleManagementToolName | typeof CREATE_SCHEDULED_TASK_TOOL>
+  assert.deepEqual(new Set(routes.map(route => route.channel)), new Set(Object.keys(tools).map(key => INVOKE_CHANNELS[key as keyof typeof tools])))
+  const manage = async () => ({ status: 'ok' as const, data: null })
+  const registered = conversationScheduleManagementTools(manage).map(tool => tool.name)
+  assert.equal(registered.length, SCHEDULE_MANAGEMENT_TOOLS.length)
+  assert.deepEqual(new Set([...registered, CREATE_SCHEDULED_TASK_TOOL]), new Set(Object.values(tools)))
+  assert.deepEqual(new Set(conversationScheduleManagementTools(manage, true).map(tool => tool.name)), SCHEDULE_READ_TOOLS)
+})
 
 test('work import only accepts title, timing and source identity, never a renderer plan or permission override', async () => {
   const route = entry(INVOKE_CHANNELS.SCHEDULE_CREATE_FROM_WORK)

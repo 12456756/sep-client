@@ -14,10 +14,12 @@
  * 下次启动无法判定副作用是否已发生。所以只允许有一个定义点。
  */
 import { CREATE_SCHEDULED_TASK_TOOL } from '../../src/shared/scheduled-creation'
+import { SCHEDULE_MANAGEMENT_TOOLS, SCHEDULE_READ_TOOLS } from '../../src/shared/scheduled-management'
 import { RUN_PYTHON_TOOL } from '../../src/shared/python-tool'
 import { connectorIdSchema } from '../../src/shared/connectors'
 
-export const SIDE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['bash', 'write', 'edit', CREATE_SCHEDULED_TASK_TOOL, RUN_PYTHON_TOOL])
+export const SIDE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['bash', 'write', 'edit', CREATE_SCHEDULED_TASK_TOOL, RUN_PYTHON_TOOL,
+  ...SCHEDULE_MANAGEMENT_TOOLS.filter(name => !SCHEDULE_READ_TOOLS.has(name))])
 const connectorExecutors = new Set(connectorIdSchema.options.map(id => `${id}_execute`))
 
 /** 保守的副作用分类。MCP 执行权限另由实际注册工具白名单决定。 */

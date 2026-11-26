@@ -4,7 +4,7 @@ import { useFeedback } from './feedback/FeedbackProvider'
 import { approvalBrowserOrigin, isBrowserHandoffRequest, isDetectedBrowserHandoff, isMediaResubmissionRequest, OFFICE_TOOL_NAME, toolApprovalSummarySchema, toolApprovalTimeoutMs } from '../shared/tool-approval'
 import type { ToolAuthorizationRequest } from '../shared/types'
 import { conversationScheduleApprovalSchema, CREATE_SCHEDULED_TASK_TOOL, formatScheduleReceiptTime } from '../shared/scheduled-creation'
-import { DELETE_SCHEDULED_TASK_TOOL, scheduleManagementApprovalSchema, UPDATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-management'
+import { DELETE_SCHEDULED_TASK_TOOL, scheduleActionApprovalSchema, scheduleManagementApprovalSchema, SCHEDULE_MANAGEMENT_TOOLS, SCHEDULE_READ_TOOLS, UPDATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-management'
 import { RUN_PYTHON_TOOL } from '../shared/python-tool'
 
 type ToolApprovalRequest = Pick<ToolAuthorizationRequest, 'toolName' | 'input' | 'registeredTool' | 'summary' | 'expiresAt'>
@@ -208,7 +208,10 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
     }
     const updatingSchedule = toolName === UPDATE_SCHEDULED_TASK_TOOL
     const deletingSchedule = toolName === DELETE_SCHEDULED_TASK_TOOL
-    if (updatingSchedule || deletingSchedule) {
+    const scheduleAction = SCHEDULE_MANAGEMENT_TOOLS.some(name => name === toolName) && !SCHEDULE_READ_TOOLS.has(toolName)
+      ? scheduleActionApprovalSchema.safeParse(request.input) : undefined
+    if (scheduleAction?.success) message = scheduleAction.data.message
+    else if (updatingSchedule || deletingSchedule) {
       const parsed = scheduleManagementApprovalSchema.safeParse(request.input)
       if (!parsed.success || (updatingSchedule && !parsed.data.newTitle && !parsed.data.newTime && !parsed.data.newGoal)) { settle(false); return }
       const { title, nextRunAt, timezone, enabled, newTitle, newTime, newGoal } = parsed.data
@@ -224,7 +227,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
         if (!enabled) message += '\n此任务当前未启用，修改不会启用它。'
         if (newGoal) message += `\n\n确认后将根据以下完整工作目标重新生成执行计划；生成失败则保留原任务。\n\n新工作目标：\n${newGoal}`
       }
-    }
+    } else if (scheduleAction) { settle(false); return }
     if (request.toolName === 'local_media_process' && input.success) {
       const labels = { trim: '裁剪', join: '拼接', compose: '合成视频', extract_audio: '提取音频', transcode: '转码',
         batch_transcode: '批量转码', frame: '提取视频帧', thumbnail_grid: '生成缩略图网格', gif: '导出 GIF', subtitle: '识别字幕' }
@@ -271,7 +274,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
     void feedback.ask({
       key: `approval:${request.requestId ?? request.timestamp ?? deadline}`,
       message: isVideo && quote.success ? `${message} 本次报价 ¥${quote.data.quote.amount}。` : message,
-      actionLabel: sendDingTalk ? '发送消息' : scheduling ? '创建并启用' : updatingSchedule ? '保存修改' : deletingSchedule ? '删除' : browserHandoff ? '已完成，继续' : resubmission ? '仍然生成' : isVideo && quote.success ? '同意并生成' : '允许',
+      actionLabel: sendDingTalk ? '发送消息' : scheduling ? '创建并启用' : scheduleAction?.success ? scheduleAction.data.label : updatingSchedule ? '保存修改' : deletingSchedule ? '删除' : browserHandoff ? '已完成，继续' : resubmission ? '仍然生成' : isVideo && quote.success ? '同意并生成' : '允许',
       ...(scheduling && onReviseScheduleTime ? { alternate: { label: '修改时间', busyLabel: '修改时间', onConfirm: async () => {
         reviseScheduleTime = true
         return { success: true }

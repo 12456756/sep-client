@@ -18,6 +18,7 @@ export interface ScheduledRunnerPort {
   cancel(run: ScheduledOccurrence): Promise<void>
   conflicts?(left: ScheduledOccurrence, right: ScheduledOccurrence): Promise<boolean>
 }
+export interface ScheduledRunIntent { expectedStatus: ScheduledRunStatus; expectedAttemptId?: string; guard(): void }
 /** Only the adapter can certify that the failed call never admitted an Agent. */
 export class BeforeScheduledAdmissionError extends Error {
   constructor(readonly failure: unknown) { super('Scheduled execution was not admitted'); this.name = 'BeforeScheduledAdmissionError' }
@@ -207,11 +208,15 @@ export class ScheduledDispatcher {
       if (attempt && !attempt.finishedAt) { attempt.finishedAt = this.now(); attempt.status = status === 'completed' ? 'completed' : 'failed'; attempt.error = error ?? null }
     })
   }
-  async cancel(scope: TaskOwnerScope, id: string): Promise<void> {
-    const admission = this.admissions.get(id)
-    if (admission) admission.cancelled = true
+  async cancel(scope: TaskOwnerScope, id: string, intent?: ScheduledRunIntent): Promise<void> {
     const run = await this.change(scope, id, item => {
+      intent?.guard()
+      if (intent && (item.status !== intent.expectedStatus || item.attempts.at(-1)?.id !== intent.expectedAttemptId)) {
+        throw new AppError('CONFLICT', { message: '执行状态已变化，请重新查看后再取消。' })
+      }
       if (['completed', 'cancelled', 'timed_out', 'failed', 'missed'].includes(item.status)) throw new AppError('INVALID_STATE')
+      const admission = this.admissions.get(id)
+      if (admission) admission.cancelled = true
       if (['pending', 'waiting_retry', 'waiting_auth', 'blocked', 'preparing'].includes(item.status)) {
         item.status = 'cancelled'; item.finishedAt = this.now(); item.nextRetryAt = null
         const attempt = item.attempts.at(-1)

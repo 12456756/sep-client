@@ -353,10 +353,11 @@ export class ScheduledCreationService {
       return record
     }
   }
-  async cancel(id: string, revision: number): Promise<ScheduledCreation> {
+  async cancel(id: string, revision: number, guard?: () => void): Promise<ScheduledCreation> {
     const scope = this.scope(), generation = this.generation
     const result = await this.options.repository.update(scope, data => {
       this.assertScope(scope, generation)
+      guard?.()
       const item = data.creations?.find(value => value.id === id)
       if (!item) throw new AppError('NOT_FOUND')
       if (item.stage === 'cancelled') return item
@@ -370,10 +371,11 @@ export class ScheduledCreationService {
     this.operations.get(this.key(scope, id))?.controller.abort()
     return result
   }
-  async deleteRecord(id: string, revision: number): Promise<ScheduledCreation> {
+  async deleteRecord(id: string, revision: number, guard?: () => void): Promise<ScheduledCreation> {
     const scope = this.scope(), generation = this.generation
     const result = await this.options.repository.update(scope, data => {
       this.assertScope(scope, generation)
+      guard?.()
       const item = data.creations?.find(value => value.id === id)
       if (!item) throw new AppError('NOT_FOUND')
       if (item.deleted) return item

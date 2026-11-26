@@ -94,6 +94,21 @@ test('a content-only schedule change shows the full replacement before approval'
   } finally { ui.cleanup() }
 })
 
+test('schedule actions use the host summary and fail closed without it', async () => {
+  const enabled = mount('enable_scheduled_task', { label: '启用任务', message: '启用「日报」？到达执行时间后会自动执行。' })
+  const malformed = mount('pause_scheduled_task', { target: { id: 'task' } })
+  try {
+    const dialog = enabled.feedback.getSnapshot()!
+    assert.equal(dialog.actionLabel, '启用任务')
+    assert.match(dialog.message, /到达执行时间后会自动执行/)
+    assert.equal(malformed.feedback.getSnapshot(), null)
+    assert.deepEqual(malformed.decisions, [false])
+    await enabled.feedback.accept(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(enabled.decisions, [true])
+  } finally { enabled.cleanup(); malformed.cleanup() }
+})
+
 test('browser snapshots describe reading or saving without skipping approval', () => {
   for (const [input, message] of [
     [{}, '允许读取当前网页内容？'],

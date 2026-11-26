@@ -51,8 +51,7 @@ import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, typ
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
 import { bindConversationSchedule, conversationScheduleContext, conversationScheduleDrafts, conversationScheduleReceipt, isConversationScheduleTimeReply, precedingConversationUser, type SubmitConversationSchedule } from './conversation-schedule'
-import { bindConversationScheduleManagement } from './conversation-schedule-management'
-import type { ScheduledTaskService } from '../service/scheduled-task-service'
+import { bindConversationScheduleManagement, type ScheduleManagementServices } from './conversation-schedule-management'
 import { CONVERSATION_SCHEDULE_EVENT, CREATE_SCHEDULED_TASK_TOOL, REVISE_CONVERSATION_SCHEDULE_TIME } from '../../src/shared/scheduled-creation'
 import { redactText, redactValue } from '../common/redact'
 import { LOCAL_MEDIA_TOOL } from '../domain/local-media-tools'
@@ -101,7 +100,9 @@ export interface ConversationExecutorOptions {
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   submitConversationSchedule?: SubmitConversationSchedule
-  scheduledTaskManagement?: Pick<ScheduledTaskService, 'list' | 'updateConversationSchedule' | 'pause'>
+  scheduledTaskManagement?: ScheduleManagementServices['service']
+  scheduledCreationManagement?: ScheduleManagementServices['creations']
+  selectScheduledOutputDirectory?: ScheduleManagementServices['selectOutputDirectory']
 }
 
 export class ConversationExecutor {
@@ -317,8 +318,9 @@ export class ConversationExecutor {
       const runStore = this.options.taskRunStore
       const workDir = task.workDir
       const canManageSchedules = scope && queued.conversation && !task.scheduledOrigin &&
-        (!queued.arrangement || queued.arrangement.mode === 'conversation') && toolPolicy?.preset !== 'read-only'
-      const canSchedule = canManageSchedules && submitSchedule && workDir
+        (!queued.arrangement || queued.arrangement.mode === 'conversation')
+      const readOnlySchedules = toolPolicy?.preset === 'read-only'
+      const canSchedule = canManageSchedules && !readOnlySchedules && submitSchedule && workDir
       const clockReply = !queued.attachmentRefs?.length && isConversationScheduleTimeReply(queued.prompt)
       const management = this.options.scheduledTaskManagement
       const messages = canManageSchedules && (canSchedule || management) && runStore && queued.messageId ? await this.conversationStore(scope, taskId).listMessages() : []
@@ -337,6 +339,9 @@ export class ConversationExecutor {
       }
       const conversationScheduleManagement = canManageSchedules && management ? bindConversationScheduleManagement({
         service: management, signal: mediaSignal, isCurrent: isCurrentScheduleTurn,
+        creations: this.options.scheduledCreationManagement, selectOutputDirectory: this.options.selectScheduledOutputDirectory,
+        readOnly: readOnlySchedules, context: { key: `${taskId}:${queued.messageId ?? runId}`, modelId: employee.modelId,
+          subscriptionId: employee.subscriptionId, workDir: workDir ?? undefined },
         conversationIds: async () => {
           if (!scheduleTimeline) return new Set<string>()
           const users = messages.filter(message => message.taskId === taskId && message.role === 'user')
@@ -348,6 +353,8 @@ export class ConversationExecutor {
           toolName, registeredTool: true, input: { ...input, title: redactText(input.title),
             ...(input.newTitle === undefined ? {} : { newTitle: redactText(input.newTitle) }),
             ...(input.newGoal === undefined ? {} : { newGoal: redactText(input.newGoal, Infinity) }) } })).approved,
+        approveAction: async (toolName, input) => (await this.options.approvals.requestDecision({ taskId, runId, subscriptionId: queued.subscriptionId,
+          toolName, registeredTool: true, input })).approved,
       }) : undefined
       const conversationSchedule = canSchedule
         ? bindConversationSchedule({
