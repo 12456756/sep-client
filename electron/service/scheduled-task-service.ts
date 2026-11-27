@@ -15,6 +15,7 @@ import { logger } from '../common/logger'
 import { createWorkScheduleSchema, editWorkScheduleSchema, type CreateWorkSchedule, type EditWorkSchedule, type WorkScheduleContext } from '../../src/shared/scheduled-tasks'
 import { sourceFingerprint } from '../domain/scheduled-work-source'
 import type { ScheduledWorkSource } from './scheduled-work-source'
+import { parseScheduledAssessment } from '../domain/scheduled-assessment'
 
 const log = logger.child('scheduled-tasks')
 type SelectOutputDirectory = (path: string) => Promise<string | null>
@@ -246,7 +247,16 @@ export class ScheduledTaskService {
     }
     check()
     if (result.status === 'blocked') throw new AppError('INVALID_ARGUMENT', { message: result.reasons.join('；') })
-    return result
+    try {
+      const { assessmentItems: candidate, ...plan } = result
+      const assessmentItems = parseScheduledAssessment(candidate, raw.goal, result.kind === 'arrangement'
+        ? result.nodes : [{ id: 'employee-work', deliverables: result.deliverables }])
+      return { ...plan, ...(assessmentItems ? { assessmentItems } : {}) }
+    } catch {
+      // Advisory planning metadata must never prevent an otherwise valid plan.
+      const { assessmentItems: _discarded, ...plan } = result
+      return plan
+    }
   }
   async confirm(id: string, revision: number, guard?: () => void): Promise<ScheduledDefinition> {
     return this.enable(id, revision, undefined, guard)

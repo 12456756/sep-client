@@ -36,10 +36,11 @@ import * as workSkillModel from '../../features/enterprise/work-skills';
 import { InlineFileApproval, InlineFileApprovals, isInlineFileApproval } from '../../components/enterprise/InlineFileApproval';
 import { ORIGINAL_DOCUMENT_REPLACE_TOOL } from '../../shared/python-tool';
 import { ScheduledOperationResults } from '../../components/enterprise/scheduled/ScheduledOperationResults';
+import { ScheduledAssessment } from '../../components/enterprise/scheduled/ScheduledAssessment';
 import * as scheduledTaskModel from '../../features/enterprise/scheduled-task-model';
 import type { ScheduledOccurrence } from '../../shared/scheduled-tasks';
 
-let scheduledRecord: Pick<ScheduledOccurrence, 'id' | 'definitionId' | 'taskId' | 'status' | 'finishedAt' | 'error' | 'operations'> | undefined;
+let scheduledRecord: (Pick<ScheduledOccurrence, 'id' | 'definitionId' | 'taskId' | 'status' | 'finishedAt' | 'error' | 'operations'> & { plan: Pick<ScheduledOccurrence['plan'], 'assessmentItems'> }) | undefined;
 
 const cardFilename = fileURLToPath(new URL('../../components/workspace/ResultFileCard.tsx', import.meta.url));
 const cardSource = ts.transpileModule(readFileSync(cardFilename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
@@ -81,6 +82,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/feedback/use-operation-feedback': { useOperationFeedback },
   '../../features/enterprise/use-scheduled-tasks': { useScheduledTasks: () => ({ data: scheduledRecord ? { occurrences: [scheduledRecord] } : null, error: null, loading: !scheduledRecord }) },
   '../../features/enterprise/scheduled-task-model': scheduledTaskModel,
+  '../../components/enterprise/scheduled/ScheduledAssessment': { ScheduledAssessment },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
   '../../features/enterprise/vocabulary': vocabulary,
@@ -626,7 +628,7 @@ describe('WorkDetailPage media entry', () => {
   it('keeps operation details in scheduled history and displays the actual run status in the work header', () => {
     const scheduledWork: WorkItem = { ...work, kind: 'flow', workType: { state: 'resolved', kind: 'arrangement' },
       scheduledOrigin: { definitionId: 'schedule', occurrenceId: 'occurrence' } };
-    const record = { id: 'occurrence', definitionId: 'schedule', taskId: work.id, finishedAt: null, error: null };
+    const record = { id: 'occurrence', definitionId: 'schedule', taskId: work.id, finishedAt: null, error: null, plan: { assessmentItems: undefined } };
     try {
       scheduledRecord = { ...record, status: 'running', operations: [
         { key: '0'.repeat(64), tool: 'dingtalk_execute', status: 'succeeded' },
@@ -651,6 +653,27 @@ describe('WorkDetailPage media entry', () => {
       assert.deepEqual(routes, [{ name: 'scheduled', taskId: 'schedule', runId: 'occurrence', view: 'history' }]);
       scheduledRecord = { ...record, status: 'completed', finishedAt: 5 };
       assert.match(renderDetail(scheduledWork), />已完成</);
+    } finally { scheduledRecord = undefined; }
+  });
+
+  it('shows verified output and unverified delivery independently of the completed schedule', () => {
+    const scheduledWork: WorkItem = { ...work, kind: 'flow', workType: { state: 'resolved', kind: 'arrangement' },
+      scheduledOrigin: { definitionId: 'schedule', occurrenceId: 'occurrence' }, arrangementExecution: {
+        activeRunId: null, status: 'completed', updatedAt: 5, nodes: [{ nodeId: 'employee-work', status: 'completed',
+          finalFiles: [{ id: 'report', path: 'report.md', format: 'md', size: 10, sha256: 'a'.repeat(64), nodeRunId: 'node-run', validatedAt: 5 }] }],
+      } };
+    scheduledRecord = { id: 'occurrence', definitionId: 'schedule', taskId: work.id, status: 'completed', finishedAt: 5, error: null,
+      plan: { assessmentItems: [
+        { kind: 'file', title: '生成报告', source: '生成报告', deliverableId: 'report' },
+        { kind: 'external', title: '发送报告', source: '发送报告', includesFile: true },
+      ] } };
+    try {
+      const html = renderDetail(scheduledWork);
+      assert.match(html, /data-work-status="completed"/);
+      assert.match(html, /aria-label="成果核对"/);
+      assert.match(html, /生成报告 · 已核验/);
+      assert.match(html, /发送报告 · 待核验/);
+      assert.doesNotMatch(html, /定时执行异常/);
     } finally { scheduledRecord = undefined; }
   });
 

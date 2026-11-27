@@ -4,17 +4,20 @@ import { arrangementNodeWorkContractSchema, isSafeDeliveryPath, scheduledFilenam
 import { deliveryPathKey } from './arrangement-delivery'
 import type { EmployeeWorkPlan, RecurrenceRule, ScheduleInput, ScheduledIssue } from '../../src/shared/scheduled-tasks'
 import { cronPreview, latestCronTime } from '../../src/shared/cron-schedule'
-import { scheduledGeneralUnavailable, scheduledWorkSourceSchema } from '../../src/shared/scheduled-tasks'
+import { scheduledAssessmentItemsSchema, scheduledGeneralUnavailable, scheduledWorkSourceSchema } from '../../src/shared/scheduled-tasks'
+import { scheduledAssessmentPlanningRule } from './scheduled-assessment'
 
 export const employeePlanSchema = z.object({
   status: z.literal('ready'), kind: z.literal('employee').optional(), objective: z.string().trim().min(1).max(4000),
   instruction: z.string().trim().min(1).max(16000), expectedOutput: z.string().trim().min(1).max(4000),
   deliverables: arrangementNodeWorkContractSchema.shape.deliverables.unwrap(),
+  assessmentItems: scheduledAssessmentItemsSchema,
 }).strict().refine(plan => new Set(plan.deliverables.map(file => file.path.toLowerCase())).size === plan.deliverables.length
   && new Set(plan.deliverables.map(file => file.id)).size === plan.deliverables.length, 'Duplicate deliverables')
 const arrangementWorkPlanSchema = z.object({
   status: z.literal('ready'), kind: z.literal('arrangement'), title: z.string().trim().min(1).max(160),
   source: scheduledWorkSourceSchema.optional(),
+  assessmentItems: scheduledAssessmentItemsSchema,
   nodes: z.array(z.object({
     id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), subscriptionId: z.string().min(1), modelId: z.string().min(1),
     title: z.string().trim().min(1).max(160), objective: z.string().trim().min(1).max(4000).optional(),
@@ -294,6 +297,7 @@ export function buildEmployeePlanningPrompt(input: ScheduleInput, employee: unkn
 ${general ? '不指定员工，不加载员工技能，不拆多员工节点。' : '只根据指定员工的 name、position、functionalCategory、description 判断职责，不得选择其他员工，不拆多员工节点。'}
 只能返回工作计划，不返回 blocked，不编造资料或承诺未来有权限。对依赖执行时数据的事项写明检查步骤和失败处理。
 返回严格 JSON：{"status":"ready","objective":"工作目标","instruction":"完整执行指令","expectedOutput":"最终成果","deliverables":[{"id":"report","name":"报告","format":"docx","path":"report.docx","contentOutline":["章节要求"],"acceptanceCriteria":["验收要求"]}]}。
+${scheduledAssessmentPlanningRule}
 必须实际生成可用文件，不得仅提供聊天正文。交付路径必须相对于本次运行的独立工作目录，不得包含绝对路径或 ..。交付物 ID、路径不得重复。
 ${scheduledDeliveryPlanningRules}
 用户明确要求发送消息时，必须把在工作节点内实际调用已连接业务工具发送纳入 instruction；保留原收件人、渠道和正文，不要把发送改写为拟稿、文件交付或任务完成后的独立操作。

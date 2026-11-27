@@ -67,6 +67,7 @@ export const scheduledDingTalkActionLabels = {
   'aitable record update': '更新记录',
   'aitable record delete': '删除记录',
   'chat +dm': '发送单聊消息',
+  'chat +messages-send': '发送钉钉消息',
   'chat +send-to-group': '发送群消息',
 } as const
 type ScheduledDingTalkAction = keyof typeof scheduledDingTalkActionLabels
@@ -127,6 +128,15 @@ export const workScheduleContextSchema = z.object({ taskId: sourceId, planHash: 
 export type CreateWorkSchedule = z.infer<typeof createWorkScheduleSchema>
 export type EditWorkSchedule = z.infer<typeof editWorkScheduleSchema>
 export type WorkScheduleContext = z.infer<typeof workScheduleContextSchema>
+const assessmentText = z.string().trim().min(1).max(256).regex(/^[^\p{Cc}\p{Bidi_Control}]+$/u)
+const assessmentBase = { title: assessmentText, source: assessmentText }
+export const scheduledAssessmentItemsSchema = z.array(z.discriminatedUnion('kind', [
+  z.object({ ...assessmentBase, kind: z.literal('file'), nodeId: scheduleIdentity.optional(), deliverableId: scheduleIdentity,
+    contentCheck: assessmentText.optional() }).strict(),
+  z.object({ ...assessmentBase, kind: z.literal('external'), tool: z.string().regex(/^[a-z0-9_]{1,120}$/).optional(),
+    action: assessmentText.optional(), target: assessmentText.optional(), includesFile: z.literal(true).optional() }).strict(),
+])).min(1).max(16).optional().catch(undefined)
+export type ScheduledAssessmentItem = NonNullable<z.infer<typeof scheduledAssessmentItemsSchema>>[number]
 export interface EmployeeWorkPlan {
   status: 'ready'
   kind?: 'employee'
@@ -134,12 +144,14 @@ export interface EmployeeWorkPlan {
   instruction: string
   expectedOutput: string
   deliverables: ArrangementDeliverable[]
+  assessmentItems?: ScheduledAssessmentItem[]
 }
 export interface ArrangementWorkPlan {
   status: 'ready'
   kind: 'arrangement'
   title: string
   source?: ScheduledWorkSourceRef
+  assessmentItems?: ScheduledAssessmentItem[]
   nodes: Array<{
     id: string; subscriptionId: string; modelId: string; title: string; objective?: string; instruction: string
     expectedOutput: string; deliverables: ArrangementDeliverable[]; dependsOn: string[]; skillIds: string[]

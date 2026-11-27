@@ -155,6 +155,37 @@ function harness(overrides: Partial<ScheduledRunnerPort> = {}, serviceOverrides:
   return { service, get data() { return data }, get starts() { return starts }, get plans() { return plans }, advance(value: number) { now = value } }
 }
 
+test('optional assessment items are planned once, carried to the run and never gate completion', async t => {
+  const goal = 'Produce report and send it to a@example.com'
+  const candidates: EmployeeWorkPlan['assessmentItems'] = [
+    { kind: 'file', title: 'Report', source: 'Produce report', deliverableId: 'file' },
+    { kind: 'file', title: 'Invalid file', source: 'Produce report', deliverableId: 'missing' },
+    { kind: 'external', title: 'Send', source: 'send it to a@example.com', target: 'a@example.com', includesFile: true },
+    { kind: 'external', title: 'Invented scope', source: 'send it to a@example.com', target: 'b@example.com' },
+  ]
+  let planningCalls = 0
+  const h = harness({ async inspect() { return { state: 'completed' } } }, {
+    planner: async () => ({ ...plan, assessmentItems: ++planningCalls === 1 ? candidates : [] }),
+  })
+  t.after(() => h.service.stop())
+  const created = await h.service.create('advisory-assessment', { ...input, goal })
+  const planned = await h.service.plan(created.id, created.revision)
+  assert.deepEqual(planned.plan?.assessmentItems, [candidates[0], candidates[2]])
+  await h.service.confirm(planned.id, planned.revision)
+  const other = await h.service.create('invalid-assessment', { ...input, scheduledAt: 3000 })
+  const fallback = await h.service.plan(other.id, other.revision)
+  assert.deepEqual(fallback.plan, plan)
+  h.advance(2000)
+  await h.service.scan()
+  await h.service.scan()
+  const run = h.data.occurrences[0]
+  assert.deepEqual(run.plan.assessmentItems, planned.plan?.assessmentItems)
+  assert.equal(run.status, 'completed')
+  assert.equal(run.error, null)
+  assert.equal(h.starts, 1)
+  assert.equal(planningCalls, 2)
+})
+
 test('conversation can query, change time, enable, and pause the same definition', async t => {
   const h = harness()
   t.after(() => h.service.stop())

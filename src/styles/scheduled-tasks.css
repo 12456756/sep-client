@@ -267,6 +267,11 @@
 .ent-sch-attempts li { padding: 6px 0 16px 4px; }
 .ent-sch-attempts strong, .ent-sch-attempts small { display: block; }
 .ent-sch-attempts small { color: var(--ent-ink-3); margin-top: 8px; overflow-wrap: anywhere; }
+.ent-sch-assessment { min-width: 0; overflow-wrap: anywhere; }
+.ent-sch-assessment.ent-flow-act { align-items: stretch; flex-direction: column; gap: 0; }
+.ent-sch-assessment h4 { margin: 0; }
+.ent-sch-assessment .ent-sch-attempts { margin: 8px 0 0; }
+.ent-sch-assessment .ent-sch-attempts li { padding-bottom: 8px; }
 .ent-sch-operations { list-style: decimal; padding-inline-start: 28px; }
 .ent-sch-operations li { padding-block: 6px; overflow-wrap: anywhere; }
 .ent-sch-operations small { margin-block-start: 3px; }

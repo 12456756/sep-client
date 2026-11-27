@@ -685,6 +685,7 @@ class BackendRuntime {
       }
       return { status: 'ready', kind: 'arrangement', title: generated.title,
         nodes: generated.nodes.map(node => ({ ...node, deliverables: node.deliverables ?? [], requiresUserConfirmation: node.requiresUserConfirmation ?? false })),
+        ...(generated.assessmentItems ? { assessmentItems: generated.assessmentItems } : {}),
         intentAnalysis: generated.intentAnalysis ?? null }
     }
     this.scheduledOperations = new ScheduledOperations(scheduledStorage, () => this.currentScope())
