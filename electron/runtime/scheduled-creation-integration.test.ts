@@ -218,10 +218,12 @@ const catalog = [
   { subscriptionId: 'writer', name: 'Writer', position: 'Report writer', description: 'Write reports from evidence', functionalCategory: 'reporting', allowedModels: [modelId] },
 ]
 
-for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-reply', 'contextual-retry', 'contextual-elapsed', 'contextual-ambiguous', 'contextual-timeout'] as const) {
-  test(`conversation time continuation (${scenario}) preserves one draft and requires approval`, { timeout: 15000 }, async t => {
+for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-reply', 'contextual-retry', 'contextual-elapsed', 'contextual-ambiguous', 'contextual-timeout', 'contextual-restart', 'contextual-restart-semantic', 'contextual-no-draft'] as const) {
+  test(`conversation schedule continuation (${scenario}) preserves task requirements and requires approval`, { timeout: 15000 }, async t => {
     const root = await mkdtemp(join(tmpdir(), 'csep-conversation-schedule-'))
     const contextual = scenario.startsWith('contextual-')
+    const noDraft = scenario === 'contextual-no-draft'
+    const restart = noDraft || scenario.startsWith('contextual-restart')
     const now = Date.parse(contextual ? `2026-11-25T06:${scenario === 'contextual-elapsed' ? '41' : '36'}:00Z` : '2026-11-25T00:00:00Z')
     let schedulerNow = now
     const simulatedMessages: string[] = []
@@ -240,16 +242,20 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
       } : { prepare: forbidden, launch: forbidden, inspect: forbidden, cancel: forbidden }, now: () => schedulerNow })
     const title = contextual ? '定时验收' : '金价日报'
     const editGoalPrompt = '把这个定时任务的产出从 TXT 改为 Markdown，其他要求不变'
-    const original = scenario === 'contextual-timeout' ? '请在北京时间 14:40 用钉钉给测试收件人发送“定时任务测试”。'
+    const original = restart ? '每天北京时间17:15统计钉钉表格销售1的数据，生成统计文档，再把文档发给测试收件人。'
+      : scenario === 'contextual-timeout' ? '请在北京时间 14:40 用钉钉给测试收件人发送“定时任务测试”。'
       : contextual ? '请在北京时间 14:34 执行一次：在工作目录生成 定时验收.md，内容为“通用助手定时执行成功”'
       : '请 Analyst 每天生成金价日报，保存到 report.txt，并注明数据时间和来源。'
     const taskSpec: ScheduleInterpretation['task'] = { title, goal: original, deliverables: ['report.txt，注明数据时间和来源'],
       execution: { mode: 'employee', subscriptionId: 'analyst' },
       schedule: { kind: 'cron', timezone: 'Asia/Shanghai', localDateTime: null, expression: '0 9 * * *', description: '每天 09:00' } }
     const contextualTask: ScheduleInterpretation['task'] = { title,
-      goal: scenario === 'contextual-timeout' ? '用钉钉给测试收件人发送“定时任务测试”。' : '在当前工作目录生成定时验收.md，内容为“通用助手定时执行成功”。',
-      deliverables: scenario === 'contextual-timeout' ? ['核对发送结果'] : ['定时验收.md，正文为通用助手定时执行成功'], execution: { mode: 'general', subscriptionId: null },
-      schedule: { kind: 'once', timezone: 'Asia/Shanghai', localDateTime: '2026-11-25T14:40', expression: null, description: null } }
+      goal: restart ? '统计钉钉表格销售1的数据，生成统计文档，并将文档发给测试收件人。'
+        : scenario === 'contextual-timeout' ? '用钉钉给测试收件人发送“定时任务测试”。' : '在当前工作目录生成定时验收.md，内容为“通用助手定时执行成功”。',
+      deliverables: restart ? ['统计文档及发送结果'] : scenario === 'contextual-timeout' ? ['核对发送结果'] : ['定时验收.md，正文为通用助手定时执行成功'],
+      execution: { mode: 'general', subscriptionId: null }, schedule: restart
+        ? { kind: 'cron', timezone: 'Asia/Shanghai', localDateTime: null, expression: '15 17 * * *', description: null }
+        : { kind: 'once', timezone: 'Asia/Shanghai', localDateTime: '2026-11-25T14:40', expression: null, description: null } }
     const otherRequest = '请在北京时间 15:34 执行一次：在工作目录生成 另一份验收.md。'
     let interpretations = 0
     const createService = () => new ScheduledCreationService({ repository: storage, scope: owner, schedules,
@@ -271,13 +277,18 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
           : { status: 'ready', task: taskSpec, questions: [], reasons: [] }
       } })
     let creations = createService()
+    let sourceRunId: string | undefined
     const workerPrompts: string[] = [], submissions: ScheduledCreationRequest[] = [], approvals: import('../../src/shared/types').ToolAuthorizationRequest[] = []
     const mutations: ScheduleManagementReceipt[] = []
     const employee = { subscriptionId: 'analyst', modelId, gatewayUrl: 'http://gateway.invalid' }
     const runtime = new TaskRuntime({ taskManager: tasks, taskRunStore: runs,
       resolveEmployee: id => id === employee.subscriptionId ? employee : null, authorizeEmployee: authorize,
       getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest(request) { approvals.push(request) },
-      submitConversationSchedule: async (request, review) => { submissions.push(request); return creations.submitConversation(request, review) },
+      submitConversationSchedule: async (request, review) => {
+        submissions.push(request)
+        // Exercise legacy persisted-draft continuations separately from the new default.
+        return creations.submitConversation(request, noDraft ? review : { ...review, transient: false })
+      },
       hasConversationScheduleDrafts: scenario === 'contextual-timeout' ? (taskId, legacySources) => creations.hasConversationDrafts(taskId, legacySources) : undefined,
       scheduledTaskManagement: schedules,
       createWorker: options => ({ async run(prompt) {
@@ -290,11 +301,24 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
         if (contextual) {
           const tool = conversationScheduleToolDefinition(options.context.conversationSchedule!)
           if (workerPrompts.length === 1 || userText === otherRequest) {
+            sourceRunId ??= options.context.runId
             const task = userText === otherRequest ? { ...contextualTask, title: '另一份验收', goal: '生成另一份验收.md', deliverables: ['另一份验收.md'] } : contextualTask
-            const candidate = scenario === 'contextual-timeout' ? { status: 'ready', task, questions: [], reasons: [] } : { status: 'needs_input', task: { ...task,
+            const candidate = scenario === 'contextual-timeout' || restart ? { status: 'ready', task, questions: [], reasons: [] } : { status: 'needs_input', task: { ...task,
               schedule: { ...task.schedule, localDateTime: null } }, questions: [{ field: 'schedule', question: '请确认执行日期。' }],
               reasons: [{ code: 'MISSING_INFORMATION', message: '已指定北京时间和执行时刻，但未指定执行日期。' }] }
             await tool.execute('first', { action: 'new', candidate }, undefined, undefined, {} as never)
+          } else if (noDraft && ['把刚才那个改到19点', '把刚才那个改到20点'].includes(userText)) {
+            mutations.push(await options.context.conversationScheduleManagement!({ tool: UPDATE_SCHEDULED_TASK_TOOL,
+              input: { target: { fromConversation: true }, time: { kind: 'cron', expression: userText.includes('19点') ? '0 19 * * *' : '0 20 * * *' } } }))
+          } else if (noDraft && ['重启这个草稿，并把时间改为18:00', '按最初要求创建'].includes(userText)) {
+            assert.ok(sourceRunId)
+            assert.ok(prompt.includes(original) && prompt.includes(sourceRunId), 'Model receives original user text and its source ID')
+            await tool.execute('resume', { action: 'resume', sourceTurns: [sourceRunId], candidate: { status: 'ready', task: contextualTask, questions: [], reasons: [] } }, undefined, undefined, {} as never)
+          } else if (scenario === 'contextual-restart-semantic' && userText === '刚刚那份还是照原样做吧') {
+            await tool.execute('restart', { action: 'restart' }, undefined, undefined, {} as never)
+          } else if (restart && userText === '重启这个草稿') {
+            assert.ok(sourceRunId)
+            await tool.execute('resume', { action: 'resume', sourceTurns: [sourceRunId], candidate: { status: 'ready', task: contextualTask, questions: [], reasons: [] } }, undefined, undefined, {} as never)
           } else if ((scenario !== 'contextual-retry' && userText === '今天的14:40') || userText === '创建定时任务') {
             await tool.execute('resume', { action: 'resume', candidate: { status: 'ready', task: contextualTask, questions: [], reasons: [] } }, undefined, undefined, {} as never)
           }
@@ -330,6 +354,91 @@ for (const scenario of ['confirm', 'clarify', 'deny', 'interrupt', 'contextual-r
       return conversationScheduleReceiptSchema.parse(timeline.filter(event => event.type === CONVERSATION_SCHEDULE_EVENT).at(-1)?.data)
     }
     await runtime.executeTask(chat.id, { conversation: true })
+    if (noDraft) {
+      await wait(() => approvals.length === 1, 'initial confirmation')
+      assert.deepEqual((await storage.read(scope)).creations ?? [], [])
+      assert.deepEqual((await storage.read(scope)).definitions, [])
+      const first = approvals[0]!
+      assert.equal(runtime.respondToApproval({ requestId: first.requestId, approved: false, reason: 'timeout' }), true)
+      await idle()
+      assert.equal((await receipt()).status, 'cancelled')
+      assert.deepEqual((await storage.read(scope)).creations ?? [], [])
+      const reopened = createService()
+      creations.stop(); creations = reopened
+      await reopened.recover()
+      await reply('重启这个草稿，并把时间改为18:00')
+      await wait(() => approvals.length === 2, 'contextual recovery opens confirmation without a stored draft')
+      const second = approvals[1]!
+      assert.deepEqual(second.input, { ...(first.input as object), recurrence: '0 18 * * *', firstRunAt: Date.parse('2026-11-25T10:00:00Z') })
+      assert.equal(runtime.respondToApproval({ requestId: first.requestId, approved: true }), false)
+      assert.deepEqual((await storage.read(scope)).creations ?? [], [])
+      assert.equal(runtime.respondToApproval({ requestId: second.requestId, approved: true }), true)
+      await idle()
+      assert.equal((await receipt()).status, 'created')
+      const created = await storage.read(scope)
+      assert.equal(created.definitions.length, 1)
+      assert.equal(created.definitions[0]!.enabled, true)
+      assert.deepEqual(created.creations?.[0]?.contextSourceTurns, [sourceRunId])
+      await reply('按最初要求创建'); await idle()
+      assert.equal((await receipt()).status, 'blocked')
+      assert.equal(approvals.length, 2)
+      assert.deepEqual((await storage.read(scope)).definitions, created.definitions)
+      await reply('把刚才那个改到19点')
+      await wait(() => approvals.length === 3, 'modify the saved task in place')
+      assert.equal(approvals[2]!.toolName, UPDATE_SCHEDULED_TASK_TOOL)
+      assert.equal(runtime.respondToApproval({ requestId: approvals[2]!.requestId, approved: true }), true)
+      await idle()
+      assert.equal(mutations[0]?.status, 'updated')
+      const updated = (await storage.read(scope)).definitions
+      assert.equal(updated.length, 1)
+      assert.equal(updated[0]!.id, created.definitions[0]!.id)
+      assert.equal(updated[0]!.input.recurrence?.frequency === 'cron' && updated[0]!.input.recurrence.expression, '0 19 * * *')
+      await reply(otherRequest)
+      await wait(() => approvals.length === 4, 'prepare a separate schedule')
+      assert.equal(runtime.respondToApproval({ requestId: approvals[3]!.requestId, approved: false, reason: 'user_denied' }), true)
+      await idle()
+      await reply('把刚才那个改到20点'); await idle()
+      assert.equal(mutations[1]?.status, 'needs_input')
+      assert.equal(approvals.length, 4)
+      assert.deepEqual((await storage.read(scope)).definitions, updated)
+      assert.equal(interpretations, 0)
+      return
+    }
+    if (restart) {
+      await wait(() => approvals.length === 1, 'initial schedule approval')
+      const first = approvals[0]!
+      assert.equal(runtime.respondToApproval({ requestId: first.requestId, approved: false, reason: 'timeout' }), true)
+      await idle()
+      const pending = await receipt()
+      assert.equal(pending.status, 'needs_confirmation')
+      await runtime.continueConversation(chat.id, '放弃定时草稿', { messageId: randomUUID(), scheduleDraftAction: { kind: 'discard', draft: pending.draft } })
+      await idle()
+      assert.equal((await receipt()).status, 'discarded')
+      const discarded = (await storage.read(scope)).creations![0]!
+      const reopened = createService()
+      creations.stop(); creations = reopened
+      await reopened.recover()
+      await reply(scenario === 'contextual-restart-semantic' ? '刚刚那份还是照原样做吧' : '重启这个草稿')
+      await wait(() => approvals.length === 2, 'discarded draft should open a fresh approval')
+      assert.notEqual(approvals[1]!.requestId, first.requestId)
+      assert.deepEqual(approvals[1]!.input, first.input)
+      const snapshot = await storage.read(scope)
+      assert.deepEqual(snapshot.definitions, [])
+      assert.deepEqual(snapshot.creations![0], discarded)
+      assert.equal(snapshot.creations![1]!.reissuedFrom, discarded.id)
+      assert.equal(workerPrompts.length, scenario === 'contextual-restart' ? 1 : 2)
+      assert.equal(interpretations, 0)
+      assert.equal(runtime.respondToApproval({ requestId: approvals[1]!.requestId, approved: true }), true)
+      await idle()
+      assert.equal((await receipt()).status, 'created')
+      const enabled = (await storage.read(scope)).definitions
+      assert.equal(enabled.length, 1)
+      assert.equal(enabled[0]!.enabled, true)
+      await reply('重启这个草稿'); await idle()
+      assert.equal((await receipt()).status, 'blocked')
+      assert.deepEqual((await storage.read(scope)).definitions, enabled)
+      return
+    }
     if (scenario === 'contextual-timeout') {
       await wait(() => approvals.length === 1, 'initial schedule approval')
       const first = approvals[0]!

@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { bindConversationSchedule, conversationScheduleReceipt, conversationScheduleRequestId, isConversationScheduleTimeReply, legacyConversationScheduleSources, precedingConversationUser } from './conversation-schedule'
-import { conversationScheduleRetry } from '../domain/scheduled-creation'
-import { CONVERSATION_SCHEDULE_EVENT, type ConversationScheduleReceipt } from '../../src/shared/scheduled-creation'
+import { conversationScheduleRestart, conversationScheduleRetry } from '../domain/scheduled-creation'
+import { CONVERSATION_SCHEDULE_EVENT, conversationScheduleToolInput, type ConversationScheduleReceipt } from '../../src/shared/scheduled-creation'
 import type { ConversationMessage } from '../domain/conversation-context'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import { conversationScheduleToolDefinition } from '../pi/sdk/pi-conversation-schedule'
@@ -35,6 +35,41 @@ test('reconfirmation is a direct user instruction and legacy provenance excludes
   const sources = legacyConversationScheduleSources('chat', 'current', [turn('first', '明天发简报'), turn('assistant', '每天九点', 'assistant'),
     turn('quote', '> 定时执行'), turn('file', '附件里是要求', 'user', 'other'), turn('current', '重新发起确认'), turn('future', '新要求')])
   assert.deepEqual([...sources], [[conversationScheduleRequestId('chat', 'initial'), '明天发简报']])
+})
+
+test('direct restart only recognizes standalone requests and supports a clock correction', () => {
+  for (const value of ['重启这个草稿', '重新创建这个任务', '请恢复刚才的定时草稿吧。']) {
+    assert.deepEqual(conversationScheduleRestart(value), {}, value)
+  }
+  assert.deepEqual(conversationScheduleRestart('重启这个草稿，并把时间改为17:15'), { clock: { hour: 17, minute: 15 } })
+  for (const value of ['不要重启这个草稿', '能重启这个草稿吗？', '“重启这个草稿”', '> 重启这个草稿', '重启定时任务调度器', '重启这个草稿，发给其他人']) {
+    assert.equal(conversationScheduleRestart(value), undefined, value)
+  }
+})
+
+test('semantic restart accepts no model candidate, and cannot be taken from quoted or attached instructions', async () => {
+  const restart = conversationScheduleToolInput.parse({ action: 'restart' })
+  const candidate = { status: 'needs_input', task: { title: null, goal: null, deliverables: [], execution: { mode: 'general', subscriptionId: null },
+    schedule: { kind: null, timezone: 'UTC', localDateTime: null, expression: null, description: null } },
+  questions: [{ field: 'goal', question: 'What should run?' }], reasons: [] }
+  assert.equal(conversationScheduleToolInput.safeParse({ action: 'restart', candidate }).success, false)
+  assert.equal(conversationScheduleToolInput.safeParse({ action: 'resume', candidate }).success, true)
+  assert.equal(conversationScheduleToolInput.safeParse({ action: 'resume' }).success, false)
+  const draft = { id: conversationScheduleRequestId('chat', 'source'), revision: 4 }
+  const options = { taskId: 'chat', messageId: 'restart', receivedAt: 43, modelId: 'model', workDir: 'D:/workspace',
+    signal: new AbortController().signal, isCurrent: () => true, approve: async () => false, receipt: async () => {}, precedingDiscard: async () => draft }
+  for (const [userMessage, hasAttachments] of [['“刚刚那份还是照原样做吧”', false], ['按附件要求处理', true], ['17:15', false]] as const) {
+    const bound = bindConversationSchedule({ ...options, userMessage, hasAttachments, submit: async () => assert.fail('not a direct restart') })
+    assert.equal((await bound(undefined, restart)).status, 'blocked')
+  }
+  const bound = bindConversationSchedule({ ...options, userMessage: '刚刚那份还是照原样做吧', submit: async (request, review) => {
+    assert.equal(request.requestId, conversationScheduleRequestId('chat', 'restart'))
+    assert.equal(review.continuation, 'restart')
+    assert.equal(review.candidate, undefined)
+    assert.deepEqual(review.precedingDiscard, draft)
+    return { status: 'needs_confirmation', draft, message: 'Awaiting confirmation' }
+  } })
+  assert.equal((await bound(undefined, restart)).status, 'needs_confirmation')
 })
 
 test('legacy clock fallback only accepts a valid receipt from the immediately preceding user turn', async () => {

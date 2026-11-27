@@ -23,6 +23,7 @@ interface Options extends ScheduleManagementServices {
   signal: AbortSignal
   isCurrent(): boolean
   conversationIds(): Promise<ReadonlySet<string>>
+  hasUncreatedConversationSchedule?: boolean
   approve(tool: ScheduleManagementRequest['tool'], input: ScheduleManagementApproval): Promise<boolean>
   approveAction?(tool: ScheduleManagementRequest['tool'], input: ScheduleActionApproval): Promise<boolean>
   now?: () => number
@@ -39,6 +40,10 @@ export function bindConversationScheduleManagement(options: Options): Conversati
       guard()
       const request = { ...rawRequest, input: scheduleManagementSchemas[rawRequest.tool].parse(rawRequest.input) } as ScheduleManagementRequest
       if (options.readOnly && !SCHEDULE_READ_TOOLS.has(request.tool)) throw new AppError('INVALID_STATE', { message: '当前对话仅允许查询定时任务。' })
+      if (options.hasUncreatedConversationSchedule && request.tool === UPDATE_SCHEDULED_TASK_TOOL && 'fromConversation' in request.input.target &&
+        !('inspect' in request.input && request.input.inspect)) {
+        return { status: 'needs_input', message: '会话中还有未创建的定时安排。请先确认要修改已创建的任务，还是继续未创建的安排。' }
+      }
       const operationSignal = signal ? AbortSignal.any([signal, options.signal]) : options.signal
       const lookup = async (target: ScheduleTarget, snapshot?: ScheduledSnapshot, allowDeleted = false) => {
         const ids = 'fromConversation' in target ? await options.conversationIds() : undefined

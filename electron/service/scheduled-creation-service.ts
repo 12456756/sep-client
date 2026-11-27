@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { isScheduledCreationFinished, isScheduledCreationWorking, scheduledCreationProgressAction, scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput, type ConversationScheduleDraft, type ConversationScheduleReceipt, type ScheduleInterpretation } from '../../src/shared/scheduled-creation'
-import { retiredScheduledExecutionMessage, type ModelScheduledInput } from '../../src/shared/scheduled-tasks'
+import { retiredScheduledExecutionMessage, type ModelScheduledInput, type ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { occurrenceId, requestsRestrictedWindowsSchedulePath, scheduledPathDenied, scheduledWorkspaceErrorMessage } from '../domain/scheduled-task'
-import { applyConversationScheduleTime, conversationScheduleClock, conversationScheduleRetry, reviseConversationScheduleClock, scheduleCandidateInput, ScheduleCandidateError } from '../domain/scheduled-creation'
+import { applyConversationScheduleTime, conversationScheduleClock, conversationScheduleRestart, conversationScheduleRetry, reviseConversationScheduleClock, scheduleCandidateInput, ScheduleCandidateError } from '../domain/scheduled-creation'
 import { cronPreview } from '../../src/shared/cron-schedule'
 import { AppError } from '../errors/app-error'
 import { withTimeout } from '../common/with-timeout'
@@ -15,12 +15,16 @@ import type { AttachmentService } from './attachment-service'
 import type { ConversationCreationReview } from '../runtime/conversation-schedule'
 import { redactText } from '../common/redact'
 
-type CreationReview = ConversationCreationReview & { legacySource?: ScheduledCreation; turnId?: string }
+type CreationReview = ConversationCreationReview & { reissueSource?: ScheduledCreation; turnId?: string }
 const draftRef = (item: ScheduledCreation): ConversationScheduleDraft => ({ id: item.id, revision: item.revision })
 const awaiting = (item: ScheduledCreation) => item.stage === 'needs_input' || item.stage === 'needs_confirmation'
 const verifiedLegacy = (item: ScheduledCreation, records: ScheduledCreation[], sources?: ReadonlyMap<string, string>) =>
   !item.conversationId && !item.definitionId && item.stage === 'cancelled' && sources?.get(item.id) === item.messages[0]?.content &&
   !!sources?.has(item.id) && !records.some(record => record.reissuedFrom === item.id)
+const canReissue = (item: ScheduledCreation, records: ScheduledCreation[], review: ConversationCreationReview) =>
+  !!review.conversationId && item.fromConversation && !item.deleted && !item.definitionId && item.stage === 'cancelled' &&
+  (item.conversationId ? item.conversationId === review.conversationId && !records.some(record => record.reissuedFrom === item.id)
+    : verifiedLegacy(item, records, review.legacySources))
 const timeOnly = (candidate: ScheduleInterpretation): ScheduleInterpretation => ({ ...candidate, status: 'needs_input', reasons: [],
   questions: [{ field: 'schedule', question: '任务尚未启用。请提供明确的未来执行时间。' }] })
 
@@ -79,30 +83,56 @@ export class ScheduledCreationService {
   async submitConversation(raw: ScheduledCreationRequest, review: ConversationCreationReview): Promise<ConversationScheduleReceipt> {
     const scope = this.scope(), generation = this.generation
     let resolved: CreationReview = { ...review, ...(review.conversationId && raw.expectedRevision === undefined ? { turnId: raw.requestId } : {}) }
+    if (review.allowContext && raw.expectedRevision !== undefined && !review.draftAction) {
+      const { creations } = await this.options.repository.read(scope)
+      this.assertScope(scope, generation)
+      review.signal.throwIfAborted()
+      if (!creations?.some(item => item.id === raw.requestId)) {
+        return { status: 'needs_context', message: '已保存的配置不可用，请从相关的会话原话复原。' }
+      }
+    }
     if (review.continuation || review.resumeDrafts || review.draftAction) {
       const revisions = new Map(review.resumeDrafts?.map(draft => [draft.id, draft.revision]))
-      const records = (await this.options.repository.read(scope)).creations ?? []
+      const snapshot = await this.options.repository.read(scope)
+      const records = snapshot.creations ?? []
       const guard = () => { this.assertScope(scope, generation); review.signal.throwIfAborted() }
       guard()
       const replay = records.find(item => item.conversationId === review.conversationId && item.conversationTurnId === resolved.turnId && !!resolved.turnId)
       if (replay) return this.conversationReceipt(scope, generation, replay)
-      const target = review.draftAction?.draft
+      const restarting = review.continuation === 'restart'
+      const sources = review.contextSources ?? []
+      const contextual = review.continuation === 'contextual' && sources.length > 0 && !!review.candidate
+      const target = review.draftAction?.draft ?? (restarting ? review.precedingDiscard : undefined)
+      if (contextual && sources.some(source => source.schedule?.status === 'created' || records.some(item =>
+        item.conversationId === review.conversationId && item.definitionId && item.stage === 'completed' &&
+        (item.contextSourceTurns?.includes(source.id) || item.messages.some(message => message.receivedAt === source.receivedAt && message.content === source.content))))) {
+        return { status: 'blocked', message: '这项安排已经创建过。请在「定时任务」中核对并管理已有任务；不会重复创建。' }
+      }
       const explicitRetry = review.continuation === 'review' && !!conversationScheduleRetry(raw.message)
-      const legacy = (item: ScheduledCreation) => !!review.conversationId && verifiedLegacy(item, records, review.legacySources)
       const available = records.filter(item => item.fromConversation && !item.deleted && (
-        awaiting(item) && (item.conversationId ? item.conversationId === review.conversationId : revisions.has(item.id)) ||
-        (explicitRetry || review.draftAction?.kind === 'review') && legacy(item)))
-      const matches = target ? available.filter(item => item.id === target.id) : available
+        !restarting && awaiting(item) && (item.conversationId ? item.conversationId === review.conversationId : revisions.has(item.id)) ||
+        (restarting || contextual || review.draftAction?.kind === 'review' || explicitRetry && !item.conversationId) && canReissue(item, records, review)))
+      const matches = target ? available.filter(item => item.id === target.id) : contextual ? available.filter(item => sources.some(source =>
+        (source.schedule && 'draft' in source.schedule && source.schedule.draft?.id === item.id) ||
+        item.contextSourceTurns?.includes(source.id) || item.messages.some(message => message.receivedAt === source.receivedAt && message.content === source.content))) : available
       if (matches.length > 1) {
-        const clock = conversationScheduleRetry(raw.message)?.clock ?? conversationScheduleClock(raw.message)
+        const clock = (restarting ? conversationScheduleRestart(raw.message) : conversationScheduleRetry(raw.message))?.clock ?? conversationScheduleClock(raw.message)
         const time = clock && `${String(clock.hour).padStart(2, '0')}:${String(clock.minute).padStart(2, '0')}`
         return { status: 'choose_draft', message: '本会话有多份定时草稿，请选择要继续的一份。',
           drafts: matches.map(item => ({ draft: draftRef(item), title: redactText(item.interpretation?.task.title ?? '定时任务') })), ...(time ? { time } : {}) }
       }
       const draft = matches[0]
+      if (!draft && !review.draftAction && (!target || !records.some(item => item.id === target.id))) {
+        if (contextual) {
+          const record = await this.start(raw, { ...resolved, transient: true })
+          guard()
+          return this.conversationReceipt(scope, generation, record)
+        }
+        if (review.allowContext && !review.candidate) return { status: 'needs_context', message: '没有可复用的任务配置。请用本会话中相关的用户原话复原要求；只问缺失的条件，并先核对是否已有任务。' }
+      }
       if (!draft || target && draft.revision !== target.revision || !draft.conversationId && awaiting(draft) && revisions.get(draft.id) !== draft.revision) {
         return { status: 'blocked', message: target ? '这份定时草稿已变更或结束，请使用最新的确认入口。'
-          : '本会话没有可核实的定时草稿。请说明要定时执行的工作。' }
+          : restarting ? '本会话没有可重新创建的已放弃草稿。' : '本会话没有可核实的定时草稿。请说明要定时执行的工作。' }
       }
       const current = this.operations.has(this.key(scope, draft.id))
       if (current) return { status: 'blocked', message: '这份定时草稿正在处理中，请稍后再试。' }
@@ -110,7 +140,7 @@ export class ScheduledCreationService {
         const item = await this.cancel(draft.id, draft.revision, guard)
         return { status: 'discarded', message: '已放弃草稿，定时任务未启用。', draft: draftRef(item) }
       }
-      if (legacy(draft)) resolved = { ...resolved, candidate: undefined, legacySource: draft }
+      if (draft.stage === 'cancelled') resolved = { ...resolved, candidate: contextual ? review.candidate : undefined, reissueSource: draft }
       else raw = { ...raw, requestId: draft.id, expectedRevision: draft.revision }
     }
     const record = await this.start(raw, resolved)
@@ -119,20 +149,29 @@ export class ScheduledCreationService {
   }
   private async conversationReceipt(scope: TaskOwnerScope, generation: number, record: ScheduledCreation): Promise<ConversationScheduleReceipt> {
     if (record.deleted || record.confirmationOutcome === 'pending') return { status: 'blocked', message: '这份定时草稿已结束或仍在等待确认。' }
+    let savedDraft: ConversationScheduleDraft | undefined
+    if (record.stage === 'needs_input' || record.stage === 'needs_confirmation') {
+      const { creations } = await this.options.repository.read(scope)
+      this.assertScope(scope, generation)
+      if (creations?.some(item => item.id === record.id && item.revision === record.revision && !item.deleted)) savedDraft = draftRef(record)
+    }
     if (record.stage === 'needs_confirmation') {
+      if (!savedDraft) return { status: 'cancelled', message: record.confirmationOutcome === 'timeout'
+        ? '本次确认已超时，任务未创建。' : '未获确认，任务未创建。' }
       const message = record.confirmationOutcome === 'timeout' ? '上次确认已超时，任务未启用，草稿已保留。'
         : '上次未完成确认，任务未启用，草稿已保留。'
-      return { status: 'needs_confirmation', message, draft: draftRef(record) }
+      return { status: 'needs_confirmation', message, draft: savedDraft }
     }
     if (record.stage === 'completed') {
       const definition = (await this.options.repository.read(scope)).definitions.find(item => item.id === record.definitionId)
       this.assertScope(scope, generation)
       if (definition?.enabled && definition.nextRunAt !== null) return { status: 'created', id: definition.id, title: definition.input.name,
-        timezone: definition.input.timezone, nextRunAt: definition.nextRunAt, ...(record.conversationId ? { draft: draftRef(record) } : {}) }
+        timezone: definition.input.timezone, nextRunAt: definition.nextRunAt, ...(record.conversationId ? { draft: draftRef(record) } : {}),
+        ...(record.contextSourceTurns ? { sourceTurns: record.contextSourceTurns } : {}) }
       return { status: 'blocked', message: '这条消息已创建过定时任务；请前往「定时任务」查看当前状态。' }
     }
     if (record.stage === 'needs_input') return { status: 'needs_input', message: record.interpretation?.questions.map(item => item.question).join('\n').slice(0, 3800) || '请补充工作内容和明确的开始时间。',
-      ...(!record.deleted ? { draft: draftRef(record) } : {}),
+      ...(savedDraft ? { draft: savedDraft } : {}),
       ...(record.interpretation?.questions.length && record.interpretation.questions.every(question => question.field === 'schedule') ? { timeOnly: true } : {}) }
     if (record.stage === 'blocked') return { status: 'blocked', message: record.interpretation?.reasons.map(item => item.message).join('\n').slice(0, 3800) || '当前请求不能创建定时任务。' }
     if (record.stage === 'cancelled') return { status: 'cancelled', message: '未获确认，定时任务未启用。' }
@@ -144,8 +183,10 @@ export class ScheduledCreationService {
     if (review && resumeFromProgress) throw new AppError('INVALID_ARGUMENT')
     const submission = resumeFromProgress ? ['creation-progress', resumeFromProgress, expectedRevision, input]
       : review ? ['conversation', input, ...(expectedRevision === undefined ? [] : [expectedRevision])] : input
-    const submissionKey = createHash('sha256').update(JSON.stringify(review?.draftAction || review?.legacySource
-      ? [submission, review.draftAction, review.legacySource?.id] : review?.candidate ? [submission, review.candidate] : submission)).digest('hex')
+    const submissionKey = createHash('sha256').update(JSON.stringify(review?.contextSources?.length
+      ? [submission, review.reissueSource?.id, review.contextSources.map(source => source.id), review.candidate]
+      : review?.draftAction || review?.reissueSource
+      ? [submission, review.draftAction, review.reissueSource?.id] : review?.candidate ? [submission, review.candidate] : submission)).digest('hex')
     const key = this.key(scope, requestId), running = this.operations.get(key)
     if (running) {
       if (running.key !== submissionKey) return Promise.reject(new AppError('CONFLICT'))
@@ -162,8 +203,10 @@ export class ScheduledCreationService {
   private async run(scope: TaskOwnerScope, generation: number, request: ScheduledCreationRequest, submissionKey: string, controller: AbortController, review?: CreationReview): Promise<ScheduledCreation> {
     const { requestId, expectedRevision, resumeFromProgress, ...submitted } = request
     const proposal = review?.candidate && scheduleInterpretationSchema.parse(review.candidate)
-    const retry = review?.continuation === 'review' ? conversationScheduleRetry(submitted.message) : undefined
-    const clock = retry?.clock ?? (review && expectedRevision !== undefined ? conversationScheduleClock(submitted.message) : undefined)
+    const retry = review?.continuation === 'review' ? conversationScheduleRetry(submitted.message)
+      : review?.continuation === 'restart' ? conversationScheduleRestart(submitted.message)
+        : review?.continuation === 'contextual' ? conversationScheduleRestart(submitted.message) ?? conversationScheduleRetry(submitted.message) : undefined
+    const clock = retry?.clock ?? (review && (expectedRevision !== undefined || review.continuation === 'contextual') ? conversationScheduleClock(submitted.message) : undefined)
     const actionTime = review?.draftAction?.kind === 'review' ? review.draftAction.time : undefined
     if (review && expectedRevision !== undefined && ((!clock && !retry && !proposal && !review.draftAction) || submitted.referenceFiles)) throw new AppError('INVALID_ARGUMENT')
     const signal = review ? AbortSignal.any([controller.signal, review.signal]) : controller.signal
@@ -176,7 +219,9 @@ export class ScheduledCreationService {
     const referenceMaterials = referenceFiles && prior?.submissionKey !== submissionKey
       ? await this.options.attachments!.referenceMaterials(scope, referenceFiles) : undefined
     const messageWithReferences = referenceMaterials ? { ...message, referenceMaterials } : message
-    let record = await this.options.repository.update(scope, data => {
+    const sourceIds = review?.contextSources?.map(source => source.id) ?? []
+    const sources = review?.contextSources?.map(source => ({ role: 'user' as const, content: source.content, receivedAt: source.receivedAt })) ?? []
+    const initialize = (data: ScheduledSnapshot): ScheduledCreation => {
       guard()
       const records = data.creations ??= []
       const existing = records.find(item => item.id === requestId)
@@ -202,31 +247,41 @@ export class ScheduledCreationService {
         const input = review ? { ...existing.request, message: submitted.message } : submitted
         Object.assign(existing, { request: input, submissionKey, ...(review?.conversationId ? { conversationId: review.conversationId } : {}),
           ...(review?.turnId ? { conversationTurnId: review.turnId } : {}),
+          ...(sourceIds.length ? { contextSourceTurns: [...new Set([...(existing.contextSourceTurns ?? []), ...sourceIds])].slice(-19) } : {}),
           messages: [...existing.messages, messageWithReferences], stage: 'parsing', error: null,
           revision: existing.revision + 1, updatedAt: this.now() })
         return existing
       }
       if (expectedRevision !== undefined) throw new AppError('DRAFT_REVISION_CONFLICT')
-      const legacySource = review?.legacySource && records.find(item => item.id === review.legacySource!.id)
-      if (review?.legacySource && (!legacySource || legacySource.revision !== review.legacySource.revision || legacySource.deleted ||
-        legacySource.stage !== 'cancelled' || legacySource.definitionId || records.some(item => item.reissuedFrom === legacySource.id))) throw new AppError('DRAFT_REVISION_CONFLICT')
-      const created: ScheduledCreation = { id: requestId, revision: 1, request: legacySource ? { ...legacySource.request, message: submitted.message } : submitted, submissionKey,
+      const source = review?.reissueSource
+      const reissue = source && records.find(item => item.id === source.id)
+      if (source && (!reissue || reissue.revision !== source.revision || !canReissue(reissue, records, review))) throw new AppError('DRAFT_REVISION_CONFLICT')
+      const history = reissue ? (reissue.conversationId ? reissue.messages : reissue.messages.slice(0, 1)) : []
+      const messages = sources.length ? [...history.filter(old => !sources.some(item => item.receivedAt === old.receivedAt && item.content === old.content)),
+        ...sources, messageWithReferences].slice(-20) : reissue ? history : [messageWithReferences]
+      const created: ScheduledCreation = { id: requestId, revision: 1, request: reissue?.request ?? submitted, submissionKey,
         ...(review ? { fromConversation: true } : {}),
         ...(review?.conversationId ? { conversationId: review.conversationId } : {}),
         ...(review?.turnId ? { conversationTurnId: review.turnId } : {}),
-        ...(legacySource ? { reissuedFrom: legacySource.id } : {}),
-        referenceNow: legacySource?.referenceNow ?? this.now(), messages: legacySource ? [legacySource.messages[0]!, message] : [messageWithReferences],
-        interpretation: null, parsedSubmissionKey: null, definitionSubmissionKey: null,
+        ...(sourceIds.length ? { contextSourceTurns: sourceIds } : {}),
+        ...(reissue ? { reissuedFrom: reissue.id } : {}),
+        referenceNow: reissue?.referenceNow ?? this.now(),
+        messages,
+        interpretation: reissue?.conversationId ? reissue.interpretation : null, parsedSubmissionKey: null, definitionSubmissionKey: null,
         stage: 'parsing', definitionId: null, definitionInput: null, error: null, createdAt: this.now(), updatedAt: this.now() }
       records.push(created)
       return created
-    })
+    }
+    const before = review?.transient && expectedRevision === undefined && !review.reissueSource && !referenceFiles ? await this.options.repository.read(scope) : undefined
+    let transient = !!before && !before.creations?.some(item => item.id === requestId)
+    let record = transient ? initialize(before!) : await this.options.repository.update(scope, initialize)
     this.assertScope(scope, generation)
     if (record.deleted || ['completed', 'cancelled', 'needs_input', 'needs_confirmation', 'blocked'].includes(record.stage)) return record
     submissionKey = record.submissionKey
     const input = record.request
     const change = async (mutate: (item: ScheduledCreation) => void) => {
       guard()
+      if (transient) { mutate(record); record.revision++; record.updatedAt = this.now(); return }
       record = await this.options.repository.update(scope, data => {
         guard()
         const item = data.creations?.find(value => value.id === requestId)
@@ -251,10 +306,10 @@ export class ScheduledCreationService {
       if (record.parsedSubmissionKey !== submissionKey || !previousDraft) {
         await change(item => { item.stage = 'parsing'; item.error = null })
         const previous = clock ? previousDraft : null
-        const preserve = previousDraft && (actionTime || retry || review?.draftAction || review && record.confirmationOutcome &&
-          previousDraft.questions.every(question => question.field === 'schedule'))
+        const preserve = previousDraft && (review?.reissueSource && (!proposal || clock) || actionTime || retry || review?.draftAction ||
+          review && record.confirmationOutcome && previousDraft.questions.length > 0 && previousDraft.questions.every(question => question.field === 'schedule'))
         let parsed = preserve ? (actionTime ? applyConversationScheduleTime(previousDraft, actionTime) ?? timeOnly(previousDraft)
-          : clock ? reviseConversationScheduleClock(previousDraft, clock)
+          : clock ? reviseConversationScheduleClock(previousDraft, clock) ?? (review?.reissueSource ? timeOnly(previousDraft) : undefined)
           : proposal?.status === 'ready' && previousDraft.task.schedule.kind === 'once' && proposal.task.schedule.localDateTime
             ? applyConversationScheduleTime(previousDraft, proposal.task.schedule.localDateTime) ?? timeOnly(previousDraft)
             : previousDraft) : (previous && clock ? reviseConversationScheduleClock(previous, clock) : undefined) ?? proposal
@@ -264,13 +319,13 @@ export class ScheduledCreationService {
             const result = await withTimeout(this.options.interpret({ subscriptionId: planningEmployee.subscriptionId, modelId: input.modelId,
               ...(record.fromConversation ? { fromConversation: true } : {}),
               referenceNow: record.referenceNow, timezone: input.timezone, employeeCatalog: catalog,
-              currentDraft: previousDraft, messages: review?.legacySource ? record.messages.slice(0, 1) : record.messages }, signal), 45000, 'scheduled-creation-interpretation')
+              currentDraft: previousDraft, messages: record.messages }, signal), 45000, 'scheduled-creation-interpretation')
             guard()
             parsed = scheduleInterpretationSchema.parse(result)
           } finally { clearTimeout(timeout) }
-          if (review?.legacySource && parsed.status !== 'blocked') {
+          if (review?.reissueSource && parsed.status !== 'blocked') {
             parsed = actionTime ? applyConversationScheduleTime(parsed, actionTime) ?? timeOnly(parsed)
-              : clock ? reviseConversationScheduleClock(parsed, clock) ?? parsed : parsed
+              : clock ? reviseConversationScheduleClock(parsed, clock) ?? timeOnly(parsed) : parsed
           }
           if (previous) {
             parsed.task.title = previous.task.title ?? parsed.task.title
@@ -284,6 +339,9 @@ export class ScheduledCreationService {
             if (clock && parsed.status === 'ready') parsed = reviseConversationScheduleClock(parsed, clock) ?? parsed
             parsed = scheduleInterpretationSchema.parse(parsed)
           }
+        }
+        if (clock && !previousDraft && proposal && review?.continuation === 'contextual' && parsed.status !== 'blocked') {
+          parsed = reviseConversationScheduleClock(parsed, clock) ?? parsed
         }
         const candidate = parsed
         await change(item => { item.interpretation = candidate; item.parsedSubmissionKey = submissionKey; item.stage = candidate.status === 'ready' ? 'planning' : candidate.status })
@@ -346,7 +404,7 @@ export class ScheduledCreationService {
       }
       const definitionId = occurrenceId(`definition:${requestId}`, 0)
       if (review) {
-        if (record.conversationId) await change(item => { item.stage = 'needs_confirmation'; item.confirmationOutcome = 'pending' })
+        if (record.conversationId && !transient) await change(item => { item.stage = 'needs_confirmation'; item.confirmationOutcome = 'pending' })
         const approved = await review.approve(configured)
         guard()
         if (approved === 'revise_time') {
@@ -365,6 +423,24 @@ export class ScheduledCreationService {
           await change(item => { item.stage = 'cancelled' })
           return record
         }
+      }
+      if (transient) {
+        // Persist only after this exact proposal was approved. Until then, scope and lifetime are the active turn.
+        if (configured.recurrence?.frequency === 'once' && configured.scheduledAt <= this.now()) {
+          await change(item => { item.stage = 'needs_input'; item.interpretation = timeOnly(candidate) })
+          return record
+        }
+        if (configured.recurrence?.frequency === 'cron' && configured.scheduledAt <= this.now()) {
+          configured = { ...configured, scheduledAt: cronPreview(configured.recurrence.expression, configured.timezone, this.now(), 1)[0]! }
+        }
+        record = await this.options.repository.update(scope, data => {
+          guard()
+          const records = data.creations ??= []
+          if (records.some(item => item.id === requestId)) throw new AppError('DRAFT_REVISION_CONFLICT')
+          records.push(record)
+          return record
+        })
+        transient = false
       }
       const previousInput = record.definitionInput
       await change(item => { item.definitionId = definitionId; item.stage = 'planning'; item.error = null; delete item.confirmationOutcome })
@@ -414,6 +490,7 @@ export class ScheduledCreationService {
       return completed
     } catch (error) {
       this.assertScope(scope, generation)
+      if (transient) throw error
       const current = (await this.options.repository.read(scope)).creations?.find(item => item.id === requestId)
       this.assertScope(scope, generation)
       if (current?.stage === 'cancelled' || current?.stage === 'completed') return current

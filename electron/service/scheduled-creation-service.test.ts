@@ -375,6 +375,96 @@ test('legacy cancellation is reissued as a new draft only from verified same-con
   } finally { h.stop() }
 })
 
+test('restart selects only verified discarded drafts, with precedence for the immediately preceding discard', async () => {
+  const h = harness()
+  const signal = new AbortController().signal, receivedAt = Date.parse('2026-10-21T08:00:00Z')
+  const context = { signal, receivedAt, conversationId: 'chat' }
+  const ids = ['22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']
+  const command = { ...request, requestId: ids[2]!, message: '重启这个草稿，并把时间改为17:15' }
+  const forbidden = async () => assert.fail('no approval is allowed without a verified target')
+  try {
+    const createDiscarded = async (requestId: string, conversationId: string, title: string) => {
+      const result = await h.creation.submitConversation({ ...request, requestId }, { ...context, conversationId,
+        candidate: { ...interpretation, task: { ...interpretation.task, title } }, approve: async () => 'dismissed' })
+      assert.equal(result.status, 'needs_confirmation')
+      const discarded = await h.creation.submitConversation(command, { ...context, conversationId, approve: forbidden,
+        draftAction: { kind: 'discard', draft: result.draft } })
+      assert.equal(discarded.status, 'discarded')
+      return discarded.draft
+    }
+    const first = await createDiscarded(request.requestId, 'chat', 'First report')
+    const second = await createDiscarded(ids[0]!, 'chat', 'Second report')
+    const unrelated = await createDiscarded(ids[1]!, 'other-chat', 'Other report')
+    const restart = { ...context, continuation: 'restart' as const, approve: forbidden }
+    const before = structuredClone(h.data)
+    const choice = await h.creation.submitConversation(command, restart)
+    assert.equal(choice.status, 'choose_draft')
+    assert.deepEqual(choice.drafts.map(item => item.draft), [first, second])
+    assert.equal(choice.time, '17:15')
+    for (const precedingDiscard of [unrelated, { ...second, revision: second.revision - 1 }]) {
+      assert.equal((await h.creation.submitConversation(command, { ...restart, precedingDiscard })).status, 'blocked')
+    }
+    assert.deepEqual(h.data, before)
+    const result = await h.creation.submitConversation(command, { ...restart, precedingDiscard: second, approve: async input => {
+      assert.equal(input.name, 'Second report')
+      assert.equal(input.recurrence?.frequency === 'cron' && input.recurrence.expression, '15 17 * * *')
+      assert.deepEqual(h.data.definitions, [])
+      return 'timeout'
+    } })
+    assert.equal(result.status, 'needs_confirmation')
+    assert.deepEqual(h.data.creations!.slice(0, 3), before.creations)
+    assert.equal(h.data.creations![3]!.reissuedFrom, second.id)
+    assert.deepEqual(await h.creation.submitConversation(command, { ...restart, precedingDiscard: second }), result)
+    assert.equal(h.interpretations, 0)
+  } finally { h.stop() }
+})
+
+test('restart preserves an elapsed one-time task and asks only for a new execution time', async () => {
+  const h = harness()
+  const receivedAt = Date.parse('2026-10-21T08:00:00Z')
+  const context = { signal: new AbortController().signal, receivedAt, conversationId: 'chat' }
+  const candidate: ScheduleInterpretation = { ...interpretation, task: { ...interpretation.task,
+    schedule: { kind: 'once', timezone: 'UTC', localDateTime: '2026-10-21T09:00', expression: null, description: null } } }
+  const command = { ...request, requestId: '22222222-2222-4222-8222-222222222222', message: '重启这个草稿' }
+  const forbidden = async () => assert.fail('an elapsed schedule must not request approval')
+  try {
+    const source = await h.creation.submitConversation(request, { ...context, candidate, approve: async () => 'dismissed' })
+    assert.equal(source.status, 'needs_confirmation')
+    await h.creation.cancel(source.draft.id, source.draft.revision)
+    h.advance(Date.parse('2026-10-21T10:00:00Z'))
+    const result = await h.creation.submitConversation(command, { ...context, continuation: 'restart', approve: forbidden })
+    assert.equal(result.status, 'needs_input')
+    assert.equal(result.timeOnly, true)
+    assert.match(result.message, /执行时间已过/)
+    assert.deepEqual(h.data.creations![1]!.interpretation?.task, candidate.task)
+    assert.deepEqual(h.data.definitions, [])
+    assert.equal(h.interpretations, 0)
+  } finally { h.stop() }
+})
+
+test('a draftless one-time proposal that expires during approval does not persist a task or a draft', async () => {
+  const h = harness()
+  const receivedAt = Date.parse('2026-10-21T08:00:00Z')
+  const task: ScheduleInterpretation['task'] = { ...interpretation.task,
+    schedule: { kind: 'once', timezone: 'UTC', localDateTime: '2026-10-21T09:00', expression: null, description: null } }
+  try {
+    const result = await h.creation.submitConversation({ ...request, message: '按前面的要求创建' }, {
+      signal: new AbortController().signal, receivedAt, conversationId: 'chat', continuation: 'contextual',
+      contextSources: [{ id: 'original', content: request.message, receivedAt }], candidate: { ...interpretation, task },
+      approve: async () => {
+        assert.deepEqual(h.data.creations ?? [], [])
+        h.advance(Date.parse('2026-10-21T09:00:00Z'))
+        return true
+      },
+    })
+    assert.equal(result.status, 'needs_input')
+    assert.equal(result.timeOnly, true)
+    assert.equal(result.draft, undefined)
+    assert.deepEqual(h.data, { definitions: [], occurrences: [] })
+    assert.equal(h.plans, 0)
+  } finally { h.stop() }
+})
+
 test('clarification continues the same persisted creation and automatic mode reuses arrangement planning', async () => {
   const h = harness()
   try {

@@ -41,16 +41,25 @@ export function conversationScheduleClock(message: string): { hour: number; minu
 }
 
 const reviewRequest = /^(?:请\s*)?(?:重新(?:发起确认|确认(?:定时任务)?)|再次发起确认|再发一次确认)$/u
+const restartRequest = /^(?:请\s*)?(?:(?:重启|恢复|重建|重新(?:开启|创建|启动))(?:这(?:个|份|项)|刚才的|之前的|原来的|已放弃的)?(?:定时草稿|草稿)|(?:重建|重新创建)这(?:个|项)任务)(?:吧)?$/u
 
-export function conversationScheduleRetry(message: string): { clock?: NonNullable<ReturnType<typeof conversationScheduleClock>> } | undefined {
+function scheduleRetryIntent(message: string, intent: RegExp): { clock?: NonNullable<ReturnType<typeof conversationScheduleClock>> } | undefined {
   const clauses = message.trim().normalize('NFKC').replace(/[。!]$/u, '').split(/\s*[,、;]\s*/u)
-  if (clauses.length === 1 && reviewRequest.test(clauses[0]!)) return {}
+  if (clauses.length === 1 && intent.test(clauses[0]!)) return {}
   if (clauses.length !== 2) return undefined
-  const index = clauses.findIndex(part => reviewRequest.test(part))
+  const index = clauses.findIndex(part => intent.test(part))
   if (index === -1) return undefined
   const time = clauses[1 - index]!.replace(/^(?:(?:并|请)\s*)*(?:(?:把|将)\s*(?:执行)?时间\s*)?/u, '')
   const clock = conversationScheduleClock(time)
   return clock ? { clock } : undefined
+}
+
+export function conversationScheduleRetry(message: string): ReturnType<typeof scheduleRetryIntent> {
+  return scheduleRetryIntent(message, reviewRequest)
+}
+
+export function conversationScheduleRestart(message: string): ReturnType<typeof scheduleRetryIntent> {
+  return scheduleRetryIntent(message, restartRequest)
 }
 
 export function applyConversationScheduleTime(previous: ScheduleInterpretation, time: string): ScheduleInterpretation | undefined {
