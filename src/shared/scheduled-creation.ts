@@ -123,8 +123,12 @@ export const conversationScheduleReceiptSchema = z.discriminatedUnion('status', 
   z.object({ status: z.enum(['blocked', 'failed', 'cancelled']), message: z.string().min(1).max(4000) }).strict(),
 ])
 export type ConversationScheduleReceipt = z.infer<typeof conversationScheduleReceiptSchema>
+export function formatScheduleLocalTime(timestamp: number, timezone: string): string {
+  return new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23' }).format(timestamp)
+}
+
 export function formatScheduleReceiptTime(timestamp: number, timezone: string): string {
-  return `${new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23' }).format(timestamp)} (${timezone})`
+  return `${formatScheduleLocalTime(timestamp, timezone)} (${timezone})`
 }
 
 export const scheduledCreationSchema = z.object({

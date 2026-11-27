@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { useFeedback } from './feedback/FeedbackProvider'
 import { approvalBrowserOrigin, isBrowserHandoffRequest, isDetectedBrowserHandoff, OFFICE_TOOL_NAME, toolApprovalSummarySchema, toolApprovalTimeoutMs } from '../shared/tool-approval'
 import type { ToolAuthorizationRequest } from '../shared/types'
-import { conversationScheduleApprovalSchema, CREATE_SCHEDULED_TASK_TOOL, formatScheduleReceiptTime } from '../shared/scheduled-creation'
+import { conversationScheduleApprovalSchema, CREATE_SCHEDULED_TASK_TOOL, formatScheduleLocalTime, formatScheduleReceiptTime } from '../shared/scheduled-creation'
+import type { FeedbackConfirmation } from '../shared/feedback-controller'
 import { DELETE_SCHEDULED_TASK_TOOL, scheduleActionApprovalSchema, scheduleManagementApprovalSchema, SCHEDULE_MANAGEMENT_TOOLS, SCHEDULE_READ_TOOLS, UPDATE_SCHEDULED_TASK_TOOL } from '../shared/scheduled-management'
 import { RUN_PYTHON_TOOL } from '../shared/python-tool'
 
@@ -183,12 +184,26 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
       message = '允许读取当前网页内容并将快照保存为文件？'
     }
     const scheduling = request.toolName === CREATE_SCHEDULED_TASK_TOOL
+    let review: FeedbackConfirmation['review']
+    let scheduleTitle: string | undefined
     if (scheduling) {
       const schedule = conversationScheduleApprovalSchema.safeParse(request.input)
       if (!schedule.success) { settle(false); return }
-      const { title, goal, firstRunAt, timezone, recurrence } = schedule.data
-      message = `创建并启用「${title}」？${recurrence ? '预计首次执行' : '计划执行时间'}：${formatScheduleReceiptTime(firstRunAt, timezone)}。${recurrence ? ` 重复规则：${scheduleRecurrenceLabel(recurrence)}。` : ' 仅执行一次。'}\n\n${goal}`
-      if (schedule.data.executor) message += `\n\n执行方式：${schedule.data.executor}`
+      const { title, goal, firstRunAt, timezone, recurrence, executor } = schedule.data
+      scheduleTitle = title
+      const separator = '\n\nDeliverables:\n'
+      const split = goal.lastIndexOf(separator)
+      const sections = [{ title: '任务要求', text: split === -1 ? goal : goal.slice(0, split) }]
+      if (split !== -1) sections.push({ title: '交付成果', text: goal.slice(split + separator.length) })
+      review = {
+        factsTitle: '执行安排', detailsTitle: '完整执行说明', sections,
+        facts: [
+          { label: recurrence ? '预计首次执行' : '计划执行时间', value: formatScheduleLocalTime(firstRunAt, timezone) },
+          { label: '重复规则', value: recurrence ? scheduleRecurrenceLabel(recurrence) : '仅执行一次' },
+          { label: '时区', value: timezone === 'Asia/Shanghai' ? '北京时间（UTC+8）' : timezone },
+          ...(executor ? [{ label: '执行方式', value: executor }] : []),
+        ],
+      }
     }
     const updatingSchedule = toolName === UPDATE_SCHEDULED_TASK_TOOL
     const deletingSchedule = toolName === DELETE_SCHEDULED_TASK_TOOL
@@ -252,7 +267,8 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
     const sendDingTalk = request.toolName === 'dingtalk_execute' && request.summary?.kind === 'dingtalk-message' && summaryMessage !== undefined
     void feedback.ask({
       key: `approval:${request.requestId ?? request.timestamp ?? deadline}`,
-      message,
+      message: scheduleTitle ?? message,
+      ...(review ? { title: '创建并启用定时任务？', review } : {}),
       actionLabel: sendDingTalk ? '发送消息' : scheduling ? '创建并启用' : scheduleAction?.success ? scheduleAction.data.label : updatingSchedule ? '保存修改' : deletingSchedule ? '删除' : browserHandoff ? '已完成，继续' : '允许',
       ...(scheduling && onReviseScheduleTime ? { alternate: { label: '修改时间', busyLabel: '修改时间', onConfirm: async () => {
         reviseScheduleTime = true

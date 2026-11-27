@@ -213,19 +213,48 @@ test('a browser summary is bound to the tool and contains only an origin', () =>
 })
 
 test('scheduled tasks require explicit confirmation showing the task and first execution time', async () => {
-  const ui = mount(CREATE_SCHEDULED_TASK_TOOL, { title: '日报', goal: '汇总昨天的销售数据', timezone: 'Asia/Shanghai',
+  const goal = '汇总昨天的销售数据\n\n发送统计文档给指定收件人。'
+  const deliverables = '- 销售统计文档\n- 钉钉发送结果'
+  const ui = mount(CREATE_SCHEDULED_TASK_TOOL, { title: '日报', goal: `${goal}\n\nDeliverables:\n${deliverables}`, timezone: 'Asia/Shanghai',
     firstRunAt: Date.parse('2026-11-24T00:00:00Z'), recurrence: '0 8 * * *', executor: '多员工编排' })
   try {
     const dialog = ui.feedback.getSnapshot()
     assert.ok(dialog)
-    assert.match(dialog.message, /日报.*预计首次执行.*08:00/s)
-    assert.match(dialog.message, /重复规则：每天 08:00/)
-    assert.match(dialog.message, /汇总昨天的销售数据/)
-    assert.match(dialog.message, /执行方式：多员工编排/)
+    assert.equal(dialog.title, '创建并启用定时任务？')
+    assert.equal(dialog.message, '日报')
+    assert.equal(dialog.actionLabel, '创建并启用')
+    assert.deepEqual(dialog.review?.facts, [
+      { label: '预计首次执行', value: '2026年11月24日 08:00' },
+      { label: '重复规则', value: '每天 08:00' },
+      { label: '时区', value: '北京时间（UTC+8）' },
+      { label: '执行方式', value: '多员工编排' },
+    ])
+    assert.deepEqual(dialog.review?.sections, [
+      { title: '任务要求', text: goal },
+      { title: '交付成果', text: deliverables },
+    ])
     assert.deepEqual(ui.decisions, [])
     await ui.feedback.accept(dialog.id)
     await new Promise<void>(resolve => setImmediate(resolve))
     assert.deepEqual(ui.decisions, [true])
+  } finally { ui.cleanup() }
+})
+
+test('a one-time schedule shows the exact non-default timezone and preserves the full request', async () => {
+  const goal = `核对数据。\n${'完整要求。'.repeat(1600)}\n收件人须在发送前核实。`
+  const ui = mount(CREATE_SCHEDULED_TASK_TOOL, { title: '一次性报告', goal, timezone: 'Asia/Tokyo',
+    firstRunAt: Date.parse('2026-11-24T15:00:00Z'), recurrence: null })
+  try {
+    const dialog = ui.feedback.getSnapshot()!
+    assert.deepEqual(dialog.review?.facts, [
+      { label: '计划执行时间', value: '2026年11月25日 00:00' },
+      { label: '重复规则', value: '仅执行一次' },
+      { label: '时区', value: 'Asia/Tokyo' },
+    ])
+    assert.deepEqual(dialog.review?.sections, [{ title: '任务要求', text: goal }])
+    ui.feedback.dismiss(dialog.id)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(ui.decisions, [false])
   } finally { ui.cleanup() }
 })
 
@@ -251,8 +280,7 @@ test('the schedule approval describes an all-wildcard cron as every minute', () 
   try {
     const dialog = ui.feedback.getSnapshot()
     assert.ok(dialog)
-    assert.match(dialog.message, /重复规则：每分钟/)
-    assert.doesNotMatch(dialog.message, /\* \* \* \* \*/)
+    assert.deepEqual(dialog.review?.facts.find(fact => fact.label === '重复规则'), { label: '重复规则', value: '每分钟' })
     assert.deepEqual(ui.decisions, [])
   } finally { ui.cleanup() }
 })
