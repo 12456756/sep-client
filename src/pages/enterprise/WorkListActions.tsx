@@ -27,6 +27,7 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
   const returnFocus = useRef<HTMLElement | null>(null)
   const returnFallbacks = useRef<HTMLElement[]>([])
   const menuWork = works.find(work => work.id === request?.workId)
+  const isConversation = menuWork?.workType?.state === 'resolved' && menuWork.workType.kind === 'conversation'
   const cannotDelete = (work: WorkItem) => Boolean(work.isActive || work.status === 'running' || work.planningDraft?.status === 'planning')
   const cannotRetry = (work: WorkItem) => Boolean(busy || work.isActive || work.status === 'running' || work.status === 'arranging' || work.planningDraft
     || work.workType?.state !== 'resolved' || work.workType.kind !== 'arrangement')
@@ -103,8 +104,10 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
           {menuWork.pinnedAt ? <PinOff size={16} aria-hidden /> : <Pin size={16} aria-hidden />}{menuWork.pinnedAt ? '取消置顶' : '置顶'}
         </button>}
         {!menuWork.planningDraft && <button type="button" role="menuitem" disabled={busy} onClick={() => { closeMenu(); void onRename(menuWork.id) }}><Pencil size={16} aria-hidden />重命名</button>}
-        {!menuWork.planningDraft && <button type="button" role="menuitem" disabled={cannotRetry(menuWork)} onClick={() => { closeMenu(); void onRetry(menuWork.id) }}><RotateCcw size={16} aria-hidden />重新执行</button>}
-        <button type="button" role="menuitem" disabled={busy || Boolean(menuWork.planningDraft) || menuWork.workType?.state !== 'resolved' || menuWork.workType.kind !== 'arrangement'} onClick={() => { closeMenu(); onSchedule(menuWork) }}><CalendarClock size={16} aria-hidden />加入定时任务</button>
+        {!isConversation && <>
+          {!menuWork.planningDraft && <button type="button" role="menuitem" disabled={cannotRetry(menuWork)} onClick={() => { closeMenu(); void onRetry(menuWork.id) }}><RotateCcw size={16} aria-hidden />重新执行</button>}
+          <button type="button" role="menuitem" disabled={busy || Boolean(menuWork.planningDraft) || menuWork.workType?.state !== 'resolved' || menuWork.workType.kind !== 'arrangement'} onClick={() => { closeMenu(); onSchedule(menuWork) }}><CalendarClock size={16} aria-hidden />加入定时任务</button>
+        </>}
         <button type="button" role="menuitem" className="danger" disabled={busy || cannotDelete(menuWork)} aria-describedby={cannotDelete(menuWork) ? 'ent-work-delete-reason' : undefined} onClick={() => { void deleteWork(menuWork.id) }}><Trash2 size={16} aria-hidden />删除</button>
         {cannotDelete(menuWork) && <p id="ent-work-delete-reason">执行中的工作需先终止，再删除记录。</p>}
       </>}
