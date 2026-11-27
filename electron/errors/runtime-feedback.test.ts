@@ -25,6 +25,14 @@ it('distinguishes media submission, tracking, generation, expiry and download fa
   }
 })
 
+it('upgrades historical query interruption warnings without changing their failure category', () => {
+  const historical = '图片或视频任务跟踪已中断，尚未确认生成结果，请恢复原任务跟踪；持续失败请联系平台管理员，勿重复生成。'
+  const result = runtimeFeedback(new Error(historical))
+  assert.equal(result.code, 'MEDIA_QUERY_UNAVAILABLE')
+  assert.match(result.message, /查询.*中断.*任务详情/)
+  assert.doesNotMatch(result.message, /尚未确认生成结果|可能继续生成|可能继续计费/)
+})
+
 it('keeps the vision restriction visible after SDK error flattening', () => {
   const message = '所选模型不支持图片输入，请选择支持图片的模型，或新建不含图片的对话。'
   for (const error of [new AppError('MODEL_NOT_ALLOWED', { message }), new Error(message)]) {

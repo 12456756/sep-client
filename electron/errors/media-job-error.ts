@@ -15,6 +15,8 @@ export function mediaJobFailure(error: unknown, stage: MediaFailure['stage']): M
   // Validate each optional field independently so malformed metadata cannot erase the reason.
   const values = { businessCode: details.businessCode, gatewayCode: details.gatewayCode,
     requestId: details.requestId, httpStatus: details.statusCode, source: details.source,
+    submissionState: details.submissionConfirmedNotSent === true ? 'not_submitted' : undefined,
+    billingState: details.submissionConfirmedNotSent === true ? details.billingState : undefined,
     reasonCode: details.reasonCode ?? (error instanceof Error && !(error instanceof AppError) && 'code' in error ? error.code : undefined) }
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined || value === null) continue

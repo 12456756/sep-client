@@ -80,16 +80,25 @@ describe('gateway retry wait', () => {
     assert.equal(retry.schedule(), 150)
   })
 
-  it('rejects excessive server waits instead of retrying before recovery', async () => {
+  it('accepts long 429 waits while rejecting invalid numeric delays', async () => {
     const retry = new GatewayRetryWait()
-    assert.equal(retry.inspect(response({ 'Retry-After': '301' })), false)
-    assert.match(retry.terminalError ?? '', /300000/)
-    await assert.rejects(retry.wait(), /300000/)
+    assert.equal(retry.inspect(response({ 'Retry-After': '600' })), true)
+    assert.equal(retry.schedule(), 600000)
     retry.reset()
     assert.equal(retry.terminalError, undefined)
     assert.equal(retry.inspect(response({ 'Retry-After': '300' })), true)
     assert.equal(retry.schedule(), 300000)
     assert.equal(retry.inspect(response({ 'Retry-After': '9'.repeat(400) })), false)
+  })
+
+  it('accepts SSE 429 body hints without the ordinary model retry ceiling', () => {
+    const retry = new GatewayRetryWait()
+    retry.inspectDiagnostic({ httpStatus: 200, computeStatus: 429,
+      body: { error: { rateLimit: { retryAfterSeconds: 600 } } } })
+    assert.equal(retry.isRateLimited, true)
+    assert.equal(retry.schedule(), 600000)
+    retry.reset()
+    assert.equal(retry.isRateLimited, false)
   })
 
   it('accepts a ninety-second server wait without shortening it', () => {

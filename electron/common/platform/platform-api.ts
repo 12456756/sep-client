@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { fetchRateLimited } from '../rate-limit-retry'
 import { parseRetryAfter, readApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
 import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
 import { LoginFeedbackError, isTransportTimeout } from './login-error'
@@ -10,6 +11,14 @@ import {
 export type { PlatformNotification as Notification, NotificationQuery } from '../../../src/shared/notification-contracts'
 import { config } from '../config'
 import { logger } from '../logger'
+
+function platformFetch(input: string, init: RequestInit, secrets: readonly string[] = []): Promise<Response> {
+  const authorization = new Headers(init.headers).get('authorization')?.replace(/^Bearer\s+/i, '')
+  return fetchRateLimited(signal => fetch(input, { ...init, signal: init.method === undefined || init.method === 'GET'
+    ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal }), {
+    signal: init.signal ?? undefined, operation: 'platform', secrets: [...secrets, ...(authorization ? [authorization] : [])],
+  })
+}
 import { platformSourceHeaders } from './platform-source-headers'
 import { parseEmployeeRuntimeManifest, type EmployeeRuntimeManifest } from './employee-runtime-contract'
 import { sepMediaRuntimeSchema } from './sep-media-runtime-contract'
@@ -250,7 +259,7 @@ async function parseError(response: Response, resource: AuthApiResource, secrets
 
 async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource, signal?: AbortSignal): Promise<T> {
   const boundedRead = ['notifications', 'skills', 'subscriptions', 'model-catalog'].includes(resource)
-  const requestSignal = signal ?? (boundedRead ? AbortSignal.timeout(15_000) : undefined)
+  const requestSignal = signal
   const failTransport = (error: unknown): never => {
     if (boundedRead && !signal?.aborted && (error instanceof TypeError || isTransportTimeout(error))) {
       const diagnostic = transportApiDiagnostic(error, resource, [accessToken])
@@ -258,7 +267,7 @@ async function getJson<T>(path: string, accessToken: string, resource: AuthApiRe
     }
     throw error
   }
-  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
+  const response = await platformFetch(`${config.SEP_BASE_URL}${path}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       ...(resource === 'notifications' ? { Origin: config.SEP_WEB_ORIGIN } : {}),
@@ -278,7 +287,7 @@ async function postJson<T>(
   path: string, body: unknown, accessToken: string, resource: AuthApiResource,
   idempotencyKey?: string,
 ): Promise<T> {
-  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
+  const response = await platformFetch(`${config.SEP_BASE_URL}${path}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -309,7 +318,7 @@ async function postMultipart<T>(
 ): Promise<T> {
   const form = new FormData()
   form.append('file', new Blob([input.bytes], { type: input.contentType }), input.filename)
-  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
+  const response = await platformFetch(`${config.SEP_BASE_URL}${path}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -354,11 +363,11 @@ const loginResponseSchema = z.object({
 export async function login(request: LoginRequest): Promise<LoginResponse> {
   let response: Response
   try {
-    response = await fetch(`${config.SEP_BASE_URL}/client/auth/login`, {
+    response = await platformFetch(`${config.SEP_BASE_URL}/client/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
-    })
+    }, [request.password])
   } catch (error) {
     throw new LoginFeedbackError(isTransportTimeout(error) ? 'timeout' : 'network', error)
   }
@@ -375,11 +384,11 @@ export async function login(request: LoginRequest): Promise<LoginResponse> {
 }
 
 export async function refreshAccessToken(refreshToken: string): Promise<RefreshResponse> {
-  const response = await fetch(`${config.SEP_BASE_URL}/client/auth/refresh`, {
+  const response = await platformFetch(`${config.SEP_BASE_URL}/client/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
-  })
+  }, [refreshToken])
   if (!response.ok) throw await parseError(response, 'refresh', [refreshToken])
   return response.json() as Promise<RefreshResponse>
 }
@@ -419,12 +428,12 @@ export async function getEmploymentToken(
   request: EmploymentTokenRequest,
   signal?: AbortSignal,
 ): Promise<EmploymentTokenResponse> {
-  const response = await fetch(`${config.SEP_BASE_URL}/client/auth/token`, {
+  const response = await platformFetch(`${config.SEP_BASE_URL}/client/auth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
     signal,
-  })
+  }, [request.refreshToken])
   if (!response.ok) throw await parseError(response, 'employment-token', [request.refreshToken], signal)
   return response.json() as Promise<EmploymentTokenResponse>
 }
@@ -473,7 +482,7 @@ export async function getUnreadNotificationCount(accessToken: string, params: No
 /** Notification writes return 204; do not try to decode a nonexistent JSON body. */
 async function notificationCommand(path: string, method: 'POST' | 'DELETE', accessToken: string): Promise<void> {
   const signal = AbortSignal.timeout(15_000)
-  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
+  const response = await platformFetch(`${config.SEP_BASE_URL}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -505,7 +514,7 @@ export async function clearReadNotifications(accessToken: string, params: Notifi
 export async function uploadFile(input: UploadInput, accessToken: string): Promise<UploadFile> {
   const form = new FormData()
   form.append('file', new Blob([input.bytes], { type: input.contentType }), input.filename)
-  const response = await fetch(`${config.SEP_BASE_URL}/upload/file`, {
+  const response = await platformFetch(`${config.SEP_BASE_URL}/upload/file`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,
@@ -519,7 +528,7 @@ export async function uploadFiles(inputs: UploadInput[], accessToken: string): P
   for (const input of inputs) {
     form.append('files', new Blob([input.bytes], { type: input.contentType }), input.filename)
   }
-  const response = await fetch(`${config.SEP_BASE_URL}/upload/files`, {
+  const response = await platformFetch(`${config.SEP_BASE_URL}/upload/files`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,

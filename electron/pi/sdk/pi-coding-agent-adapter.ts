@@ -135,7 +135,7 @@ function registeredMediaNames(config: PiAgentSessionConfig): MediaToolName[] {
   ))
 }
 
-const VIDEO_TOOL_NAMES: readonly VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
+const VIDEO_TOOL_NAMES: readonly VideoToolName[] = ['video_from_image', 'video_from_video', 'video_generate', 'video_get_job']
 
 function mediaInputValidationFailure(error: z.ZodError) {
   const fields = new Set(['width', 'height', 'size', 'aspectRatio', 'count', 'quality', 'durationSeconds', 'resolution', 'frameRate', 'audio', 'outputFormat'])
@@ -180,7 +180,7 @@ function modelMediaJobFeedback<T extends MediaIssueState>(job: T, kind: 'image' 
 
 const videoJobResultSchema = z.object({
   jobId: videoId, taskId: videoId, profileId: videoId,
-  operation: z.enum(['image-to-video', 'text-to-video']),
+  operation: z.enum(['image-to-video', 'text-to-video', 'video-to-video']),
   parameters: videoRequestedSpecSchema,
   specFailure: videoSpecFailureSchema.optional(),
   protocolVersion: z.literal(3).optional(), specRevision: z.number().int().positive().optional(),
@@ -208,10 +208,15 @@ const videoJobResultSchema = z.object({
 }).refine(job => job.billingStatus !== 'MOCK_NOT_CHARGED' || job.amountCny === undefined && job.actualCostCny === undefined && job.amountUsd === undefined)
   .transform(job => modelMediaJobFeedback(job, 'video'))
 const videoTaskResultSchema = z.object({
-  mock: z.boolean(), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&
+  mock: z.boolean(), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 5 &&
     runtime.profiles.every(profile => profile.capabilities.aspectRatios.every(ratio => ratio.length <= 32))),
   jobs: z.array(videoJobResultSchema).max(50),
   referenceSources: z.array(videoReferenceSourceSchema).max(100).optional(),
+  referenceVideos: z.array(z.object({
+    localAssetId: videoId, taskId: videoId, name: z.string().max(256),
+    mime: z.enum(['video/mp4', 'video/quicktime']), size: z.number().int().positive().max(90 * 1024 * 1024),
+    status: z.enum(['SAVED', 'MISSING']),
+  })).max(100).optional(),
   referenceAssets: z.array(z.object({
     localAssetId: videoId, taskId: videoId, jobId: z.null(), outputId: z.null(), source: z.literal('reference'),
     mime: z.enum(['image/png', 'image/jpeg', 'image/webp']), size: z.number().int().positive(),
@@ -253,16 +258,19 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
   }, { additionalProperties: false })
   const specFields = Object.keys(parameters.properties)
   return names.map(name => {
-    const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
+    const operation = name === 'video_from_video' ? 'video-to-video' : name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
     return {
       name, label: name, executionMode: 'sequential',
-      description: name === 'video_get_job'
-        ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs and referenceAssets. When present, referenceSources maps conversation attachment names and generated image sourceArtifactIds to usable reference localAssetIds. Select the actual requested image; clarify ambiguous multiple inputs rather than picking the first. The host tracks and saves submitted jobs; generation tools return only after terminal status and local save are known. Never poll this tool or use sleep to wait. Image capabilities do not describe video availability.'
-        : `Generate a video using ${operation}. Inspect video_get_job({}) for actual authorization, profiles and protocol version. Preserve user specifications. When the user has not specified resolution or pixel dimensions, prefer the lowest resolution confirmed to be supported by the current model for the selected operation, duration and reference assets, while preserving the intended aspect ratio. Compare actual pixel specifications, using total pixel count when explicit width and height are available; never assume the first capability entry is the lowest resolution. If support or ordering is uncertain, do not invent or claim a minimum. Submit the selected resolution or width/height as structured specifications with model sources; preserve any explicit user resolution or pixel dimensions. Infer other ordinary unspecified specifications from purpose, context and reference assets, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. Legacy parameters require explicit complete decisions; missing fields are never filled by the host. Never silently change specifications, switch model or substitute script animation. ${name === 'video_from_image' ? 'Supply one or more SAVED task-local referenceAssets localAssetIds in the user-specified order; never invent IDs or file paths.' : 'No reference assets are needed.'} The host automatically uploads only the selected references and validates the quote before submitting. Report the actual generation and local save states and chosen specifications; distinguish submitted, generated and saved. Report tool error codes and their source, never invent a missing-profile diagnosis, and never automatically retry a paid submission. If an older video submission is unconfirmed, query the original first; start a new job only when the user explicitly requests new generation in a later turn. A new job may be charged separately.`,
+      description: name === 'video_from_video'
+        ? 'Edit videos using video-to-video, V3 only. First call video_get_job({}) to discover actual profiles, videoReferenceSupport, videoReferenceRules and SAVED referenceVideos. Supply their localAssetIds as localVideoAssetIds in the user-specified order; do not mix image references, remote URLs or paths. Respect the selected profile limits and preserve user requirements. Send protocolVersion:3, positive integer requestedSpec.durationSeconds, specRevision and parameterSources; preserve audio:false. Choose ordinary unspecified specifications from context and record model sources. The host automatically uploads only selected original references, validates the quote and permissions, submits once and waits for local save. Report actual generation, file and billing states and concrete errors. Never automatically retry a paid submission.'
+        : name === 'video_get_job'
+        ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs, image referenceAssets and video referenceVideos. referenceSources maps conversation image attachment names and generated image sourceArtifactIds to usable image localAssetIds. Select actual user-requested assets in order and clarify ambiguous inputs. Use video_from_video with referenceVideos localAssetIds, never video_from_image. The host tracks and saves submitted jobs; generation tools wait for terminal status and local save. Never poll or sleep to wait. Image capabilities do not describe video availability.'
+        : `Generate a video using ${operation}. Inspect video_get_job({}) for actual authorization, profiles and protocol version. Preserve user specifications. When the user has not specified resolution or pixel dimensions, prefer the lowest resolution confirmed to be supported by the current model for the selected operation, duration and reference assets, while preserving the intended aspect ratio. Compare actual pixel specifications, using total pixel count when explicit width and height are available; never assume the first capability entry is the lowest resolution. If support or ordering is uncertain, do not invent or claim a minimum. Submit the selected resolution or width/height as structured specifications with model sources; preserve any explicit user resolution or pixel dimensions. Infer other ordinary unspecified specifications from purpose, context and reference assets, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. Legacy parameters require explicit complete decisions; missing fields are never filled by the host. Never silently change specifications, switch model or substitute script animation. ${name === 'video_from_image' ? 'Supply one or more SAVED task-local referenceAssets localAssetIds in the user-specified order; never invent IDs or file paths.' : 'No reference assets are needed.'} The host automatically uploads only the selected references and validates the quote and permissions before submitting. Report the actual generation and local save states and chosen specifications; distinguish submitted, generated and saved. Report tool error codes and their source, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
       parameters: name === 'video_get_job' ? Type.Object({ jobId: Type.Optional(id) }, { additionalProperties: false })
         : Type.Object({
           profileId: Type.Optional(profileId), operation: Type.Optional(Type.Literal(operation)),
           localAssetIds: name === 'video_from_image' ? Type.Array(id, { minItems: 1, maxItems: 32 }) : Type.Optional(Type.Array(id, { maxItems: 0 })),
+          localVideoAssetIds: name === 'video_from_video' ? Type.Array(id, { minItems: 1, maxItems: 10, description: 'Select SAVED referenceVideos IDs from video_get_job({}) in user-specified order. Use profile videoReferenceSupport limits. Do not mix image references.' }) : Type.Optional(Type.Array(id, { maxItems: 0 })),
           creativeBrief: Type.String({ minLength: 1, maxLength: 4000 }), parameters: Type.Optional(parameters),
           requestedSpec: Type.Optional(parameters), ...mediaDecisionToolProperties(specFields),
         }, { additionalProperties: false }),
@@ -280,7 +288,9 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
             const invalidReferences = name === 'video_from_image'
               ? parsed.data.protocolVersion === 3 ? count < 1 : count !== 1
               : count !== 0
-            if (parsed.data.operation !== undefined && parsed.data.operation !== operation || invalidReferences) {
+            const videos = parsed.data.localVideoAssetIds?.length ?? 0
+            if (parsed.data.operation !== undefined && parsed.data.operation !== operation || invalidReferences
+              || (name === 'video_from_video' ? parsed.data.protocolVersion !== 3 || videos < 1 : videos !== 0)) {
               return failure(JSON.stringify(videoToolFailureFrom(new AppError('INVALID_ARGUMENT'))))
             }
           }
@@ -1067,7 +1077,7 @@ class PiCodingAgentSession implements PiAgentSession {
           input: { path: redactText(skill.path) }, skillDetails: redactValue(skill.label) }
       }
       if (event.type === 'auto_retry_start') {
-        normalized.data = { ...(normalized.data as Record<string, unknown>), delayMs }
+        normalized.data = { ...(normalized.data as Record<string, unknown>), delayMs, rateLimited: retryWait.isRateLimited }
       }
       if (event.type === 'agent_end' && !event.willRetry && retryWait.terminalError) {
         normalized.failure = retryWait.terminalError
@@ -1204,6 +1214,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       // The request boundary applies the one cancellable delay; Pi must not sleep again.
       retry: { enabled: true, maxRetries: MAX_RUN_AUTO_RETRIES, baseDelayMs: 0, provider: { maxRetries: 0 } },
     })
+    const retrySettings = settingsManager.getRetrySettings.bind(settingsManager)
+    settingsManager.getRetrySettings = () => ({ ...retrySettings(),
+      maxRetries: retryWait.isRateLimited ? Number.MAX_SAFE_INTEGER : MAX_RUN_AUTO_RETRIES })
     const requestTracker = config.onModelRequest ? new ModelRequestTracker(config.onModelRequest) : null
     let latestOverhead: { timestamp: number; value: ReturnType<typeof estimateRequestOverhead> } | undefined
     // The exported subpath is loaded dynamically under the project's legacy Node resolution.
@@ -1305,7 +1318,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
             return guardGatewayResponse(response, {
               signal: init?.signal, secrets: [accessToken],
               onFailure: ({ kind, diagnostic }) => {
-                if (gatewayDisallowsRetry(diagnostic) || kind === 'sse' && diagnostic.retryable !== true) settingsManager.setRetryEnabled(false)
+                retryWait.inspectDiagnostic(diagnostic)
+                if (gatewayDisallowsRetry(diagnostic) || diagnostic.headers?.['x-should-retry'] === 'false'
+                  || kind === 'sse' && diagnostic.retryable !== true) settingsManager.setRetryEnabled(false)
                 log.warn('model gateway response failed', { ...fields, kind, diagnostic, traceRequestId: requestId })
                 void requestRecord({ phase: '', kind: 'status', text: '模型请求失败；已保留脱敏后的服务端或传输诊断。',
                   metrics: { 失败阶段: kind, 诊断: JSON.stringify(diagnostic) } })

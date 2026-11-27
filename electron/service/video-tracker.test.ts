@@ -98,6 +98,52 @@ describe('VideoTracker bounded scope polling', () => {
       assert.deepEqual(calls, [0])
     }
   })
+  it('keeps the original recovery alive while 429 cooling exceeds the normal tracking budget', async () => {
+    const clock = new Clock()
+    let waiting = true, recoveredAt = 0, calls = 0
+    let inFlight: AbortSignal | undefined
+    const tracker = new VideoTracker({ now: clock.now, delay: clock.delay, budgetMs: 50,
+      floorMs: 10, maxDelayMs: 100, service: {
+        hasRateLimitWait: async () => waiting,
+        recoveredFromRateLimitAt: () => recoveredAt,
+        recover: async signal => {
+          calls++; inFlight = signal
+          await clock.delay(150, signal!)
+          waiting = false; recoveredAt = clock.now()
+          return []
+        },
+      } })
+    const pending = tracker.start()
+    try {
+      await flush()
+      await clock.advance(149)
+      assert.equal(inFlight?.aborted, false)
+      await clock.advance(1)
+      await pending
+      assert.equal(calls, 1)
+      assert.deepEqual(clock.pending, [])
+    } finally { await tracker.stop() }
+  })
+  it('uses v2 polling actions for delivery and respects their stop even if the composite status remains RUNNING', async t => {
+    let rounds = 0
+    const { tracker, clock, calls } = setup(t, async () => {
+      const current = job(100)
+      rounds++
+      return [{ ...current, receipt: { ...current.receipt!, mock: false, billingStatus: 'RECONCILING', receiptVersion: 2,
+        fileStatus: rounds === 1 ? 'download_failed' : 'unavailable',
+        execution: { requestId: 'original', taskId: 'original-task', submissionStatus: 'accepted', generationStatus: 'completed',
+          isFinal: true, observedAt: 0, statusSource: 'upstream', billing: { status: 'unknown', actualCostUsd: null } },
+        clientActions: { submissionFinished: true, generationFinished: true, shouldPoll: rounds === 1,
+          pollPurpose: rounds === 1 ? 'delivery' : 'none', canStartNewRequest: true, canRetryDownload: rounds === 1 } } }]
+    })
+    const running = tracker.start()
+    await flush()
+    assert.deepEqual(clock.pending, [100, 20_000])
+    await clock.advance(100)
+    await running
+    assert.deepEqual(calls, [0, 100])
+    assert.deepEqual(clock.pending, [])
+  })
   for (const status of ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'] as const) {
     for (const billingStatus of ['RESERVED', 'RECONCILING'] as const) {
       it(`continues ${status}/${billingStatus} reconciliation with a null server poll hint`, async t => {
@@ -312,10 +358,16 @@ describe('VideoTracker bounded scope polling', () => {
   })
 
   for (const hint of [50, 100, 2_147_483_648]) {
-    it(`stops instead of shortening hint ${hint} to fit the remaining budget`, async t => {
-      const { tracker, clock, calls } = setup(t, async () => [job(hint)], { budgetMs: 50 })
-      await tracker.start()
+    it(`honors hint ${hint} without consuming the active tracking budget`, async t => {
+      let polls = 0
+      const { tracker, clock, calls } = setup(t, async () => ++polls === 1 ? [job(hint)] : [], { budgetMs: 50 })
+      const running = tracker.start()
+      await flush()
+      await clock.advance(hint - 1)
       assert.deepEqual(calls, [0])
+      await clock.advance(1)
+      await running
+      assert.deepEqual(calls, [0, hint])
       assert.deepEqual(clock.pending, [])
     })
   }
@@ -339,11 +391,16 @@ describe('VideoTracker bounded scope polling', () => {
     assert.deepEqual(clock.pending, [])
   })
 
-  it('stops when a completed recovery has consumed the next polling budget', async t => {
-    const clock = new Clock()
-    const { tracker, calls } = setup(t, async () => { await clock.advance(45); return [job(10)] }, { now: clock.now, delay: clock.delay, budgetMs: 50 })
-    await tracker.start()
-    assert.deepEqual(calls, [0])
+  it('counts recovery work but excludes the advertised interval from its budget', async t => {
+    const { tracker, clock, calls } = setup(t, async signal => { await clock.delay(45, signal!); return [job(10)] }, { budgetMs: 50 })
+    const running = tracker.start()
+    await flush()
+    await clock.advance(45)
+    await clock.advance(10)
+    assert.deepEqual(calls, [0, 55])
+    await clock.advance(5)
+    await running
+    assert.deepEqual(calls, [0, 55])
     assert.deepEqual(clock.pending, [])
   })
 

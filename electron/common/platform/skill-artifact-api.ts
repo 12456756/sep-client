@@ -4,13 +4,11 @@ import { config } from '../config'
 import { logger } from '../logger'
 import { AuthApiError } from './platform-api'
 import { parseRetryAfter, readApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
+import { rateLimitRetryDelay } from '../rate-limit-retry'
 import {
   skillArtifactAvailableSchema, skillArtifactParamsSchema,
   skillArtifactDownloadPath, type AvailableDescriptor,
 } from './skill-artifact-contract'
-
-const MAX_RATE_LIMIT_RETRIES = 3
-const MAX_RETRY_WAIT_MS = 5 * 60_000
 
 export interface SkillArtifactDownloadOptions {
   signal?: AbortSignal
@@ -46,7 +44,6 @@ async function artifactError(response: Response, accessToken: string, options: S
 }
 
 async function fetchArtifact(expected: AvailableDescriptor, accessToken: string, options: SkillArtifactDownloadOptions): Promise<Response> {
-  let waited = 0
   for (let attempt = 0; ; attempt++) {
     options.signal?.throwIfAborted()
     options.assertCurrent?.()
@@ -67,14 +64,13 @@ async function fetchArtifact(expected: AvailableDescriptor, accessToken: string,
     const error = await artifactError(response, accessToken, options)
     options.signal?.throwIfAborted()
     options.assertCurrent?.()
-    const delayMs = retryDelay(response.headers.get('Retry-After'), attempt)
-    if (attempt >= MAX_RATE_LIMIT_RETRIES || !Number.isFinite(delayMs) || waited + delayMs > MAX_RETRY_WAIT_MS) {
+    const delayMs = rateLimitRetryDelay(error.error.diagnostic ?? {}) ?? retryDelay(response.headers.get('Retry-After'), Math.min(attempt, 4))
+    if (!Number.isFinite(delayMs) || !Number.isSafeInteger(delayMs)) {
       throw error
     }
-    waited += delayMs
     logger.child('skill-artifact').warn('skill artifact rate limited; waiting before retry', {
       capabilityId: expected.capabilityId, versionId: expected.versionId,
-      statusCode: 429, retry: attempt + 1, maxRetries: MAX_RATE_LIMIT_RETRIES, delayMs, diagnostic: error.error.diagnostic,
+      statusCode: 429, retry: attempt + 1, delayMs, diagnostic: error.error.diagnostic,
     })
     await waitForRetry(delayMs, options.signal)
   }

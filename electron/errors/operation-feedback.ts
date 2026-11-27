@@ -9,7 +9,7 @@ import { ResultFilePathError } from './result-file-path-error'
 import { transportKind } from '../common/transport-error'
 import { mediaJobFailure } from './media-job-error'
 import { mediaIssueMessage } from '../../src/shared/media-feedback'
-import { VideoRequestError } from './video-request-error'
+import { mediaSubmissionRejected } from '../../src/shared/media-failure'
 import { mediaErrorReason, mediaRecoveryAdvice } from '../../src/shared/media-error-messages'
 export { transportKind } from '../common/transport-error'
 
@@ -199,12 +199,12 @@ export function operationFeedback(error: unknown, operation: FeedbackOperation, 
     const reasons = operationReasons[operation]
     if (typeof reason === 'string' && reasons && Object.hasOwn(reasons, reason)) return { ...base, message: reasons[reason] }
     if ((operation.startsWith('image') || operation.startsWith('video')) &&
-      (error.details?.businessCode || error.details?.gatewayCode || error.details?.source === 'upstream')) {
+      (error.details?.businessCode || error.details?.gatewayCode || error.details?.source === 'upstream' || error.details?.submissionConfirmedNotSent === true)) {
       const kind = operation.startsWith('video') ? 'video' : 'image'
       const failure = mediaJobFailure(error, `${kind}-${operation.endsWith('Generate') ? 'submit' : operation.endsWith('Save') ? 'save' : 'query'}`)
       const message = mediaIssueMessage({ failure, error: error.code,
-        generationStatus: failure.stage.endsWith('-submit') && !(error instanceof VideoRequestError && error.definitelyRejected) ? 'SUBMISSION_UNKNOWN' : 'FAILED',
-        trackingStatus: 'STOPPED', saveStatus: failure.stage.endsWith('-save') ? 'SAVE_FAILED' : 'PENDING' }, kind)
+        generationStatus: failure.stage.endsWith('-submit') && !mediaSubmissionRejected(failure) ? 'SUBMISSION_UNKNOWN' : 'FAILED',
+        trackingStatus: 'STOPPED', saveStatus: failure.stage.endsWith('-save') ? 'SAVE_FAILED' : 'PENDING' }, kind, { diagnostics: false })
       if (message) return { ...base, message }
     }
     if ((operation.startsWith('image') || operation.startsWith('video')) &&

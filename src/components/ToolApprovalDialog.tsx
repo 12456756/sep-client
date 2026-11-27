@@ -155,6 +155,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny, onReviseSchedul
       }
       else onDeny()
     }
+
     const input = z.record(z.string(), z.unknown()).safeParse(request.input)
     const browserHandoff = isBrowserHandoffRequest(request)
     const detectedHandoff = isDetectedBrowserHandoff(request)

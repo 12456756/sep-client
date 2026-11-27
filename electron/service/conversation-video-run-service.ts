@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { VideoRunPort, VideoHostTools } from '../domain/video-tools'
 import type { VideoScope } from '../domain/video-media'
-import { videoDefaultRecoveryExclusions } from '../domain/video-media'
+import { videoDefaultRecoveryExclusions, videoJobGenerationState } from '../domain/video-media'
 import { abortableVideo } from '../data/video-files'
 import { AppError } from '../errors/app-error'
 import { isErrorCode } from '../errors/error-codes'
@@ -19,7 +19,7 @@ interface ConversationVideoRun {
   revision: number
   taskSubscriptionId: string | null | undefined
   controller: AbortController
-  wait: { controller: AbortController; timer?: ReturnType<typeof setTimeout> }
+  wait: { controller: AbortController; timer?: ReturnType<typeof setTimeout>; startedAt?: number; remainingMs: number; cooling: Set<string> }
   jobs: Set<string>
   host: MockVideoHostService
   recovery?: Promise<void>
@@ -40,9 +40,25 @@ export class ConversationVideoRunService implements VideoRunPort {
   private key(taskId: string, runId: string): string { return JSON.stringify([taskId, runId]) }
 
   private startWait(wait: ConversationVideoRun['wait']): void {
-    if (!wait.timer) {
-      wait.timer = setTimeout(() => wait.controller.abort(new Error(RUNTIME_FAILURE_MESSAGES.MEDIA_WAIT_EXPIRED)), this.waitBudgetMs)
+    if (!wait.timer && !wait.cooling.size && !wait.controller.signal.aborted) {
+      wait.startedAt = Date.now()
+      wait.timer = setTimeout(() => wait.controller.abort(new Error(RUNTIME_FAILURE_MESSAGES.MEDIA_WAIT_EXPIRED)), Math.max(1, wait.remainingMs))
       wait.timer.unref()
+    }
+  }
+
+  private recoveryWait(wait: ConversationVideoRun['wait'], jobId: string, operation: string, retryAt?: number): void {
+    const key = JSON.stringify([jobId, operation])
+    if (retryAt !== undefined && retryAt > Date.now()) {
+      if (wait.timer) {
+        clearTimeout(wait.timer)
+        wait.timer = undefined
+        wait.remainingMs = Math.max(0, wait.remainingMs - (Date.now() - (wait.startedAt ?? Date.now())))
+      }
+      wait.cooling.add(key)
+    } else {
+      wait.cooling.delete(key)
+      this.startWait(wait)
     }
   }
 
@@ -58,8 +74,12 @@ export class ConversationVideoRunService implements VideoRunPort {
     const task = await this.options.getTask(input.taskId)
     if (!task || revision !== this.options.authorizationRevision() || !isDeepStrictEqual(owner, requireScope(this.options.scope))) throw new AppError('AUTH_REQUIRED')
     const jobs = new Set<string>()
-    const wait: ConversationVideoRun['wait'] = { controller: new AbortController() }
-    const raw = await this.base.prepareRun({ ...input, onJobCreated: async job => {
+    const wait: ConversationVideoRun['wait'] = { controller: new AbortController(), remainingMs: this.waitBudgetMs, cooling: new Set() }
+    const onRecoveryWait: NonNullable<RunInput['onRecoveryWait']> = (jobId, operation, retryAt) => {
+      input.onRecoveryWait?.(jobId, operation, retryAt)
+      this.recoveryWait(wait, jobId, operation, retryAt)
+    }
+    const raw = await this.base.prepareRun({ ...input, onRecoveryWait, onJobCreated: async job => {
       await input.onJobCreated?.(job)
       for (const id of job.previousUnconfirmedJobIds ?? []) jobs.delete(id)
       jobs.add(job.jobId)
@@ -69,7 +89,7 @@ export class ConversationVideoRunService implements VideoRunPort {
     const scope = { ...owner, subscriptionId: input.subscriptionId }
     const run: ConversationVideoRun = {
       input, scope, revision, taskSubscriptionId: task.subscriptionId, controller: new AbortController(), jobs, wait,
-      host: new MockVideoHostService({ ...this.options, trackingJobIds: jobs,
+      host: new MockVideoHostService({ ...this.options, trackingJobIds: jobs, onRecoveryWait,
         getTask: async taskId => {
           this.validate(run)
           const current = await this.options.getTask(taskId)
@@ -86,9 +106,14 @@ export class ConversationVideoRunService implements VideoRunPort {
       this.validate(run)
       const excluded = videoDefaultRecoveryExclusions(existing)
       for (const job of existing) {
+        if (!input.recoverJobIds && job.runId !== input.runId) continue
         if (input.recoverJobIds ? !input.recoverJobIds.includes(job.jobId) : excluded.has(job.jobId)) continue
-        if (job.submission !== 'NOT_SENT' && (generating.has(job.receipt?.status ?? 'SUBMISSION_UNKNOWN') ||
-          ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.receipt?.status ?? '') && job.saveStatus !== 'SAVED')) jobs.add(job.jobId)
+        if (job.rateLimitRetryAt !== undefined) onRecoveryWait(job.jobId, 'submission', job.rateLimitRetryAt)
+        if (job.queryRateLimit?.automatic) onRecoveryWait(job.jobId, 'query', job.queryRateLimit.retryAt)
+        if (job.downloadRateLimit?.automatic) onRecoveryWait(job.jobId, 'download', job.downloadRateLimit.retryAt)
+        const status = videoJobGenerationState(job)
+        if (job.submission !== 'NOT_SENT' && (generating.has(status) ||
+          ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(status) && job.saveStatus !== 'SAVED')) jobs.add(job.jobId)
       }
     } catch (error) {
       await this.closeRun(this.key(input.taskId, input.runId), run, true)
@@ -156,8 +181,10 @@ export class ConversationVideoRunService implements VideoRunPort {
       const relevant = jobs.filter(job => job.taskId === run.input.taskId && run.jobs.has(job.jobId))
       const denied = relevant.find(job => job.trackingStatus === 'AUTH_REQUIRED')
       if (denied) throw new AppError(denied.error === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED', { cause: original })
-      const pending = relevant.filter(job => job.submission !== 'NOT_SENT' && generating.has(job.receipt?.status ?? 'SUBMISSION_UNKNOWN'))
-      const failedSaves = relevant.filter(job => ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.receipt?.status ?? '') &&
+      const state = videoJobGenerationState
+      const pending = relevant.filter(job => job.submission !== 'NOT_SENT' && (generating.has(state(job)) ||
+        job.receipt?.receiptVersion === 2 && job.receipt.clientActions?.pollPurpose === 'delivery' && job.receipt.clientActions.shouldPoll))
+      const failedSaves = relevant.filter(job => ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(state(job)) &&
         ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
       const now = nowMs()
       const queryAt = Math.min(...pending.filter(job => job.trackingStatus !== 'STOPPED' && job.queryRateLimit?.automatic !== false &&

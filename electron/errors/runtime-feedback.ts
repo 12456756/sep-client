@@ -17,7 +17,9 @@ const legacyFailures: Readonly<Record<string, RuntimeFailureCode>> = {
   '所选模型不可用，请联系平台管理员': 'MODEL_NOT_ALLOWED',
   '工作成果校验未通过，请联系平台管理员': 'DELIVERY_FAILED',
   '当前媒体交付暂不可用，请联系平台管理员': 'MEDIA_UNAVAILABLE',
+  '图片或视频生成未成功完成，请查看原任务的具体原因；原因不明时请联系平台管理员。': 'MEDIA_GENERATION_FAILED',
   '图片或视频下载失败，自动恢复未成功，请联系平台管理员': 'MEDIA_DOWNLOAD_FAILED',
+  '图片或视频任务跟踪已中断，尚未确认生成结果，请恢复原任务跟踪；持续失败请联系平台管理员，勿重复生成。': 'MEDIA_QUERY_UNAVAILABLE',
   '图片或视频已生成，但保存到交付目录失败，请联系平台管理员': 'MEDIA_DELIVERY_FAILED',
   '工作运行结果保存失败，请联系平台管理员': 'STORAGE_FAILED',
   '工作历史会话无法恢复，请联系平台管理员': 'SESSION_UNRECOVERABLE',
@@ -37,7 +39,7 @@ export function runtimeFeedback(error: unknown): RuntimeFailure {
     if (error instanceof ImageDownloadDeferredError) return failure('IMAGE_DOWNLOAD_DEFERRED')
     if (error instanceof ArrangementMediaRecoveryError) {
       const codes: Record<ArrangementMediaRecoveryError['phase'], RuntimeFailureCode> = {
-        submission: 'MEDIA_SUBMISSION_UNKNOWN', 'image-missing-target': 'IMAGE_MISSING_TARGET',
+        submission: 'MEDIA_SUBMISSION_UNKNOWN', 'submission-rejected': 'MEDIA_SUBMISSION_REJECTED', 'image-missing-target': 'IMAGE_MISSING_TARGET',
         query: 'MEDIA_QUERY_UNAVAILABLE', generation: 'MEDIA_GENERATION_FAILED',
         expired: 'MEDIA_RESULT_EXPIRED', download: 'MEDIA_DOWNLOAD_FAILED', copy: 'MEDIA_DELIVERY_FAILED',
       }

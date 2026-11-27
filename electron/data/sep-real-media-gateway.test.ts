@@ -27,6 +27,65 @@ const signal = () => new AbortController().signal
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
 const jsonBudget = 64 * 1024
 const contentBudget = 25 * 1024 * 1024
+it('uses explicit SEP non-submission evidence for every non-2xx class, not a business-code whitelist', async () => {
+  for (const status of [400, 401, 402, 403, 404, 409, 410, 422, 429, 500, 502, 503, 504]) {
+    const { gateway } = create(async () => json({ error: { code: 'NEW_PLATFORM_REJECTION', source: 'platform', requestId: 'sep-rejected',
+      submissionState: 'not_submitted', billingState: 'unknown', message: 'Original rejection detail' } }, status))
+    await assert.rejects(gateway.submit('sub-1', { ...request, quoteId: 'quote-1', clientRequestId: 'request-1' }, signal()), error => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.details?.submissionState, 'not_submitted')
+      assert.equal(error.details?.billingState, 'unknown')
+      assert.equal(error.details?.statusCode, status)
+      assert.equal(error.details?.businessCode, 'NEW_PLATFORM_REJECTION')
+      return true
+    })
+  }
+})
+
+it('never turns query errors or untrusted non-2xx bodies into non-submission proof', async () => {
+  const body = { error: { code: 'INVALID_PARAMETER', source: 'platform', requestId: 'sep-query',
+    submissionState: 'not_submitted', billingState: 'not_reserved' } }
+  const { gateway } = create(async () => json(body, 422))
+  await assert.rejects(gateway.getReceipt('sub-1', 'receipt-1', signal()), error => {
+    assert.ok(error instanceof AppError)
+    assert.equal(error.details?.stage, 'image-query')
+    return true
+  })
+  for (const source of ['upstream', 'provider']) {
+    const f = create(async () => json({ error: { ...body.error, source } }, 422))
+    await assert.rejects(f.gateway.submit('sub-1', { ...request, quoteId: 'q', clientRequestId: 'r' }, signal()), error => {
+      assert.ok(error instanceof AppError)
+      assert.notEqual(error.details?.submissionConfirmedNotSent, true)
+      return true
+    })
+  }
+})
+
+it('proves a credential failure before POST was not submitted without reclassifying GET failures', async () => {
+  const gateway = new SepRealMediaGateway({ baseUrl: 'https://sep.invalid/api', token: async () => { throw new AppError('AUTH_REQUIRED') },
+    fetch: async () => assert.fail('No HTTP request should be sent') })
+  await assert.rejects(gateway.submit('sub-1', { ...request, quoteId: 'q', clientRequestId: 'r' }, signal()), error => {
+    assert.ok(error instanceof AppError); assert.equal(error.details?.submissionState, 'not_submitted'); return true
+  })
+  await assert.rejects(gateway.getReceipt('sub-1', 'receipt-1', signal()), error => {
+    assert.ok(error instanceof AppError); assert.equal(error.details?.submissionState, undefined); return true
+  })
+})
+it('accepts receipt v2 without losing independent execution, delivery and billing evidence', async () => {
+  const value = { ...receipt, executionMode: 'async-query', protocolVersion: 3, semanticHashVersion: 3, specRevision: 1,
+    effectiveSpec: { count: 1 }, acceptance: { status: 'unknown', mismatchedFields: [], unknownFields: [] }, receiptVersion: 2, billingStatus: 'NOT_RESERVED',
+    execution: { requestId: 'upstream-1', taskId: null, submissionStatus: 'protocol_error', generationStatus: null,
+      isFinal: null, observedAt: null, statusSource: null, billing: { status: 'not_charged', actualCostUsd: '0' } },
+    fileStatus: 'unavailable', billingError: { status: 402, body: { message: 'Insufficient funds' } },
+    clientActions: { submissionFinished: true, generationFinished: true, shouldPoll: false, pollPurpose: 'none', canStartNewRequest: true, canRetryDownload: false } }
+  const { gateway } = create(async () => json(value, 202))
+  const result = await gateway.getReceipt('sub-1', 'receipt-1', signal())
+  assert.equal(result.receiptVersion, 2)
+  assert.deepEqual(result.execution, value.execution)
+  assert.deepEqual(result.clientActions, value.clientActions)
+  assert.deepEqual(result.billingError, value.billingError)
+  assert.equal(result.fileStatus, 'unavailable')
+})
 const privateDetail = `${token} https://private.example/storage?credential=private-secret`
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQ2FIBAAJEAU2Vdyv6AAAAAElFTkSuQmCC', 'base64')
 const pngHeaders = { 'Content-Type': 'image/png', 'Content-Length': String(png.length),
@@ -383,6 +442,33 @@ describe('SepRealMediaGateway', () => {
 })
 
 describe('V3 image quotes', () => {
+  it('accepts CNY quotes with null USD while still rejecting invalid monetary values', async () => {
+    const spec = { size: '1024x1024', count: 1, quality: 'high' }
+    const input = { ...request, protocolVersion: 3 as const, parameters: spec, requestedSpec: spec, specRevision: 1 }
+    const quote = { mock: false, protocolVersion: 3, semanticHashVersion: 3, specRevision: 1,
+      profileId: input.profileId, configVersion: input.configVersion, modelId: 'image-model', adapterVersion: 'adapter-v1',
+      amountUsd: null, connectionFingerprint: 'b'.repeat(64), effectiveSpec: spec,
+      billingDimensions: spec, normalizationNotes: [], quoteId: 'quote-cny',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), semanticSha256: 'c'.repeat(64),
+      pricingStatus: 'quoted', amountCny: '1.000000', pricingVersion: 'p1', billingStatus: 'NOT_RESERVED',
+      funding: { creditCny: '1.000000', memberWalletCny: '0.000000', personalCny: '0.000000' } }
+    for (const amountUsd of [null, '0.01']) {
+      const { gateway } = create(async () => json({ ...quote, amountUsd }))
+      const result = await gateway.quote('sub-1', input, signal())
+      assert.equal(result.amount, '1.000000')
+      assert.equal(result.currency, 'CNY')
+      assert.equal(result.quoteId, 'quote-cny')
+      assert.deepEqual(result.effectiveSpec, spec)
+    }
+    for (const invalid of [
+      ...[null, 'unknown', '-1.000000', '1'].map(amountCny => ({ ...quote, amountCny })),
+      ...[undefined, '', 'unknown', '-0.01', 0.01].map(amountUsd => ({ ...quote, amountUsd })),
+    ]) {
+      const { gateway } = create(async () => json(invalid))
+      await assert.rejects(gateway.quote('sub-1', input, signal()), safeError('SERVICE_UNAVAILABLE'))
+    }
+  })
+
   it('transmits free specifications unchanged and rejects a quote that silently changes them', async () => {
     const spec = { width: 1600, height: 2400, quality: 'ultra', count: 7 }
     const input = { ...request, protocolVersion: 3 as const, parameters: spec, requestedSpec: spec,

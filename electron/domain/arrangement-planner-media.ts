@@ -11,13 +11,14 @@ function normalizeOperation(value: unknown): unknown {
     case 'edit': case 'image-to-image': case 'image-edit': return 'edit'
     case 'image-to-video': case 'image_to_video': return 'image-to-video'
     case 'text-to-video': case 'text_to_video': return 'text-to-video'
+    case 'video-to-video': case 'video_to_video': return 'video-to-video'
     default: return value
   }
 }
 
 function operationKind(operation: unknown): 'image' | 'video' | undefined {
   if (operation === 'generate' || operation === 'edit') return 'image'
-  if (operation === 'image-to-video' || operation === 'text-to-video') return 'video'
+  if (operation === 'image-to-video' || operation === 'text-to-video' || operation === 'video-to-video') return 'video'
   return undefined
 }
 

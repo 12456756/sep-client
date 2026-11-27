@@ -6,9 +6,10 @@ const TIMEOUT_MS = 5000
 // Diagnostic envelopes add layers around the provider's own nested body.
 const MAX_DIAGNOSTIC_DEPTH = 16
 const HEADERS = new Set([
-  'content-type', 'content-length', 'retry-after', 'x-request-id', 'x-sep-error-source',
+  'content-type', 'content-length', 'retry-after', 'retry-after-auth', 'retry-after-chat', 'retry-after-ms', 'x-request-id', 'x-sep-error-source',
   'x-compute-status', 'x-compute-request-id', 'x-client-request-id', 'x-upstream-request-id',
-  'x-video-dispatch', 'x-data-degraded', 'x-sep-execution-id', 'x-sha256', 'x-sep-media-mock',
+  'x-sep-receipt-id', 'x-sep-client-request-id',
+  'x-video-dispatch', 'x-data-degraded', 'x-sep-execution-id', 'x-sha256', 'x-sep-media-mock', 'x-should-retry',
 ])
 
 function safeText(value: string): string {
@@ -150,7 +151,8 @@ export async function readApiDiagnostic(response: Response, operation?: string,
     retryable: nested.retryable ?? top.retryable, recovery: nested.recovery ?? top.recovery,
     sepRequestId: response.headers.get('x-request-id') ?? top.sepRequestId ?? top.requestId ?? nested.requestId,
     computeRequestId: response.headers.get('x-compute-request-id') ?? undefined,
-    clientRequestId: response.headers.get('x-client-request-id') ?? undefined,
+    sepReceiptId: response.headers.get('x-sep-receipt-id') ?? undefined,
+    clientRequestId: response.headers.get('x-sep-client-request-id') ?? response.headers.get('x-client-request-id') ?? undefined,
     upstreamRequestId: response.headers.get('x-upstream-request-id') ?? undefined,
     executionId: response.headers.get('x-sep-execution-id') ?? undefined,
     computeStatus: computeStatus >= 100 && computeStatus <= 599 ? computeStatus : undefined,

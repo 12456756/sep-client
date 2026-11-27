@@ -26,6 +26,22 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe('platform HTTP error preservation', () => {
+  it('waits after a code-less HTTP 429 and reuses the original write and idempotency key', async () => {
+    const bodies: string[] = []
+    const times: number[] = []
+    globalThis.fetch = async (_url, init) => {
+      times.push(Date.now())
+      bodies.push(String(init?.body))
+      assert.equal(new Headers(init?.headers).get('Idempotency-Key'), 'original-key-12345')
+      if (times.length === 1) return new Response(JSON.stringify({ statusCode: 429, message: '请求过于频繁，请稍后重试' }),
+        { status: 429, headers: { 'Retry-After': '0.05', 'X-Request-ID': 'sep-limit' } })
+      return response({ ...version, content: 'text' }, 201)
+    }
+    await api.createPersonalSkillVersion({ capabilityId: 'cap-1', parentVersionId: 'published-1', content: 'text' }, 'original-key-12345', 'access')
+    assert.equal(times.length, 2)
+    assert.ok(times[1] - times[0] >= 50)
+    assert.equal(bodies[0], bodies[1])
+  })
   it('removes already known credentials even from unlabeled diagnostic fields', async () => {
     const calls: Array<[string, (secret: string) => Promise<unknown>]> = [
       ['opaque-desktop-access', secret => api.getSubscriptions(secret)],
@@ -570,7 +586,7 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.equal((await api.reviewSkillVersion('psv_opaque', { decision: 'APPROVE' }, 'access')).status, 'ENTERPRISE_APPROVED')
   })
 
-  for (const status of [400, 401, 403, 404, 409, 429, 500]) {
+  for (const status of [400, 401, 403, 404, 409, 500]) {
     it(`retains the platform ${status} error and does not retry writes automatically`, async () => {
       const logs: LogRecord[] = []
       restoreLogSink = setLogSink(record => logs.push(record))

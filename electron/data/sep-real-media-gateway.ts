@@ -12,6 +12,9 @@ import { mediaUpstreamErrorSchema } from '../../src/shared/media-upstream-error'
 import { safeMediaUpstreamError, safeMediaUpstreamMessage } from '../common/media-upstream-error'
 import { readApiDiagnostic, transportApiDiagnostic } from '../common/platform/api-diagnostic'
 import { AuthApiError } from '../common/platform/platform-api'
+import { mediaExecutionFields, refineMediaExecution } from '../../src/shared/media-execution'
+import { safeMediaExecutionFields } from '../common/media-execution'
+import { mediaSubmissionEvidence } from '../common/platform/media-submission-evidence'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const v3ProfileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
@@ -41,16 +44,17 @@ const quoteBaseSchema = z.object({ mock: z.literal(false), quoteId: id, expiresA
   funding: z.object({ creditCny: money, memberWalletCny: money, personalCny: money }).strict() }).strict()
 const quoteV3Schema = quoteBaseSchema.extend({ protocolVersion: z.literal(3), semanticHashVersion: z.literal(3), specRevision: z.number().int().positive(),
   profileId: v3ProfileId, configVersion: v3ConfigVersion, modelId: z.string().min(1).max(160), adapterVersion: z.string().min(1).max(128),
-  amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/), connectionFingerprint: z.string().regex(/^[a-f0-9]{64}$/), effectiveSpec: imageSepSpecSchema,
+  amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable(), connectionFingerprint: z.string().regex(/^[a-f0-9]{64}$/), effectiveSpec: imageSepSpecSchema,
   billingDimensions: z.object({ size: z.string().min(1).max(128), count: z.number().int().positive(), quality: z.string().min(1).max(128) }).strict(),
   normalizationNotes: z.array(z.string().min(1).max(240)).max(16) }).strict()
 const legacyReceiptSchema = z.object({ mock: z.literal(false), receiptId: id, clientRequestId: id, profileId: id, configVersion: id,
+  ...mediaExecutionFields,
   upstreamError: mediaUpstreamErrorSchema.optional(),
   executionMode: z.literal('sync-response'), status: z.enum(['SUBMITTING','QUEUED','RUNNING','SUBMISSION_UNKNOWN','SUCCEEDED','PARTIAL_SUCCEEDED','FAILED','CANCELLED','RESULT_EXPIRED']),
     pollAfterMs: z.number().int().nonnegative().nullable(), outputs: z.array(z.object({ outputId: id, kind: z.literal('image'), mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
     byteLength: z.number().int().positive().max(25 * 1024 * 1024), width: z.number().int().positive(), height: z.number().int().positive(),
     sha256: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: date.nullable() }).strict()).max(4),
-  billingStatus: z.enum(['RESERVED','SETTLED','RELEASED','RECONCILING']), errorCode: z.string().nullable(),
+  billingStatus: z.enum(['NOT_RESERVED','RESERVED','SETTLED','RELEASED','RECONCILING']), errorCode: z.string().nullable(),
   outputErrors: z.array(z.object({ index: z.number().int().min(0).max(3), code: z.string() }).strict()).max(4),
   recovery: z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict() }).strict()
 const receiptV3Schema = legacyReceiptSchema.extend({ profileId: v3ProfileId, configVersion: v3ConfigVersion, executionMode: z.enum(['sync-response', 'async-query']),
@@ -58,7 +62,7 @@ const receiptV3Schema = legacyReceiptSchema.extend({ profileId: v3ProfileId, con
   outputErrors: z.array(z.object({ index: z.number().int().nonnegative(), code: z.string() }).strict()).max(32),
   protocolVersion: z.literal(3), semanticHashVersion: z.literal(3), specRevision: z.number().int().positive(),
   effectiveSpec: imageSepSpecSchema, actualSpec: imageSepSpecSchema.optional(), acceptance: acceptanceSchema })
-const receiptSchema = z.union([receiptV3Schema, legacyReceiptSchema])
+const receiptSchema = z.union([receiptV3Schema, legacyReceiptSchema]).superRefine(refineMediaExecution)
 const MAX_JSON = 64 * 1024
 const MIN_OUTPUT_METADATA_BYTES = Buffer.byteLength(JSON.stringify({ outputId: 'x', kind: 'image', mimeType: 'image/png',
   byteLength: 1, width: 1, height: 1, sha256: '0'.repeat(64), expiresAt: null }), 'utf8') + 1
@@ -145,8 +149,19 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
 
   async submit(subscriptionId: string, request: MediaRequest, signal: AbortSignal) {
-    if (request.protocolVersion === 3) this.validateV3Spec(request.requestedSpec, 'image-submit')
-    return this.normalReceipt(await this.json(subscriptionId, '/requests', 'POST', { ...this.body(request), clientRequestId: request.clientRequestId,
+    let body: ReturnType<SepRealMediaGateway['body']>
+    try {
+      this.safeId(subscriptionId)
+      signal.throwIfAborted()
+      if (request.protocolVersion === 3) this.validateV3Spec(request.requestedSpec, 'image-submit')
+      body = this.body(request)
+    }
+    catch (error) {
+      throw new AppError(error instanceof AppError ? error.code : 'INVALID_ARGUMENT', { ...(error instanceof AppError ? { message: error.userMessage } : {}),
+        cause: error, details: { ...(error instanceof AppError ? error.details : {}),
+        stage: 'image-submit', submissionState: 'not_submitted', billingState: 'not_reserved', submissionConfirmedNotSent: true } })
+    }
+    return this.normalReceipt(await this.json(subscriptionId, '/requests', 'POST', { ...body, clientRequestId: request.clientRequestId,
       quoteId: request.quoteId }, receiptSchema, signal))
   }
 
@@ -242,7 +257,7 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
   private safeId(value: string) { const parsed = id.safeParse(value); if (!parsed.success) throw new AppError('INVALID_ARGUMENT'); return parsed.data }
   private normalReceipt(value: z.infer<typeof receiptSchema>) {
-    return { receiptId: value.receiptId, clientRequestId: value.clientRequestId, profileId: value.profileId, configVersion: value.configVersion,
+    return { ...safeMediaExecutionFields(value), receiptId: value.receiptId, clientRequestId: value.clientRequestId, profileId: value.profileId, configVersion: value.configVersion,
       status: value.status, ...('actualSpec' in value && value.actualSpec ? { actualSpec: value.actualSpec } : {}), pollAfterMs: value.pollAfterMs, outputs: value.outputs.map(output => ({ outputId: output.outputId, mime: output.mimeType,
         size: output.byteLength, width: output.width, height: output.height, sha256: output.sha256, expiresAt: output.expiresAt ? Date.parse(output.expiresAt) : null })),
       billingStatus: value.billingStatus, recovery: value.recovery, errorCode: value.errorCode, outputErrors: value.outputErrors,
@@ -276,6 +291,11 @@ export class SepRealMediaGateway implements MediaGatewayPort {
       const parsed = schema.safeParse(data)
       if (!parsed.success) throw new Error()
       verified = true
+      if (parsed.data && typeof parsed.data === 'object' && 'receiptVersion' in parsed.data) {
+        const receipt = receiptSchema.parse(parsed.data)
+        return { ...parsed.data, ...safeMediaExecutionFields(receipt, [token]),
+          ...(receipt.upstreamError ? { upstreamError: safeMediaUpstreamError(receipt.upstreamError, [token]) } : {}) }
+      }
       if (parsed.data && typeof parsed.data === 'object' && 'upstreamError' in parsed.data && parsed.data.upstreamError) {
         return { ...parsed.data, upstreamError: safeMediaUpstreamError(parsed.data.upstreamError, [token]) }
       }
@@ -314,10 +334,14 @@ export class SepRealMediaGateway implements MediaGatewayPort {
     const requestId = headerId ?? bodyId
     const validId = typeof requestId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(requestId) && (bodyId === undefined || bodyId === requestId)
     const upstreamMessage = upstream ? safeMediaUpstreamMessage(payload) : undefined
-    return new AppError(mapped, { message, diagnostic, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', statusCode: status, ...(validId ? { requestId } : {}), ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}), ...(metadata.success ? metadata.data : {}), ...(upstream ? { source: 'upstream', ...(upstreamMessage ? { upstreamMessage } : {}) } : {}) } })
+    const evidence = stage === 'image-submit' ? mediaSubmissionEvidence(diagnostic) : {}
+    const publicMetadata = metadata.success ? metadata.data : {}
+    return new AppError(mapped, { message, diagnostic, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', statusCode: status, ...(validId ? { requestId } : {}), ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}), ...publicMetadata, ...evidence,
+      ...(evidence.submissionState ? { submissionConfirmedNotSent: true } : {}), ...(upstream ? { source: 'upstream', ...(upstreamMessage ? { upstreamMessage } : {}) } : {}) } })
   }
   private async request(subscriptionId: string, path: string, method: 'GET'|'POST', body: unknown, signal: AbortSignal) {
     this.safeId(subscriptionId); signal.throwIfAborted()
+    const notSent = path === '/requests' && method === 'POST' ? { submissionState: 'not_submitted', billingState: 'not_reserved', submissionConfirmedNotSent: true } : {}
     let token: string
     try {
       token = await this.options.token(subscriptionId, signal)
@@ -326,13 +350,13 @@ export class SepRealMediaGateway implements MediaGatewayPort {
         const code = error.isUnauthorized ? 'AUTH_REQUIRED' : error.isForbidden ? 'PERMISSION_DENIED'
           : error.statusCode === 429 ? 'RATE_LIMITED' : error.isNetworkError ? 'NETWORK_ERROR' : 'SERVICE_UNAVAILABLE'
         throw new AppError(code, { cause: error, diagnostic: error.error.diagnostic,
-          details: { stage: 'image-authorization', source: error.error.diagnostic?.source === 'upstream' ? 'upstream' : 'authorization' } })
+          details: { stage: 'image-authorization', source: error.error.diagnostic?.source === 'upstream' ? 'upstream' : 'authorization', ...notSent } })
       }
       if (error instanceof AppError) throw new AppError(error.code, { message: error.userMessage, cause: error,
-        diagnostic: error.diagnostic, details: { ...error.details, stage: 'image-authorization', source: error.diagnostic?.source === 'upstream' ? 'upstream' : 'authorization' } })
-      throw new AppError(signal.aborted ? 'INVALID_STATE' : 'AUTH_REQUIRED', { cause: error, details: { stage: 'image-authorization', source: 'authorization' } })
+        diagnostic: error.diagnostic, details: { ...error.details, stage: 'image-authorization', source: error.diagnostic?.source === 'upstream' ? 'upstream' : 'authorization', ...notSent } })
+      throw new AppError(signal.aborted ? 'INVALID_STATE' : 'AUTH_REQUIRED', { cause: error, details: { stage: 'image-authorization', source: 'authorization', ...notSent } })
     }
-    if (typeof token !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new AppError('AUTH_REQUIRED', { details: { stage: 'image-authorization', source: 'authorization' } })
+    if (typeof token !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new AppError('AUTH_REQUIRED', { details: { stage: 'image-authorization', source: 'authorization', ...notSent } })
     try {
       const multipart = body instanceof FormData
       const response = await this.fetcher(`${this.root}${path}`, { method, signal, redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer',

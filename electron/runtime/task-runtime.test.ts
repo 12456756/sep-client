@@ -148,7 +148,7 @@ describe('TaskRuntime media lifecycle', () => {
     } finally { finishPreparation(undefined); await runtime.stopAll() }
   })
 
-  it('does not mark a run completed when media delivery fails', async () => {
+  it('does not mark a run completed or stop original media tracking when delivery fails', async () => {
     const { manager, task, employee } = await fixture()
     let stopped = false
     const runtime = new TaskRuntime({
@@ -160,7 +160,7 @@ describe('TaskRuntime media lifecycle', () => {
     await runtime.executeTask(task.id)
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal((await manager.getTask(task.id))?.status, TaskStatus.FAILED)
-    assert.equal(stopped, true)
+    assert.equal(stopped, false)
     await runtime.stopAll()
   })
 })
@@ -262,7 +262,7 @@ describe('TaskRuntime video lifecycle', () => {
     } finally { finishPreparation(undefined); await runtime.stopAll() }
   })
 
-  it('does not mark a run completed when video delivery fails', async () => {
+  it('does not mark a run completed or stop original video tracking when delivery fails', async () => {
     const { manager, task, employee } = await fixture()
     let stopped = false
     const runtime = new TaskRuntime({
@@ -274,7 +274,7 @@ describe('TaskRuntime video lifecycle', () => {
     await runtime.executeTask(task.id)
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal((await manager.getTask(task.id))?.status, TaskStatus.FAILED)
-    assert.equal(stopped, true)
+    assert.equal(stopped, false)
     await runtime.stopAll()
   })
 })
@@ -306,7 +306,7 @@ for (const kind of ['image cooldown', 'video wait expiry'] as const) {
       assert.ok(runId)
       assert.equal(finished, runId)
       assert.equal((await manager.getTask(task.id))?.status, TaskStatus.FAILED)
-      assert.deepEqual(stopped, image ? ['video'] : [])
+      assert.deepEqual(stopped, [])
     } finally { await runtime.stopAll() }
   })
 }

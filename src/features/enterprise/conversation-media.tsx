@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MediaAssetView, MediaTaskView } from '../../shared/media'
 import type { VideoTaskView } from '../../shared/video-host'
 import { savedConversationVideos, type ConversationResult } from './conversation-results'
@@ -38,10 +38,13 @@ export function useConversationMedia(taskId: string, scopeKey: string) {
   const [videos, setVideos] = useState<VideoTaskView | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
+  const identity = useRef('')
   useEffect(() => {
     let active = true
     let timer: ReturnType<typeof setTimeout> | undefined
-    setImages(null); setVideos(null); setError(null)
+    const nextIdentity = JSON.stringify([taskId, scopeKey])
+    if (identity.current !== nextIdentity) { setImages(null); setVideos(null); identity.current = nextIdentity }
+    setError(null)
     const refresh = async () => {
       const results = await Promise.allSettled([
         Promise.resolve().then(() => window.electronAPI.getTaskMedia(taskId)), Promise.resolve().then(() => window.electronAPI.getTaskVideo(taskId)),
@@ -60,5 +63,5 @@ export function useConversationMedia(taskId: string, scopeKey: string) {
     const imageResults = images ? savedConversationImages(taskId, images) : []
     return [...imageResults, ...(videos ? savedConversationVideos(taskId, videos) : [])]
   }, [taskId, images, videos])
-  return { results, error, retry: () => setAttempt(value => value + 1) }
+  return { results, videos, error, retry: () => setAttempt(value => value + 1) }
 }

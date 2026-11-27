@@ -16,7 +16,7 @@ interface Options {
   isBusy?(taskId: string): boolean
   start(taskId: string, entry: ConversationQueueEntry, signal: AbortSignal): Promise<void>
   retry(taskId: string, signal: AbortSignal): Promise<void>
-  assertReplayAllowed?(owner: TaskOwnerScope, task: ClientTask): Promise<void>
+  assertReplayAllowed?(owner: TaskOwnerScope, task: ClientTask, runId?: string | null): Promise<void>
   interruptCurrent?(taskId: string, runId: string): Promise<void>
   startInitial?(taskId: string, signal: AbortSignal, fullFileAccess?: boolean): Promise<void>
   onInitialFailure?(taskId: string, error: unknown, scope: TaskOwnerScope, signal: AbortSignal): Promise<void>
@@ -236,7 +236,7 @@ export class ConversationQueueService {
       const retryOriginal = !skipped && !unstarted && !failed && (['failed', 'interrupted'].includes(task.status) || task.executionHealth === 'start-failed'
         || options.retryOriginal && !record.entries.some(item => item.status === 'waiting'))
       if (failed || retryOriginal) {
-        await this.options.assertReplayAllowed?.(record.owner, task)
+        await this.options.assertReplayAllowed?.(record.owner, task, failed?.runId ?? task.lastRunId)
         assert()
       }
       if (failed?.recoveryConfirmationRequired) {

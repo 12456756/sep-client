@@ -14,6 +14,7 @@ export const apiDiagnosticSchema = z.object({
   recovery: z.json().optional(),
   body: z.json().optional(),
   sepRequestId: text.optional(),
+  sepReceiptId: text.optional(),
   computeRequestId: text.optional(),
   clientRequestId: text.optional(),
   upstreamRequestId: text.optional(),

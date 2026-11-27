@@ -2,6 +2,7 @@ import type { ImageRequestedSpec, MediaParameterSources } from './media-spec-con
 import type { MediaUpstreamError } from './media-upstream-error'
 import type { MediaFailure } from './media-failure'
 import type { SepRuntimeV3ProfileMetadata } from './sep-runtime-v3-contract'
+import type { MediaExecutionFields } from './media-execution'
 export type ImageMime = 'image/png' | 'image/jpeg' | 'image/webp'
 export type MediaOperation = 'generate' | 'edit'
 export type MediaToolName = 'media_get_capabilities' | 'media_generate_image' | 'media_get_job' | 'media_cancel_job'
@@ -62,7 +63,9 @@ export interface MediaAssetView {
   status: MediaSaveStatus
 }
 
-export interface MediaJobView {
+export interface MediaJobView extends MediaExecutionFields {
+  rateLimitRetryAt?: number
+  platformStatus?: MediaGenerationStatus
   jobId: string
   taskId: string
   runId: string

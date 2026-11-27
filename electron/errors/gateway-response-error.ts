@@ -19,16 +19,18 @@ function gatewaySpecificCode(diagnostic: ApiDiagnostic): RuntimeFailureCode | un
 
 export function gatewayDisallowsRetry(diagnostic: ApiDiagnostic): boolean {
   const code = gatewaySpecificCode(diagnostic)
-  return diagnostic.retryable === false || code === 'MODEL_QUOTA_EXCEEDED' || code === 'MODEL_INSUFFICIENT_FUNDS' || code === 'MODEL_PROVIDER_AUTH_FAILED'
+  return diagnostic.retryable === false || diagnostic.code === 'GATEWAY_AUTH_RATE_LIMIT_EXCEEDED'
+    || code === 'MODEL_QUOTA_EXCEEDED' || code === 'MODEL_INSUFFICIENT_FUNDS' || code === 'MODEL_PROVIDER_AUTH_FAILED'
 }
 
 export function gatewayFailureMessage(diagnostic: ApiDiagnostic): string {
+  if (diagnostic.code === 'GATEWAY_AUTH_RATE_LIMIT_EXCEEDED') return '雇佣令牌认证失败次数过多，请恢复有效授权后再试。'
   const specific = gatewaySpecificCode(diagnostic)
   if (specific) return RUNTIME_FAILURE_MESSAGES[specific]
   const status = diagnostic.httpStatus
   if (status === 401 && diagnostic.source !== 'upstream') return RUNTIME_FAILURE_MESSAGES.AUTH_REQUIRED
   if (status === 403) return RUNTIME_FAILURE_MESSAGES.REQUEST_DENIED
-  if (status === 429) return RUNTIME_FAILURE_MESSAGES.RATE_LIMITED
+  if (status === 429 || diagnostic.computeStatus === 429) return RUNTIME_FAILURE_MESSAGES.RATE_LIMITED
   if (status === 408 || status === 504) return RUNTIME_FAILURE_MESSAGES.MODEL_TIMEOUT
   return RUNTIME_FAILURE_MESSAGES.SERVICE_UNAVAILABLE
 }

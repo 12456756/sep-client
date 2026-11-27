@@ -19,6 +19,8 @@ const taskId = 'task-a'
 const jobId = 'job-a'
 const outputId = 'output-a'
 const channels = [
+  INVOKE_CHANNELS.VIDEO_IMPORT_VIDEO_REFERENCES, INVOKE_CHANNELS.VIDEO_UPLOAD_VIDEO_REFERENCE,
+  INVOKE_CHANNELS.VIDEO_CANCEL_REFERENCE_UPLOAD, INVOKE_CHANNELS.VIDEO_REMOVE_VIDEO_REFERENCE,
   INVOKE_CHANNELS.VIDEO_GET_TASK, INVOKE_CHANNELS.VIDEO_GET_REFERENCES, INVOKE_CHANNELS.VIDEO_IMPORT_REFERENCES,
   INVOKE_CHANNELS.VIDEO_GENERATE, INVOKE_CHANNELS.VIDEO_PREVIEW, INVOKE_CHANNELS.VIDEO_EXPORT,
   INVOKE_CHANNELS.VIDEO_RESUME, INVOKE_CHANNELS.VIDEO_RETRY_SAVE,
@@ -65,6 +67,7 @@ function harness(options: {
   let openCalls = 0
   let saveCalls = 0
   const selection = {
+    importVideos: async (...args: unknown[]) => { calls.push({ method: 'importVideos', args }); return ['video-a'] },
     import: async (...args: unknown[]) => { importCalls++; calls.push({ method: 'import', args }); return ['asset-a'] },
     export: async (...args: unknown[]) => { exportCalls++; calls.push({ method: 'export', args }) },
   }
@@ -151,6 +154,10 @@ describe('video IPC contract', () => {
       [INVOKE_CHANNELS.VIDEO_GET_TASK, '../task'],
       [INVOKE_CHANNELS.VIDEO_GET_REFERENCES, '/private/task'],
       [INVOKE_CHANNELS.VIDEO_IMPORT_REFERENCES, { taskId, path: '/private/reference.png' }],
+      [INVOKE_CHANNELS.VIDEO_IMPORT_VIDEO_REFERENCES, { taskId, profileId: 'profile', paths: ['/private/video.mp4'] }],
+      [INVOKE_CHANNELS.VIDEO_UPLOAD_VIDEO_REFERENCE, { taskId, profileId: 'profile', localAssetId: '../video' }],
+      [INVOKE_CHANNELS.VIDEO_CANCEL_REFERENCE_UPLOAD, { taskId, localAssetId: 'remote-id' }],
+      [INVOKE_CHANNELS.VIDEO_REMOVE_VIDEO_REFERENCE, { taskId, localAssetId: '../video' }],
       [INVOKE_CHANNELS.VIDEO_GENERATE, { taskId, input: { ...generation, localAssetIds: ['../remote-ref'] } }],
       [INVOKE_CHANNELS.VIDEO_GENERATE, { taskId, input: { ...generation, referenceIds: ['remote-ref'] } }],
       [INVOKE_CHANNELS.VIDEO_GENERATE, { taskId, input: { ...generation, ...{ path: '/private/x' } } }],
@@ -228,7 +235,7 @@ describe('video IPC contract', () => {
       assert.deepEqual(await exporting.invoke(INVOKE_CHANNELS.VIDEO_EXPORT, { taskId, jobId, outputId }), { success: true, cancelled: false })
       assert.deepEqual(exporting.calls.map(call => call.method), ['nativeSelection', 'outputInfo', 'showSaveDialog', 'export'])
       const dialogArgs = exporting.calls[2].args[1] as { defaultPath: string; filters: Array<{ extensions: string[] }> }
-      assert.equal(dialogArgs.defaultPath, `${outputId}.${extension}`)
+      assert.equal(dialogArgs.defaultPath, `视频.${extension}`)
       assert.deepEqual(dialogArgs.filters[0].extensions, [extension])
       assert.deepEqual(exporting.calls[3].args, [jobId, outputId, `/native/export.${extension}`])
     }
@@ -240,6 +247,13 @@ describe('video IPC contract', () => {
     const dialogCall = importing.calls.find(call => call.method === 'showOpenDialog')
     assert.deepEqual((dialogCall?.args[1] as { filters?: Array<{ extensions?: string[] }> }).filters?.[0]?.extensions,
       ['png', 'jpg', 'jpeg', 'webp'])
+  })
+  it('selects MP4 and MOV with the native dialog and retains selected profile and order', async () => {
+    const test = harness({ open: { canceled: false, filePaths: ['/native/b.mov', '/native/a.mp4'] } })
+    assert.deepEqual(await test.invoke(INVOKE_CHANNELS.VIDEO_IMPORT_VIDEO_REFERENCES, { taskId, profileId: 'video-profile' }), { success: true, data: ['video-a'] })
+    const dialogCall = test.calls.find(call => call.method === 'showOpenDialog')
+    assert.deepEqual((dialogCall?.args[1] as { filters: { extensions: string[] }[] }).filters[0].extensions, ['mp4', 'mov'])
+    assert.deepEqual(test.calls.at(-1)?.args, [['/native/b.mov', '/native/a.mp4'], 'video-profile'])
   })
 
   it('returns mapped plain IPC errors without authenticated flags or host details', async () => {

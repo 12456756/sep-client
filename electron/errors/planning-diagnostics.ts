@@ -59,7 +59,7 @@ function contractExpectation(issue: { path: readonly PropertyKey[]; code: string
   if (issue.code === 'too_big') return `字段长度、数组项数或数值不能超过 ${String(issue.maximum ?? '系统协议上限')}。`
   const fields: Record<string, string> = {
     kind: 'kind 必须与场景及 operation 一致；媒体需求只使用 image 或 video。',
-    operation: 'operation 只能是 generate、edit、image-to-video、text-to-video，必须与媒体类型一致。',
+    operation: 'operation 只能是 generate、edit、image-to-video、text-to-video、video-to-video，必须与媒体类型一致。',
     source: 'source 只能是 workspace、media-output、either；AI 生成媒体交付物必须使用 media-output。',
     inputFrom: 'inputFrom 是单个对象，填写真实 artifactId 或前置 nodeId 与 deliverableId；绑定用户图片按系统附件规则处理，不得编造资产。',
     inputSelection: 'inputSelection 只能是 single、any、all、model、user；无输入时省略。',

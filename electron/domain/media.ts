@@ -5,6 +5,7 @@ import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtim
 import type { MediaUpstreamError } from '../../src/shared/media-upstream-error'
 import { isImageMissingTargetRejection, type MediaFailure } from '../../src/shared/media-failure'
 import type { MediaDiagnosticErrors } from './arrangement-diagnostic'
+import type { MediaExecutionFields } from '../../src/shared/media-execution'
 export type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaJobView, MediaProfile } from '../../src/shared/media'
 
 export interface MediaOutput {
@@ -17,7 +18,7 @@ export interface MediaOutput {
   expiresAt: number | null
 }
 
-export interface MediaReceipt {
+export interface MediaReceipt extends MediaExecutionFields {
   receiptId: string
   clientRequestId: string
   profileId: string
@@ -88,7 +89,10 @@ export interface LocalMediaAsset extends MediaAssetView {
   derivedFrom?: { localAssetId: string; jobId: string; outputId: string; sha256: string }
 }
 
-export interface LocalMediaJob {
+export interface LocalMediaJob extends MediaExecutionFields {
+  rateLimitRetryAt?: number
+  recoveryReceiptId?: string
+  platformStatus?: MediaGenerationStatus
   version: 1
   owner: TaskOwnerScope
   jobId: string
@@ -146,7 +150,7 @@ export interface MediaRunSnapshot {
 
 export function missingImageTargetFailure(job: LocalMediaJob): MediaFailure | undefined {
   // Older jobs may have saved the rejection separately before an unsuccessful query.
-  if (job.submission !== 'MAYBE_SENT' || job.receiptId || !['FAILED', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)) return undefined
+  if (job.submission !== 'MAYBE_SENT' || job.receiptId || job.recoveryReceiptId || !['FAILED', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)) return undefined
   return [job.failure, job.submissionFailure].find(isImageMissingTargetRejection)
 }
 

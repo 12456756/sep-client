@@ -5,7 +5,13 @@ import { mediaRateLimit } from '../errors/media-rate-limit'
 
 export type VideoTrackingSelection = (job: LocalVideoJob) => { query: boolean; download: boolean }
 
+import { mediaReceiptNeedsPoll } from '../../src/shared/media-execution'
+import { MEDIA_RECOVERY_DEFAULTS, mediaRecoveryDelay } from '../common/media-recovery'
+import { waitForRetry } from '../common/rate-limit-retry'
+
 export interface VideoTrackerPort {
+  hasRateLimitWait?(): Promise<boolean>
+  recoveredFromRateLimitAt?(): number
   recover(signal: AbortSignal, select: VideoTrackingSelection): Promise<LocalVideoJob[]>
 }
 
@@ -30,19 +36,12 @@ function positive(value: number, name: string, maximum = MAX_TIMER_MS): number {
   return value
 }
 
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    signal.throwIfAborted()
-    const aborted = (): void => { clearTimeout(timer); signal.removeEventListener('abort', aborted); reject(signal.reason) }
-    const timer = setTimeout(() => { signal.removeEventListener('abort', aborted); resolve() }, ms)
-    signal.addEventListener('abort', aborted, { once: true })
-  })
-}
-
 function queryable(job: LocalVideoJob, initial: boolean): boolean {
   if (job.submission === 'NOT_SENT') return false
   if ((!initial && job.trackingStatus === 'STOPPED') || job.queryRateLimit?.automatic === false) return false
   if (!job.receipt) return true
+  const shouldPoll = mediaReceiptNeedsPoll(job.receipt)
+  if (shouldPoll !== undefined) return shouldPoll && job.receipt.recovery.canQuery
   const billingPending = !job.receipt.mock && videoBillingPending(job.receipt.billingStatus)
   return (!terminal.has(job.receipt.status) || billingPending) && job.receipt.recovery.canQuery && (initial || job.receipt.pollAfterMs !== null || billingPending)
 }
@@ -67,13 +66,13 @@ export class VideoTracker {
 
   constructor(options: VideoTrackerOptions) {
     this.service = options.service
-    this.floorMs = positive(options.floorMs ?? 1000, 'floorMs')
-    this.maxDelayMs = positive(options.maxDelayMs ?? 30_000, 'maxDelayMs')
-    this.maxAttempts = positive(options.maxAttempts ?? 120, 'maxAttempts', Number.MAX_SAFE_INTEGER)
-    this.budgetMs = positive(options.budgetMs ?? 30 * 60_000, 'budgetMs')
+    this.floorMs = positive(options.floorMs ?? MEDIA_RECOVERY_DEFAULTS.floorMs, 'floorMs')
+    this.maxDelayMs = positive(options.maxDelayMs ?? MEDIA_RECOVERY_DEFAULTS.maxDelayMs, 'maxDelayMs')
+    this.maxAttempts = positive(options.maxAttempts ?? MEDIA_RECOVERY_DEFAULTS.maxAttempts, 'maxAttempts', Number.MAX_SAFE_INTEGER)
+    this.budgetMs = positive(options.budgetMs ?? MEDIA_RECOVERY_DEFAULTS.budgetMs, 'budgetMs')
     if (this.maxDelayMs < this.floorMs) throw new RangeError('Video tracker maxDelayMs is below floorMs.')
     this.now = options.now ?? Date.now
-    this.delay = options.delay ?? delay
+    this.delay = options.delay ?? waitForRetry
   }
 
   /** Idempotent startup; resolves when idle, paused, bounded or stopped. */
@@ -117,8 +116,27 @@ export class VideoTracker {
   private async run(controller: AbortController): Promise<void> {
     const { signal } = controller
     if (signal.aborted) return
-    const startedAt = this.now()
-    const deadline = this.delay(this.budgetMs, signal).then(() => controller.abort(), error => {
+    let startedAt = this.now()
+    let pollWaitingUntil: number | undefined
+    let budgetChanged = new AbortController()
+    const deadline = (async () => {
+      for (;;) {
+        const reschedule = budgetChanged.signal
+        try {
+          await this.delay(Math.max(1, pollWaitingUntil === undefined
+            ? this.budgetMs - (this.now() - startedAt) : pollWaitingUntil - this.now() + this.budgetMs),
+          AbortSignal.any([signal, reschedule]))
+        } catch (error) {
+          if (signal.aborted) return
+          if (reschedule.aborted) continue
+          throw error
+        }
+        startedAt = Math.max(startedAt, this.service.recoveredFromRateLimitAt?.() ?? 0)
+        if (pollWaitingUntil !== undefined) continue
+        if (await this.service.hasRateLimitWait?.()) { startedAt = this.now(); continue }
+        if (this.now() - startedAt >= this.budgetMs) { controller.abort(); return }
+      }
+    })().catch(error => {
       if (!signal.aborted) { controller.abort(); throw error }
     })
     void deadline.catch(() => undefined)
@@ -127,7 +145,7 @@ export class VideoTracker {
     const queryAt = (job: LocalVideoJob, schedule?: ActivitySchedule, owned = true): number => {
       if (!queryable(job, owned && !schedule) || (schedule?.attempts ?? 0) >= this.maxAttempts) return Infinity
       const last = job.lastQueriedAt
-      return Math.max(schedule?.at ?? 0, job.queryRateLimit?.retryAt ?? 0,
+      return Math.max(schedule?.at ?? 0, job.queryRateLimit?.retryAt ?? 0, job.nextPollAt ?? 0, job.rateLimitRetryAt ?? 0,
         last === undefined ? 0 : last + Math.max(this.floorMs, job.receipt?.pollAfterMs ?? 0))
     }
     const downloadAt = (job: LocalVideoJob, schedule?: ActivitySchedule): number => {
@@ -138,6 +156,7 @@ export class VideoTracker {
     }
     try {
       while (!signal.aborted) {
+        startedAt = Math.max(startedAt, this.service.recoveredFromRateLimitAt?.() ?? 0)
         if (this.now() - startedAt >= this.budgetMs) return
         const generation = this.generation
         let waitMs: number
@@ -152,6 +171,7 @@ export class VideoTracker {
             selected.set(job.jobId, { query, download })
             return { query, download }
           })
+          startedAt = Math.max(startedAt, this.service.recoveredFromRateLimitAt?.() ?? 0)
           if (signal.aborted || jobs.some(job => job.trackingStatus === 'AUTH_REQUIRED')) return
           failures = 0
           const now = this.now()
@@ -163,12 +183,12 @@ export class VideoTracker {
               const failed = !!job.queryRateLimit || (job.error !== null && retryable.has(job.error) && job.failure?.stage !== 'video-save')
               const count = failed ? (schedule.query?.failures ?? 0) + 1 : 0
               schedule.query = { at: now + Math.max(this.floorMs, job.receipt?.pollAfterMs ?? 0, count ? this.backoff(count) : 0),
-                attempts: (schedule.query?.attempts ?? 0) + 1, failures: count }
+                attempts: (schedule.query?.attempts ?? 0) + (job.queryRateLimit?.automatic ? 0 : 1), failures: count }
             }
             if (actions?.download && job.receipt?.outputs.length) {
               const count = job.downloadRateLimit ? (schedule.download?.failures ?? 0) + 1 : 0
               schedule.download = { at: now + (count ? this.backoff(count) : this.floorMs),
-                attempts: (schedule.download?.attempts ?? 0) + 1, failures: count }
+                attempts: (schedule.download?.attempts ?? 0) + (job.downloadRateLimit?.automatic ? 0 : 1), failures: count }
             }
             if (actions) schedules.set(job.jobId, schedule)
             const due = Math.min(queryAt(job, schedule.query, !!actions), downloadAt(job, schedule.download))
@@ -187,18 +207,23 @@ export class VideoTracker {
           if (++failures >= this.maxAttempts) return
           waitMs = Math.max(backoff, (gate?.retryAt ?? now) - now)
         }
+        if (!Number.isFinite(waitMs) || signal.aborted) return
         if (failures === 0 && generation !== this.generation) continue
-        const remaining = this.budgetMs - (this.now() - startedAt)
-        if (remaining <= waitMs || signal.aborted) return
-        if (failures > 0) {
-          await this.delay(waitMs, signal)
-          continue
-        }
+        if (this.now() - startedAt >= this.budgetMs) return
+        const waitStartedAt = this.now()
+        pollWaitingUntil = waitStartedAt + waitMs
         const sleeping = new AbortController()
-        this.sleeping = sleeping
+        this.sleeping = failures === 0 ? sleeping : undefined
         try { await this.delay(waitMs, AbortSignal.any([signal, sleeping.signal])) }
         catch (error) { if (!sleeping.signal.aborted) throw error }
-        finally { this.sleeping = undefined }
+        finally {
+          this.sleeping = undefined
+          startedAt += this.now() - waitStartedAt
+          pollWaitingUntil = undefined
+          const previous = budgetChanged
+          budgetChanged = new AbortController()
+          previous.abort()
+        }
       }
     } catch (error) {
       if (!signal.aborted) throw error
@@ -209,6 +234,6 @@ export class VideoTracker {
   }
 
   private backoff(failures: number): number {
-    return Math.min(this.maxDelayMs, this.floorMs * 2 ** Math.min(failures - 1, 52))
+    return mediaRecoveryDelay(failures, this.floorMs, 0, this.maxDelayMs)
   }
 }

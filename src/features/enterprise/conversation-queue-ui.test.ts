@@ -26,6 +26,8 @@ const dependencies: Record<string, unknown> = {
   '../../features/enterprise/use-drawer': { useDrawer: () => ({ current: null }) },
   './EmployeeFace': { EmployeeFace: empty }, './MessageContent': { MessageContent: empty },
   '../../styles/conversation.css': {},
+  '../../styles/video-artifacts.css': {},
+  '../workspace/ReferenceVideoPanel': { ReferenceVideoPanel: empty },
   '../../features/speech/use-speech-input': { useSpeechInput: () => ({ busy: false, inputProps: { onKeyDown() {} }, isComposing: () => false }) },
   '../speech/SpeechInputActions': { SpeechInputActions: empty },
   './attachments/AttachmentComposer': { AttachmentComposer: empty },

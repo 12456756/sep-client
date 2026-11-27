@@ -3,6 +3,7 @@ import { Readable } from 'node:stream'
 import { z } from 'zod'
 import { parseRetryAfter, readApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
 import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
+import { rateLimitRetryDelay } from '../rate-limit-retry'
 
 const SMALL_RESPONSE_BYTES = 1024 * 1024
 
@@ -91,7 +92,7 @@ export class SkillImportApi {
         const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
         const top = record(diagnostic.body), nested = record(top.error), wrapped = record(top.body)
         const seconds = nested.retryAfterSeconds ?? top.retryAfterSeconds ?? record(wrapped.error).retryAfterSeconds ?? wrapped.retryAfterSeconds
-        const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'))
+        const retryAfterMs = rateLimitRetryDelay(diagnostic) ?? parseRetryAfter(response.headers.get('retry-after'))
           ?? (typeof seconds === 'number' && Number.isFinite(seconds * 1000) && seconds >= 0 ? Math.ceil(seconds * 1000) : 0)
         const code = typeof diagnostic.code === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(diagnostic.code) ? diagnostic.code : 'IMPORT_UNAVAILABLE'
         throw new SkillImportApiError(code, response.status,

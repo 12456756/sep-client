@@ -1,4 +1,17 @@
 /** Based on the successful employee runtime response supplied on 2026-11-17. */
+export function sepVideoToVideoRuntimeFixture() {
+  const runtime = sepRuntimeV3Fixture('video')
+  const profile = runtime.profiles[0]
+  const support = { maxCount: 3, maxInputBytes: 90 * 1024 * 1024, mimeTypes: ['video/mp4', 'video/quicktime'] }
+  return { ...runtime, tools: [...runtime.tools, 'video_from_video'], profiles: [{ ...profile,
+    operations: [...profile.operations, 'video-to-video'],
+    adapter: { ...profile.adapter, operations: [...profile.adapter.operations, 'video-to-video'], videoReferenceSupport: support },
+    referenceRules: [...profile.referenceRules, { operation: 'video-to-video', minCount: 0, maxCount: 0, maxInputBytes: 0, mimeTypes: [] }],
+    videoReferenceRules: [...profile.operations.map(operation => ({ operation, minCount: 0, maxCount: 0, maxInputBytes: 0, mimeTypes: [] })),
+      { operation: 'video-to-video', minCount: 1, ...support }],
+  }] }
+}
+
 export function sepRuntimeV3Fixture(kind: 'image' | 'video') {
   const image = kind === 'image'
   const operations = image ? ['generate', 'edit'] : ['text-to-video', 'image-to-video']

@@ -10,6 +10,8 @@ import type { MediaHostTools, MediaJobCreated, MediaToolName } from '../domain/m
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
 import { mediaReplacementInputSchema, mediaToolGenerationInputSchema } from '../../src/shared/media-host'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
+import { mediaExecutionSnapshot, mediaGenerationState, mediaReceiptNeedsPoll } from '../../src/shared/media-execution'
+import { safeMediaExecutionFields } from '../common/media-execution'
 import { realMediaParameters, realMediaSemanticHash } from '../common/platform/real-media-semantics'
 import { imageAspectRatio } from '../../src/shared/media-spec'
 import { imageReferenceSupport, mediaReferenceProblem, type MediaReferenceInfo } from '../../src/shared/media-references'
@@ -19,13 +21,15 @@ import { safeMediaUpstreamError } from '../common/media-upstream-error'
 import { AppError } from '../errors/app-error'
 import { mediaJobFailure } from '../errors/media-job-error'
 import { appendMediaDiagnosticError } from '../errors/arrangement-diagnostic'
-import { IMAGE_MISSING_TARGET_MESSAGE, isImageMissingTargetRejection, mediaFailureCodeSchema, mediaFailureSchema } from '../../src/shared/media-failure'
+import { IMAGE_MISSING_TARGET_MESSAGE, isImageMissingTargetRejection, mediaFailureCodeSchema, mediaFailureSchema, mediaSubmissionRejected, mediaFailureBillingStatus, mediaFailureNeedsBillingQuery } from '../../src/shared/media-failure'
 import { transportKind } from '../errors/operation-feedback'
 import { requireScope, type ScopeSource } from './scope-guard'
-import { ArrangementMediaRecoveryError, ImageDownloadDeferredError } from '../domain/arrangement-media-runtime'
+import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
 import { WriteChain } from '../data/write-chain'
 import { mediaRetryDeferred } from '../domain/media-retry-gate'
 import { mediaCooldownError, mediaRateLimit } from '../errors/media-rate-limit'
+import { MEDIA_RECOVERY_DEFAULTS, mediaRecoveryDelay, mediaSubmissionRecovery } from '../common/media-recovery'
+import { retryRateLimited, waitForRetry, type RateLimitWait } from '../common/rate-limit-retry'
 
 const log = logger.child('media-service')
 const terminal = new Set(['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'])
@@ -51,6 +55,7 @@ export interface MediaServiceOptions {
   capabilities?: (employee: MediaEmployeeRuntime) => unknown
   pollFloorMs?: number
   maxAttempts?: number
+  tracker?: { maxAttempts?: number; budgetMs?: number; maxDelayMs?: number }
   operationTimeoutMs?: number
   /** Submission may outlive ordinary control-plane calls while SEP waits on its upstream. */
   submissionTimeoutMs?: number
@@ -92,6 +97,7 @@ export class MediaService {
   private readonly runRecoveries = new Map<string, string[]>()
   private readonly taskStops = new Map<string, number>()
   private readonly jobStops = new Map<string, number>()
+  private readonly rateLimitRecoveryAt = new WeakMap<LocalMediaJob, number>()
   private recoveryDraining = false
   constructor(private readonly options: MediaServiceOptions) {}
 
@@ -132,25 +138,38 @@ export class MediaService {
     this.caps.delete(key)
     this.capabilityLoads.delete(key)
   }
-  private async network<T>(scope: TaskOwnerScope, parent: AbortSignal, call: (signal: AbortSignal) => Promise<T>, timeoutMs = this.options.operationTimeoutMs ?? 60_000): Promise<T> {
+  private async network<T>(scope: TaskOwnerScope, parent: AbortSignal, call: (signal: AbortSignal) => Promise<T>, timeoutMs = this.options.operationTimeoutMs ?? 60_000,
+    job?: LocalMediaJob, submitting = false): Promise<T> {
     const epoch = this.epoch
     this.assert(scope, epoch)
-    const signal = AbortSignal.any([parent, this.sessionController.signal, AbortSignal.timeout(timeoutMs)])
-    signal.throwIfAborted()
-    let onAbort: () => void = () => undefined
-    try {
-      const abort = new Promise<never>((_, reject) => { onAbort = () => reject(signal.reason); signal.addEventListener('abort', onAbort, { once: true }) })
-      const result = await Promise.race([call(signal), abort])
+    const signal = AbortSignal.any([parent, this.sessionController.signal])
+    if (job?.rateLimitRetryAt !== undefined) {
+      await waitForRetry(Math.max(0, job.rateLimitRetryAt - Date.now()), signal)
+      job.rateLimitRetryAt = undefined
+      this.rateLimitRecoveryAt.set(job, Date.now())
+      await this.options.store.saveJob(scope, job)
+    }
+    return retryRateLimited(async bounded => {
       this.assert(scope, epoch)
-      signal.throwIfAborted()
+      const result = await call(bounded)
+      this.assert(scope, epoch)
+      bounded.throwIfAborted()
       return result
-    } finally { signal.removeEventListener('abort', onAbort) }
+    }, { signal, timeoutMs, preserveWaitOnAbort: true,
+      shouldRetry: job ? submitting ? error => !mediaSubmissionRecovery(error, job.clientRequestId) : () => false : undefined,
+      onWait: job ? async (wait: RateLimitWait | undefined) => {
+        job.rateLimitRetryAt = wait?.retryAt
+        if (wait === undefined) this.rateLimitRecoveryAt.set(job, Date.now())
+        await this.options.store.saveJob(scope, job)
+      } : undefined })
   }
   private viewAsset(asset: MediaAssetView): MediaAssetView {
     return { localAssetId: asset.localAssetId, taskId: asset.taskId, jobId: asset.jobId, outputId: asset.outputId,
       source: asset.source, mime: asset.mime, size: asset.size, width: asset.width, height: asset.height, status: asset.status }
   }
   private needsBillingQuery(job: LocalMediaJob): boolean {
+    if (job.receiptVersion === 2 && job.clientActions) return job.clientActions.shouldPoll && job.recovery?.canQuery === true
+    if (!job.receiptId && mediaFailureNeedsBillingQuery(job.submissionFailure)) return job.profile.capabilities.recoverByRequestId
     return (job.billingStatus === 'RESERVED' || job.billingStatus === 'RECONCILING') && job.recovery?.canQuery === true
   }
   private viewJob(job: LocalMediaJob, assets: MediaAssetView[]): MediaJobView {
@@ -161,11 +180,13 @@ export class MediaService {
     const saveStatus = job.saveStatus === 'SAVED' && missingOutput ? 'MISSING' : job.saveStatus
     const canRetrySave = job.recovery?.canDownload !== false && job.outputs.some(output =>
       (output.expiresAt === null || output.expiresAt > Date.now()) && !jobAssets.some(asset => asset.outputId === output.outputId && asset.status === 'SAVED'))
-    return { jobId: job.jobId, taskId: job.taskId, runId: job.runId, profileId: job.profile.profileId,
+    return { ...mediaExecutionSnapshot(job), platformStatus: job.platformStatus, jobId: job.jobId, taskId: job.taskId, runId: job.runId, profileId: job.profile.profileId,
       operation: job.input.operation, parameters: { ...job.input.parameters }, generationStatus: job.generationStatus,
       requestedSpec: job.input.requestedSpec, effectiveSpec: job.quote.effectiveSpec, actualSpec: job.actualSpec,
       protocolVersion: job.input.protocolVersion, parameterSources: job.input.parameterSources, specRevision: job.input.specRevision,
       trackingStatus: job.trackingStatus, saveStatus, billingStatus: job.billingStatus,
+      rateLimitRetryAt: (job.trackingStatus === 'ACTIVE' ? job.rateLimitRetryAt ?? (job.queryRateLimit?.automatic ? job.queryRateLimit.retryAt : undefined) : undefined)
+        ?? (job.downloadRateLimit?.automatic && !job.downloadAutoResumeStopped ? job.downloadRateLimit.retryAt : undefined),
       ...(job.lastQueriedAt !== undefined ? { lastQueriedAt: job.lastQueriedAt } : {}),
       ...(job.providerWaitMs !== undefined ? { providerWaitMs: job.providerWaitMs } : {}),
       ...(job.downloadMs !== undefined ? { downloadMs: job.downloadMs } : {}),
@@ -175,7 +196,7 @@ export class MediaService {
       ...(job.outputErrors?.length ? { outputErrors: job.outputErrors.filter(item => mediaFailureCodeSchema.safeParse(item.code).success) } : {}),
       assets: jobAssets.map(asset => this.viewAsset(asset)), canRetrySave,
       canResumeTracking: !rejection && (terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job)
-        : job.recovery?.canQuery !== false && (!!job.receiptId || job.profile.capabilities.recoverByRequestId)),
+        : job.recovery?.canQuery !== false && (!!job.receiptId || !!job.recoveryReceiptId || job.profile.capabilities.recoverByRequestId)),
       canCancelUpstream: job.recovery?.canCancel !== false && job.profile.capabilities.cancel && !!job.receiptId && !terminal.has(job.generationStatus) }
   }
   private publicJobError(error: string | null): string | null {
@@ -356,7 +377,7 @@ export class MediaService {
     const initialScope = this.scope(), initialEpoch = this.epoch, stopKey = this.key(initialScope, taskId)
     const stopVersion = this.taskStops.get(stopKey) ?? 0
     const { scope, subscriptionId } = await this.task(taskId), epoch = this.epoch
-    const employee = await this.options.authorize(subscriptionId)
+    const employee = await this.network(scope, this.sessionController.signal, () => this.options.authorize(subscriptionId))
     this.assert(scope, epoch)
     if (!employee) throw new AppError('EMPLOYEE_UNAVAILABLE')
     const capabilities = this.capabilities(employee)
@@ -376,7 +397,7 @@ export class MediaService {
     return jobs.filter(job => job.subscriptionId === input.subscriptionId && imageSubmissionUnconfirmed(job))
       .sort((a, b) => b.createdAt - a.createdAt).slice(0, 32).map(job => ({
         jobId: job.jobId, creativeBrief: job.input.creativeBrief.slice(0, 300),
-        replacementAvailable: job.generationStatus === 'SUBMISSION_UNKNOWN' && job.runId !== input.runId && !decisions.has(job.jobId),
+        replacementAvailable: job.generationStatus === 'SUBMISSION_UNKNOWN' && job.runId !== input.runId && !decisions.has(job.jobId) && job.clientActions?.canStartNewRequest !== false,
       }))
   }
 
@@ -402,8 +423,8 @@ export class MediaService {
       }))
       check()
       const eligible = originals.filter(job => !decisions.has(job.jobId) && job.runId !== runId &&
-        job.generationStatus === 'SUBMISSION_UNKNOWN' && imageSubmissionUnconfirmed(job))
-      if (!eligible.length) throw new AppError('CONFLICT', { message: '没有可替换的图片任务。已处理或本轮刚提交的任务不会重复提交，请查看原任务。' })
+        job.generationStatus === 'SUBMISSION_UNKNOWN' && imageSubmissionUnconfirmed(job) && job.clientActions?.canStartNewRequest !== false)
+      if (!eligible.length) throw new AppError('CONFLICT', { message: '没有可替换的图片任务。已处理或本轮刚提交的任务不会重复请求确认，请查看原任务。' })
 
       // Consume the explicit replacement request before any paid submission.
       const recorded = await this.options.store.recordImageReplacement(scope, taskId, eligible.map(job => job.jobId), 'approved', check)
@@ -499,7 +520,7 @@ export class MediaService {
       const assertOriginalUnconfirmed = async (id: string) => {
         const original = await this.options.store.getJob(scope, taskId, id)
         this.assert(scope, epoch); parent.throwIfAborted()
-        if (!original || original.subscriptionId !== subscriptionId || !imageSubmissionUnconfirmed(original)) throw new AppError('CONFLICT')
+        if (!original || original.subscriptionId !== subscriptionId || !imageSubmissionUnconfirmed(original) || original.clientActions?.canStartNewRequest === false) throw new AppError('CONFLICT')
       }
       if (replacesJobId) await assertOriginalUnconfirmed(replacesJobId)
       else {
@@ -573,16 +594,25 @@ export class MediaService {
         // phase separate from ordinary control-plane calls so a slow accepted submit
         // becomes an UNKNOWN request that is queried by its original id instead of
         // being mistaken for a local failure or retried with a new id.
-        this.acceptReceipt(job, await this.network(scope, parent, s => gateway.submit(binding.subscriptionId, job!.request, s), this.options.submissionTimeoutMs ?? 190_000))
+        this.acceptReceipt(job, await this.network(scope, parent, s => gateway.submit(binding.subscriptionId, job!.request, s), this.options.submissionTimeoutMs ?? 190_000, job, true))
       } catch (error) {
         this.invalidateCapabilities(scope, taskId, epoch, error)
         job.failure = mediaJobFailure(error, 'image-submit')
         job.queryRateLimit = mediaRateLimit(error, Date.now(), this.options.pollFloorMs ?? 1_000)
         job.diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, 'image-submit', error)
         job.error = job.failure.code
-        if (isImageMissingTargetRejection(job.failure)) {
+        const recovery = mediaSubmissionRecovery(error, job.clientRequestId)
+        if (recovery && (!isImageMissingTargetRejection(job.failure) || recovery.receiptId)) {
+          job.recoveryReceiptId = recovery.receiptId
+          job.rateLimitRetryAt = recovery.retryAt
+          job.nextPollAt = recovery.retryAt ?? Date.now()
+          job.generationStatus = 'SUBMISSION_UNKNOWN'
+        } else if (mediaSubmissionRejected(job.failure) || isImageMissingTargetRejection(job.failure)) {
           job.generationStatus = 'FAILED'
           job.trackingStatus = 'STOPPED'
+          job.submissionFailure = job.failure
+          if (mediaSubmissionRejected(job.failure)) job.billingStatus = mediaFailureBillingStatus(job.failure)
+          if (this.needsBillingQuery(job)) job.trackingStatus = 'ACTIVE'
           job.updatedAt = Date.now()
         } else {
           job.generationStatus = 'SUBMISSION_UNKNOWN'
@@ -592,6 +622,7 @@ export class MediaService {
       await this.options.store.saveJob(scope, job)
       this.assert(scope, epoch)
       if (missingImageTargetFailure(job)) return this.viewJob(job, [])
+      if (mediaSubmissionRejected(job.submissionFailure) && !this.needsBillingQuery(job)) return this.viewJob(job, [])
       const submitted = job
       let saved!: () => void
       const initialSave = new Promise<void>(resolve => { saved = resolve })
@@ -631,18 +662,32 @@ export class MediaService {
   private acceptReceipt(job: LocalMediaJob, raw: unknown): void {
     const receipt: MediaReceipt = mediaReceiptSchema.parse(raw)
     if (receipt.clientRequestId !== job.clientRequestId || receipt.profileId !== job.profile.profileId || receipt.configVersion !== job.profile.configVersion
-      || (job.receiptId && job.receiptId !== receipt.receiptId) || new Set(receipt.outputs.map(output => output.outputId)).size !== receipt.outputs.length
+      || ((job.receiptId ?? job.recoveryReceiptId) && (job.receiptId ?? job.recoveryReceiptId) !== receipt.receiptId) || new Set(receipt.outputs.map(output => output.outputId)).size !== receipt.outputs.length
       || (job.input.protocolVersion !== 3 && job.input.parameters.count !== undefined && receipt.outputs.length > job.input.parameters.count)) throw new AppError('INVALID_ARGUMENT')
+    if (job.receiptVersion === 2 && receipt.receiptVersion !== 2) return
+    if (receipt.execution && ['unobserved', 'not_applicable'].includes(receipt.execution.submissionStatus)) {
+      if (job.execution && receipt.execution.operationError) job.execution.operationError = safeMediaUpstreamError(receipt.execution.operationError)
+      return
+    }
+    const status = mediaGenerationState(receipt.status, receipt)
+    if (mediaSubmissionRejected(job.submissionFailure) && !['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(status)) return
+    if (job.receiptId && (
+      terminal.has(job.generationStatus) && status !== job.generationStatus &&
+        !(status === 'RESULT_EXPIRED' && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) ||
+      job.generationStatus === 'RUNNING' && ['QUEUED', 'SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(status) ||
+      job.generationStatus === 'QUEUED' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(status))) return
     const priorMismatch = job.errorCode === 'OUTPUT_SPEC_MISMATCH'
     const sameGeneration = !!job.receiptId && terminal.has(job.generationStatus) &&
-      (job.generationStatus === receipt.status || receipt.status === 'RESULT_EXPIRED')
-    job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'; job.generationStatus = receipt.status
+      (job.generationStatus === status || status === 'RESULT_EXPIRED')
+    Object.assign(job, { billingError: undefined }, safeMediaExecutionFields(receipt))
+    job.platformStatus = receipt.status
+    job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'; job.generationStatus = status
     job.outputs = receipt.outputs; job.billingStatus = receipt.billingStatus
     job.actualSpec = receipt.actualSpec
     job.recovery = receipt.recovery; job.errorCode = receipt.errorCode
     job.outputErrors = sameGeneration && !receipt.outputErrors?.length ? job.outputErrors : receipt.outputErrors
-    job.upstreamError = safeMediaUpstreamError(receipt.upstreamError) ?? (sameGeneration ? job.upstreamError : undefined)
-    job.submissionFailure = receipt.status === 'SUBMISSION_UNKNOWN'
+    job.upstreamError = safeMediaUpstreamError(receipt.upstreamError) ?? (sameGeneration && receipt.receiptVersion !== 2 ? job.upstreamError : undefined)
+    job.submissionFailure = status === 'SUBMISSION_UNKNOWN'
       ? job.submissionFailure ?? (job.failure?.stage === 'image-submit' ? job.failure : undefined) : undefined
     job.failure = sameGeneration && job.failure?.stage === 'image-save' ? job.failure : undefined
     job.queryRateLimit = undefined
@@ -652,9 +697,10 @@ export class MediaService {
       return actual !== undefined && !mediaSpecsEqual({ [key]: requested }, { [key]: actual })
     })) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
     this.recordOutputMismatch(job)
+    job.rateLimitRetryAt = undefined
     job.nextPollAt = Date.now() + Math.max(this.options.pollFloorMs ?? 1_000, receipt.pollAfterMs ?? 0)
     job.error = null; job.attempts = 0; job.updatedAt = Date.now()
-    if (terminal.has(receipt.status) && job.providerWaitMs === undefined) job.providerWaitMs = Math.max(0, job.updatedAt - job.createdAt)
+    if (terminal.has(status) && job.providerWaitMs === undefined) job.providerWaitMs = Math.max(0, job.updatedAt - job.createdAt)
   }
   private outputSpecEvidence(job: LocalMediaJob, assets: MediaAssetView[]): { width: number | null; height: number | null; outputFormat: string }[] {
     return job.outputs.map(output => {
@@ -667,7 +713,7 @@ export class MediaService {
     const requested = job.input.requestedSpec
     if (job.input.protocolVersion !== 3 || !requested) return
     const succeeded = job.generationStatus === 'SUCCEEDED' || job.generationStatus === 'PARTIAL_SUCCEEDED'
-    if (succeeded && requested.count !== undefined && job.outputs.length !== requested.count) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
+    if (succeeded && (job.receiptVersion !== 2 || job.fileStatus === 'available') && requested.count !== undefined && job.outputs.length !== requested.count) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
     const size = requested.size?.split('x').map(Number)
     for (const output of this.outputSpecEvidence(job, assets)) {
       if ((output.width !== null && ((requested.width !== undefined && output.width !== requested.width) || (size && output.width !== size[0])))
@@ -712,7 +758,7 @@ export class MediaService {
           const stream = await this.gateway().content(job.subscriptionId, job.receiptId!, output.outputId, signal)
           const asset = await this.options.store.saveOutput(scope, job.taskId, job.jobId, output, stream, signal, { repairCorrupt: repair })
           this.options.onOutputSaved?.(scope, job.taskId, asset.localAssetId, asset.createdAt, job.createdAt)
-        })
+        }, undefined, job)
         downloaded++
       } catch (error) {
         if (parent.aborted) throw parent.reason
@@ -803,10 +849,30 @@ export class MediaService {
     epoch = this.epoch,
     options: { repair?: boolean; onInitialSave?: () => void; manualDownload?: boolean; manualQuery?: boolean } = {},
   ): Promise<void> {
-    const trackingStartedAt = Date.now()
+    let trackingStartedAt = Date.now()
     const locked = <T>(work: () => Promise<T>) => this.jobWrites.run(this.key(scope, job.jobId), work)
-    let manualQuery = options.manualQuery === true
+    let pollWaitingUntil: number | undefined
+    const roundController = new AbortController()
+    const round = roundController.signal
+    let roundTimer: ReturnType<typeof setTimeout>
+    const roundBudget = this.options.tracker?.budgetMs ?? MEDIA_RECOVERY_DEFAULTS.budgetMs
+    const expireRound = () => {
+      trackingStartedAt = Math.max(trackingStartedAt, this.rateLimitRecoveryAt.get(job) ?? 0)
+      if (job.rateLimitRetryAt !== undefined || pollWaitingUntil !== undefined) {
+        roundTimer = setTimeout(expireRound, Math.min(2_147_483_647,
+          Math.max(roundBudget, (pollWaitingUntil ?? job.rateLimitRetryAt ?? 0) - Date.now())))
+        roundTimer.unref?.()
+      } else if (Date.now() - trackingStartedAt < roundBudget) {
+        roundTimer = setTimeout(expireRound, roundBudget - (Date.now() - trackingStartedAt))
+        roundTimer.unref?.()
+      } else roundController.abort(new DOMException('Tracking round expired', 'TimeoutError'))
+    }
+    roundTimer = setTimeout(expireRound, roundBudget)
+    roundTimer.unref?.()
+    const originalParent = parent
+    parent = AbortSignal.any([parent, round])
     let polls = 0
+    let advertisedInterval = Math.max(0, job.nextPollAt - Date.now())
     let initialSaveNotified = false
     const notifyInitialSave = () => {
       if (initialSaveNotified) return
@@ -819,24 +885,29 @@ export class MediaService {
         await locked(() => this.save(scope, job, parent, options.repair === true, !options.manualDownload))
         notifyInitialSave()
       }
-      while (!terminal.has(job.generationStatus) || this.needsBillingQuery(job)) {
+      while (mediaReceiptNeedsPoll(job) ?? (!terminal.has(job.generationStatus) || this.needsBillingQuery(job))) {
+        trackingStartedAt = Math.max(trackingStartedAt, this.rateLimitRecoveryAt.get(job) ?? 0)
         this.assert(scope, epoch); parent.throwIfAborted()
         if (job.receiptId && job.recovery?.canQuery === false) {
           job.trackingStatus = 'STOPPED'; job.error = '服务端无法继续查询原请求，不会再次生成。'; break
         }
-        if (++polls > 500 || Date.now() - trackingStartedAt > 86_400_000) {
-          job.trackingStatus = 'STOPPED'; job.error = '本轮跟踪已达时长或查询上限，可手动恢复原请求。'; break
+        if (++polls > (this.options.tracker?.maxAttempts ?? MEDIA_RECOVERY_DEFAULTS.maxAttempts) ||
+          Date.now() - trackingStartedAt >= (this.options.tracker?.budgetMs ?? MEDIA_RECOVERY_DEFAULTS.budgetMs)) {
+          job.trackingStatus = 'INTERRUPTED'; job.error = 'TRACKING_LIMIT'; break
         }
         if (job.submission === 'NOT_SENT') { job.trackingStatus = 'STOPPED'; job.error = '请求未提交，不会自动生成。'; break }
-        if (!job.receiptId && !job.profile.capabilities.recoverByRequestId) {
+        if (!job.receiptId && !job.recoveryReceiptId && !job.profile.capabilities.recoverByRequestId) {
           job.trackingStatus = 'STOPPED'; job.error = '该通道不支持按原请求找回，不能自动恢复。'; break
         }
-        const nextPollAt = Math.max(job.nextPollAt, job.queryRateLimit?.retryAt ?? 0)
-        if (job.queryRateLimit && !job.queryRateLimit.automatic && !manualQuery || nextPollAt - trackingStartedAt >= 86_400_000) {
-          job.trackingStatus = 'STOPPED'; job.error = job.failure?.code ?? 'RATE_LIMITED'; break
+        const waitStartedAt = Date.now()
+        pollWaitingUntil = Math.max(job.nextPollAt, job.queryRateLimit?.retryAt ?? 0)
+        try { await waitForRetry(Math.max(0, pollWaitingUntil - waitStartedAt), parent) }
+        finally {
+          trackingStartedAt += Date.now() - waitStartedAt; pollWaitingUntil = undefined
+          clearTimeout(roundTimer)
+          roundTimer = setTimeout(expireRound, Math.max(1, roundBudget - (Date.now() - trackingStartedAt)))
+          roundTimer.unref?.()
         }
-        await delay(Math.max(0, nextPollAt - Date.now()), undefined, { signal: parent })
-        manualQuery = false
         let stage: 'image-save' | 'image-query' = 'image-query'
         try {
           await locked(async () => {
@@ -844,13 +915,14 @@ export class MediaService {
             job.lastQueriedAt = Date.now()
             await this.options.store.saveJob(scope, job)
           })
-          const receipt = await this.network(scope, parent, signal => job.receiptId
-            ? this.gateway().getReceipt(job.subscriptionId, job.receiptId, signal)
-            : this.gateway().findReceipt(job.subscriptionId, job.clientRequestId, signal))
+          const receipt = await this.network(scope, parent, signal => (job.receiptId ?? job.recoveryReceiptId)
+            ? this.gateway().getReceipt(job.subscriptionId, (job.receiptId ?? job.recoveryReceiptId)!, signal)
+            : this.gateway().findReceipt(job.subscriptionId, job.clientRequestId, signal), undefined, job)
           if (receipt === null) throw new AppError('NOT_FOUND')
           await locked(async () => {
             parent.throwIfAborted()
             this.acceptReceipt(job, receipt)
+            advertisedInterval = Math.max(0, job.nextPollAt - Date.now())
             await this.options.store.saveJob(scope, job)
             stage = 'image-save'
             // Reconciliation must not retry failed downloads on its own cadence.
@@ -870,12 +942,12 @@ export class MediaService {
             }
             if (stage === 'image-save' && job.saveStatus === 'SAVING') job.saveStatus = 'SAVE_FAILED'
             const now = Date.now()
-            job.attempts++
-            const backoff = Math.min(30_000, (this.options.pollFloorMs ?? 1_000) * 2 ** Math.min(job.attempts, 5))
+            const backoff = mediaRecoveryDelay(job.attempts + 1, this.options.pollFloorMs ?? MEDIA_RECOVERY_DEFAULTS.floorMs, advertisedInterval, this.options.tracker?.maxDelayMs ?? MEDIA_RECOVERY_DEFAULTS.maxDelayMs)
             const rateLimit = stage === 'image-query' ? mediaRateLimit(error, now, backoff) : undefined
+            if (!rateLimit?.automatic) job.attempts++
             if (rateLimit) job.queryRateLimit = rateLimit
             job.nextPollAt = now + backoff
-            if (rateLimit?.automatic === false || job.attempts >= (this.options.maxAttempts ?? 8)) {
+            if (rateLimit?.automatic === false || job.attempts >= (this.options.maxAttempts ?? this.options.tracker?.maxAttempts ?? MEDIA_RECOVERY_DEFAULTS.maxAttempts)) {
               const transport = transportKind(error)
               job.trackingStatus = 'STOPPED'
               job.error = transport === 'timeout' ? 'NETWORK_TIMEOUT' : transport === 'network' ? 'NETWORK_ERROR'
@@ -899,11 +971,13 @@ export class MediaService {
       }
       const interrupted = epoch !== this.epoch && parent.reason !== explicitStop
       const authRequired = !interrupted && parent.reason !== explicitStop && error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
-      job.trackingStatus = authRequired ? 'AUTH_REQUIRED' : interrupted ? 'INTERRUPTED' : 'STOPPED'
+      const roundExpired = round.aborted && !originalParent.aborted
+      job.trackingStatus = authRequired ? 'AUTH_REQUIRED' : interrupted || roundExpired ? 'INTERRUPTED' : 'STOPPED'
       if (job.saveStatus === 'SAVING') job.saveStatus = 'SAVE_FAILED'
-      job.error = authRequired ? '请恢复图片任务的读取授权。' : parent.aborted ? '本地跟踪已停止，上游任务可能仍在执行。' : '本地跟踪暂不可用，可恢复原请求。'
+      job.error = roundExpired ? 'TRACKING_LIMIT' : authRequired ? '请恢复图片任务的读取授权。' : parent.aborted ? '本地跟踪已停止，上游任务可能仍在执行。' : '本地跟踪暂不可用，可恢复原请求。'
       if (!parent.aborted) log.warn('media tracking interrupted', { taskId: job.taskId, jobId: job.jobId, authChanged: error instanceof AppError && error.code === 'AUTH_REQUIRED' })
     } finally {
+      clearTimeout(roundTimer)
       try { await locked(async () => { job.updatedAt = Date.now(); await this.options.store.saveJob(scope, job) }) }
       finally { notifyInitialSave() }
     }
@@ -936,6 +1010,7 @@ export class MediaService {
       const job = await this.jobWrites.run(key, async () => {
         const { job } = await this.job(taskId, jobId)
         if (missingImageTargetFailure(job)) return
+        if (mediaSubmissionRejected(job.submissionFailure) && !this.needsBillingQuery(job)) return
         if (controller.signal.aborted || stopVersion !== (this.taskStops.get(taskKey) ?? 0)) {
           job.trackingStatus = epoch !== this.epoch && controller.signal.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
           job.updatedAt = Date.now()
@@ -947,7 +1022,7 @@ export class MediaService {
           const gate = repair ? job.downloadRateLimit : job.queryRateLimit
           if (gate && gate.retryAt > Date.now()) throw mediaCooldownError(gate.retryAt)
         }
-        job.trackingStatus = 'ACTIVE'; job.attempts = 0; job.nextPollAt = Date.now()
+        job.trackingStatus = 'ACTIVE'; job.attempts = 0; job.nextPollAt = Math.max(job.nextPollAt, job.rateLimitRetryAt ?? 0, Date.now())
         await this.options.store.saveJob(scope, job)
         this.activities.get(key)!.job = job
         return job
@@ -1002,6 +1077,7 @@ export class MediaService {
     const { job } = await this.job(taskId, jobId)
     if (missingImageTargetFailure(job)) throw new AppError('INVALID_ARGUMENT', { message: IMAGE_MISSING_TARGET_MESSAGE })
     if (!terminal.has(job.generationStatus)) throw new AppError('INVALID_STATE', { message: '原请求尚未结束或提交状态不明，不能重做。' })
+    if (job.clientActions?.canStartNewRequest === false) throw new AppError('INVALID_STATE')
     return this.generateTaskMedia(taskId, job.input)
   }
   async cancel(taskId: string, jobId: string, cancelUpstream: boolean, binding?: { toolPolicy?: TaskToolPolicy; requestApproval: Approval }, signal?: AbortSignal): Promise<void> {
@@ -1045,7 +1121,7 @@ export class MediaService {
     check()
     if (settlementError) throw settlementError
   }
-  async waitForRun(taskId: string, runId: string, options: { recoverOriginal?: boolean; allowIncomplete?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+  async waitForRun(taskId: string, runId: string, options: { recoverOriginal?: boolean; allowIncomplete?: boolean; continueRecovery?: boolean; signal?: AbortSignal } = {}): Promise<void> {
     const { scope } = await this.task(taskId)
     const stopKey = this.key(scope, taskId), stopVersion = this.taskStops.get(stopKey) ?? 0, epoch = this.epoch
     const recoveries = new Map<string, number>()
@@ -1072,6 +1148,10 @@ export class MediaService {
       if (!options.allowIncomplete && pending.some(missingImageTargetFailure)) {
         throw new ArrangementMediaRecoveryError('image-missing-target', new Error('Upstream rejected the image submission because it found no image target.'))
       }
+      if (!options.allowIncomplete && pending.some(job => mediaSubmissionRejected(job.submissionFailure) ||
+        job.receiptVersion === 2 && job.execution && ['not_submitted', 'rejected', 'failed', 'protocol_error'].includes(job.execution.submissionStatus))) {
+        throw new ArrangementMediaRecoveryError('submission-rejected', new Error('The original media submission has ended; inspect its recorded rejection.'))
+      }
       if (!options.allowIncomplete && pending.some(job => ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus))) {
         if (options.recoverOriginal) {
           const phase = pending.some(job => job.generationStatus === 'RESULT_EXPIRED') ? 'expired' : 'generation'
@@ -1090,7 +1170,8 @@ export class MediaService {
           this.assert(scope, epoch)
           if ((this.taskStops.get(stopKey) ?? 0) !== stopVersion) throw new Error('Media run stopped.')
           this.scheduleDownload(scope, failedSave)
-          throw new ImageDownloadDeferredError(new Error('Original image output is waiting for its download cooldown.'))
+          await delay(100, undefined, { signal: options.signal })
+          continue
         }
         if (activity || mediaRetryDeferred(failedSave.downloadRateLimit, Date.now(), true)) {
           throw new ArrangementMediaRecoveryError('download', new Error('Original image output could not be saved.'))
@@ -1104,7 +1185,35 @@ export class MediaService {
       }
       if (options.allowIncomplete) return
       if (options.recoverOriginal) {
-        if (pending.some(job => job.trackingStatus === 'AUTH_REQUIRED')) throw new AppError('AUTH_REQUIRED')
+        const denied = pending.find(job => job.trackingStatus === 'AUTH_REQUIRED')
+        if (denied) throw new AppError(denied.failure?.code === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED')
+        if (options.continueRecovery) {
+          const recoverableCodes = new Set(['NETWORK_ERROR', 'NETWORK_TIMEOUT', 'RATE_LIMITED', 'SERVICE_UNAVAILABLE', 'TRACKING_LIMIT'])
+          const retry = pending.find(job => {
+            const generating = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
+            const deliveryPending = job.receiptVersion === 2 && job.clientActions?.shouldPoll && job.clientActions.pollPurpose === 'delivery'
+            const transientSave = ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus) &&
+              !!job.failure && recoverableCodes.has(job.failure.code)
+            const canPoll = job.recovery?.canQuery !== false && (!!job.receiptId || job.profile.capabilities.recoverByRequestId)
+            const canDownload = transientSave && !!job.receiptId && job.recovery?.canDownload !== false &&
+              job.outputs.some(output => output.expiresAt === null || output.expiresAt > Date.now())
+            return job.submission !== 'NOT_SENT' && (job.trackingStatus !== 'STOPPED' || canDownload && this.publicJobError(job.error) !== 'TRACKING_STOPPED') &&
+              ((generating || deliveryPending) && canPoll || canDownload)
+          })
+          if (retry) {
+            const key = this.key(scope, retry.jobId), jobStop = this.jobStops.get(key)
+            const attempt = (recoveries.get(retry.jobId) ?? 0) + 1
+            recoveries.set(retry.jobId, attempt)
+            const hint = Math.max(0, retry.nextPollAt - Date.now())
+            await delay(mediaRecoveryDelay(attempt, this.options.pollFloorMs ?? MEDIA_RECOVERY_DEFAULTS.floorMs, hint,
+              this.options.tracker?.maxDelayMs ?? MEDIA_RECOVERY_DEFAULTS.maxDelayMs), undefined, { signal: options.signal })
+            this.assert(scope, epoch)
+            if ((this.taskStops.get(stopKey) ?? 0) !== stopVersion) throw new Error('Media run stopped.')
+            if (this.jobStops.get(key) !== jobStop) throw new ArrangementMediaRecoveryError('query', new Error('Original image recovery was stopped.'))
+            await this.resume(taskId, retry.jobId, ['SAVE_FAILED', 'MISSING'].includes(retry.saveStatus))
+            continue
+          }
+        }
         if (pending.some(job => job.generationStatus === 'SUBMISSION_UNKNOWN')) {
           throw new ArrangementMediaRecoveryError('submission', new Error('Original image submission is unconfirmed.'))
         }

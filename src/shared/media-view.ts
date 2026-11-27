@@ -3,7 +3,9 @@ import { imageAspectRatio } from './media-spec'
 import { videoAllowedAudioModes, videoParametersSchema } from './video-media'
 import type { VideoParameters, VideoRuntime } from './video-media'
 import type { VideoRequestedSpec } from './media-spec-contract'
-import { isImageMissingTargetRejection } from './media-failure'
+import { isImageMissingTargetRejection, mediaSubmissionRejected, mediaFailureNeedsBillingQuery, type MediaFailure } from './media-failure'
+import type { MediaExecutionFields } from './media-execution'
+import { mediaGenerationFinished } from './media-execution'
 
 /** Preserve an explicit available choice; otherwise use the server default before list order. */
 export function selectMediaProfile<T extends { profileId: string }>(profiles: readonly T[], selectedId?: string, defaultProfileId?: string | null): T | undefined {
@@ -84,9 +86,21 @@ export const mediaGenerationLabels: Record<MediaGenerationStatus, MediaStatusLab
   RESULT_EXPIRED: { label: '上游结果已过期', tone: 'warning' },
 }
 
+export function mediaJobGenerationLabel(job: MediaExecutionFields & { generationStatus: string; failure?: MediaFailure; submissionFailure?: MediaFailure }): MediaStatusLabel {
+  if (job.generationStatus === 'FAILED') {
+    const submission = job.execution?.submissionStatus
+    if (submission === 'protocol_error') return { label: '提交协议错误', tone: 'error' }
+    if (submission === 'not_submitted' || mediaSubmissionRejected(job.submissionFailure ?? job.failure)) return { label: '未提交生成', tone: 'error' }
+    if (submission === 'rejected') return { label: '提交被拒绝', tone: 'error' }
+    if (submission === 'failed' && job.execution?.generationStatus === null) return { label: '提交失败', tone: 'error' }
+  }
+  return Object.hasOwn(mediaGenerationLabels, job.generationStatus) ? mediaGenerationLabels[job.generationStatus as MediaGenerationStatus]
+    : { label: job.generationStatus === 'NOT_SUBMITTED' ? '尚未提交' : '未知生成状态', tone: 'warning' }
+}
+
 export const mediaTrackingLabels: Record<MediaTrackingStatus, MediaStatusLabel> = {
   ACTIVE: { label: '本地跟踪中', tone: 'active' },
-  INTERRUPTED: { label: '跟踪中断，可恢复', tone: 'warning' },
+  INTERRUPTED: { label: '本地跟踪已中断', tone: 'warning' },
   AUTH_REQUIRED: { label: '需要恢复认证', tone: 'warning' },
   STOPPED: { label: '本地跟踪已停止', tone: 'neutral' },
 }
@@ -99,19 +113,37 @@ export const mediaSaveLabels: Record<MediaSaveStatus, MediaStatusLabel> = {
   MISSING: { label: '本地文件缺失', tone: 'error' },
 }
 
+export function mediaJobSaveLabel(job: { generationStatus: string; saveStatus: MediaSaveStatus; fileStatus?: string;
+  outputs?: readonly unknown[]; assets?: readonly { source: string }[] }): MediaStatusLabel {
+  if (job.saveStatus !== 'SAVED' && (job.fileStatus === 'expired' || job.generationStatus === 'RESULT_EXPIRED')) {
+    return { label: '原结果无法重新下载', tone: 'warning' }
+  }
+  if (job.saveStatus === 'PENDING' && ['FAILED', 'CANCELLED', 'NOT_SUBMITTED'].includes(job.generationStatus)
+    && !job.outputs?.length && !job.assets?.some(asset => asset.source === 'output')) {
+    return { label: '无待保存成果', tone: 'neutral' }
+  }
+  return mediaSaveLabels[job.saveStatus]
+}
+
+export function mediaStopTrackingMessage(job: MediaExecutionFields & { generationStatus: string }): string {
+  return mediaGenerationFinished(job)
+    ? '生成流程已结束，仅停止本地下载或状态查询，不会重新生成。'
+    : '仅停止本地跟踪，不会取消平台任务。平台任务可能继续生成，费用以平台最终回执为准。'
+}
+
 export function mediaJobActions(job: MediaJobView, archived: boolean): {
   stopTracking: boolean; cancelUpstream: boolean; resumeTracking: boolean; retrySave: boolean; redo: boolean
 } {
   const unfinished = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
   const generated = ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)
-  const recoverable = unfinished || (generated && ['PENDING', 'SAVING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
+  const recoverable = job.clientActions?.shouldPoll || mediaFailureNeedsBillingQuery(job.submissionFailure ?? job.failure) || unfinished || (generated && ['PENDING', 'SAVING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
   return {
     stopTracking: job.trackingStatus === 'ACTIVE' && recoverable,
     cancelUpstream: job.canCancelUpstream && ['QUEUED', 'RUNNING'].includes(job.generationStatus),
     resumeTracking: job.canResumeTracking !== false && job.trackingStatus !== 'ACTIVE' && recoverable && job.generationStatus !== 'RESULT_EXPIRED',
     retrySave: job.canRetrySave !== false && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus) && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus),
     // This rejection needs a changed input, not a copy of the rejected request.
-    redo: !archived && !unfinished && !isImageMissingTargetRejection(job.failure),
+    redo: !archived && !unfinished && job.clientActions?.canStartNewRequest !== false && !isImageMissingTargetRejection(job.failure),
   }
 }
 

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { uploadedVideoReferenceSchema, MAX_VIDEO_REFERENCE_BYTES, type UploadedVideoReference } from '../../src/shared/video-references'
 import type { z } from 'zod'
 import { z as schema } from 'zod'
 import {
@@ -9,6 +10,7 @@ import {
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { SEP_MEDIA_MOCK_PNG_BASE64, SEP_MEDIA_MOCK_PNG_SHA256 } from '../common/platform/sep-media-gateway-contract'
 import { VideoRequestError, type VideoErrorSource, type VideoRequestStage } from '../errors/video-request-error'
+import { mediaSubmissionEvidence, type MediaSubmissionEvidence } from '../common/platform/media-submission-evidence'
 import { AppError } from '../errors/app-error'
 import { inspectMediaImage } from './media-image'
 import { config } from '../common/config'
@@ -21,6 +23,7 @@ import { safeMediaUpstreamError, safeMediaUpstreamMessage } from '../common/medi
 import { readApiDiagnostic, transportApiDiagnostic } from '../common/platform/api-diagnostic'
 import type { ApiDiagnostic } from '../../src/shared/api-diagnostic'
 import { AuthApiError } from '../common/platform/platform-api'
+import { safeMediaExecutionFields } from '../common/media-execution'
 
 const id = schema.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)
 const JSON_BUDGET = 256 * 1024
@@ -28,7 +31,7 @@ const referenceBytes = Buffer.from(SEP_MEDIA_MOCK_PNG_BASE64, 'base64')
 const videoBytes = Buffer.from(fixture.mediaFixture.base64, 'base64')
 export class SepVideoGatewayError extends VideoRequestError {
   readonly gatewayCode: string
-  constructor(gatewayCode: string, statusCode = 0, stage?: VideoRequestStage, details?: { businessCode?: string | null; source?: VideoErrorSource; requestId?: string | null; message?: string; diagnostic?: ApiDiagnostic }) {
+  constructor(gatewayCode: string, statusCode = 0, stage?: VideoRequestStage, details?: { businessCode?: string | null; source?: VideoErrorSource; requestId?: string | null; message?: string; diagnostic?: ApiDiagnostic; submissionEvidence?: MediaSubmissionEvidence }) {
     super({ gatewayCode, statusCode, stage, ...details })
     this.gatewayCode = gatewayCode
     this.name = gatewayCode === 'VIDEO_ABORTED' ? 'AbortError' : 'SepVideoGatewayError'
@@ -138,9 +141,40 @@ class SepVideoGateway implements VideoGatewayPort {
         ...(value.protocolVersion === 3 ? { protocolVersion: 3 as const, specRevision: value.specRevision, effectiveSpec: value.effectiveSpec } : {}) } : {}) }
   }
 
+  async uploadVideoReference(input: { file: Blob; sha256: string; profileId: string; configVersion: string }, signal: AbortSignal, onProgress?: (percent: number) => void): Promise<UploadedVideoReference> {
+    if (this.options.mock || !input.file.size || input.file.size > MAX_VIDEO_REFERENCE_BYTES
+      || !['video/mp4', 'video/quicktime'].includes(input.file.type) || !/^[a-f0-9]{64}$/.test(input.sha256)) throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST')
+    const profileId = parse(schema.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/), input.profileId, 'VIDEO_INVALID_REQUEST')
+    const version = parse(schema.string().min(1).max(128), input.configVersion, 'VIDEO_INVALID_REQUEST')
+    const form = new FormData()
+    form.append('file', input.file, input.file.type === 'video/quicktime' ? 'reference.mov' : 'reference.mp4')
+    const encoded = new Request(this.root, { method: 'POST', body: form })
+    let sent = 0
+    const stream = encoded.body!.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({ transform(chunk, controller) {
+      signal.throwIfAborted()
+      sent += chunk.byteLength
+      onProgress?.(Math.min(99, Math.floor(sent / input.file.size * 100)))
+      controller.enqueue(chunk)
+    } }))
+    const body = new Request(this.root, { method: 'POST', headers: encoded.headers, body: stream, duplex: 'half' } as RequestInit)
+    const path = `/video-references?${new URLSearchParams({ profileId, configVersion: version })}`
+    const result = await this.json(path, 'POST', body, uploadedVideoReferenceSchema, signal)
+    if (result.profileId !== profileId || result.configVersion !== version || result.sha256.toLowerCase() !== input.sha256
+      || result.byteLength !== input.file.size || result.mimeType !== input.file.type || Date.parse(result.expiresAt) <= Date.now()) throw new SepVideoGatewayError('VIDEO_INTEGRITY_MISMATCH')
+    onProgress?.(100)
+    return result
+  }
+
   async submit(input: VideoRequest, signal: AbortSignal): Promise<VideoReceipt> {
-    const request = parse(videoRequestWithIdentitySchema, input, 'VIDEO_INVALID_REQUEST')
-    if (request.protocolVersion === 3 && this.options.mock) throw new AppError('UPGRADE_REQUIRED')
+    let request: VideoRequest
+    try {
+      signal.throwIfAborted()
+      request = parse(videoRequestWithIdentitySchema, input, 'VIDEO_INVALID_REQUEST')
+      if (request.protocolVersion === 3 && this.options.mock) throw new AppError('UPGRADE_REQUIRED')
+    } catch (error) {
+      throw new AppError(error instanceof AppError ? error.code : 'INVALID_ARGUMENT', { cause: error,
+        details: { stage: 'video-submit', submissionState: 'not_submitted', billingState: 'not_reserved', submissionConfirmedNotSent: true } })
+    }
     const { parameters: _parameters, ...versioned } = request
     const receipt = validateV3Receipt(await this.receipt('/requests', 'POST', request.protocolVersion === 3 ? versioned : request, signal), request)
     if (receipt.clientRequestId !== request.clientRequestId || receipt.profileId !== request.profileId || receipt.configVersion !== request.configVersion || receipt.operation !== request.operation) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
@@ -265,31 +299,37 @@ class SepVideoGateway implements VideoGatewayPort {
   }
 
   private async request(path: string, method: 'GET' | 'POST', body: unknown, accept: string, signal: AbortSignal): Promise<{ response: Response; token: string }> {
+    const submissionEvidence: MediaSubmissionEvidence = path === '/requests' && method === 'POST'
+      ? { submissionState: 'not_submitted', billingState: 'not_reserved' } : {}
     let token: string
     try {
       token = await abortable(signal, () => this.options.token(this.options.subscriptionId, signal))
     } catch (error) {
-      if (signal.aborted) throw new SepVideoGatewayError('VIDEO_ABORTED')
+      if (signal.aborted) throw new SepVideoGatewayError('VIDEO_ABORTED', 0, 'video-authorization', { submissionEvidence })
       if (error instanceof AuthApiError) throw new SepVideoGatewayError(error.isNetworkError ? 'VIDEO_NETWORK_ERROR' : 'VIDEO_AUTH_FAILED',
-        error.statusCode, 'video-authorization', { diagnostic: error.error.diagnostic, source: error.error.diagnostic?.source === 'upstream' ? 'upstream' : null })
+        error.statusCode, 'video-authorization', { diagnostic: error.error.diagnostic, source: error.error.diagnostic?.source === 'upstream' ? 'upstream' : null,
+          submissionEvidence })
       if (error instanceof AppError) {
-        const diagnostic = { diagnostic: error.diagnostic }
+        const diagnostic = { diagnostic: error.diagnostic, submissionEvidence }
         if (error.diagnostic?.source === 'upstream') throw new SepVideoGatewayError('VIDEO_AUTH_UNAVAILABLE', error.diagnostic.httpStatus ?? 0, 'video-authorization', { ...diagnostic, source: 'upstream' })
         if (error.code === 'NETWORK_ERROR') throw new SepVideoGatewayError('VIDEO_NETWORK_ERROR', 0, 'video-authorization', diagnostic)
         if (error.code === 'PERMISSION_DENIED') throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 403, 'video-authorization', diagnostic)
         if (error.code === 'RATE_LIMITED') throw new SepVideoGatewayError('VIDEO_AUTH_RATE_LIMITED', 429, 'video-authorization', diagnostic)
         if (error.code === 'SERVICE_UNAVAILABLE') throw new SepVideoGatewayError('VIDEO_AUTH_UNAVAILABLE', 503, 'video-authorization', diagnostic)
       }
-      throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 401, 'video-authorization')
+      throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 401, 'video-authorization', { submissionEvidence })
     }
-    if (typeof token !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 401, 'video-authorization')
+    if (typeof token !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 401, 'video-authorization', { submissionEvidence })
     const multipart = body instanceof FormData
+    const streamed = body instanceof Request
     let response: Response
     try {
       response = await abortable(signal, () => this.fetcher(`${this.root}${path}`, {
         method, signal, redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer',
-        headers: { ...this.sourceHeaders, Authorization: `Bearer ${token}`, Accept: accept, ...(body !== undefined && !multipart ? { 'Content-Type': 'application/json' } : {}) },
-        body: body === undefined ? undefined : multipart ? body : JSON.stringify(body),
+        headers: { ...this.sourceHeaders, Authorization: `Bearer ${token}`, Accept: accept,
+          ...(streamed ? { 'Content-Type': body.headers.get('Content-Type')! } : body !== undefined && !multipart ? { 'Content-Type': 'application/json' } : {}) },
+        body: body === undefined ? undefined : streamed ? body.body : multipart ? body : JSON.stringify(body),
+        ...(streamed ? { duplex: 'half' } : {}),
       }))
     } catch (error) {
       throw new SepVideoGatewayError(signal.aborted ? 'VIDEO_ABORTED' : 'VIDEO_NETWORK_ERROR', 0, undefined,
@@ -302,10 +342,13 @@ class SepVideoGateway implements VideoGatewayPort {
     if (!response.ok) {
       const stage = path.endsWith('/content') ? 'video-save' : method === 'POST' ? path === '/quotes' ? 'video-quote' : path === '/requests' ? 'video-submit' : undefined : 'video-query'
       const details = await this.errorDetails(response, signal, token)
+      const evidence = stage === 'video-submit' ? mediaSubmissionEvidence(details.diagnostic) : {}
+      const specDetails = details.specDetails
       if (details.source === 'upstream') throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status, stage, details)
-      if (details.businessCode && isMediaSpecError(details.businessCode)) throw new AppError(details.businessCode as ErrorCode, { diagnostic: details.diagnostic, details: { ...details.specDetails,
-        stage, statusCode: response.status, ...(details.requestId ? { requestId: details.requestId } : {}), ...(details.source ? { source: details.source } : {}), businessCode: details.businessCode } })
-      throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status, stage, details)
+      if (details.businessCode && isMediaSpecError(details.businessCode)) throw new AppError(details.businessCode as ErrorCode, { diagnostic: details.diagnostic, details: { ...specDetails,
+        stage, statusCode: response.status, ...(details.requestId ? { requestId: details.requestId } : {}), ...(details.source ? { source: details.source } : {}), businessCode: details.businessCode,
+        ...evidence, ...(evidence.submissionState ? { submissionConfirmedNotSent: true } : {}) } })
+      throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status, stage, { ...details, submissionEvidence: evidence })
     }
     return { response, token }
   }
@@ -333,6 +376,11 @@ class SepVideoGateway implements VideoGatewayPort {
       if (length !== null && length !== size) throw new SepVideoGatewayError('VIDEO_INVALID_RESPONSE')
       const result = parse(contract, JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))) as unknown)
       if (!result || typeof result !== 'object' || !('mock' in result) || result.mock !== this.options.mock) throw new SepVideoGatewayError('VIDEO_MODE_MISMATCH')
+      if ('receiptVersion' in result) {
+        const receipt = videoReceiptSchema.parse(result)
+        return { ...result, ...safeMediaExecutionFields(receipt, [token]),
+          ...(receipt.upstreamError ? { upstreamError: safeMediaUpstreamError(receipt.upstreamError, [token]) } : {}) }
+      }
       if ('upstreamError' in result && result.upstreamError) return { ...result, upstreamError: safeMediaUpstreamError(result.upstreamError, [token]) }
       return result
     } catch (error) {

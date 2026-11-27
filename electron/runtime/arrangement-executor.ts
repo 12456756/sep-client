@@ -726,7 +726,7 @@ export class ArrangementExecutor {
       const videoTools: VideoHostTools | undefined = bound.video && node.mediaRequirements?.length ? { ...bound.video, execute: async (name, raw, signal) => {
         try {
           const result = await bound.video!.execute(name, raw, signal)
-          if (name === 'video_generate' || name === 'video_from_image') resolveMissingSpec(mediaInputKey(name, raw))
+          if (name === 'video_generate' || name === 'video_from_image' || name === 'video_from_video') resolveMissingSpec(mediaInputKey(name, raw))
           return result
         } catch (error) { observeMissingSpec(mediaInputKey(name, raw), error); throw error }
       } } : bound.video

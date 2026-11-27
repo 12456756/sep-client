@@ -5,6 +5,7 @@ import { toLocalMediaCapabilities } from './sep-media-runtime-contract'
 import { sepRuntimeV3ProfileMetadata } from '../../../src/shared/sep-runtime-v3-contract'
 import { AppError } from '../../errors/app-error'
 import { mediaUpstreamErrorSchema } from '../../../src/shared/media-upstream-error'
+import { mediaExecutionFields, refineMediaExecution } from '../../../src/shared/media-execution'
 
 export const mediaId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const opaqueId = z.string().min(1).max(256)
@@ -92,13 +93,14 @@ export const mediaOutputSchema = z.object({
 export const mediaRecoverySchema = z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict()
 export const mediaOutputErrorsSchema = z.array(z.object({ index: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), code: mediaId }).strict())
 export const mediaReceiptSchema = z.object({
+  ...mediaExecutionFields,
   receiptId: opaqueId, clientRequestId: mediaId, profileId: opaqueId, configVersion: opaqueId,
   status: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   pollAfterMs: z.number().int().nonnegative().max(86_400_000).nullable(), outputs: z.array(mediaOutputSchema),
   actualSpec: imageRequestedSpecSchema.optional(),
   billingStatus: z.string().min(1).max(64),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(), upstreamError: mediaUpstreamErrorSchema.optional(),
-}).strict()
+}).strict().superRefine(refineMediaExecution)
 
 /** Internal port format; HTTP adapters must validate and translate their wire contracts. */
 export const mediaQuoteSchema = z.object({

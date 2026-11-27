@@ -6,7 +6,7 @@ export interface ArrangementMediaToolAvailability {
   state: 'available' | 'unavailable' | 'unknown'
   reason: 'authorized-runtime' | 'not-authorized' | 'runtime-unavailable' | 'host-unavailable' | 'runtime-not-checked'
 }
-export type ArrangementMediaTools = Record<'media_generate_image' | 'video_generate' | 'video_from_image', ArrangementMediaToolAvailability>
+export type ArrangementMediaTools = Record<'media_generate_image' | 'video_generate' | 'video_from_image', ArrangementMediaToolAvailability> & { video_from_video?: ArrangementMediaToolAvailability }
 
 export function unknownArrangementMediaTools(): ArrangementMediaTools {
   return Object.fromEntries(['media_generate_image', 'video_generate', 'video_from_image'].map(name =>
@@ -19,10 +19,10 @@ export function requiredArrangementMediaTools(node: Pick<ArrangementNode, 'media
     .map(deliverable => deliverable.artifact)
     .filter((artifact): artifact is NonNullable<NonNullable<ArrangementNode['deliverables']>[number]['artifact']> => artifact?.source === 'media-output')
   return [...new Set([
-    ...requirements.map(requirement => requirement.kind === 'image'
+    ...requirements.map(requirement => requirement.operation === 'video-to-video' ? 'video_from_video' as const : requirement.kind === 'image'
       ? 'media_generate_image' as const
       : requirement.operation === 'image-to-video' ? 'video_from_image' as const : 'video_generate' as const),
-    ...artifacts.map(artifact => artifact.kind === 'image'
+    ...artifacts.map(artifact => artifact.operation === 'video-to-video' ? 'video_from_video' as const : artifact.kind === 'image'
       ? 'media_generate_image' as const
       : artifact.operation === 'image-to-video' ? 'video_from_image' as const : 'video_generate' as const),
   ])]
@@ -43,6 +43,9 @@ export function summarizeArrangementMediaTools(input: {
     input.image?.tools.includes('media_generate_image') && input.image.profiles.some(profile => profile.operations.length > 0)
       ? { state: 'available', reason: 'authorized-runtime' } : unavailable('runtime-unavailable')
   const video = videoRuntimeSchema.safeParse(input.video)
+  if (video.success && video.data.tools.includes('video_from_video')) result.video_from_video = !input.videoHostMode ? unavailable('host-unavailable') :
+    video.data.executionAvailable && video.data.executionMode === input.videoHostMode
+      ? { state: 'available', reason: 'authorized-runtime' } : unavailable('runtime-unavailable')
   for (const name of ['video_generate', 'video_from_image'] as const) {
     result[name] = !input.videoHostMode ? unavailable('host-unavailable') :
       video.success && video.data.executionAvailable && (video.data.executionMode ?? 'mock') === input.videoHostMode && video.data.tools.includes(name)

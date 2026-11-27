@@ -1,11 +1,13 @@
 import { afterEach, test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
-import { sepRuntimeV3Fixture } from '../../src/shared/fixtures/sep-media-runtime-v3'
+import { sepRuntimeV3Fixture, sepVideoToVideoRuntimeFixture } from '../../src/shared/fixtures/sep-media-runtime-v3'
+import { VideoReferenceStore } from '../data/video-reference-store'
+import type { VideoRequest } from '../../src/shared/video-media'
 import type { VideoGenerationInput } from '../../src/shared/video-host'
 import { videoReceiptSchema, videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
 import { MockVideoMediaGateway } from '../data/mock-video-media-gateway'
@@ -18,6 +20,84 @@ import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-ho
 import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
 import { MOCK_MEDIA_PNG } from '../data/mock-media-gateway'
 import { referenceImages } from '../data/media-reference.test-helper'
+
+test('video-to-video freezes ordered reference IDs, recovers a lost submission and never uploads or submits it again', async t => {
+  const f = await realSetup()
+  f.state.runtime = videoRuntimeSchema.parse(sepVideoToVideoRuntimeFixture())
+  const references = new VideoReferenceStore(f.root)
+  const original = Buffer.alloc(32); original.writeUInt32BE(24, 0); original.write('ftypisom', 4)
+  const path = join(f.root, 'original.mp4'); await writeFile(path, original)
+  const imported = await references.import(scope, 'task-a', [path, path], f.state.runtime.profiles[0].videoReferenceSupport!, new AbortController().signal, () => {})
+  const order = [...imported].reverse().map(asset => asset.localAssetId)
+  let uploads = 0, quotes = 0, submits = 0, finds = 0
+  let frozen: VideoRequest | undefined
+  const receipt = () => videoReceiptSchema.parse({ ...fixture.receipt, mock: false, protocolVersion: 3, semanticHashVersion: 3, specRevision: 1,
+    effectiveSpec: frozen!.requestedSpec, billingStatus: 'RESERVED', receiptId: 'v2v-receipt', clientRequestId: frozen!.clientRequestId,
+    profileId: frozen!.profileId, configVersion: frozen!.configVersion, operation: 'video-to-video' })
+  const options: MockVideoHostOptions = { ...f.options, videoReferences: references, gateway: () => ({ ...f.options.gateway(scope),
+    uploadVideoReference: async (input, _signal, progress) => {
+      assert.equal(input.file.type, 'video/mp4'); progress?.(50)
+      return { mock: false, kind: 'video', referenceId: `sep-video-${++uploads}`, profileId: input.profileId, configVersion: input.configVersion,
+        mimeType: 'video/mp4', sha256: input.sha256, byteLength: input.file.size, expiresAt: new Date(Date.now() + 60_000).toISOString() }
+    },
+    quote: async request => {
+      quotes++; assert.deepEqual(request.referenceIds, []); assert.deepEqual(request.videoReferenceIds, ['sep-video-1', 'sep-video-2']); assert.equal(request.parameters.audio, false)
+      return { quoteId: 'v2v-quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.100000', currency: 'CNY', protocolVersion: 3, specRevision: 1, effectiveSpec: request.parameters }
+    },
+    submit: async request => { submits++; frozen = request; throw new Error('response disconnected') },
+    findReceipt: async id => { finds++; assert.equal(id, frozen!.clientRequestId); return receipt() },
+    getReceipt: async () => receipt(),
+  }) }
+  const host = new MockVideoHostService(options)
+  t.after(async () => { await host.stopAll(); await f.host.stopAll() })
+  const input: VideoGenerationInput = { profileId: 'video_example', operation: 'video-to-video', localAssetIds: [], localVideoAssetIds: order,
+    creativeBrief: 'Change to a night scene', protocolVersion: 3, requestedSpec: { durationSeconds: 5, audio: false }, parameters: { durationSeconds: 5, audio: false },
+    specRevision: 1, parameterSources: { durationSeconds: 'user', audio: 'user' } }
+  const run = { runId: 'v2v-run' }
+  const unknown = await host.generate('task-a', input, undefined, run)
+  assert.equal(unknown.generationStatus, 'SUBMISSION_UNKNOWN')
+  assert.deepEqual((await f.store.getJob(scope, 'task-a', unknown.jobId))?.localReferenceIds, order)
+  assert.deepEqual(frozen!.videoReferenceIds, ['sep-video-1', 'sep-video-2'])
+  const view = await host.getTaskVideo('task-a')
+  assert.equal(view.referenceVideos?.length, 2)
+  assert.ok(view.referenceVideos?.every(asset => asset.uploadStatus === 'UPLOADED'))
+  assert.doesNotMatch(JSON.stringify(view.referenceVideos), /sep-video-|"sha256"|"referenceId"/)
+  await host.stopAll()
+  const reopened = new MockVideoHostService(options)
+  t.after(() => reopened.stopAll())
+  const recovered = await reopened.resume('task-a', unknown.jobId)
+  assert.notEqual(recovered.generationStatus, 'SUBMISSION_UNKNOWN')
+  assert.equal((await reopened.generate('task-a', input, undefined, run)).jobId, unknown.jobId)
+  assert.deepEqual({ uploads, quotes, submits, finds }, { uploads: 2, quotes: 1, submits: 1, finds: 1 })
+})
+
+test('cancelled reference upload leaves originals available and creates no generation or billing record', async t => {
+  const f = await realSetup()
+  f.state.runtime = videoRuntimeSchema.parse(sepVideoToVideoRuntimeFixture())
+  const references = new VideoReferenceStore(f.root)
+  const original = Buffer.alloc(32); original.writeUInt32BE(24, 0); original.write('ftypisom', 4)
+  const path = join(f.root, 'cancel.mp4'); await writeFile(path, original)
+  const [asset] = await references.import(scope, 'task-a', [path], f.state.runtime.profiles[0].videoReferenceSupport!, new AbortController().signal, () => {})
+  let start!: () => void
+  const started = new Promise<void>(resolve => { start = resolve })
+  const host = new MockVideoHostService({ ...f.options, videoReferences: references, gateway: () => ({ ...f.options.gateway(scope),
+    uploadVideoReference: async (_input, signal) => { start(); return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })) },
+  }) })
+  t.after(async () => { await host.stopAll(); await f.host.stopAll() })
+  const upload = host.retryVideoReferenceUpload('task-a', asset.localAssetId, 'video_example')
+  const rejected = assert.rejects(upload)
+  await started
+  const sharedUpload = host.retryVideoReferenceUpload('task-a', asset.localAssetId, 'video_example')
+  const sharedRejected = assert.rejects(sharedUpload)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await host.cancelVideoReferenceUpload('task-a', asset.localAssetId)
+  await rejected; await sharedRejected
+  const view = await host.getTaskVideo('task-a')
+  assert.equal(view.referenceVideos?.[0].uploadStatus, 'FAILED')
+  assert.match(view.referenceVideos?.[0].uploadError ?? '', /取消/)
+  assert.deepEqual(await f.store.listJobs(scope), [])
+  assert.equal((await references.list(scope, 'task-a'))[0].status, 'SAVED')
+})
 
 test('V3 video uploads all selected references before one quote and one submission', async () => {
   const f = await realSetup()
@@ -141,7 +221,28 @@ function afterQuote(f: Awaited<ReturnType<typeof setup>>, change: () => void) {
   } }) })
 }
 
-test('real host keeps an existing video mode prefix and freezes the submitted prompt', async t => {
+test('receipt v2 with an unconfirmed submission restores the same request instead of creating another paid attempt', async t => {
+  const f = await realSetup()
+  const source = f.options.gateway(scope)
+  const host = new MockVideoHostService({ ...f.options, gateway: () => ({ ...source,
+    submit: async (input, signal) => ({ ...await source.submit(input, signal), status: 'SUBMISSION_UNKNOWN',
+      receiptVersion: 2, fileStatus: 'pending', outputs: [], pollAfterMs: 3000,
+      execution: { requestId: 'original-upstream-id', taskId: null, submissionStatus: 'unknown', generationStatus: null,
+        isFinal: null, observedAt: null, statusSource: null, billing: { status: 'unknown', actualCostUsd: null } },
+      clientActions: { submissionFinished: false, generationFinished: false, shouldPoll: true, pollPurpose: 'submission',
+        canStartNewRequest: false, canRetryDownload: false } }),
+  }) })
+  t.after(async () => { await host.stopAll(); await f.host.stopAll() })
+  const original = await host.generate('task-a', input())
+  const restored = await host.generate('task-a', input())
+  assert.equal(restored.jobId, original.jobId)
+  assert.equal(restored.execution?.billing.actualCostUsd, null)
+  assert.equal(f.gateway.calls.submit, 1)
+  assert.equal(f.gateway.calls.quote, 1)
+  assert.equal(f.state.uploads, 1)
+})
+
+test('real host keeps an existing video mode prefix and shows the frozen prompt for approval', async t => {
   const f = await realSetup()
   t.after(() => f.host.stopAll())
   const creativeBrief = 'Animate the provided image(s) according to the following instructions.\n\nSlow product movement'
@@ -238,7 +339,7 @@ test('lost real submit response recovers original request and never repeats subm
   }) })
   const unknown = await host.generate('task-a', input())
   assert.equal(unknown.generationStatus, 'SUBMISSION_UNKNOWN')
-  assert.equal(unknown.billingStatus, 'RECONCILING')
+  assert.equal(unknown.billingStatus, 'UNKNOWN')
   await host.stopAll()
   const restored = new MockVideoHostService(f.options)
   await restored.resume('task-a', unknown.jobId)
@@ -364,12 +465,20 @@ for (const phase of ['query', 'download'] as const) test(`recovery delivers anot
     },
   }) })
   t.after(() => reopened.stopAll())
-  await reopened.track('task-a')
+  const tracking = reopened.track('task-a')
+  let savedFast = false
+  for (let attempt = 0; attempt < 500; attempt++) {
+    if ((await f.store.getJob(scope, 'task-a', fast.jobId))?.saveStatus === 'SAVED') { savedFast = true; break }
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(savedFast, true, 'A sibling must finish while the other task waits for Retry-After')
   const pending = await f.store.getJob(scope, 'task-a', slow.jobId)
   assert.ok(phase === 'query' ? pending?.queryRateLimit : pending?.downloadRateLimit)
   assert.equal(rateLimits, 1)
   assert.equal((await f.store.getJob(scope, 'task-a', fast.jobId))?.saveStatus, 'SAVED')
   assert.equal(f.gateway.calls.submit, 2)
+  await reopened.stopAll()
+  await tracking
 })
 
 async function arrangementOutput(real: boolean, overrides: Partial<ArrangementMediaLink> = {}) {
@@ -1132,7 +1241,7 @@ test('V3 submit failures retain diagnostics without a same-run retry', async () 
   const host = new MockVideoHostService(options)
   const run = { runId: 'video-diagnostics' }
   const first = await host.generateTool('task-a', 'video_generate', raw, undefined, run)
-  assert.equal(first.generationStatus, 'SUBMISSION_UNKNOWN'); assert.equal(first.billingStatus, 'RECONCILING')
+  assert.equal(first.generationStatus, 'SUBMISSION_UNKNOWN'); assert.equal(first.billingStatus, 'UNKNOWN')
   assert.equal(first.specFailure?.requestedValue, '8k'); assert.deepEqual(first.specFailure?.alternatives, [{ resolution: '1080p' }])
   const duplicate = await host.generateTool('task-a', 'video_generate', raw, undefined, run)
   assert.equal(duplicate.jobId, first.jobId)
@@ -1140,8 +1249,8 @@ test('V3 submit failures retain diagnostics without a same-run retry', async () 
   const reopened = new MockVideoHostService(options)
   const saved = (await reopened.getTaskVideo('task-a')).jobs.find(job => job.jobId === first.jobId)!
   assert.deepEqual(saved.specFailure, first.specFailure)
-  await assert.rejects(reopened.generateTool('task-a', 'video_generate', { ...raw, specRevision: 3, requestedSpec: { resolution: '1080p' } }, undefined, run), { code: 'CONFLICT' })
-  assert.equal(quotes, 1); assert.equal(submissions, 1)
+  await assert.rejects(reopened.generateTool('task-a', 'video_generate', { ...raw, specRevision: 3, requestedSpec: { resolution: '1080p' } }), { code: 'SPEC_CONFLICT' })
+  assert.equal(quotes, 2); assert.equal(submissions, 1)
   assert.equal((saved.failure?.diagnostic?.body as { error: { message: string } }).error.message, 'Unsupported resolution')
   assert.doesNotMatch(JSON.stringify(saved), /private-secret|test-token/)
   await reopened.stopAll()

@@ -2,7 +2,7 @@ import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types
 import type { MediaJobCreated } from './media-tools'
 
 /** V0 deliberately excludes cancellation until the video host supports it. */
-export type VideoToolName = 'video_from_image' | 'video_generate' | 'video_get_job'
+export type VideoToolName = 'video_from_image' | 'video_from_video' | 'video_generate' | 'video_get_job'
 
 /** Trusted task-scoped facade; the host validates authorization and quotes. */
 export interface VideoHostTools {
@@ -21,6 +21,8 @@ export interface VideoRunPort {
     /** Persist the node association before the first generation submission. */
     onJobCreated?: (job: MediaJobCreated) => Promise<void>
     recoverJobIds?: readonly string[]
+    /** Provider cooldowns pause the conversation's active wait budget. */
+    onRecoveryWait?: (jobId: string, operation: string, retryAt?: number) => void
     /** Stop the current employee turn after an external media submission failure. */
     onTerminalFailure?: (error: unknown) => void | Promise<void>
   }): Promise<VideoHostTools | undefined>

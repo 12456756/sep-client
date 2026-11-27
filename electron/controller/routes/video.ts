@@ -12,6 +12,8 @@ const taskId = videoLocalIdSchema
 const jobInput = z.object({ taskId, jobId: videoLocalIdSchema }).strict()
 const outputInput = jobInput.extend({ outputId: videoLocalIdSchema })
 const options = { errorShape: 'ipc' as const }
+const profileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
+const videoReferenceInput = z.object({ taskId, localAssetId: z.string().regex(/^vref_[a-f0-9]{32}$/) }).strict()
 function host(ctx: RequestContext) {
   if (!ctx.video) throw appError('SERVICE_UNAVAILABLE')
   return ctx.video
@@ -22,6 +24,26 @@ function track(ctx: RequestContext, taskId: string): void {
 }
 
 export const videoRoutes = [
+  route(INVOKE_CHANNELS.VIDEO_IMPORT_VIDEO_REFERENCES, z.object({ taskId, profileId }).strict(), async (ctx, input) => {
+    const selection = await host(ctx).nativeSelection(input.taskId)
+    const window = ctx.window()
+    if (!window) throw appError('INTERNAL_ERROR')
+    const result = await dialog.showOpenDialog(window, { title: '选择参考视频', properties: ['openFile', 'multiSelections'], filters: [{ name: '参考视频', extensions: ['mp4', 'mov'] }] })
+    if (result.canceled) return { success: true, data: [] }
+    return { success: true, data: await selection.importVideos(result.filePaths, input.profileId) }
+  }, options),
+  route(INVOKE_CHANNELS.VIDEO_UPLOAD_VIDEO_REFERENCE, videoReferenceInput.extend({ profileId }).strict(), async (ctx, input) => {
+    await host(ctx).retryVideoReferenceUpload(input.taskId, input.localAssetId, input.profileId)
+    return { success: true }
+  }, options),
+  route(INVOKE_CHANNELS.VIDEO_CANCEL_REFERENCE_UPLOAD, videoReferenceInput, async (ctx, input) => {
+    await host(ctx).cancelVideoReferenceUpload(input.taskId, input.localAssetId)
+    return { success: true }
+  }, options),
+  route(INVOKE_CHANNELS.VIDEO_REMOVE_VIDEO_REFERENCE, videoReferenceInput, async (ctx, input) => {
+    await host(ctx).removeVideoReference(input.taskId, input.localAssetId)
+    return { success: true }
+  }, options),
   route(INVOKE_CHANNELS.VIDEO_GET_TASK, taskId, async (ctx, id) => {
     if (!ctx.video) return { success: true, data: null }
     try { return { success: true, data: await ctx.video.getTaskVideo(id) } } catch (error) {

@@ -17,9 +17,15 @@ import { logger } from '../common/logger'
 import { mediaRetryDeferred } from '../domain/media-retry-gate'
 import { mediaCooldownError, mediaRateLimit } from '../errors/media-rate-limit'
 import type { VideoTrackingSelection } from './video-tracker'
+import { mediaGenerationState } from '../../src/shared/media-execution'
+import { mediaSubmissionRejected, mediaFailureNeedsBillingQuery } from '../../src/shared/media-failure'
+import { safeMediaExecutionFields } from '../common/media-execution'
+import { retryRateLimited, waitForRetry } from '../common/rate-limit-retry'
+import { mediaSubmissionRecovery } from '../common/media-recovery'
 
 type VideoInput = z.infer<typeof videoRequestSchema>
 export interface VideoServiceOptions {
+  onRecoveryWait?: (jobId: string, operation: string, retryAt?: number) => void
   onOutputSaved?: (scope: VideoScope, taskId: string, jobId: string, outputId: string, when: number, startedAt: number) => void
   /** One immutable authenticated scope and one gateway bound to that subscription. */
   scope: VideoScope
@@ -28,11 +34,13 @@ export interface VideoServiceOptions {
   store: VideoStorePort
   now?: () => number
   retryFloorMs?: number
+  operationTimeoutMs?: number
 }
 const activities = new WriteChain()
 const generating = new Set(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'])
 const terminal = new Set(['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'])
 function tracking(receipt: VideoReceipt): boolean {
+  if (receipt.receiptVersion === 2 && receipt.clientActions) return receipt.clientActions.shouldPoll && receipt.recovery.canQuery
   return generating.has(receipt.status) || !receipt.mock && videoBillingPending(receipt.billingStatus) && receipt.recovery.canQuery
 }
 function interrupted(error: unknown, fallback: string): Pick<LocalVideoJob, 'trackingStatus' | 'error'> {
@@ -51,6 +59,11 @@ export class VideoService {
   private readonly retryFloorMs: number
   private readonly shutdown = new AbortController()
   private readonly onOutputSaved: VideoServiceOptions['onOutputSaved']
+  private readonly onRecoveryWait: VideoServiceOptions['onRecoveryWait']
+  private readonly operationTimeoutMs: number
+  private rateLimitRecoveryAt = 0
+
+  recoveredFromRateLimitAt(): number { return this.rateLimitRecoveryAt }
 
   constructor(options: VideoServiceOptions) {
     this.scope = videoScopeSchema.parse(options.scope)
@@ -60,6 +73,26 @@ export class VideoService {
     this.mode = options.executionMode ?? 'mock'
     this.retryFloorMs = options.retryFloorMs ?? 1_000
     this.onOutputSaved = options.onOutputSaved
+    this.onRecoveryWait = options.onRecoveryWait
+    this.operationTimeoutMs = options.operationTimeoutMs ?? (this.mode === 'real' ? 360_000 : 60_000)
+  }
+  private async network<T>(call: (signal: AbortSignal) => Promise<T>, parent: AbortSignal, job?: LocalVideoJob, submitting = false, querying = false): Promise<T> {
+    const notBefore = Math.max(job?.rateLimitRetryAt ?? 0, querying ? job?.nextPollAt ?? 0 : 0)
+    if (job && notBefore > 0) {
+      this.onRecoveryWait?.(job.jobId, 'submission', notBefore)
+      await waitForRetry(Math.max(0, notBefore - this.now()), this.signal(parent))
+      this.onRecoveryWait?.(job.jobId, 'submission')
+      this.rateLimitRecoveryAt = this.now()
+      await this.store.updateJob(this.scope, job.taskId, job.jobId, previous => ({ ...previous, rateLimitRetryAt: undefined,
+        ...(querying ? { nextPollAt: undefined } : {}) }))
+    }
+    return retryRateLimited(call, { signal: this.signal(parent), timeoutMs: this.operationTimeoutMs, preserveWaitOnAbort: true,
+      shouldRetry: job ? submitting ? error => !mediaSubmissionRecovery(error, job.request.clientRequestId, this.now()) : () => false : undefined,
+      onWait: job ? async wait => {
+        this.onRecoveryWait?.(job.jobId, 'submission', wait?.retryAt)
+        if (wait === undefined) this.rateLimitRecoveryAt = this.now()
+        await this.store.updateJob(this.scope, job.taskId, job.jobId, previous => ({ ...previous, rateLimitRetryAt: wait?.retryAt }))
+      } : undefined })
   }
   private signal(parent?: AbortSignal): AbortSignal {
     return parent ? AbortSignal.any([parent, this.shutdown.signal]) : this.shutdown.signal
@@ -74,18 +107,18 @@ export class VideoService {
     if ((job.executionMode ?? 'mock') !== this.mode) throw new AppError('PERMISSION_DENIED')
     return job
   }
-  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'failure' | 'submissionFailure' | 'diagnosticErrors' | 'specFailure' | 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error' | 'lastQueriedAt' | 'providerWaitMs' | 'downloadMs' | 'queryRateLimit' | 'downloadRateLimit'>>): Promise<LocalVideoJob> {
+  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'failure' | 'submissionFailure' | 'diagnosticErrors' | 'specFailure' | 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error' | 'lastQueriedAt' | 'providerWaitMs' | 'downloadMs' | 'queryRateLimit' | 'downloadRateLimit' | 'recoveryReceiptId' | 'rateLimitRetryAt' | 'nextPollAt'>>): Promise<LocalVideoJob> {
     return this.store.updateJob(this.scope, job.taskId, job.jobId, previous => ({ ...previous, ...fields, updatedAt: Math.max(this.now(), previous.updatedAt) }))
   }
 
   /** Quote, then durably freeze identity and parameters before any submit call. */
-  async prepare(taskId: string, value: VideoInput, parent?: AbortSignal, runId?: string, previousUnconfirmedJobIds: readonly string[] = []): Promise<LocalVideoJob> {
+  async prepare(taskId: string, value: VideoInput, parent?: AbortSignal, runId?: string, previousUnconfirmedJobIds: readonly string[] = [], localReferenceIds?: readonly string[]): Promise<LocalVideoJob> {
     videoLocalIdSchema.parse(taskId)
     if (runId !== undefined) videoLocalIdSchema.parse(runId)
     const signal = this.signal(parent)
     signal.throwIfAborted()
     const input = videoRequestSchema.parse(value)
-    const quote = videoStoredQuoteSchema.parse(await abortableVideo(this.gateway.quote(structuredClone(input), signal), signal))
+    const quote = videoStoredQuoteSchema.parse(await this.network(bounded => this.gateway.quote(structuredClone(input), bounded), signal))
     signal.throwIfAborted()
     if (quote.status !== 'quoted' || quote.expiresAt <= this.now()) throw new Error('Video quote is unavailable or expired.')
     if (input.protocolVersion === 3 && (quote.protocolVersion !== 3 || quote.specRevision !== input.specRevision || !quote.effectiveSpec || !mediaSpecsEqual(input.requestedSpec!, quote.effectiveSpec))) {
@@ -95,6 +128,7 @@ export class VideoService {
     const job: LocalVideoJob = {
       version: 1, executionMode: this.mode, scope: { ...this.scope }, taskId, jobId: `video_${randomUUID()}`,
       ...(runId ? { runId } : {}),
+      ...(localReferenceIds ? { localReferenceIds: [...localReferenceIds] } : {}),
       ...(previousUnconfirmedJobIds.length ? { previousUnconfirmedJobIds: [...previousUnconfirmedJobIds] } : {}),
       request: { ...input, clientRequestId: `video_request_${randomUUID()}`, quoteId: quote.quoteId }, quote,
       submission: 'NOT_SENT', receipt: null, trackingStatus: 'ACTIVE', saveStatus: 'PENDING', error: null, createdAt: now, updatedAt: now,
@@ -123,12 +157,19 @@ export class VideoService {
       let receipt: VideoReceipt
       try {
         signal.throwIfAborted()
-        receipt = await abortableVideo(this.gateway.submit(structuredClone(job.request), signal), signal)
+        receipt = await this.network(bounded => this.gateway.submit(structuredClone(job.request), bounded), signal, job, true)
       } catch (error) {
         const failure = mediaJobFailure(error, 'video-submit')
         const diagnosticErrors = appendMediaDiagnosticError(job.diagnosticErrors, 'video-submit', error, this.now())
-        if (error instanceof VideoRequestError && error.definitelyRejected) {
-          return this.update(job, { trackingStatus: 'STOPPED', error: error.businessCode, failure, diagnosticErrors })
+        const recovery = mediaSubmissionRecovery(error, job.request.clientRequestId, this.now())
+        if (recovery) {
+          this.onRecoveryWait?.(job.jobId, 'submission', recovery.retryAt)
+          return this.update(job, { recoveryReceiptId: recovery.receiptId, rateLimitRetryAt: recovery.retryAt,
+            trackingStatus: 'ACTIVE', error: recovery.retryAt === undefined ? failure.code : null, failure, diagnosticErrors })
+        }
+        if (mediaSubmissionRejected(failure) || error instanceof VideoRequestError && error.definitelyRejected) {
+          return this.update(job, { trackingStatus: mediaFailureNeedsBillingQuery(failure) ? 'ACTIVE' : 'STOPPED',
+            error: failure.businessCode ?? failure.code, failure, submissionFailure: failure, diagnosticErrors })
         }
         // Persist uncertainty, never label a lost response as failure/success or re-submit.
         const specDiagnostic = error instanceof AppError && isMediaSpecError(error.code) ? videoSpecFailureSchema.safeParse(mediaToolFailureFrom(error).error) : undefined
@@ -145,20 +186,33 @@ export class VideoService {
 
   private async accept(job: LocalVideoJob, value: VideoReceipt): Promise<LocalVideoJob> {
     const parsed = videoReceiptSchema.parse(value)
-    const receipt = parsed.upstreamError ? { ...parsed, upstreamError: safeMediaUpstreamError(parsed.upstreamError) } : parsed
-    if (!receiptMatchesRequest(job, receipt) || (job.receipt && job.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')
+    const receipt = { ...parsed, ...safeMediaExecutionFields(parsed),
+      ...(parsed.upstreamError ? { upstreamError: safeMediaUpstreamError(parsed.upstreamError) } : {}) }
+    if (!receiptMatchesRequest(job, receipt) || (job.receipt && job.receipt.receiptId !== receipt.receiptId)
+      || job.recoveryReceiptId !== undefined && job.recoveryReceiptId !== receipt.receiptId) throw new Error('Video receipt differs from original request.')
     return this.store.updateJob(this.scope, job.taskId, job.jobId, previous => {
       if (!receiptMatchesRequest(previous, receipt) || (previous.receipt && previous.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')
-      if (previous.receipt && terminal.has(previous.receipt.status) && !terminal.has(receipt.status)) return previous
-      const isTerminal = terminal.has(receipt.status)
+      if (previous.receipt?.receiptVersion === 2 && receipt.receiptVersion !== 2) return previous
+      if (receipt.execution && ['unobserved', 'not_applicable'].includes(receipt.execution.submissionStatus)) {
+        if (!previous.receipt?.execution) return previous
+        return { ...previous, receipt: { ...previous.receipt, execution: { ...previous.receipt.execution,
+          ...(receipt.execution.operationError ? { operationError: receipt.execution.operationError } : {}) } },
+          updatedAt: Math.max(this.now(), previous.updatedAt) }
+      }
+      const status = mediaGenerationState(receipt.status, receipt)
+      if (videoSubmissionRejected(previous) && !['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(status)) return previous
+      if (previous.receipt && terminal.has(mediaGenerationState(previous.receipt.status, previous.receipt)) && !terminal.has(status)) return previous
+      const isTerminal = terminal.has(status)
       const prior = previous.receipt
       const sameGeneration = prior && terminal.has(prior.status) && (prior.status === receipt.status || receipt.status === 'RESULT_EXPIRED')
       const next = sameGeneration ? { ...receipt, outputErrors: receipt.outputErrors ?? prior.outputErrors,
-        upstreamError: receipt.upstreamError ?? prior.upstreamError } : receipt
-      const unknown = receipt.status === 'SUBMISSION_UNKNOWN'
+        upstreamError: receipt.upstreamError ?? (receipt.receiptVersion === 2 ? undefined : prior.upstreamError) } : receipt
+      const unknown = status === 'SUBMISSION_UNKNOWN'
+      this.onRecoveryWait?.(job.jobId, 'query')
       const submissionFailure = unknown ? previous.submissionFailure ?? (previous.failure?.stage === 'video-submit' ? previous.failure : undefined) : undefined
       const saveFailure = sameGeneration && previous.failure?.stage === 'video-save' && previous.saveStatus === 'SAVE_FAILED' ? previous.failure : undefined
-      return { ...previous, receipt: next, specFailure: unknown ? previous.specFailure : undefined, failure: saveFailure, submissionFailure,
+      return { ...previous, receipt: next, rateLimitRetryAt: undefined,
+        nextPollAt: tracking(receipt) && receipt.pollAfterMs !== null ? this.now() + receipt.pollAfterMs : undefined, specFailure: unknown ? previous.specFailure : undefined, failure: saveFailure, submissionFailure,
         queryRateLimit: undefined,
         submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode,
         ...(isTerminal && previous.providerWaitMs === undefined ? { providerWaitMs: Math.max(0, this.now() - previous.createdAt) } : {}),
@@ -183,6 +237,7 @@ export class VideoService {
       return job
     }
     job = await this.update(job, { saveStatus: 'SAVING' })
+    this.onRecoveryWait?.(job.jobId, 'download')
     let failed = false
     let downloadRateLimit: LocalVideoJob['downloadRateLimit']
     let failure: LocalVideoJob['failure']
@@ -200,17 +255,20 @@ export class VideoService {
         if (!receipt.recovery.canDownload || (output.expiresAt && Date.parse(output.expiresAt) <= this.now())) throw new Error('Original video output is unavailable.')
         // Lazily open content only if the store actually needs bytes; concurrent
         // stores or commit recovery can deduplicate without another download.
-        const gateway = this.gateway
-        const source = (async function* () {
-          const content = await abortableVideo(gateway.content(receipt.receiptId, output.outputId, signal), signal)
-          yield* content
-        })()
-        const saved = await this.store.saveOutput(this.scope, job.taskId, job.jobId, output, source, signal)
-        this.onOutputSaved?.(this.scope, job.taskId, job.jobId, output.outputId, saved.createdAt, job.createdAt)
+        await this.network(async bounded => {
+          const gateway = this.gateway
+          const source = (async function* () {
+            const content = await abortableVideo(gateway.content(receipt.receiptId, output.outputId, bounded), bounded)
+            yield* content
+          })()
+          const saved = await this.store.saveOutput(this.scope, job.taskId, job.jobId, output, source, bounded)
+          this.onOutputSaved?.(this.scope, job.taskId, job.jobId, output.outputId, saved.createdAt, job.createdAt)
+        }, signal, job)
       } catch (error) {
         failed = true
         failure = mediaJobFailure(error, 'video-save')
         downloadRateLimit = mediaRateLimit(error, this.now(), this.retryFloorMs)
+        if (downloadRateLimit?.automatic) this.onRecoveryWait?.(job.jobId, 'download', downloadRateLimit.retryAt)
         diagnosticErrors = appendMediaDiagnosticError(diagnosticErrors, 'video-save', error, this.now())
         logger.child('video-service').warn('original video download failed', { taskId: job.taskId, jobId: job.jobId, outputId: output.outputId,
           ...failure })
@@ -239,7 +297,9 @@ export class VideoService {
       const signal = this.signal(parent)
       signal.throwIfAborted()
       let job = await this.load(taskId, jobId)
-      if (videoSubmissionRejected(job)) return job
+      if (job.queryRateLimit?.automatic) this.onRecoveryWait?.(job.jobId, 'query', job.queryRateLimit.retryAt)
+      if (job.downloadRateLimit?.automatic) this.onRecoveryWait?.(job.jobId, 'download', job.downloadRateLimit.retryAt)
+      if (videoSubmissionRejected(job) && !mediaFailureNeedsBillingQuery(job.submissionFailure ?? job.failure)) return job
       // Recheck under the activity lock: another recovery may just have lost auth.
       if (automatic && job.trackingStatus === 'AUTH_REQUIRED') return job
       if (job.submission === 'NOT_SENT') return this.update(job, { trackingStatus: 'STOPPED', error: 'NOT_SUBMITTED' })
@@ -253,11 +313,12 @@ export class VideoService {
         const queriedAt = this.now()
         job = await this.update(job, { lastQueriedAt: queriedAt })
         try {
-          receipt = job.receipt
-            ? await abortableVideo(this.gateway.getReceipt(job.receipt.receiptId, signal), signal)
-            : await abortableVideo(this.gateway.findReceipt(job.request.clientRequestId, signal), signal)
+          receipt = await this.network(bounded => (job.receipt?.receiptId ?? job.recoveryReceiptId)
+            ? this.gateway.getReceipt((job.receipt?.receiptId ?? job.recoveryReceiptId)!, bounded)
+            : this.gateway.findReceipt(job.request.clientRequestId, bounded), signal, job, false, true)
         } catch (error) {
           const gate = mediaRateLimit(error, this.now(), this.retryFloorMs)
+          if (gate?.automatic) this.onRecoveryWait?.(job.jobId, 'query', gate.retryAt)
           const queryFailure = { ...interrupted(error, 'VIDEO_QUERY_INTERRUPTED'),
             ...(gate?.automatic === false ? { trackingStatus: 'STOPPED' as const } : {}), queryRateLimit: gate, failure: mediaJobFailure(error, 'video-query'),
             diagnosticErrors: appendMediaDiagnosticError(job.diagnosticErrors, 'video-query', error, queriedAt),
