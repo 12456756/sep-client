@@ -12,6 +12,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const creationNavigationOnly = process.argv.includes('--creation-navigation')
 const creationDeletionOnly = process.argv.includes('--creation-deletion')
 const historyLabelsOnly = process.argv.includes('--history-labels')
+const groupingOnly = process.argv.includes('--task-grouping')
 const defaultWorkspaceOnly = process.argv.includes('--default-workspace')
 const outputDirectoryOnly = process.argv.includes('--output-directory')
 const fixture = `
@@ -96,7 +97,10 @@ window.electronAPI = {
  },
  async editScheduledTask(value) { counters.edit++; return change(value, item => { item.input = value.input; item.enabled = false; item.nextRunAt = null; item.pausedAt = null; }); },
  async planScheduledTask(value) { counters.plan++; return change(value, item => { item.planInputKey = 'key'; item.plan = { status: 'ready', objective: '生成行业报告', instruction: '读取当前员工技能，研究并生成可用文件。', expectedOutput: '行业报告.docx', deliverables: [{id: 'report', name: '行业报告', path: 'report.docx', format: 'docx', contentOutline: ['趋势', '建议'], acceptanceCriteria: ['来源清晰', '文件可用']}] }; }); },
- async confirmScheduledTask(value) { return change(value, item => { item.enabled = true; item.nextRunAt = item.input.scheduledAt; item.pausedAt = null; }); },
+ async confirmScheduledTask(value) {
+  if (window.rejectEnable) { window.rejectEnable = false; return { success: false, error: { message: '测试：启用暂不可用' } }; }
+  return change(value, item => { item.enabled = true; item.nextRunAt = item.input.scheduledAt; item.pausedAt = null; });
+ },
  async pauseScheduledTask(value) { return change(value, item => { item.enabled = false; item.nextRunAt = null; item.pausedAt = Date.now(); }); },
  async deleteScheduledTask(value) { return change(value, item => { item.deleted = true; item.enabled = false; item.nextRunAt = null; item.pausedAt = null; }); },
  async checkScheduledRun(id) { counters.check++; data.occurrences.find(run => run.id === id).status = 'pending'; return {success: true}; },
@@ -160,7 +164,7 @@ const screenshots = process.env.SCHEDULED_UI_OUTPUT_DIR || resolve(tmpdir(), 'se
 let browser
 try {
   browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge' })
-  if (!historyLabelsOnly && !outputDirectoryOnly && !creationDeletionOnly) await mkdir(screenshots, { recursive: true })
+  if (!groupingOnly && !historyLabelsOnly && !outputDirectoryOnly && !creationDeletionOnly) await mkdir(screenshots, { recursive: true })
   for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 620 }, { width: 1000, height: 760 }, { width: 760, height: 900 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport })
     const errors = []
@@ -284,6 +288,49 @@ try {
       await page.close()
       continue
     }
+    if (groupingOnly) {
+      await page.getByRole('button', { name: '新建任务', exact: true }).first().waitFor()
+      await page.evaluate(async () => {
+        const request = { requestId: '12345678-1234-4234-8234-123456789abc', message: '每天整理资料', modelId: 'test-model', workDir: 'D:/reports', timezone: 'Asia/Shanghai', permissions: { preset: 'workspace-edit', approvalMode: 'confirm-each' } }
+        await window.electronAPI.submitScheduledCreation(request)
+        const item = window.testData.definitions[0]
+        item.input = { ...item.input, scheduledAt: Date.now() - 3600000, recurrence: { frequency: 'once', interval: 1 } }
+        window.seedRun('completed')
+      })
+      const sidebar = page.getByRole('complementary', { name: '定时任务导航' })
+      assert.deepEqual((await sidebar.locator('summary').allTextContents()).map(text => text.replace(/\d+$/, '')), ['已启用', '未启用', '历史记录'])
+      await sidebar.locator('summary').filter({ hasText: '历史记录' }).click()
+      const history = sidebar.getByRole('region', { name: '历史记录的定时任务' })
+      await history.getByRole('button', { name: /自然语言报告.*已结束/ }).click()
+      await page.getByRole('tab', { name: '任务配置', exact: true }).click()
+      await page.getByRole('button', { name: '编辑任务配置', exact: true }).click()
+      const editor = page.getByRole('dialog', { name: '编辑定时任务', exact: true })
+      const nextTime = await page.evaluate(() => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'short' }).format(Date.now() + 86400000).replace(' ', 'T'))
+      await editor.getByLabel('执行时间', { exact: true }).fill(nextTime)
+      await editor.getByRole('button', { name: '保存', exact: true }).click()
+      const pending = sidebar.getByRole('region', { name: '未启用的定时任务' }).getByRole('button', { name: /自然语言报告.*待启用/ })
+      await pending.waitFor()
+      assert.equal(await pending.getAttribute('aria-current'), 'page')
+      assert.ok((await pending.textContent()).includes(nextTime.replace('T', ' ')))
+      assert.equal(await history.getByRole('button', { name: /自然语言报告/ }).count(), 0)
+      await sidebar.getByRole('button', { name: '搜索定时任务', exact: true }).click()
+      await sidebar.getByRole('searchbox').fill('自然语言报告')
+      await pending.waitFor()
+      await page.evaluate(() => { window.rejectEnable = true })
+      await page.getByRole('button', { name: '确认计划并启用', exact: true }).click()
+      await page.getByRole('alert').getByText('测试：启用暂不可用', { exact: true }).waitFor()
+      assert.equal(await pending.getAttribute('aria-current'), 'page')
+      await page.getByRole('button', { name: '确认计划并启用', exact: true }).click()
+      const enabled = sidebar.getByRole('region', { name: '已启用的定时任务' }).getByRole('button', { name: /^自然语言报告/ })
+      await enabled.waitFor()
+      assert.equal(await enabled.getAttribute('aria-current'), 'page')
+      assert.equal(await pending.count(), 0)
+      await page.getByRole('tab', { name: '执行记录', exact: true }).click()
+      await page.getByRole('tabpanel', { name: '执行记录' }).getByText('已完成', { exact: true }).first().waitFor()
+      assert.deepEqual(errors, [])
+      await page.close()
+      continue
+    }
     if (historyLabelsOnly) {
       await page.evaluate(async () => {
         const api = window.electronAPI
@@ -296,9 +343,10 @@ try {
       })
       const historyFold = page.locator('.ent-sch-nav-fold').filter({ hasText: '历史记录' })
       await historyFold.waitFor()
+      await historyFold.locator('summary small').filter({ hasText: /^2$/ }).waitFor()
       assert.equal(await historyFold.evaluate(element => element.open), false)
       assert.equal(await historyFold.locator('summary small').textContent(), '2')
-      const historyList = page.getByRole('region', { name: '定时任务历史', exact: true })
+      const historyList = page.getByRole('region', { name: '历史记录的定时任务', exact: true })
       assert.equal(await historyList.isVisible(), false)
       await historyFold.locator('summary').click()
       await historyList.waitFor()
@@ -450,8 +498,8 @@ try {
     assert.equal(await page.getByRole('heading', { name: '安排任务', exact: true }).count(), 1)
     assert.equal(await page.getByRole('button', { name: '全部任务', exact: true }).count(), 0)
     assert.equal(await page.locator('.ent-scroll').evaluate(element => getComputedStyle(element).backgroundColor), 'rgba(0, 0, 0, 0)')
-    assert.equal(await page.getByRole('region', { name: '进行中的定时任务', exact: true }).count(), 0)
-    assert.equal(await page.getByRole('region', { name: '已暂停的定时任务', exact: true }).count(), 0)
+    assert.equal(await page.getByRole('region', { name: '已启用的定时任务', exact: true }).count(), 0)
+    assert.equal(await page.getByRole('region', { name: '未启用的定时任务', exact: true }).count(), 0)
     assert.equal(await page.getByRole('region', { name: '定时任务示例', exact: true }).count(), 1)
     assert.equal(await page.getByRole('button', { name: '创建并启用定时任务', exact: true }).isDisabled(), true)
     await page.getByRole('button', { name: '使用示例：行业日报', exact: true }).click()
@@ -517,13 +565,13 @@ try {
     await page.screenshot({ path: resolve(screenshots, `creation-completed-${viewport.width}.png`), fullPage: true })
     await page.getByRole('button', { name: '查看执行记录', exact: true }).click()
     await page.getByRole('tab', { name: '执行记录', exact: true }).waitFor()
-    await page.evaluate(() => window.seedRun('completed'))
+    await page.evaluate(() => { window.testData.definitions[0].input.recurrence = { frequency: 'once', interval: 1 }; window.seedRun('completed') })
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
     assert.equal(await page.getByRole('region', { name: '定时任务创建进度', exact: true }).count(), 0)
-    const history = page.getByRole('region', { name: '定时任务历史', exact: true })
-    await page.locator('.ent-sch-nav-fold').filter({ hasText: '历史记录' }).locator('summary').click()
+    const history = page.getByRole('region', { name: '历史记录的定时任务', exact: true })
+    if (!(await history.isVisible())) await page.locator('.ent-sch-nav-fold').filter({ hasText: '历史记录' }).locator('summary').click()
     await history.waitFor()
-    await history.getByRole('button').click()
+    await history.getByRole('button', { name: /已结束$/ }).click()
     if (!creationNavigationOnly) {
       await page.getByRole('button', { name: '查看工作详情与成果', exact: true }).click()
       await page.getByRole('heading', { name: '行业周报执行结果', exact: true }).waitFor()
@@ -650,17 +698,17 @@ try {
     await page.getByLabel('只读工作计划').waitFor()
     assert.equal(await page.getByLabel('只读工作计划').locator('textarea,input,[contenteditable]').count(), 0)
     await page.getByRole('button', { name: '确认计划并启用', exact: true }).click()
-    await page.getByText('已启用', { exact: true }).waitFor()
+    await page.locator('.ent-sch-detail-head').getByText('已启用', { exact: true }).waitFor()
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
-    await page.getByRole('region', { name: '进行中的定时任务', exact: true }).waitFor()
-    assert.equal(await page.getByRole('region', { name: '已暂停的定时任务', exact: true }).count(), 0)
+    await page.getByRole('region', { name: '已启用的定时任务', exact: true }).waitFor()
+    assert.equal(await page.getByRole('region', { name: '未启用的定时任务', exact: true }).count(), 0)
     await page.screenshot({ path: resolve(screenshots, `home-active-${viewport.width}.png`), fullPage: true })
     await page.locator('.ent-sch-nav-task').click()
     await page.getByRole('tab', { name: '任务配置', exact: true }).click()
     await page.getByRole('button', { name: '暂停后续调度', exact: true }).click()
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
-    await page.getByRole('region', { name: '已暂停的定时任务', exact: true }).waitFor()
-    assert.equal(await page.getByRole('region', { name: '进行中的定时任务', exact: true }).count(), 0)
+    await page.getByRole('region', { name: '未启用的定时任务', exact: true }).getByText('已暂停', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('region', { name: '已启用的定时任务', exact: true }).count(), 0)
     await page.screenshot({ path: resolve(screenshots, `home-paused-${viewport.width}.png`), fullPage: true })
     await page.locator('.ent-sch-nav-task').click()
     await page.getByRole('tab', { name: '任务配置', exact: true }).click()
@@ -672,7 +720,7 @@ try {
     assert.equal(await page.evaluate(() => window.testData.definitions[0].input.recurrence.expression), '30 9 1,15,30 * *')
     await page.evaluate(() => window.seedRun('review'))
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
-    await page.getByRole('region', { name: '进行中的定时任务', exact: true }).waitFor()
+    await page.getByRole('region', { name: '已启用的定时任务', exact: true }).waitFor()
     await page.locator('.ent-sch-nav-task').click()
     await page.getByRole('button', { name: '核查后关闭本次执行', exact: true }).waitFor()
     assert.equal(await page.getByRole('button', { name: '重新检查执行条件', exact: true }).count(), 0)
@@ -725,8 +773,9 @@ try {
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
     await page.getByRole('button', { name: '恢复调度', exact: true }).click()
     await page.getByRole('button', { name: '恢复调度', exact: true }).waitFor({ state: 'detached' })
-    const pendingDrafts = page.getByRole('region', { name: '待完成的定时任务', exact: true })
-    await pendingDrafts.getByRole('button', { name: /自动编排验证/ }).click()
+    const pendingDrafts = page.getByRole('region', { name: '未启用的定时任务', exact: true })
+    await pendingDrafts.getByRole('button', { name: /自动编排验证.*待生成计划/ }).click()
+    await page.getByRole('tabpanel', { name: '任务配置', exact: true }).getByRole('button', { name: '编辑任务配置', exact: true }).click()
     const resumedDraft = page.getByRole('dialog', { name: '编辑定时任务', exact: true })
     await resumedDraft.waitFor()
     assert.equal(await resumedDraft.getByLabel('工作目标', { exact: true }).inputValue(), '完成研究并输出报告文件')
@@ -765,11 +814,11 @@ try {
     await page.getByRole('button', { name: '搜索定时任务', exact: true }).click()
     assert.equal(await page.getByRole('searchbox', { name: '搜索任务名称或内容', exact: true }).count(), 0)
     assert.equal(await page.locator('.ent-sch-nav-task').count(), taskCount)
-    const paused = page.locator('.ent-sch-nav-fold').filter({ hasText: '已暂停' })
+    const paused = page.locator('.ent-sch-nav-fold').filter({ has: page.locator('summary').filter({ hasText: '未启用' }) })
     await paused.locator('summary').click()
-    assert.equal(await paused.getByRole('region', { name: '已暂停的定时任务', exact: true }).isVisible(), false)
+    assert.equal(await paused.getByRole('region', { name: '未启用的定时任务', exact: true }).isVisible(), false)
     await paused.locator('summary').click()
-    assert.equal(await paused.getByRole('region', { name: '已暂停的定时任务', exact: true }).isVisible(), true)
+    assert.equal(await paused.getByRole('region', { name: '未启用的定时任务', exact: true }).isVisible(), true)
     await page.screenshot({ path: resolve(screenshots, `home-scroll-${viewport.width}.png`), fullPage: true })
     await page.evaluate(() => window.scheduleNavigate({ name: 'scheduled', taskId: 'missing' }))
     await page.getByRole('status').filter({ hasText: '未找到这项任务' }).waitFor()
@@ -778,5 +827,5 @@ try {
     assert.deepEqual(errors, [])
     await page.close()
   }
-  console.log(creationDeletionOnly ? 'Scheduled creation deletion passed at all viewport sizes' : historyLabelsOnly ? 'Scheduled history labels passed at all viewport sizes' : `Scheduled module UI smoke passed; screenshots: ${screenshots}`)
+  console.log(groupingOnly ? 'Scheduled grouping and rescheduling passed at all viewport sizes' : creationDeletionOnly ? 'Scheduled creation deletion passed at all viewport sizes' : historyLabelsOnly ? 'Scheduled history labels passed at all viewport sizes' : `Scheduled module UI smoke passed; screenshots: ${screenshots}`)
 } finally { await browser?.close(); await new Promise(done => server.close(done)) }

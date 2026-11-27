@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { scheduledInstant, localDateTime, definitionLabel, recurrenceLabel, runActions, scheduledHomeGroups, scheduledTaskActions } from './scheduled-task-model'
+import { scheduledInstant, localDateTime, definitionLabel, recurrenceLabel, runActions, scheduledTaskActions } from './scheduled-task-model'
+import { groupScheduledTasks, indexScheduledRuns, scheduledTaskState } from '../../shared/scheduled-task-state'
 import type { ScheduledDefinition, ScheduledOccurrence } from '../../shared/scheduled-tasks'
 
 test('one-off wall times use the selected timezone, rejecting DST gaps and ambiguous hours', () => {
@@ -11,30 +12,33 @@ test('one-off wall times use the selected timezone, rejecting DST gaps and ambig
   }
 })
 
-test('definition state is not inferred from the last execution outcome', () => {
-  const definition = { enabled: true, plan: {}, nextRunAt: 100 } as ScheduledDefinition
-  assert.equal(definitionLabel(definition), '已启用')
-  assert.equal(definitionLabel({ ...definition, enabled: false, nextRunAt: null }), '未启用')
-  assert.equal(definitionLabel({ ...definition, enabled: false, plan: null }), '草稿')
-  assert.equal(definitionLabel({ ...definition, enabled: false, pausedAt: 50 }), '已暂停')
-})
-
-test('homepage groups distinguish explicit pauses, enabled schedules and unfinished executions', () => {
-  const base = { enabled: false, deleted: false, nextRunAt: null, plan: {}, updatedAt: 1 } as ScheduledDefinition
+test('homepage groups include each task exactly once and prioritize pending confirmation', () => {
+  const base = { enabled: false, deleted: false, nextRunAt: null, plan: {}, updatedAt: 1, input: { scheduledAt: 100 } } as ScheduledDefinition
   const items = [
-    { ...base, id: 'draft', plan: null }, { ...base, id: 'unconfirmed' },
-    { ...base, id: 'enabled', enabled: true }, { ...base, id: 'paused', pausedAt: 10 },
-    { ...base, id: 'executing' }, { ...base, id: 'finished' },
+    { ...base, id: 'draft', plan: null, updatedAt: 20 }, { ...base, id: 'unconfirmed' },
+    { ...base, id: 'enabled', enabled: true }, { ...base, id: 'paused', pausedAt: 10, updatedAt: 30 },
+    { ...base, id: 'executing' }, { ...base, id: 'finished', updatedAt: 10 },
     { ...base, id: 'deleted', deleted: true, enabled: true },
   ]
-  const runs = [{ definitionId: 'executing', status: 'running' }, { definitionId: 'finished', status: 'completed' }, { definitionId: 'paused', status: 'running' }] as ScheduledOccurrence[]
-  const grouped = scheduledHomeGroups(items, runs)
-  assert.deepEqual(grouped.active.map(item => item.id), ['enabled', 'executing'])
-  assert.deepEqual(grouped.paused.map(item => item.id), ['paused'])
-  assert.deepEqual(grouped.pending.map(item => item.id), ['draft', 'unconfirmed'])
-  assert.deepEqual(grouped.history.map(item => item.id), ['finished', 'deleted'])
-  assert.deepEqual(scheduledHomeGroups([], []), { active: [], paused: [], pending: [], history: [] })
-  assert.equal(items[0]!.id, 'draft')
+  const runs = [
+    { definitionId: 'executing', scheduledAt: 100, status: 'waiting_retry' },
+    { definitionId: 'finished', scheduledAt: 100, status: 'failed' },
+    { definitionId: 'paused', scheduledAt: 100, status: 'running' },
+  ] as const
+  const grouped = groupScheduledTasks(items, indexScheduledRuns(runs))
+  const summary = (rows: typeof grouped.disabled) => rows.map(({ definition, status }) => [definition.id, definitionLabel(status)])
+  assert.deepEqual(summary(grouped.disabled), [['unconfirmed', '待启用'], ['draft', '待生成计划'], ['paused', '已暂停']])
+  assert.deepEqual(summary(grouped.enabled), [['enabled', '已启用'], ['executing', '等待重试']])
+  assert.deepEqual(summary(grouped.history), [['finished', '已结束'], ['deleted', '已删除']])
+})
+
+test('rescheduling a single or recurring task does not classify it by old executions', () => {
+  const base = { enabled: false, deleted: false, plan: {}, input: { scheduledAt: 200 } } as ScheduledDefinition
+  const oldRun = { scheduledAt: 100, status: 'completed' } as const
+  assert.deepEqual(scheduledTaskState(base, [oldRun]), { group: 'disabled', state: 'pending' })
+  const recurring = { ...base, input: { ...base.input, recurrence: { frequency: 'daily' as const, interval: 1 } } }
+  assert.deepEqual(scheduledTaskState(recurring, [oldRun]), { group: 'disabled', state: 'pending' })
+  assert.deepEqual(scheduledTaskState(base, [{ scheduledAt: 200, status: 'missed' }]), { group: 'history', state: 'ended' })
 })
 
 test('recurrence labels distinguish one-off and recurring definitions', () => {

@@ -226,6 +226,48 @@ test('schedule query paginates safe data and read-only sessions cannot write', a
   assert.equal((await manage({ tool: DELETE_SCHEDULED_TASK_TOOL, input: { target: { id: task.id } } })).status, 'failed')
 })
 
+test('schedule query uses sidebar groups across rescheduling, retry and deletion', async t => {
+  const h = harness()
+  t.after(() => h.service.stop())
+  const original = await h.service.create('original', input)
+  const planned = await h.service.plan(original.id, original.revision)
+  const enabled = await h.service.confirm(planned.id, planned.revision)
+  await h.service.create('draft', { ...input, name: 'Draft' })
+  const removed = await h.service.create('deleted', { ...input, name: 'Deleted' })
+  await h.service.pause(removed.id, removed.revision, true)
+  h.advance(input.scheduledAt)
+  await h.service.scan()
+  const run = h.data.occurrences[0]!
+  h.data.occurrences[0] = { ...run, status: 'waiting_retry' }
+
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal, readOnly: true,
+    isCurrent: () => true, conversationIds: async () => new Set(), approve: async () => assert.fail('no write approvals') })
+  const query = async (group: 'disabled' | 'enabled' | 'history', includeDeleted?: boolean) => {
+    const result = await manage({ tool: 'query_scheduled_tasks', input: { view: 'tasks', group, includeDeleted } })
+    assert.equal(result.status, 'ok')
+    return result.data as { total: number; items: { id: string; state: string; runStatus?: string }[] }
+  }
+  const running = await query('enabled')
+  assert.equal(running.total, 1)
+  assert.equal(running.items[0]?.state, 'executing')
+  assert.equal(running.items[0]?.runStatus, 'waiting_retry')
+  assert.equal((await query('disabled')).total, 1)
+
+  h.data.occurrences[0] = { ...run, status: 'completed' }
+  assert.equal((await query('history')).total, 2)
+  assert.equal((await query('history', false)).total, 1)
+  const edited = await h.service.edit(enabled.id, enabled.revision, { ...input, scheduledAt: 3000 })
+  assert.equal(edited.id, original.id)
+  const disabled = await query('disabled')
+  assert.equal(disabled.total, 2)
+  assert.equal(disabled.items[0]?.id, edited.id)
+  assert.equal(disabled.items[0]?.state, 'pending')
+  assert.equal((await query('history')).total, 1)
+  const detail = await manage({ tool: 'query_scheduled_tasks', input: { view: 'task', target: { id: edited.id } } })
+  assert.match(JSON.stringify(detail), /"group":"disabled","state":"pending"/)
+  assert.equal(h.data.occurrences[0]?.id, run.id)
+})
+
 test('a structured schedule stays disabled when saved and when its plan is generated', async t => {
   const h = harness()
   t.after(() => h.service.stop())

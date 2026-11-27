@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { ArrowLeft, ArrowUp, CalendarClock, ChevronDown, History, MoreHorizontal, Pause, Pencil, Play, Plus, Search, Trash2, X } from 'lucide-react'
 import scheduledClock from '../../../assets/scheduled-clock.png'
-import type { ScheduledDefinition, ScheduledOccurrence } from '../../../shared/scheduled-tasks'
+import type { ScheduledDefinition } from '../../../shared/scheduled-tasks'
+import { groupScheduledTasks, indexScheduledRuns, scheduledTaskGroupLabels, scheduledTaskGroups, scheduledTaskState, type ScheduledTaskEntry, type ScheduledTaskGroup } from '../../../shared/scheduled-task-state'
 import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterpriseWorkspace'
 import type { ScheduledTasksModel } from '../../../features/enterprise/use-scheduled-tasks'
-import { definitionLabel, recurrenceLabel, scheduledHomeGroups, scheduledTaskActions } from '../../../features/enterprise/scheduled-task-model'
+import { definitionLabel, localDateTime, recurrenceLabel, scheduledTaskActions } from '../../../features/enterprise/scheduled-task-model'
 import { authorizedScheduledModels, emptyScheduledTaskDraft, SCHEDULE_EXAMPLES } from '../../../features/enterprise/scheduled-task-home'
 import { scheduledCreationProgressAction, type ScheduledCreation, type ScheduledCreationRequest } from '../../../shared/scheduled-creation'
 import { creationAccepted } from '../../../features/enterprise/scheduled-task-client'
@@ -38,6 +39,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
   const { capture } = useOperationFeedback(workspace.attachmentScopeKey)
   const [searching, setSearching] = useState(false)
   const [search, setSearch] = useState('')
+  const groupElements = useRef<Partial<Record<ScheduledTaskGroup, HTMLDetailsElement | null>>>({})
   const [draft, setDraft] = useState(emptyScheduledTaskDraft)
   const [replacement, setReplacement] = useState<Example | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -75,16 +77,18 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     setContinuationId(null)
     submitted.current = null
   }, [data])
-  const groups = useMemo(() => scheduledHomeGroups(data?.definitions ?? [], data?.occurrences ?? []), [data])
-  const runsByDefinition = useMemo(() => {
-    const grouped = new Map<string, ScheduledOccurrence[]>()
-    for (const run of data?.occurrences ?? []) {
-      const runs = grouped.get(run.definitionId)
-      if (runs) runs.push(run)
-      else grouped.set(run.definitionId, [run])
-    }
-    return grouped
-  }, [data?.occurrences])
+  const runsByDefinition = useMemo(() => indexScheduledRuns(data?.occurrences ?? []), [data?.occurrences])
+  const groups = useMemo(() => groupScheduledTasks(data?.definitions ?? [], runsByDefinition), [data?.definitions, runsByDefinition])
+  const selectedGroup = selectedDefinition && scheduledTaskState(selectedDefinition, runsByDefinition.get(selectedDefinition.id) ?? []).group
+  const selectedId = selectedDefinition?.id
+  const selectedRevision = selectedDefinition?.revision
+  const searchTerm = search.trim().toLocaleLowerCase()
+  useEffect(() => {
+    if (selectedGroup) groupElements.current[selectedGroup]?.setAttribute('open', '')
+  }, [selectedGroup, selectedId, selectedRevision])
+  useEffect(() => {
+    if (searchTerm) for (const group of scheduledTaskGroups) groupElements.current[group]?.setAttribute('open', '')
+  }, [searchTerm])
   const applyExample = (example: Example) => {
     setDraft(value => ({ ...value, goal: example.prompt }))
     lastExample.current = example.prompt
@@ -149,11 +153,12 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     })
   }, [])
   useEffect(() => () => { if (resizeScrollFrame.current !== null) cancelAnimationFrame(resizeScrollFrame.current) }, [])
-  const creationDefinitions = new Set(data?.creations?.filter(item => !item.deleted && item.stage !== 'cancelled').map(item => item.definitionId))
-  const pendingDefinitions = groups.pending.filter(item => !creationDefinitions.has(item.id))
-  const matches = (item: ScheduledDefinition) => `${item.input.name} ${item.input.goal}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
-  const list = (items: ScheduledDefinition[], label: string, inHistory = false) => items.length ? <section className="ent-sch-nav-group" aria-label={label}>
-    {items.filter(matches).map(item => <ContentActionMenu key={item.id} className="ent-sch-nav-row"
+  const matches = ({ definition }: ScheduledTaskEntry) => `${definition.input.name} ${definition.input.goal}`.toLocaleLowerCase().includes(searchTerm)
+  const list = (items: ScheduledTaskEntry[], group: ScheduledTaskGroup) => items.map(({ definition: item, status }) => {
+    const inHistory = group === 'history'
+    const time = group === 'disabled' ? item.input.scheduledAt : item.nextRunAt
+    const timing = time == null ? recurrenceLabel(item) : `${recurrenceLabel(item)} · ${localDateTime(time, item.input.timezone).replace('T', ' ')}`
+    return <ContentActionMenu key={item.id} className="ent-sch-nav-row"
         label="定时任务操作" triggerLabel={`更多操作：${item.input.name}`} triggerClassName="ent-sch-nav-menu"
         triggerIcon={<MoreHorizontal size={16} aria-hidden />}
         items={scheduledTaskActions(item, runsByDefinition.get(item.id) ?? [], { inHistory, busy: model.busy }).map(action => ({ ...taskMenuItems[action.id], ...action }))}
@@ -166,12 +171,12 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
             case 'archive': deleteTask(item); break
           }
         }}>
-      <button type="button" className="ent-sch-nav-task" aria-current={selectedDefinition?.id === item.id ? 'page' : undefined} onClick={() => workspace.navigate({ name: 'scheduled', taskId: item.id, view: !inHistory && !item.plan && !item.enabled ? 'edit' : 'history' })}>
-        <span className="ent-sch-nav-task-title"><strong title={item.input.name}>{item.input.name}</strong>{inHistory && <span className="ent-sch-state">{definitionLabel(item, inHistory)}</span>}</span>
-        <span className="ent-sch-nav-task-recurrence">{recurrenceLabel(item)}</span>
+      <button type="button" className="ent-sch-nav-task" aria-current={selectedId === item.id ? 'page' : undefined} onClick={() => workspace.navigate({ name: 'scheduled', taskId: item.id, view: group === 'disabled' ? 'configuration' : 'history' })}>
+        <span className="ent-sch-nav-task-title"><strong title={item.input.name}>{item.input.name}</strong></span>
+        <span className="ent-sch-nav-task-meta"><span className="ent-sch-nav-task-recurrence" title={timing}>{timing}</span>{status.state !== 'enabled' && <span className="ent-sch-state">{definitionLabel(status)}</span>}</span>
       </button>
-    </ContentActionMenu>)}
-  </section> : null
+    </ContentActionMenu>
+  })
   const hasCreations = Boolean(data?.creations?.some(item => !item.deleted) || pending.length)
   const creationsView = workspace.route.name === 'scheduled' && workspace.route.view === 'creations'
   const missingTask = workspace.route.name === 'scheduled' && workspace.route.taskId && !selectedDefinition
@@ -183,16 +188,19 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
       {searching ? <label className="ent-sch-search"><Search size={14} aria-hidden /><input autoFocus type="search" aria-label="搜索任务名称或内容" value={search} onChange={event => setSearch(event.target.value)} /></label> : null}
       <button type="button" className="ent-sch-nav-new" onClick={focusComposer}><Plus size={18} />新建任务</button>
       <div className="ent-sch-nav-scroll" aria-label="定时任务概览" tabIndex={0}>
-        {list(groups.active, '进行中的定时任务')}
-        {pendingDefinitions.length ? <><h3>待完成</h3>{list(pendingDefinitions, '待完成的定时任务')}</> : null}
-        <details className="ent-sch-nav-fold" open><summary>已暂停<ChevronDown size={14} /><small>{groups.paused.length || ''}</small></summary>{list(groups.paused, '已暂停的定时任务')}</details>
-        {groups.history.length ? <details className="ent-sch-nav-fold"><summary>历史记录<ChevronDown size={14} /><small>{groups.history.length}</small></summary>{list(groups.history, '定时任务历史', true)}</details> : null}
-        {search.trim() && ![...groups.active, ...groups.paused, ...pendingDefinitions, ...groups.history].some(matches) ? <p className="ent-sch-search-empty">没有匹配的任务</p> : null}
+        {scheduledTaskGroups.map(group => {
+          const items = groups[group].filter(matches)
+          return <details key={group} ref={element => { groupElements.current[group] = element }} className="ent-sch-nav-fold" open={group !== 'history'}>
+            <summary>{scheduledTaskGroupLabels[group]}<ChevronDown size={14} aria-hidden /><small>{items.length}</small></summary>
+            {items.length ? <section className="ent-sch-nav-group" aria-label={`${scheduledTaskGroupLabels[group]}的定时任务`}>{list(items, group)}</section> : null}
+          </details>
+        })}
+        {searchTerm && !scheduledTaskGroups.some(group => groups[group].some(matches)) ? <p className="ent-sch-search-empty">没有匹配的任务</p> : null}
         {hasCreations || creationsView ? <button type="button" className="ent-sch-nav-new" aria-current={creationsView ? 'page' : undefined} onClick={() => workspace.replaceRoute({ name: 'scheduled', view: 'creations' })}>创建进度</button> : null}
       </div>
     </aside>
     <section ref={mainPane} className={`ent-sch-main-pane${home ? ' ent-sch-compose-pane' : ''}`} aria-label="定时任务内容">
-      {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{creationsView ? hasCreations ? <ScheduledCreationList model={model} onResume={resume} onOpen={open} /> : <p role="status">暂无创建进度。</p> : selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} inHistory={groups.history.some(item => item.id === selectedDefinition.id)} onDelete={deleteTask} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
+      {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{creationsView ? hasCreations ? <ScheduledCreationList model={model} onResume={resume} onOpen={open} /> : <p role="status">暂无创建进度。</p> : selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} onDelete={deleteTask} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
       <div className="ent-sch-home-content" tabIndex={0} aria-label="定时任务创建区">
         <div className="ent-sch-welcome"><img className="ent-sch-clock" src={scheduledClock} width={80} height={80} alt="" /><h2>安排任务</h2>
         <section className="ent-sch-examples" aria-label="定时任务示例"><h3>常用任务</h3>
