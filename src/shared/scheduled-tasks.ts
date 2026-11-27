@@ -148,7 +148,6 @@ export interface ArrangementWorkPlan {
   intentAnalysis: { summary: string; steps: Array<{ id: string; title: string; requiredCapabilities: string[]; requiredCapabilityIds?: string[]; dependsOn: string[] }> } | null
 }
 export type ScheduledWorkPlan = EmployeeWorkPlan | ArrangementWorkPlan
-export type EmployeePlanResult = EmployeeWorkPlan | { status: 'blocked'; reasons: string[] }
 export type ScheduledRunStatus = 'pending' | 'preparing' | 'launching' | 'running' | 'waiting_approval' | 'waiting_retry' | 'waiting_auth' | 'blocked' | 'review' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'missed'
 export const scheduledIssueSchema = z.object({ code: z.string(), message: z.string(),
   action: z.enum(['retry', 'auth', 'blocked', 'review', 'fail']), retryAfterMs: z.number().positive().optional(),

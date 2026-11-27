@@ -7,6 +7,7 @@ import type { ScheduledServiceOptions } from './scheduled-task-service'
 import { BeforeScheduledAdmissionError, type ScheduledRunnerPort } from './scheduled-dispatcher'
 import { setLogSink, type LogRecord } from '../common/logger'
 import { toEnvelope } from '../errors/error-mapper'
+import { AppError } from '../errors/app-error'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -351,7 +352,8 @@ test('a content edit re-plans only after consent and the next occurrence uses th
     if (value.goal === input.goal) return plan
     assert.equal(value.goal, goal)
     assert.equal(value.workDir, input.workDir)
-    return blocked ? { status: 'blocked', reasons: ['Model cannot plan this edit'] } : replacement
+    if (blocked) throw new AppError('PLANNING_FAILED')
+    return replacement
   } })
   t.after(() => h.service.stop())
   const draft = await h.service.create('edit-content', input)

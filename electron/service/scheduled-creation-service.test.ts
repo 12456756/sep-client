@@ -1,9 +1,10 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import type { ScheduledSnapshot, EmployeeWorkPlan } from '../../src/shared/scheduled-tasks'
+import type { ScheduledSnapshot, EmployeeWorkPlan, ModelScheduledInput } from '../../src/shared/scheduled-tasks'
 import { scheduleInterpretationSchema, scheduledCreationSchema, type ScheduledCreationInterpreterInput, type ScheduledCreationRequest, type ScheduleInterpretation } from '../../src/shared/scheduled-creation'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import { WriteChain } from '../data/write-chain'
+import { PiEmployeePlanner } from '../runtime/pi-employee-planner'
 import { ScheduledTaskService } from './scheduled-task-service'
 import { ScheduledCreationService } from './scheduled-creation-service'
 import { AppError } from '../errors/app-error'
@@ -28,7 +29,7 @@ function harness() {
   let now = Date.parse('2026-10-21T08:00:00Z')
   let interpretations = 0, plans = 0, launches = 0
   let interpret: (input: ScheduledCreationInterpreterInput) => Promise<ScheduleInterpretation> = async () => interpretation
-  let planner: () => Promise<EmployeeWorkPlan> = async () => plan
+  let planner: (input: ModelScheduledInput, employee: unknown, signal: AbortSignal, grantId?: string) => Promise<EmployeeWorkPlan> = async () => plan
   let validate: () => Promise<void> = async () => undefined
   let fault: 'before-enable' | 'after-enable' | null = null
   const writes = new WriteChain()
@@ -46,7 +47,7 @@ function harness() {
   const scopes = { currentScope: () => scope }
   const schedules = new ScheduledTaskService({ repository, scope: scopes, now: () => now, employee: async () => ({}),
     authorizeModel: async modelId => { assert.equal(modelId, 'model'); return { subscriptionId: 'sub' } },
-    planner: async () => { plans++; return planner() },
+    planner: async (...args) => { plans++; return planner(...args) },
     arrangementPlanner: async () => ({ status: 'ready', kind: 'arrangement', title: 'Report', intentAnalysis: null,
       nodes: [{ id: 'work', subscriptionId: 'sub', modelId: 'model', title: 'Report', instruction: plan.instruction,
         expectedOutput: plan.expectedOutput, deliverables: plan.deliverables, dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }),
@@ -95,6 +96,44 @@ test('a general report borrows model authorization and enables without binding a
     assert.equal(h.data.definitions[0].enabled, true)
     assert.equal(h.data.definitions[0].input.mode, 'general')
     assert.equal(h.data.definitions[0].input.subscriptionId, undefined)
+  } finally { h.stop() }
+})
+
+test('conversation enables a scheduled report and send without verifying the external connection', async () => {
+  const h = harness()
+  const goal = '读取钉钉 AI 表格「销售1」，生成统计文档，再发给胡锐。'
+  const workPlan = { ...plan, instruction: `${goal} 执行时检查连接和权限，唯一匹配表格和收件人后再操作；条件不满足则记录未执行。` }
+  const candidate: ScheduleInterpretation = { ...interpretation, task: { ...interpretation.task, goal,
+    deliverables: ['销售1统计文档', '发给胡锐并记录发送结果'], execution: { mode: 'general', subscriptionId: null } } }
+  let confirmations = 0, corrections = 0
+  const planner = new PiEmployeePlanner({ gatewayUrl: 'http://invalid', workspaceRoot: 'planning', getRefreshToken: () => 'test', onAuthenticationRequired() {},
+    createWorker: options => ({
+      async run() {
+        assert.equal(options.context.disableTools, true)
+        assert.ok(options.context.fixedSystemPrompt?.includes(goal))
+        assert.match(options.context.fixedSystemPrompt ?? '', /把这些检查安排在实际执行时/)
+        const correction = await options.onResponseSettled?.({ text: JSON.stringify({ status: 'blocked', reasons: ['当前未提供已连接且获授权的钉钉业务工具。'] }), stopReason: 'stop' })
+        assert.match(correction?.continueWith ?? '', /permission, tool availability and target checks in the execution instructions/)
+        corrections++
+        assert.equal(await options.onResponseSettled?.({ text: JSON.stringify(workPlan), stopReason: 'stop' }), undefined)
+      }, async abort() {}, async dispose() {},
+    }),
+  })
+  const signal = new AbortController().signal
+  h.setPlanner((...args) => planner.plan(...args))
+  try {
+    const receipt = await h.creation.submitConversation({ ...request, message: `每天九点${goal}` }, {
+      candidate, conversationId: 'chat', receivedAt: Date.parse('2026-10-21T08:00Z'), signal,
+      approve: async input => { confirmations++; assert.ok(input.goal.includes(goal)); return true },
+    })
+    assert.equal(receipt.status, 'created')
+    assert.equal(confirmations, 1)
+    assert.equal(corrections, 1)
+    assert.equal(h.interpretations, 0)
+    assert.equal(h.launches, 0)
+    assert.equal(h.data.definitions[0].enabled, true)
+    assert.equal(h.data.definitions[0].connectorRevision, null)
+    assert.deepEqual(h.data.definitions[0].plan, workPlan)
   } finally { h.stop() }
 })
 

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import type { ArrangementWorkPlan, EmployeePlanResult, ScheduleInput, ScheduledDefinition, ScheduledOccurrence, ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
+import type { ArrangementWorkPlan, EmployeeWorkPlan, ScheduleInput, ScheduledDefinition, ScheduledOccurrence, ScheduledSnapshot } from '../../src/shared/scheduled-tasks'
 import { retiredScheduledExecutionMessage, scheduleInputSchema, scheduleTimeRequestSchema, scheduleTimeResultSchema, type ScheduleTimeRequest, type ScheduleTimeResult } from '../../src/shared/scheduled-tasks'
-import { occurrenceId, planInputKey, employeePlanResultSchema, scheduledPlanResultSchema, dueScheduleWindow, nextScheduledAt, requestsRestrictedWindowsSchedulePath, scheduledPathDenied, scheduledWorkspaceGoal } from '../domain/scheduled-task'
+import { occurrenceId, planInputKey, employeePlanSchema, scheduledPlanResultSchema, dueScheduleWindow, nextScheduledAt, requestsRestrictedWindowsSchedulePath, scheduledPathDenied, scheduledWorkspaceGoal } from '../domain/scheduled-task'
 import type { ModelScheduledInput } from '../../src/shared/scheduled-tasks'
 import { AppError } from '../errors/app-error'
 import { inspectScheduledOutputDirectory } from '../data/scheduled-output-directory'
@@ -25,7 +25,7 @@ export interface ScheduledServiceOptions {
   scope: { currentScope(): TaskOwnerScope | null }
   employee(subscriptionId: string, modelId: string): Promise<unknown>
   authorizeModel?(modelId: string): Promise<{ subscriptionId: string }>
-  planner(input: ModelScheduledInput, employee: unknown, signal: AbortSignal, modelGrantId?: string): Promise<EmployeePlanResult>
+  planner(input: ModelScheduledInput, employee: unknown, signal: AbortSignal, modelGrantId?: string): Promise<EmployeeWorkPlan>
   arrangementPlanner?(input: ScheduleInput, signal: AbortSignal): Promise<ArrangementWorkPlan | { status: 'blocked'; reasons: string[] }>
   timeInterpreter?(input: ScheduleTimeRequest, signal: AbortSignal): Promise<ScheduleTimeResult>
   runner: ScheduledRunnerPort
@@ -225,7 +225,7 @@ export class ScheduledTaskService {
       if (!this.options.authorizeModel) throw new AppError('INVALID_STATE')
       const grant = await withTimeout(this.options.authorizeModel(input.modelId), 60000, 'scheduled-model-authorization')
       check()
-      result = employeePlanResultSchema.parse(await withTimeout(this.options.planner(input, null, signal, grant.subscriptionId), 120000, 'scheduled-general-planning'))
+      result = employeePlanSchema.parse(await withTimeout(this.options.planner(input, null, signal, grant.subscriptionId), 120000, 'scheduled-general-planning'))
     } else if (input.mode === 'auto') {
       if (!this.options.arrangementPlanner) throw new AppError('INVALID_STATE', { message: 'Multi-employee planning is unavailable' })
       await withTimeout(this.options.employee(input.subscriptionId, input.modelId), 60000, 'arrangement-planning-authorization')
@@ -242,7 +242,7 @@ export class ScheduledTaskService {
     } else {
       const employee = await withTimeout(this.options.employee(input.subscriptionId, input.modelId), 60000, 'employee-planning-authorization')
       check()
-      result = employeePlanResultSchema.parse(await withTimeout(this.options.planner(input, employee, signal), 120000, 'employee-planning'))
+      result = employeePlanSchema.parse(await withTimeout(this.options.planner(input, employee, signal), 120000, 'employee-planning'))
     }
     check()
     if (result.status === 'blocked') throw new AppError('INVALID_ARGUMENT', { message: result.reasons.join('；') })
