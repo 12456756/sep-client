@@ -14,6 +14,11 @@ export function isMediaSubmissionUnconfirmed(status: string | undefined): boolea
   return status === 'SUBMITTING' || status === 'SUBMISSION_UNKNOWN'
 }
 
+/** Legacy jobs without a run association stay protected until their receipt is recovered. */
+export function mediaReplayJobs<T extends { runId?: string }>(jobs: readonly T[], runId?: string | null): T[] {
+  return jobs.filter(job => !runId || !job.runId || job.runId === runId)
+}
+
 export function mediaRetryState(statuses: readonly string[], loaded: boolean, failed: boolean): MediaRetryState {
   if (statuses.some(isMediaSubmissionUnconfirmed)) return 'unconfirmed'
   if (failed) return 'unavailable'

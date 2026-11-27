@@ -17,8 +17,9 @@ import { ConversationContextStore } from '../domain/conversation-context'
 import { ConversationArtifactStore } from '../data/conversation-artifact-store'
 
 for (const kind of ['general', 'employee'] as const) {
-  for (const directoryStatus of ['ready', 'retry-in-prompt'] as const) {
-    test(`${kind} chat delivers saved media independently of a ${directoryStatus} ordinary artifact directory`, async () => {
+  for (const [directoryStatus, outcome] of (['ready', 'retry-in-prompt'] as const).flatMap(status =>
+    (['success', 'model-error'] as const).map(result => [status, result] as const))) {
+    test(`${kind} chat preserves media tracking with a ${directoryStatus} artifact directory after ${outcome}`, async () => {
       const root = await mkdtemp(join(tmpdir(), 'sep-conversation-media-delivery-'))
       const scope = { memberId: 'member', enterpriseId: 'enterprise' }
       const manager = new TaskManager(root)
@@ -28,6 +29,7 @@ for (const kind of ['general', 'employee'] as const) {
       const calls: string[] = []
       let promptSeen = ''
       let delivered = false
+      let mediaStops = 0
       const runtime = new TaskRuntime({
         taskManager: manager, taskRunStore: runs, workPlanStore: plans,
         resolveEmployee: id => ({ subscriptionId: id, modelId: 'model', gatewayUrl: 'http://unused' }),
@@ -42,11 +44,11 @@ for (const kind of ['general', 'employee'] as const) {
         },
         // The fallback case exposes only a query tool, as when recovering an existing video.
         video: { async prepareRun() { return { names: ['video_get_job'], async execute(name) { calls.push(name); return { saveStatus: 'SAVED' } } } },
-          async waitForRun() {}, async stopTask() {} },
+          async waitForRun() {}, async stopTask() { mediaStops++ } },
         media: { async prepareRun() { if (directoryStatus === 'retry-in-prompt') return undefined; return { names: ['media_generate_image'], async execute(name) {
           calls.push(name)
           return { generationStatus: 'SUCCEEDED', saveStatus: 'SAVED', assets: [{ localAssetId: 'saved-output', source: 'output', status: 'SAVED' }] }
-        } } }, async waitForRun() { delivered = true }, async stopTask() {} },
+        } } }, async waitForRun() { delivered = true }, async stopTask() { mediaStops++ } },
         createWorker: options => ({
           async run(prompt) {
             promptSeen = prompt
@@ -66,6 +68,7 @@ for (const kind of ['general', 'employee'] as const) {
             await options.context.videoTools!.execute('video_get_job', { jobId: 'saved-video' })
             await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
               sequence: 0, occurredAt: Date.now(), type: 'text_delta', data: { text: 'Generated and saved.' } })
+            if (outcome === 'model-error') throw new Error('Model response interrupted after media submission')
           }, async abort() {}, async dispose() {},
         }),
       })
@@ -85,10 +88,11 @@ for (const kind of ['general', 'employee'] as const) {
         for (let i = 0; i < 200 && (await manager.getTask(task.id))?.activeRunId !== null; i++) await new Promise(resolve => setTimeout(resolve, 10))
         const completed = await manager.getTask(task.id)
         assert.equal(completed?.activeRunId, null)
-        assert.equal(completed?.status, 'completed')
+        assert.equal(completed?.status, outcome === 'success' ? 'completed' : 'failed')
+        assert.equal(mediaStops, 0)
         assert.deepEqual(completed?.files, [])
         assert.ok(promptSeen.length > 0)
-        assert.equal(delivered, true)
+        assert.equal(delivered, outcome === 'success')
         assert.deepEqual(calls, directoryStatus === 'ready' ? ['media_generate_image', 'video_get_job'] : ['video_get_job'])
         if (directoryStatus === 'ready') assert.deepEqual(await readdir(join(task.workDir!, '成果', task.id)), [])
         const messages = await new ConversationContextStore(runs.getTaskDir(scope, task.id)).listMessages()
@@ -167,9 +171,10 @@ test('general chat preserves selected model, permissions and history across turn
         assert.match(prompt, /不能静默以脚本合成替代/)
         assert.match(prompt, /未指定的常规规格由模型.*本轮直接执行/)
         assert.match(prompt, /不要仅为确认.*追加一轮对话/)
-        assert.match(prompt, /用户在后续消息明确要求.*当前会话调用生成工具创建独立的新任务，无需新开会话/)
-        assert.match(prompt, /客户端会.*重复生成、重复计费的确认.*用户取消或未确认时不得继续尝试/)
-        assert.match(prompt, /同一轮提交异常后不得自行再次生成/)
+        assert.match(prompt, /分别判断提交、生成、平台文件、本地保存和费用/)
+        assert.match(prompt, /费用待核对不等于仍在生成，未知金额不等于免费/)
+        assert.match(prompt, /同一项提交异常后不得自行再次生成，先查询原 jobId；其他独立任务可以继续/)
+        assert.match(prompt, /不得用新 ID 绕过原任务的提交不明状态/)
         assert.equal(options.context.mediaTools, mediaTools)
         assert.equal(options.context.videoTools, videoTools)
         await options.context.mediaTools.execute('media_generate_image', {})

@@ -11,6 +11,7 @@ import { VideoStore } from '../data/video-store'
 import { MockVideoMediaGateway, type MockVideoScenario } from '../data/mock-video-media-gateway'
 import type { VideoRunPort } from '../domain/video-tools'
 import { AppError } from '../errors/app-error'
+import { runtimeFeedback } from '../errors/runtime-feedback'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { VideoRunService } from './video-run-service'
 import { ConversationVideoRunService } from './conversation-video-run-service'
@@ -64,7 +65,24 @@ test('conversation continues the original video after a bounded tracker exits wh
   await f.video.finishRun('task-a', 'run-a')
 })
 
-for (const stopped of [false, true]) test(`conversation confirms a fresh video and keeps later turns usable (old tracking stopped=${stopped})`, { timeout: 10_000 }, async context => {
+for (const billingState of ['not_reserved', 'unknown']) test(`a proven video rejection ends the conversation wait with billing ${billingState}`, { timeout: 10_000 }, async context => {
+  const f = await setup()
+  context.mock.method(f.gateway, 'submit', async () => { throw new AppError('INVALID_ARGUMENT', { details: {
+    stage: 'video-submit', submissionState: 'not_submitted', billingState, submissionConfirmedNotSent: true,
+    businessCode: 'INVALID_PARAMETER', statusCode: 422 } }) })
+  context.mock.method(f.gateway, 'findReceipt', async () => null)
+  const tools = await f.video.prepareRun(f.run)
+  assert.ok(tools)
+  const view = await tools.execute('video_from_image', input) as VideoJobView
+  assert.equal(view.generationStatus, 'FAILED')
+  assert.equal(view.failure?.submissionState, 'not_submitted')
+  await assert.rejects(f.video.waitForRun('task-a', f.run.runId), error => {
+    assert.equal(runtimeFeedback(error).code, 'MEDIA_SUBMISSION_REJECTED'); return true
+  })
+  await f.video.finishRun('task-a', f.run.runId)
+})
+
+for (const stopped of [false, true]) test(`an unrelated uncertain video does not require extra confirmation or block later turns (old tracking stopped=${stopped})`, { timeout: 10_000 }, async context => {
   const f = await setup()
   const requests: VideoRequest[] = []
   const submit = f.gateway.submit.bind(f.gateway)
@@ -94,7 +112,7 @@ for (const stopped of [false, true]) test(`conversation confirms a fresh video a
   assert.ok(tools)
   const result = await tools.execute('video_from_image', { ...input, creativeBrief: 'User explicitly requests a new product video' }) as VideoJobView
   await f.video.waitForRun('task-a', f.run.runId)
-  assert.equal(decisions, 1)
+  assert.equal(decisions, 0)
   assert.notEqual(result.jobId, original.jobId)
   assert.equal(result.saveStatus, 'SAVED')
   assert.equal(f.gateway.calls.submit, 2)
@@ -106,7 +124,7 @@ for (const stopped of [false, true]) test(`conversation confirms a fresh video a
   assert.equal(retained.receipt, null)
   assert.equal(retained.request.clientRequestId, savedOriginal.request.clientRequestId)
   assert.equal(retained.failure?.stage, savedOriginal.failure?.stage)
-  assert.deepEqual((await f.store.getJob(owner, 'task-a', result.jobId))?.previousUnconfirmedJobIds, [original.jobId])
+  assert.equal((await f.store.getJob(owner, 'task-a', result.jobId))?.previousUnconfirmedJobIds, undefined)
   await f.video.finishRun('task-a', f.run.runId)
   const reloadedOptions = { ...f.options, store: new VideoStore(f.root) }
   const reloadedBase = new VideoRunService(reloadedOptions)

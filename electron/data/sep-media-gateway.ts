@@ -15,6 +15,8 @@ import { inspectMediaImage } from './media-image'
 import { AppError } from '../errors/app-error'
 import type { ErrorCode } from '../errors/error-codes'
 import { AuthApiError } from '../common/platform/platform-api'
+import { readApiDiagnostic } from '../common/platform/api-diagnostic'
+import type { ApiDiagnostic } from '../../src/shared/api-diagnostic'
 
 export interface SepMediaGatewayOptions {
   baseUrl: string
@@ -30,7 +32,7 @@ export type SepMediaGatewayErrorCode = SepMediaGatewayHttpErrorCode
 function appCode(gatewayCode: SepMediaGatewayErrorCode, statusCode: number): ErrorCode {
   if (statusCode === 401 || ['AUTH_REQUIRED', 'UNAUTHORIZED', 'MEDIA_AUTH_FAILED'].includes(gatewayCode)) return 'AUTH_REQUIRED'
   if (statusCode === 403 || ['MEDIA_FORBIDDEN', 'FORBIDDEN', 'PERMISSION_DENIED', 'BUDGET_EXCEEDED'].includes(gatewayCode)) return 'PERMISSION_DENIED'
-  if (['MEDIA_RATE_LIMITED', 'RATE_LIMITED'].includes(gatewayCode)) return 'RATE_LIMITED'
+  if (statusCode === 429 || ['MEDIA_RATE_LIMITED', 'RATE_LIMITED'].includes(gatewayCode)) return 'RATE_LIMITED'
   if (gatewayCode === 'MEDIA_NOT_FOUND') return 'NOT_FOUND'
   if (gatewayCode === 'MEDIA_NETWORK_ERROR') return 'NETWORK_ERROR'
   if (['MEDIA_INVALID_BASE_URL', 'MEDIA_INVALID_REQUEST', 'INVALID_PARAMETER', 'INVALID_REFERENCE',
@@ -41,8 +43,8 @@ function appCode(gatewayCode: SepMediaGatewayErrorCode, statusCode: number): Err
 }
 
 export class SepMediaGatewayError extends AppError {
-  constructor(readonly gatewayCode: SepMediaGatewayErrorCode, readonly statusCode: number = 0) {
-    super(appCode(gatewayCode, statusCode), { message: `SEP mock media request failed (${gatewayCode}).` })
+  constructor(readonly gatewayCode: SepMediaGatewayErrorCode, readonly statusCode: number = 0, diagnostic?: ApiDiagnostic) {
+    super(appCode(gatewayCode, statusCode), { message: `SEP mock media request failed (${gatewayCode}).`, diagnostic })
     this.name = gatewayCode === 'MEDIA_ABORTED' ? 'AbortError' : 'SepMediaGatewayError'
   }
 }
@@ -267,7 +269,7 @@ export class SepMediaGateway implements MediaGatewayPort {
       }
       if ((error instanceof AppError && error.code === 'RATE_LIMITED')
         || (error instanceof AuthApiError && error.statusCode === 429)) {
-        throw new SepMediaGatewayError('MEDIA_RATE_LIMITED')
+        throw new SepMediaGatewayError('MEDIA_RATE_LIMITED', 429, error instanceof AuthApiError ? error.error.diagnostic : error.diagnostic)
       }
       if ((error instanceof AppError && error.code === 'NETWORK_ERROR')
         || (error instanceof AuthApiError && error.isNetworkError && error.statusCode === 0)) {
@@ -302,6 +304,8 @@ export class SepMediaGateway implements MediaGatewayPort {
       throw new SepMediaGatewayError('MEDIA_REDIRECT_BLOCKED', response.status)
     }
     if (!response.ok) {
+      if (response.status === 429) throw new SepMediaGatewayError('MEDIA_RATE_LIMITED', 429,
+        await readApiDiagnostic(response, 'mock-media', { signal, secrets: [token] }))
       let value: unknown
       try {
         value = await this.readJson(response, signal)

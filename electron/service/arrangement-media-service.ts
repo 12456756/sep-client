@@ -6,6 +6,7 @@ import { ArrangementMediaSubmissionError, ArrangementMediaRecoveryError } from '
 import { arrangementMediaMimeByFormat } from '../domain/arrangement-plan'
 import type { MediaStorePort } from '../domain/media'
 import type { VideoStorePort } from '../domain/video-media'
+import type { VideoReferencePort } from '../domain/video-references'
 import type { MediaJobCreated, MediaRunPort } from '../domain/media-tools'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
@@ -28,6 +29,7 @@ export interface ArrangementMediaServiceOptions {
   links: ArrangementMediaLinkStorePort
   images: MediaStorePort
   videos?: VideoStorePort
+  videoReferences?: VideoReferencePort
   assets: ArrangementMediaAssetsPort
   media: MediaRunPort
   getTask(taskId: string): Promise<{ subscriptionId?: string | null } | null>
@@ -98,6 +100,11 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       links.set(link.kind + ':' + link.jobId, link)
     }
     const references = new Map<string, { artifactId: string; sha256: string; sourceNodeId?: string }>()
+    const referenceVideos = new Map((await this.options.videoReferences?.list({ ...scope, subscriptionId: input.node.subscriptionId }, input.taskId) ?? [])
+      .filter(asset => asset.status === 'SAVED').map(asset => [asset.localAssetId, asset]))
+    if (effectiveRequirements.some(requirement => requirement.operation === 'video-to-video')) {
+      for (const asset of referenceVideos.values()) references.set(asset.localAssetId, { artifactId: asset.localAssetId, sha256: asset.sha256 })
+    }
     const requirementReferences = new Map<string, string>()
     for (const binding of input.node.inputRefs ?? []) {
       if (binding.kind !== 'attachment' || binding.purpose !== 'media-source') continue
@@ -109,6 +116,12 @@ export class ArrangementMediaService implements ArrangementMediaPort {
     for (const requirement of input.node.mediaRequirements ?? []) {
       const source = requirement.inputFrom
       if (!source) continue
+      if (requirement.operation === 'video-to-video') {
+        const asset = source.artifactId ? referenceVideos.get(source.artifactId) : undefined
+        if (source.nodeId || !asset) throw new AppError('INVALID_ARGUMENT', { message: '视频生视频需要本任务已导入的参考视频，请先导入并选择原视频。' })
+        requirementReferences.set(requirement.id, asset.localAssetId)
+        continue
+      }
       let artifactId = source.artifactId
       let expectedHash: string | undefined
       if (source.nodeId) {
@@ -235,24 +248,28 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       const legacyRequirement = effectiveRequirements.filter(requirement => requirement.operation === operation &&
         (value.requirementId === undefined || requirement.id === value.requirementId))
       const requirementReference = requirementReferences.get((selectedRequirement ?? (legacyRequirement.length === 1 ? legacyRequirement[0] : undefined))?.id ?? '')
-      if (value.localAssetIds === undefined && !requirementReference && references.size > 1 && operation !== 'generate' && operation !== 'text-to-video') {
+      const localIds = operation === 'video-to-video' ? value.localVideoAssetIds : value.localAssetIds
+      const candidates = [...references.keys()].filter(id => operation === 'video-to-video' ? referenceVideos.has(id) : !referenceVideos.has(id))
+      if (localIds === undefined && !requirementReference && candidates.length > 1 && operation !== 'generate' && operation !== 'text-to-video') {
         throw new AppError('INVALID_ARGUMENT', { message: '存在多张候选参考图，请通过 localAssetIds 明确选择并保留顺序。' })
       }
-      const ids = value.localAssetIds === undefined
-        ? operation === 'generate' ? [] : image && requirementReference ? [requirementReference] : [...references.keys()]
-        : idsSchema.parse(value.localAssetIds)
+      const ids = localIds === undefined
+        ? operation === 'generate' || operation === 'text-to-video' ? [] : requirementReference ? [requirementReference] : candidates
+        : idsSchema.parse(localIds)
       if (ids.some(id => !references.has(id))) throw new AppError('PERMISSION_DENIED', { message: '媒体输入必须来自本节点计划声明的资产。' })
+      if (ids.some(id => !candidates.includes(id)) || (operation === 'video-to-video' ? idsSchema.parse(value.localAssetIds ?? []).length > 0 : idsSchema.parse(value.localVideoAssetIds ?? []).length > 0)) throw new AppError('INVALID_ARGUMENT', { message: '请按媒体操作选择对应的参考图片或参考视频，不能混用。' })
       if (operation === 'edit' && ids.length === 0) throw new AppError('INVALID_ARGUMENT', {
         message: '图生图需要明确选择本节点参考图，请通过 localAssetIds 按顺序指定；候选来源不明确时先询问用户。',
       })
-      if (operation === 'edit' && requirementReference && ids[0] !== requirementReference) throw new AppError('SPEC_CONFLICT', {
+      if ((operation === 'edit' || operation === 'video-to-video') && requirementReference && ids[0] !== requirementReference) throw new AppError('SPEC_CONFLICT', {
         message: '参考图与当前媒体需求指定的输入不一致，请使用该需求绑定的原图片。',
       })
       if (operation === 'generate' && ids.length) throw new AppError('INVALID_ARGUMENT', { message: '文生图不应传入参考图；编辑图片请使用 edit 操作。' })
       if (selectedRequirement) submittingRequirements.set(operation, selectedRequirement)
       const { requirementId: _requirementId, parameters: _parameters, ...rest } = value
       return { ...rest, ...(!spec && value.parameters !== undefined ? { parameters: value.parameters } : {}), ...spec,
-        ...(image ? { operation } : {}), localAssetIds: operation === 'text-to-video' ? [] : ids }
+        ...(image ? { operation } : {}), localAssetIds: operation === 'text-to-video' || operation === 'video-to-video' ? [] : ids,
+        ...(operation === 'video-to-video' ? { localVideoAssetIds: ids } : {}) }
     }
     const assertJob = async (kind: 'image' | 'video', raw: unknown, optional = false) => {
       await check()
@@ -267,7 +284,8 @@ export class ArrangementMediaService implements ArrangementMediaPort {
         matches.length >= input.node.mediaRequirements!.filter(item => item.required !== false && item.kind === requirement.kind && item.operation === requirement.operation).length
     })
     return {
-      inputPrompt: JSON.stringify({ referenceAssets: [...references].map(([localAssetId, original]) => ({ localAssetId, ...original })), recoverJobIds }),
+      inputPrompt: JSON.stringify({ referenceAssets: [...references].filter(([id]) => !referenceVideos.has(id)).map(([localAssetId, original]) => ({ localAssetId, ...original })),
+        ...(referenceVideos.size ? { referenceVideos: [...references].filter(([id]) => referenceVideos.has(id)).map(([localAssetId, original]) => ({ localAssetId, ...original })) } : {}), recoverJobIds }),
       recoverJobIds,
       readyForTracking: () => mediaOnly && input.node.deliverables!.every(file => [...links.values()].some(link => link.kind === file.artifact?.kind)) &&
         !!input.node.mediaRequirements?.length && requiredMediaSubmitted(),
@@ -292,7 +310,7 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       bind: (media, video) => {
         for (const requirement of input.node.mediaRequirements ?? []) {
           if (requirement.required === false) continue
-          const tool = requirement.kind === 'image' ? 'media_generate_image' : requirement.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
+          const tool = requirement.operation === 'video-to-video' ? 'video_from_video' : requirement.kind === 'image' ? 'media_generate_image' : requirement.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
           if (!(requirement.kind === 'image' ? media?.names : video?.names)?.some(name => name === tool)) throw new AppError('PERMISSION_DENIED', { message: '当前节点员工没有获准执行计划中的媒体操作，请调整员工或计划。' })
         }
         return {
@@ -348,15 +366,17 @@ export class ArrangementMediaService implements ArrangementMediaPort {
             const value = result as Record<string, unknown>
             return Array.isArray(value.jobs) ? { ...value,
               referenceAssets: Array.isArray(value.referenceAssets) ? value.referenceAssets.filter(asset => asset && typeof asset === 'object' && references.has(asset.localAssetId)) : [],
+              referenceVideos: Array.isArray(value.referenceVideos) ? value.referenceVideos.filter(asset => asset && typeof asset === 'object' && referenceVideos.has(asset.localAssetId) && references.has(asset.localAssetId)) : [],
               jobs: value.jobs.filter((job): job is Record<string, unknown> => !!job && typeof job === 'object' && links.has('video:' + job.jobId)).map(attach) } : attach(value)
           }
           if (name !== 'video_get_job') {
-            const value = await normalize(raw, name === 'video_from_image' ? 'image-to-video' : 'text-to-video')
+            const operation = name === 'video_from_video' ? 'video-to-video' : name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
+            const value = await normalize(raw, operation)
             if ('recovered' in value) {
               return augment(await inheritedJob('video', String(value.jobId)) ?? await video.execute('video_get_job', { jobId: value.jobId }, signal))
             }
             try { return await augment(await video.execute(name, value, signal)) } finally {
-              submittingRequirements.delete(name === 'video_from_image' ? 'image-to-video' : 'text-to-video')
+              submittingRequirements.delete(operation)
             }
           }
           await assertJob('video', raw, true)

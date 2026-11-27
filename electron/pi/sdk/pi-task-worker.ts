@@ -247,7 +247,7 @@ export class PiTaskWorker {
       const intentionalAbort = yielded && isHandoffAbort(event.failure) &&
         (session.getSettledResponse?.().stopReason === 'aborted' || event.failure === 'Gateway retry cancelled.')
       if (event.failure && !intentionalAbort && !this.finalFailure) this.finalFailure = event.failure
-      if (event.type === 'auto_retry_start' && ++this.retryCount > MAX_RUN_AUTO_RETRIES) {
+      if (event.type === 'auto_retry_start' && (event.data as { rateLimited?: boolean } | null)?.rateLimited !== true && ++this.retryCount > MAX_RUN_AUTO_RETRIES) {
         this.finalFailure = `本轮自动重试已达到 ${MAX_RUN_AUTO_RETRIES} 次上限，请检查网关错误后手动重试。`
         void this.emit('retry_budget_exhausted', { error: this.finalFailure })
         // Let the SDK install its retry AbortController before aborting its backoff wait.

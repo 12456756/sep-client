@@ -3,7 +3,7 @@ import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types
 import type { MediaJobCreated } from './media-tools'
 
 /** V0 deliberately excludes cancellation until the video host supports it. */
-export type VideoToolName = 'video_from_image' | 'video_generate' | 'video_get_job'
+export type VideoToolName = 'video_from_image' | 'video_from_video' | 'video_generate' | 'video_get_job'
 
 /** Trusted task-scoped facade; the host validates quotes and obtains approval. */
 export interface VideoHostTools {

@@ -3,6 +3,13 @@ import * as assert from 'node:assert/strict'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { requiredArrangementMediaTools, summarizeArrangementMediaTools } from './arrangement-media-availability'
 import { MOCK_MEDIA_CAPABILITIES } from '../data/mock-media-gateway'
+import { sepVideoToVideoRuntimeFixture } from '../../src/shared/fixtures/sep-media-runtime-v3'
+
+test('video-to-video requires its own authorized runtime tool', () => {
+  const result = summarizeArrangementMediaTools({ authorized: true, imageHost: false, video: sepVideoToVideoRuntimeFixture(), videoHostMode: 'real' })
+  assert.equal(result.video_from_video?.state, 'available')
+  assert.deepEqual(requiredArrangementMediaTools({ mediaRequirements: [{ id: 'edit', kind: 'video', operation: 'video-to-video' }] }), ['video_from_video'])
+})
 
 test('media summaries distinguish runtime tools, missing grants and unavailable adapters', () => {
   const runtime = { authorized: true, image: MOCK_MEDIA_CAPABILITIES, imageHost: true, video: fixture.runtime, videoHostMode: 'mock' as const }

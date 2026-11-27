@@ -348,6 +348,10 @@ export interface ElectronAPI {
   cancelSpeechRecording: (input: { recordingId: string }) => Promise<IpcCommandResult>
   getTaskVideo: (taskId: string) => Promise<IpcCommandResult & { data?: VideoTaskView | null }>
   importVideoReferences: (taskId: string) => Promise<IpcCommandResult & { data?: MediaAssetView[] }>
+  importReferenceVideos: (input: { taskId: string; profileId: string }) => Promise<IpcCommandResult & { data?: import('./video-references').VideoReferenceView[] }>
+  uploadReferenceVideo: (input: { taskId: string; profileId: string; localAssetId: string }) => Promise<IpcCommandResult>
+  cancelReferenceVideoUpload: (input: { taskId: string; localAssetId: string }) => Promise<IpcCommandResult>
+  removeReferenceVideo: (input: { taskId: string; localAssetId: string }) => Promise<IpcCommandResult>
   getVideoReferences: (taskId: string) => Promise<IpcCommandResult & { data?: MediaAssetView[] }>
   generateTaskVideo: (input: { taskId: string; input: VideoGenerationInput }) => Promise<IpcCommandResult & { data?: VideoJobView }>
   previewVideoOutput: (input: { taskId: string; jobId: string; outputId: string }) => Promise<IpcCommandResult & { data?: { mime: 'video/mp4' | 'video/webm'; bytes: Uint8Array } | { mime: 'video/mp4' | 'video/webm'; opened: true } }>

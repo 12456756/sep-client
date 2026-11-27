@@ -15,6 +15,7 @@ import { WriteChain } from './write-chain'
 import { mediaUpstreamErrorSchema } from '../../src/shared/media-upstream-error'
 import { mediaFailureSchema } from '../../src/shared/media-failure'
 import { mediaDiagnosticErrors } from '../domain/arrangement-diagnostic'
+import { mediaExecutionFields, refineMediaExecution } from '../../src/shared/media-execution'
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const timestamp = z.number().int().nonnegative()
@@ -31,6 +32,7 @@ const requestSchema = z.object({
   parameterSources: mediaParameterSourcesSchema.optional(), specRevision: z.number().int().positive().optional(),
 }).strict()
 const jobSchema = z.object({
+  ...mediaExecutionFields, platformStatus: generationSchema.optional(),
   version: z.literal(1), owner: ownerSchema, jobId: mediaId, taskId: mediaId, runId: mediaId, subscriptionId: opaqueId,
   clientRequestId: mediaId, requestHash: hashSchema, input: mediaGenerationInputSchema, profile: mediaProfileSchema,
   request: requestSchema, quote: mediaQuoteSchema, approval: z.enum(['manual', 'automatic']), receiptId: opaqueId.nullable(),
@@ -38,11 +40,14 @@ const jobSchema = z.object({
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']), saveStatus: saveSchema,
   outputs: z.array(mediaOutputSchema), actualSpec: imageRequestedSpecSchema.optional(), billingStatus: z.string().min(1).max(64), nextPollAt: timestamp,
   lastQueriedAt: timestamp.optional(),
+  rateLimitRetryAt: timestamp.optional(),
+  recoveryReceiptId: opaqueId.optional(),
   providerWaitMs: timestamp.optional(), downloadMs: timestamp.optional(),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(), upstreamError: mediaUpstreamErrorSchema.optional(),
   failure: mediaFailureSchema.optional(), submissionFailure: mediaFailureSchema.optional(), diagnosticErrors: mediaDiagnosticErrors.optional(),
   attempts: z.number().int().nonnegative(), error: z.string().max(20_000).nullable(), createdAt: timestamp, updatedAt: timestamp,
 }).strict().superRefine((job, context) => {
+  refineMediaExecution(job, context)
   const { request, input, profile, quote } = job
   if (request.clientRequestId !== job.clientRequestId || request.requestHash !== job.requestHash || quote.requestHash !== job.requestHash ||
     request.quoteId !== quote.quoteId || request.profileId !== profile.profileId || input.profileId !== profile.profileId ||
@@ -52,6 +57,7 @@ const jobSchema = z.object({
     !isDeepStrictEqual(request.requestedSpec, input.requestedSpec) || !isDeepStrictEqual(request.parameterSources, input.parameterSources) ||
     request.referenceIds.length !== input.localAssetIds.length || !profile.operations.includes(input.operation) ||
     job.updatedAt < job.createdAt || (job.submission === 'RECEIPTED') !== (job.receiptId !== null) ||
+    job.recoveryReceiptId !== undefined && job.receiptId !== null && job.recoveryReceiptId !== job.receiptId ||
     new Set(job.outputs.map(output => output.outputId)).size !== job.outputs.length) {
     context.addIssue({ code: 'custom', message: 'Inconsistent media job identity or state.' })
   }
@@ -299,7 +305,8 @@ export class MediaStore implements MediaStorePort {
         const stable = ['owner', 'jobId', 'taskId', 'runId', 'subscriptionId', 'clientRequestId', 'requestHash', 'input', 'profile', 'request', 'quote', 'approval', 'createdAt'] as const
         if (stable.some(key => !isDeepStrictEqual(previous[key], job[key])) || job.updatedAt < previous.updatedAt ||
           ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(job.submission) < ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(previous.submission) ||
-          (previous.receiptId !== null && previous.receiptId !== job.receiptId)) throw new MediaPersistenceError('Stable media request identity or submission state cannot change.')
+          (previous.receiptId !== null && previous.receiptId !== job.receiptId) ||
+          previous.recoveryReceiptId !== undefined && previous.recoveryReceiptId !== job.recoveryReceiptId) throw new MediaPersistenceError('Stable media request identity or submission state cannot change.')
         const terminal = ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']
         if (terminal.includes(previous.generationStatus) && job.generationStatus !== previous.generationStatus &&
           !(job.generationStatus === 'RESULT_EXPIRED' && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(previous.generationStatus))) {

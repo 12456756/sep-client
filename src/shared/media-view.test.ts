@@ -3,12 +3,30 @@ import { test } from 'node:test'
 import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { MediaAssetView, MediaJobView, MediaProfile } from './media'
-import { imageFormAspectRatios, imageFormParameters, imageFormSizes, mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile } from './media-view'
+import { imageFormAspectRatios, imageFormParameters, imageFormSizes, mediaGenerationLabels, mediaJobGenerationLabel, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile } from './media-view'
 import { imageAspectRatio } from './media-spec'
 
 // Shared tests also compile under the Node tsconfig, which intentionally has no JSX setting.
 const { MediaArtifactsPanel, MediaAssetGrid, MediaCommandFeedback, MediaCreationForm, MediaJobList, mediaTaskIssue, savedImageOutputCount } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
 const { ResultFileCard } = await import(new URL('../components/workspace/ResultFileCard.tsx', import.meta.url).href)
+
+test('labels proven non-submission separately from confirmed generation failure', () => {
+  assert.equal(mediaJobGenerationLabel({ generationStatus: 'FAILED', failure: { code: 'INVALID_ARGUMENT', stage: 'image-submit',
+    submissionState: 'not_submitted' } }).label, '未提交生成')
+  const execution = { requestId: 'original', taskId: null, submissionStatus: 'protocol_error' as const, generationStatus: null,
+    isFinal: null, observedAt: null, statusSource: null, billing: { status: 'unknown' as const, actualCostUsd: null } }
+  assert.equal(mediaJobGenerationLabel({ generationStatus: 'FAILED', execution }).label, '提交协议错误')
+  assert.equal(mediaJobGenerationLabel({ generationStatus: 'FAILED', execution: { ...execution, submissionStatus: 'failed' } }).label, '提交失败')
+  assert.equal(mediaJobGenerationLabel({ generationStatus: 'FAILED' }).label, '生成失败')
+})
+
+test('offers only original billing recovery when a rejected image has explicit unknown billing', () => {
+  const value = job({ generationStatus: 'FAILED', trackingStatus: 'INTERRUPTED', canResumeTracking: true,
+    failure: { code: 'INVALID_ARGUMENT', stage: 'image-submit', submissionState: 'not_submitted', billingState: 'unknown' } })
+  assert.equal(mediaJobActions(value, false).resumeTracking, true)
+  assert.equal(mediaJobActions(value, false).retrySave, false)
+  assert.equal(mediaJobActions({ ...value, failure: { ...value.failure!, billingState: 'not_reserved' } }, false).resumeTracking, false)
+})
 
 const profile: MediaProfile = {
   profileId: 'image-profile', kind: 'image', displayName: '商品图片', configVersion: '1', operations: ['generate', 'edit'],
@@ -26,6 +44,16 @@ function job(patch: Partial<MediaJobView> = {}): MediaJobView {
 }
 const { FeedbackProvider } = await import(new URL('../components/feedback/FeedbackProvider.tsx', import.meta.url).href)
 const noop = () => {}
+
+test('completed image delivery failures expose original recovery and allow a deliberate new generation', () => {
+  const value = job({ generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', fileStatus: 'download_failed',
+    canRetrySave: false, canResumeTracking: true, clientActions: { submissionFinished: true, generationFinished: true,
+      shouldPoll: true, pollPurpose: 'delivery', canStartNewRequest: true, canRetryDownload: true } })
+  const actions = mediaJobActions(value, false)
+  assert.equal(actions.resumeTracking, true)
+  assert.equal(actions.retrySave, false)
+  assert.equal(actions.redo, true)
+})
 
 test('model selection honors the default after loading or removal while preserving valid explicit choices', () => {
   const alternate = { ...profile, profileId: 'preferred' }
@@ -140,7 +168,7 @@ test('local stop is always distinguished from capability-gated upstream cancella
   assert.equal(mediaJobActions(job({ canCancelUpstream: true, generationStatus: 'SUBMISSION_UNKNOWN' }), false).cancelUpstream, false)
   const stopped = jobs(job({ trackingStatus: 'STOPPED' }))
   assert.match(stopped, /本地跟踪已停止/)
-  assert.match(stopped, /上游可能继续生成和计费/)
+  assert.match(stopped, /不会取消平台任务.*平台任务可能继续生成.*费用以平台最终回执为准/)
   assert.match(stopped, /恢复跟踪/)
   assert.doesNotMatch(stopped, />停止跟踪</)
   for (const generationStatus of ['CANCELLED', 'FAILED'] as const) {

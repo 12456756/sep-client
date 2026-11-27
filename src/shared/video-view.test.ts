@@ -77,6 +77,15 @@ test('video results panel has no duplicate creation form or technical configurat
   assert.doesNotMatch(html, /<form|<select|<textarea|视频模型|视频时长|提交视频生成|从系统选择视频参考图/)
 })
 
+test('keeps billing recovery available after proven video non-submission without showing generation pending', () => {
+  const failed = job({ generationStatus: 'FAILED', trackingStatus: 'INTERRUPTED', billingStatus: 'UNKNOWN',
+    error: 'INSUFFICIENT_FUNDS', failure: { code: 'INSUFFICIENT_FUNDS', stage: 'video-submit', submissionState: 'not_submitted', billingState: 'unknown' } })
+  const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [failed] } })
+  assert.match(html, /未提交.*本次请求已结束/)
+  assert.match(html, /恢复跟踪/)
+  assert.doesNotMatch(html, /提交结果尚未确认|正在生成|未预占费用/)
+})
+
 test('saved conversation video output uses inline playback and folder reveal', () => {
   const html = render(React.createElement(ResultFileCard, {
     taskId: 'task-1',
@@ -306,6 +315,19 @@ function realJobs(patch: Partial<VideoJobView>): string {
     billingStatus: 'NOT_RESERVED', ...patch,
   })] } })
 }
+
+test('receipt v2 delivery and billing evidence survives renderer validation and exposes original recovery', () => {
+  const html = realJobs({ receiptVersion: 2, generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED',
+    billingStatus: 'RECONCILING', fileStatus: 'download_failed', canDownload: false,
+    execution: { requestId: 'upstream-request', taskId: 'upstream-task', submissionStatus: 'accepted', generationStatus: 'completed',
+      isFinal: true, observedAt: 100, statusSource: 'upstream', billing: { status: 'unknown', actualCostUsd: null } },
+    clientActions: { submissionFinished: true, generationFinished: true, shouldPoll: true, pollPurpose: 'delivery',
+      canStartNewRequest: true, canRetryDownload: true } })
+  assert.match(html, /生成已完成，取得文件失败/)
+  assert.match(html, /恢复跟踪/)
+  assert.doesNotMatch(html, /正在生成|实付|提交结果不明/)
+  assert.match(realJobs({ generationStatus: 'SUBMISSION_UNKNOWN', billingStatus: 'UNKNOWN' }), /账务待确认/)
+})
 
 test('only stopped failed jobs with a controlled rejection code show submission rejected', () => {
   for (const error of ['INSUFFICIENT_FUNDS', 'VIDEO_BUDGET_EXCEEDED', 'QUOTE_EXPIRED', 'VIDEO_CONCURRENCY_LIMIT']) {

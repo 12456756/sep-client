@@ -2,6 +2,51 @@ import * as assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { mediaIssueMessage, mediaSpecFailureMessage } from './media-feedback'
 
+it('shows original protocol rejection separately from query, persistence and billing errors', () => {
+  for (const kind of ['image', 'video'] as const) {
+    const text = mediaIssueMessage({ receiptVersion: 2, generationStatus: 'FAILED', trackingStatus: 'ACTIVE', saveStatus: 'PENDING', error: null,
+      execution: { requestId: 'original', taskId: 'diagnostic-task', submissionStatus: 'protocol_error', generationStatus: null,
+        isFinal: null, observedAt: null, statusSource: 'cached', operation: 'query',
+        submissionError: { code: 'model_mismatch', message: 'Original model mismatch' }, submissionHttpStatus: 502,
+        submissionRecordError: { reason: 'Record persistence failed' }, diagnosticTruncated: true,
+        billing: { status: 'unknown', actualCostUsd: null } },
+      clientActions: { submissionFinished: true, generationFinished: true, shouldPoll: true,
+        pollPurpose: 'billing', canStartNewRequest: true, canRetryDownload: false } }, kind)!
+    assert.match(text, /协议错误结束.*Original model mismatch/)
+    assert.match(text, /原提交 HTTP 502.*提交回执保存异常.*Record persistence failed/)
+    assert.match(text, /错误详情已截断.*生成流程已结束，费用待核对/)
+    assert.doesNotMatch(text, /提交结果尚未确认|原任务操作异常|恢复原任务|未扣费|免费/)
+  }
+})
+
+it('reports a proven non-submission without inventing its billing outcome', () => {
+  const text = mediaIssueMessage({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', saveStatus: 'PENDING', error: 'SERVICE_UNAVAILABLE',
+    failure: { code: 'SERVICE_UNAVAILABLE', stage: 'image-submit', submissionState: 'not_submitted', billingState: 'unknown', httpStatus: 503,
+      diagnostic: { body: { error: { message: 'Original submit rejection' } } } } }, 'image')!
+  assert.match(text, /图片未提交，本次请求已结束.*Original submit rejection.*HTTP 503.*费用状态待核对/)
+  assert.doesNotMatch(text, /提交结果尚未确认|未预占|未扣费|恢复原任务/)
+})
+
+it('describes a bounded recovery exit without declaring the original generation failed', () => {
+  for (const kind of ['image', 'video'] as const) {
+    const text = mediaIssueMessage({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED',
+      saveStatus: 'PENDING', error: 'TRACKING_LIMIT', failure: { code: 'NETWORK_ERROR', stage: kind === 'image' ? 'image-query' : 'video-query' } }, kind)
+    assert.match(text!, /恢复已达查询或时长上限.*提交结果仍待确认.*恢复原任务跟踪/)
+    assert.doesNotMatch(text!, /生成失败|未扣费|免费/)
+  }
+})
+
+it('separates confirmed generation failure from pending platform refunds', () => {
+  const message = mediaIssueMessage({ receiptVersion: 2, generationStatus: 'FAILED', trackingStatus: 'ACTIVE', saveStatus: 'PENDING', error: null,
+    execution: { requestId: 'original', taskId: null, submissionStatus: 'failed', generationStatus: null, isFinal: null,
+      observedAt: null, statusSource: null, billing: { status: 'not_charged', actualCostUsd: '0' }, taskError: { message: 'Reference rejected' } },
+    billingError: { status: 503, body: { message: 'Refund pending' } } }, 'image')
+  assert.match(message!, /生成失败：Reference rejected/)
+  assert.match(message!, /上游确认不扣费，平台预留金额尚待核对/)
+  assert.match(message!, /Refund pending/)
+  assert.doesNotMatch(message!, /正在生成|已退款|免费|提交结果尚未确认/)
+})
+
 it('explains specification failures instead of reporting unavailable employees or missing permissions', () => {
   const job = { generationStatus: 'FAILED', trackingStatus: 'STOPPED' as const, saveStatus: 'PENDING' as const }
   assert.match(mediaIssueMessage({ ...job, error: 'MISSING_SPEC' }, 'video')!, /规格尚未确定/)
@@ -23,10 +68,10 @@ it('preserves uncertain submission and never echoes raw supplier errors', () => 
   const job = { generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED' as const, saveStatus: 'PENDING' as const, error: 'INSUFFICIENT_FUNDS' }
   assert.equal(mediaIssueMessage(job, 'video'), '视频提交结果尚未确认；已知异常：当前账号可用资金不足；请查询原任务，勿重复提交')
   assert.equal(mediaIssueMessage({ ...job, generationStatus: 'FAILED', trackingStatus: 'STOPPED' }, 'video'), '当前账号可用资金不足，请联系企业管理员补充资金后重试。')
-  assert.equal(mediaIssueMessage({ ...job, generationStatus: 'FAILED', error: 'secret token /private/file' }, 'image'), '图片任务跟踪已中断，尚未确认原任务的最新状态，请恢复原任务跟踪，勿重复生成。')
+  assert.equal(mediaIssueMessage({ ...job, generationStatus: 'FAILED', error: 'secret token /private/file' }, 'image'), '图片生成失败；本地状态查询已中断，已确认的生成结果保持不变。')
   assert.equal(mediaIssueMessage({ ...job, generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', error: null }, 'image'), null)
-  assert.equal(mediaIssueMessage({ ...job, generationStatus: 'FAILED', error: '__proto__' }, 'image'), '图片任务跟踪已中断，尚未确认原任务的最新状态，请恢复原任务跟踪，勿重复生成。')
-  assert.equal(mediaIssueMessage({ ...job, generationStatus: 'SUCCEEDED', error: 'RESULT_EXPIRED' }, 'image'), '图片结果已过期，无法重新下载')
+  assert.equal(mediaIssueMessage({ ...job, generationStatus: 'FAILED', error: '__proto__' }, 'image'), '图片生成失败；本地状态查询已中断，已确认的生成结果保持不变。')
+  assert.equal(mediaIssueMessage({ ...job, generationStatus: 'SUCCEEDED', error: 'RESULT_EXPIRED' }, 'image'), '图片原结果已过期，无法重新下载；已保存的成果仍可使用')
 })
 
 it('shows the observed failure alongside uncertainty without suggesting another paid request', () => {

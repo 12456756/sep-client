@@ -1,3 +1,6 @@
+import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
+import { rateLimitRetryDelay } from '../../common/rate-limit-retry'
+
 export const MAX_GATEWAY_RETRY_WAIT_MS = 5 * 60_000
 
 function numericDelay(value: string | null, multiplier: number): number | undefined {
@@ -20,13 +23,21 @@ function retryAfter(headers: Headers, now: number): number | undefined {
 
 export function waitForGatewayRetry(delayMs: number, signal?: AbortSignal | null): Promise<void> {
   return new Promise((resolve, reject) => {
+    const deadline = Date.now() + delayMs
     const cleanup = () => signal?.removeEventListener('abort', abort)
     const abort = () => {
       clearTimeout(timer)
       cleanup()
       reject(new DOMException('Gateway retry cancelled.', 'AbortError'))
     }
-    const timer = setTimeout(() => { cleanup(); resolve() }, delayMs)
+    let timer: ReturnType<typeof setTimeout>
+    const schedule = () => {
+      timer = setTimeout(() => {
+        if (Date.now() < deadline) schedule()
+        else { cleanup(); resolve() }
+      }, Math.min(2_147_483_647, Math.max(0, deadline - Date.now())))
+    }
+    schedule()
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) abort()
   })
@@ -34,6 +45,7 @@ export function waitForGatewayRetry(delayMs: number, signal?: AbortSignal | null
 
 /** Per-session timing only. Pi remains the sole owner of retry decisions and attempts. */
 export class GatewayRetryWait {
+  isRateLimited = false
   private hintMs: number | undefined
   private pendingMs = 0
   private attempt = 0
@@ -41,6 +53,7 @@ export class GatewayRetryWait {
   terminalError: string | undefined
 
   reset(): void {
+    this.isRateLimited = false
     this.hintMs = undefined
     this.pendingMs = 0
     this.attempt = 0
@@ -49,15 +62,22 @@ export class GatewayRetryWait {
   }
 
   inspect(response: Response, now = Date.now()): boolean {
+    this.isRateLimited = response.status === 429
     const hasRetryHint = response.status === 429 || (response.status >= 500 && response.status < 600)
     this.hintMs = hasRetryHint ? retryAfter(response.headers, now) : undefined
     this.blocked = response.headers.get('x-should-retry') === 'false' && !response.ok
     if (this.blocked) return false
-    if (this.hintMs !== undefined && this.hintMs > MAX_GATEWAY_RETRY_WAIT_MS) {
+    if (this.hintMs !== undefined && (!Number.isSafeInteger(this.hintMs) || !this.isRateLimited && this.hintMs > MAX_GATEWAY_RETRY_WAIT_MS)) {
       this.terminalError = `Gateway recovery requires ${this.hintMs} ms, exceeding the ${MAX_GATEWAY_RETRY_WAIT_MS} ms retry wait limit.`
       return false
     }
     return true
+  }
+
+  inspectDiagnostic(diagnostic: ApiDiagnostic): void {
+    this.isRateLimited = diagnostic.httpStatus === 429 || diagnostic.computeStatus === 429
+    if (this.isRateLimited) this.hintMs = rateLimitRetryDelay(diagnostic)
+    this.blocked = diagnostic.retryable === false || diagnostic.headers?.['x-should-retry'] === 'false'
   }
 
   schedule(): number {

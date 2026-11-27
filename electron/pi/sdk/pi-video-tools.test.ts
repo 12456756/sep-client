@@ -15,6 +15,7 @@ import { videoRuntimeSchema } from '../../../src/shared/video-media'
 import { AppError } from '../../errors/app-error'
 import { AuthApiError } from '../../common/platform/platform-api'
 import { SepVideoGatewayError } from '../../data/sep-video-media-gateway'
+import { sepVideoToVideoRuntimeFixture } from '../../../src/shared/fixtures/sep-media-runtime-v3'
 
 const names: VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
 const parameters = { durationSeconds: 5, aspectRatio: '16:9', resolution: '720p' as const, frameRate: 24, audio: false, outputFormat: 'video/mp4' as const }
@@ -96,6 +97,29 @@ function value(result: Awaited<ReturnType<Awaited<ReturnType<typeof sdk>>['execu
 }
 
 describe('video tools through the mocked Pi SDK extension API', () => {
+  it('advertises video-to-video only when authorized and forwards ordered video IDs without exposing upload credentials', async () => {
+    const sent: unknown[] = []
+    const runtime = videoRuntimeSchema.parse(sepVideoToVideoRuntimeFixture())
+    const host: VideoHostTools = { names: ['video_get_job', 'video_from_video'], execute: async (name, input) => {
+      if (name === 'video_get_job') return { mock: false, runtime, jobs: [], referenceVideos: [{ localAssetId: 'vref_1', taskId: 'task-a', name: 'product.mp4',
+        mime: 'video/mp4', size: 1024, status: 'SAVED', uploaded: { referenceId: 'private-sep-id' }, path: secrets.path }] }
+      sent.push(input)
+      return { ...job, operation: 'video-to-video', billingStatus: 'RESERVED', amountCny: '0.100000' }
+    } }
+    const tools = await sdk({ videoTools: host })
+    assert.ok(tools.definitions.has('video_from_video'))
+    const discovery = JSON.parse(value(await tools.execute('video_get_job', {})))
+    assert.equal(discovery.referenceVideos[0].name, 'product.mp4')
+    assert.doesNotMatch(JSON.stringify(discovery), /private-sep-id|private\/video/)
+    const input = { creativeBrief: 'Edit the scene', localVideoAssetIds: ['vref_2', 'vref_1'], protocolVersion: 3,
+      specRevision: 1, requestedSpec: { durationSeconds: 5, audio: false }, parameterSources: { durationSeconds: 'user', audio: 'user' } }
+    assert.deepEqual((await tools.execute('video_from_video', input)).details, { isError: false })
+    assert.deepEqual((sent[0] as { localVideoAssetIds: string[] }).localVideoAssetIds, ['vref_2', 'vref_1'])
+    assert.deepEqual((await tools.execute('video_from_video', { ...input, localAssetIds: ['image-1'] })).details, { isError: true })
+    assert.equal(sent.length, 1)
+    const disabled = await sdk({ videoTools: host, toolPolicy: policy })
+    assert.equal(disabled.definitions.has('video_from_video'), false)
+  })
   it('preserves new video failure codes and supplies Chinese reasons in job and task queries', async () => {
     const failed = { ...job, generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'STOPPED', error: 'NEW_PROVIDER_FAILURE',
       failure: { code: 'SERVICE_UNAVAILABLE', stage: 'video-submit', source: 'upstream', message: 'Supplier account disabled',
@@ -258,7 +282,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       assert.deepEqual(result.details, { isError: true })
       assert.deepEqual(JSON.parse(value(result)).error, { code: 'VIDEO_BUDGET_EXCEEDED', message: '已超过企业视频预算。',
         businessCode: 'VIDEO_BUDGET_EXCEEDED', gatewayCode: 'VIDEO_HTTP_ERROR', httpStatus: 402,
-        requestId: 'req-safe-1', source: 'platform', stage: 'video-submit' })
+        requestId: 'req-safe-1', source: 'platform', stage: 'video-submit', submissionState: 'not_submitted', billingState: 'not_reserved' })
       assert.deepEqual(records.at(-1), { runId: 'run-a', tool: 'video_generate', toolCallId: 'call-a',
         exceptionType: 'SepVideoGatewayError', code: 'VIDEO_BUDGET_EXCEEDED', httpStatus: 402,
         resource: 'video', stage: 'video-submit', requestId: 'req-safe-1' })

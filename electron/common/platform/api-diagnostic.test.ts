@@ -6,6 +6,18 @@ const json = (body: unknown, status = 400, headers: Record<string, string> = {})
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } })
 
 describe('platform error diagnostics', () => {
+  it('preserves SEP media recovery identifiers separately from HTTP correlation IDs', async () => {
+    const result = await readApiDiagnostic(json({ error: { message: 'Busy' } }, 429, {
+      'X-SEP-Receipt-ID': 'receipt-original', 'X-SEP-Client-Request-ID': 'client-original',
+      'X-Request-ID': 'http-request', 'X-Compute-Request-ID': 'compute-request', 'Retry-After': '7',
+    }))
+    assert.equal(result.sepReceiptId, 'receipt-original')
+    assert.equal(result.clientRequestId, 'client-original')
+    assert.equal(result.sepRequestId, 'http-request')
+    assert.equal(result.headers?.['x-sep-receipt-id'], 'receipt-original')
+    assert.equal(result.headers?.['x-sep-client-request-id'], 'client-original')
+    assert.deepEqual(safeApiDiagnostic(result), result)
+  })
   it('keeps validation reasons, unknown fields and actual HTTP authority', async () => {
     const body = { statusCode: 500, message: 'Invalid parameters',
       error: { code: 'invalid_parameter', message: 'Invalid parameters', reason: 'Expected number', field: 'requestedSpec.count', retryable: false },

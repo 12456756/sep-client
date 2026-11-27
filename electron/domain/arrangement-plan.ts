@@ -78,7 +78,7 @@ const deliveryText = z.string().trim().min(1).max(4_000)
 const arrangementId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 export const arrangementMediaArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/)
 const mediaArtifactKindSchema = z.enum(['document', 'image', 'video', 'data', 'other'])
-const mediaOperationSchema = z.enum(['generate', 'edit', 'image-to-video', 'text-to-video'])
+const mediaOperationSchema = z.enum(['generate', 'edit', 'image-to-video', 'text-to-video', 'video-to-video'])
 const attachmentRefSchema = z.object({ attachmentId: arrangementId, sha256: z.string().regex(/^[a-f0-9]{64}$/i) }).strict()
 const nodeInputRefSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('attachment'), attachment: attachmentRefSchema, required: z.boolean(), purpose: z.enum(['reference', 'analysis', 'vision', 'media-source']) }).strict(),
@@ -134,7 +134,7 @@ export const arrangementMediaRequirementSchema = z.object({
   if ((requirement.requiredSpec || requirement.proposedSpec || requirement.parameterSources) && !requirement.specRevision) {
     context.addIssue({ code: 'custom', path: ['specRevision'], message: 'Structured media specifications require a revision.' })
   }
-  const expectedKind = requirement.operation === 'image-to-video' || requirement.operation === 'text-to-video' ? 'video' : 'image'
+  const expectedKind = requirement.operation.endsWith('-to-video') ? 'video' : 'image'
   if (requirement.kind !== expectedKind) context.addIssue({ code: 'custom', path: ['kind'], message: 'Media operation and output kind do not match.' })
   if (requirement.operation === 'text-to-video' && requirement.inputFrom) {
     context.addIssue({ code: 'custom', path: ['inputFrom'], message: 'Text-to-video cannot declare an image input.' })
@@ -150,7 +150,7 @@ export const arrangementDeliverableArtifactSchema = z.object({
     context.addIssue({ code: 'custom', path: ['source'], message: 'Only image and video deliverables can be sourced from media output.' })
   }
   if (artifact.operation) {
-    const expectedKind = artifact.operation === 'image-to-video' || artifact.operation === 'text-to-video' ? 'video' : 'image'
+    const expectedKind = artifact.operation.endsWith('-to-video') ? 'video' : 'image'
     if (artifact.kind !== expectedKind) context.addIssue({ code: 'custom', path: ['operation'], message: 'Media operation and deliverable kind do not match.' })
   }
 })

@@ -428,7 +428,10 @@ export class SkillImportService {
         this.assertCurrent(current)
         if (error instanceof SkillImportApiError && (isTerminal(error) || !error.retryable && !['GRANT_EXPIRED', 'UPLOAD_PROCESSING', 'INVALID_RESPONSE'].includes(error.code))) throw error
         this.recordFailure(error)
-        if (error instanceof SkillImportApiError && error.status === 429) this.publish({ error: this.errorView(error.code, error) })
+        if (error instanceof SkillImportApiError && error.status === 429) {
+          attempts--
+          this.publish({ error: this.errorView(error.code, error) })
+        }
         await this.waitForRetry(current, Math.max(2000, error instanceof SkillImportApiError ? error.retryAfterMs : 0))
       }
     }

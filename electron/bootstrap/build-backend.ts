@@ -74,6 +74,7 @@ import type { SpeechRuntimePort } from '../domain/speech'
 import { SepRealMediaGateway } from '../data/sep-real-media-gateway'
 import type { MediaGatewayPort } from '../domain/media'
 import { VideoStore } from '../data/video-store'
+import { VideoReferenceStore } from '../data/video-reference-store'
 import { SepMockVideoGateway, SepRealVideoGateway } from '../data/sep-video-media-gateway'
 import { createVideoScopeAdapter } from '../data/video-scope-adapter'
 import { MockVideoHostService, type MockVideoHostOptions } from '../service/mock-video-host-service'
@@ -82,7 +83,8 @@ import { ConversationVideoRunService } from '../service/conversation-video-run-s
 import { ConversationMediaService } from '../service/conversation-media-service'
 import { AppError } from '../errors/app-error'
 import { videoSubmissionRejected } from '../domain/video-media'
-import { isMediaSubmissionUnconfirmed, MEDIA_RETRY_READ_FAILED } from '../../src/shared/media-retry'
+import { isMediaSubmissionUnconfirmed, mediaReplayJobs, MEDIA_RETRY_READ_FAILED } from '../../src/shared/media-retry'
+import { mediaGenerationState } from '../../src/shared/media-execution'
 import { ScopePath } from '../data/scope-path'
 import { DocumentPreviewService } from '../service/document-preview-service'
 import { DocumentPreviewStore, writeWordCopy } from '../data/document-preview-store'
@@ -296,6 +298,7 @@ class BackendRuntime {
     })
 
     const videoStore = config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED ? new VideoStore(userDataDir) : undefined
+    const videoReferenceStore = videoStore ? new VideoReferenceStore(userDataDir) : undefined
     this.arrangementDiagnostics = new ArrangementDiagnosticService({
       scope: this, clientVersion: app.getVersion(),
       authorizationRevision: () => this.authSession.getSessionRevision(),
@@ -329,6 +332,7 @@ class BackendRuntime {
             token: (subscriptionId: string, signal: AbortSignal) => this.getEmploymentToken(subscriptionId, signal) }
           return config.SEP_VIDEO_REAL_ENABLED ? new SepRealVideoGateway({ ...transport, mock: false }) : new SepMockVideoGateway({ ...transport, mock: true })
         },
+        videoReferences: videoReferenceStore,
         ...createVideoScopeAdapter(userDataDir, mediaStore, store, async path => {
           const error = await shell.openPath(path)
           if (error) throw new Error('Local video player unavailable.')
@@ -362,7 +366,7 @@ class BackendRuntime {
       getTask: taskId => this.taskManager.getTask(taskId) })
     this.arrangementMedia = new ArrangementMediaService({
       scope: this, plans: this.workPlans, checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore,
-      links: new ArrangementMediaLinkStore(userDataDir), images: mediaStore, videos: videoStore,
+      links: new ArrangementMediaLinkStore(userDataDir), images: mediaStore, videos: videoStore, videoReferences: videoReferenceStore,
       assets: mediaAssets, media: this.media,
       getTask: taskId => this.taskManager.getTask(taskId),
     })
@@ -426,12 +430,12 @@ class BackendRuntime {
         signal.throwIfAborted()
         await runtime.retryTask(taskId, { conversation: true, signal })
       },
-      assertReplayAllowed: async (owner, task) => {
+      assertReplayAllowed: async (owner, task, runId) => {
         const unconfirmed = await Promise.all([
-          mediaStore.listJobs(owner, task.id).then(jobs => jobs.some(job => isMediaSubmissionUnconfirmed(job.generationStatus))),
+          mediaStore.listJobs(owner, task.id).then(jobs => mediaReplayJobs(jobs, runId).some(job => isMediaSubmissionUnconfirmed(job.generationStatus))),
           videoStore && task.subscriptionId
-            ? videoStore.listJobs({ ...owner, subscriptionId: task.subscriptionId }, task.id).then(jobs => jobs.some(job =>
-              isMediaSubmissionUnconfirmed(job.receipt?.status) || !job.receipt && job.submission !== 'NOT_SENT' && !videoSubmissionRejected(job)))
+            ? videoStore.listJobs({ ...owner, subscriptionId: task.subscriptionId }, task.id).then(jobs => mediaReplayJobs(jobs, runId).some(job =>
+              isMediaSubmissionUnconfirmed(job.receipt ? mediaGenerationState(job.receipt.status, job.receipt) : undefined) || !job.receipt && job.submission !== 'NOT_SENT' && !videoSubmissionRejected(job)))
             : false,
         ]).catch(cause => { throw new AppError('MEDIA_REPLAY_BLOCKED', { message: MEDIA_RETRY_READ_FAILED, cause }) })
         if (unconfirmed.some(Boolean)) throw new AppError('MEDIA_REPLAY_BLOCKED')

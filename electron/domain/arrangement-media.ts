@@ -16,7 +16,7 @@ export const arrangementMediaLinkSchema = z.object({
   attempt: z.number().int().positive(),
   subscriptionId: z.string().min(1).max(256),
   kind: z.enum(['image', 'video']),
-  operation: z.enum(['generate', 'edit', 'image-to-video', 'text-to-video']),
+  operation: z.enum(['generate', 'edit', 'image-to-video', 'text-to-video', 'video-to-video']),
   jobId: localId,
   requirementId: localId.optional(),
   specRevision: z.number().int().positive().safe().optional(),
@@ -39,7 +39,7 @@ export const arrangementMediaLinkSchema = z.object({
   if (link.updatedAt < link.createdAt) context.addIssue({ code: 'custom', path: ['updatedAt'], message: 'Media link timestamps cannot move backwards.' })
   if (new Set(link.inputs.map(input => input.artifactId)).size !== link.inputs.length) context.addIssue({ code: 'custom', path: ['inputs'], message: 'Duplicate media input artifact.' })
   if (new Set(link.outputs.map(output => output.artifactId)).size !== link.outputs.length) context.addIssue({ code: 'custom', path: ['outputs'], message: 'Duplicate media output artifact.' })
-  const expectedKind = link.operation === 'image-to-video' || link.operation === 'text-to-video' ? 'video' : 'image'
+  const expectedKind = link.operation.endsWith('-to-video') ? 'video' : 'image'
   if (link.kind !== expectedKind) context.addIssue({ code: 'custom', path: ['kind'], message: 'Media operation and output kind do not match.' })
   if (link.operation === 'text-to-video' && link.inputs.length > 0) context.addIssue({ code: 'custom', path: ['inputs'], message: 'Text-to-video generation cannot have image inputs.' })
   if (new Set(link.materializations.map(item => item.deliverableId)).size !== link.materializations.length) context.addIssue({ code: 'custom', path: ['materializations'], message: 'Duplicate media materialization.' })

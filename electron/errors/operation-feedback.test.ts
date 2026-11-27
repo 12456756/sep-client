@@ -26,6 +26,17 @@ it('keeps concrete media causes in Chinese through the operation envelope withou
   assert.match(toEnvelope(appError('SERVICE_UNAVAILABLE'), { feedbackOperation: 'imageGenerate' }).message, /图片提交.*生成服务暂时不可用/)
 })
 
+it('uses the same proven non-submission rule for image and video operation feedback', () => {
+  for (const kind of ['image', 'video'] as const) {
+    const result = toEnvelope(appError('INVALID_ARGUMENT', { details: { stage: `${kind}-submit`, businessCode: 'INVALID_PARAMETER',
+      statusCode: 422, submissionState: 'not_submitted', billingState: 'not_reserved', submissionConfirmedNotSent: true },
+      diagnostic: { body: { error: { message: 'private provider detail', submissionState: 'not_submitted' } } } }),
+    { feedbackOperation: kind === 'image' ? 'imageGenerate' : 'videoGenerate' })
+    assert.match(result.message, /未提交，本次请求已结束/)
+    assert.doesNotMatch(result.message, /尚未确认|HTTP|private provider/)
+  }
+})
+
 it('keeps actionable task, document and speech causes through the IPC envelope', () => {
   const cases = [
     ['workRetry', '这项工作有尚未结束的运行，请先结束后再重新执行。', '当前工作还有未结束的运行，请先结束当前运行后再重新执行。'],

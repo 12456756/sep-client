@@ -84,7 +84,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     const requiredMediaTools = requiredArrangementMediaTools(input.node)
     const employees = input.employees.filter(employee => employee.subscriptionId !== input.node.subscriptionId && (stage === 'authorized'
       ? employee.status === 'ACTIVE' && employee.canExecute !== false && employee.allowedModels.includes(input.node.modelId) &&
-        requiredMediaTools.every(tool => employee.mediaTools?.[tool].state === 'available')
+        requiredMediaTools.every(tool => employee.mediaTools?.[tool]?.state === 'available')
       : employee.source === stage && employee.canApply === true))
     if (!employees.length) return null
     const plannerEmployee = selectPlannerEmployee(input.plannerEmployees ?? employees, this.options, input.plannerModelId)

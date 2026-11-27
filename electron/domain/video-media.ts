@@ -1,9 +1,10 @@
 import { isDeepStrictEqual } from 'node:util'
+import { mediaGenerationState } from '../../src/shared/media-execution'
 import { z } from 'zod'
 import { videoOutputSchema, videoReceiptSchema, videoSpecFailureSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 import type { VideoOutput, VideoReceipt } from '../../src/shared/video-media'
 import { isVideoSubmissionRejectionCode } from '../../src/shared/video-errors'
-import { mediaFailureSchema } from '../../src/shared/media-failure'
+import { mediaFailureSchema, mediaSubmissionRejected } from '../../src/shared/media-failure'
 import { mediaDiagnosticErrors } from './arrangement-diagnostic'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec } from '../../src/shared/media-spec-contract'
 
@@ -27,6 +28,7 @@ export const videoSaveStatusSchema = z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE
 export const localVideoJobSchema = z.object({
   version: z.literal(1), scope: videoScopeSchema, taskId: videoLocalIdSchema, jobId: videoLocalIdSchema,
   runId: videoLocalIdSchema.optional(),
+  localReferenceIds: z.array(videoLocalIdSchema).max(32).optional(),
   /** Older uncertain jobs left independent by an explicitly confirmed new request. */
   previousUnconfirmedJobIds: z.array(videoLocalIdSchema).optional(),
   executionMode: z.enum(['mock', 'real']).optional(),
@@ -34,6 +36,9 @@ export const localVideoJobSchema = z.object({
   submission: z.enum(['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED']), receipt: videoReceiptSchema.nullable(),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']), saveStatus: videoSaveStatusSchema,
   lastQueriedAt: z.number().int().nonnegative().optional(),
+  rateLimitRetryAt: z.number().int().nonnegative().optional(),
+  nextPollAt: z.number().int().nonnegative().optional(),
+  recoveryReceiptId: videoLocalIdSchema.optional(),
   /** Elapsed time from job creation to first observed provider success; includes queue time. */
   providerWaitMs: z.number().int().nonnegative().optional(),
   /** Duration of the most recent complete save round across all outputs. */
@@ -46,6 +51,7 @@ export const localVideoJobSchema = z.object({
 }).strict().superRefine((job, context) => {
   if (job.request.quoteId !== job.quote.quoteId || job.quote.status !== 'quoted' || job.updatedAt < job.createdAt ||
     (job.submission === 'RECEIPTED') !== (job.receipt !== null) ||
+    job.recoveryReceiptId !== undefined && job.receipt !== null && job.recoveryReceiptId !== job.receipt.receiptId ||
     (job.saveStatus === 'SAVED' && !job.receipt?.outputs.length)) {
     context.addIssue({ code: 'custom', message: 'Inconsistent local video job.' })
   }
@@ -63,8 +69,13 @@ export function videoDefaultRecoveryExclusions(jobs: readonly LocalVideoJob[]): 
 }
 
 export function videoSubmissionRejected(job: LocalVideoJob): boolean {
-  return job.submission === 'MAYBE_SENT' && job.receipt === null && job.trackingStatus === 'STOPPED' &&
-    isVideoSubmissionRejectionCode(job.error)
+  return job.submission === 'MAYBE_SENT' && job.receipt === null &&
+    (mediaSubmissionRejected(job.submissionFailure ?? job.failure) || job.trackingStatus === 'STOPPED' && isVideoSubmissionRejectionCode(job.error))
+}
+
+export function videoJobGenerationState(job: LocalVideoJob): string {
+  return job.receipt ? mediaGenerationState(job.receipt.status, job.receipt)
+    : job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : videoSubmissionRejected(job) ? 'FAILED' : 'SUBMISSION_UNKNOWN'
 }
 
 export function receiptMatchesRequest(job: Pick<LocalVideoJob, 'request' | 'executionMode'>, receipt: VideoReceipt): boolean {
@@ -82,8 +93,9 @@ export type LocalVideoAsset = z.infer<typeof localVideoAssetSchema>
 export type VideoAssetState = Omit<LocalVideoAsset, 'status'> & { status: 'SAVED' | 'MISSING' }
 
 export function assertVideoJobUpdate(previous: LocalVideoJob, next: LocalVideoJob): void {
-  const stable = ['version', 'scope', 'taskId', 'jobId', 'runId', 'previousUnconfirmedJobIds', 'executionMode', 'request', 'quote', 'createdAt'] as const
+  const stable = ['version', 'scope', 'taskId', 'jobId', 'runId', 'localReferenceIds', 'previousUnconfirmedJobIds', 'executionMode', 'request', 'quote', 'createdAt'] as const
   if (stable.some(key => !isDeepStrictEqual(previous[key], next[key])) || next.updatedAt < previous.updatedAt ||
+    previous.recoveryReceiptId !== undefined && previous.recoveryReceiptId !== next.recoveryReceiptId ||
     ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(next.submission) < ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(previous.submission)) {
     throw new Error('Frozen video identity or submission state cannot change.')
   }
@@ -91,11 +103,12 @@ export function assertVideoJobUpdate(previous: LocalVideoJob, next: LocalVideoJo
   const receipt = next.receipt
   if (!receipt || receipt.receiptId !== previous.receipt.receiptId) throw new Error('Original video receipt cannot change.')
   const terminal = ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']
-  const before = previous.receipt.status
-  if ((terminal.includes(before) && receipt.status !== before &&
-      !(receipt.status === 'RESULT_EXPIRED' && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(before))) ||
-    (before === 'RUNNING' && ['QUEUED', 'SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(receipt.status)) ||
-    (before === 'QUEUED' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(receipt.status))) throw new Error('Video generation state cannot regress.')
+  const before = mediaGenerationState(previous.receipt.status, previous.receipt)
+  const after = mediaGenerationState(receipt.status, receipt)
+  if ((terminal.includes(before) && after !== before &&
+      !(after === 'RESULT_EXPIRED' && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(before))) ||
+    (before === 'RUNNING' && ['QUEUED', 'SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(after)) ||
+    (before === 'QUEUED' && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(after))) throw new Error('Video generation state cannot regress.')
   for (const output of previous.receipt.outputs) {
     const candidate = receipt.outputs.find(item => item.outputId === output.outputId)
     // Retention metadata may be refreshed; the actual content identity is immutable.

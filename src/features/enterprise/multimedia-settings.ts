@@ -7,7 +7,7 @@ const FIELD_LABELS: Record<string, string> = {
   size: '尺寸', width: '宽度', height: '高度', aspectRatio: '宽高比', count: '图片数量', quality: '质量',
   resolution: '分辨率', durationSeconds: '时长', audio: '音频', outputFormat: '输出格式', frameRate: '帧率',
 }
-const OPERATIONS: Record<string, string> = { generate: '文生图', edit: '图生图', 'text-to-video': '文生视频', 'image-to-video': '图生视频' }
+const OPERATIONS: Record<string, string> = { generate: '文生图', edit: '图生图', 'text-to-video': '文生视频', 'image-to-video': '图生视频', 'video-to-video': '视频生视频' }
 const SOURCES = { 'profile-config': '模型配置', adapter: '适配器', 'platform-policy': '平台策略', provider: '模型服务商' }
 const CONFIDENCE = { verified: '已验证', declared: '已声明', unknown: '未确认' }
 const UNITS = { seconds: '秒', pixels: '像素', images: '张' }

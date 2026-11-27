@@ -1,5 +1,5 @@
 import { videoToolJobInputSchema } from '../../src/shared/video-host'
-import { videoBillingPending, videoRuntimeSchema } from '../../src/shared/video-media'
+import { videoRuntimeSchema } from '../../src/shared/video-media'
 import { videoErrorMessage } from '../../src/shared/video-errors'
 import { videoLocalIdSchema } from '../domain/video-media'
 import type { VideoHostTools, VideoRunPort, VideoToolName } from '../domain/video-tools'
@@ -10,6 +10,8 @@ import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-ho
 import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isMediaResubmissionRequest } from '../../src/shared/tool-approval'
+import { mediaSubmissionClosed } from '../../src/shared/media-execution'
+import { mediaSubmissionRejected } from '../../src/shared/media-failure'
 
 type RunInput = Parameters<VideoRunPort['prepareRun']>[0]
 interface Run {
@@ -23,7 +25,7 @@ interface Run {
   terminalFailureNotified: boolean
   onTerminalFailure?: RunInput['onTerminalFailure']
 }
-const names: readonly VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
+const names: readonly VideoToolName[] = ['video_from_image', 'video_from_video', 'video_generate', 'video_get_job']
 const TERMINAL_FAILURE_CODES = new Set([
   'PERMISSION_DENIED', 'AUTH_REQUIRED', 'INSUFFICIENT_FUNDS', 'VIDEO_BUDGET_EXCEEDED',
   'MEDIA_FORBIDDEN', 'QUOTE_EXPIRED', 'VIDEO_CONCURRENCY_LIMIT',
@@ -100,9 +102,10 @@ export class VideoRunService implements VideoRunPort {
       const restored = await abortableVideo(host.getTaskVideo(input.taskId, { forRunRecovery: !input.recoverJobIds }), controller.signal)
       validate()
       for (const job of restored.jobs) {
+        if (!input.recoverJobIds && job.runId !== input.runId) continue
         if (input.recoverJobIds && !input.recoverJobIds.includes(job.jobId)) continue
         if (!input.recoverJobIds && [...this.runs.values()].some(other => other !== run && other.jobs.has(job.jobId))) continue
-        if (videoBillingPending(job.billingStatus) || job.generationStatus !== 'NOT_SUBMITTED' && (!['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus)) && job.saveStatus !== 'SAVED') run.jobs.add(job.jobId)
+        if (job.generationStatus !== 'NOT_SUBMITTED' && (!['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus)) && job.saveStatus !== 'SAVED') run.jobs.add(job.jobId)
       }
       if (run.jobs.size) {
         run.tracking = host.track(input.taskId)
@@ -205,6 +208,10 @@ export class VideoRunService implements VideoRunPort {
           if (failed || trackingDone && !run.host.hasActiveTracker(taskId, id)) {
             const error = trackingError instanceof AppError ? trackingError : new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
             await this.notifyTerminalFailure(run, error)
+            if (recoverOriginal && job && (mediaSubmissionRejected(job.submissionFailure ?? job.failure) ||
+              job.execution && mediaSubmissionClosed(job.execution.submissionStatus))) {
+              throw new ArrangementMediaRecoveryError('submission-rejected', error)
+            }
             if (recoverOriginal && job && !terminalVideoFailure(error)) {
               if (job.generationStatus === 'SUBMISSION_UNKNOWN') throw new ArrangementMediaRecoveryError('submission', error)
               if (job.generationStatus === 'RESULT_EXPIRED') throw new ArrangementMediaRecoveryError('expired', error)
@@ -268,9 +275,11 @@ export class VideoRunService implements VideoRunPort {
       return
     }
     void run.tracking.finally(async () => {
+      const handoff = this.runs.get(key) === run && !run.controller.signal.aborted
       run.controller.abort(new Error('Video run finished.'))
       await run.host.stopAll()
       if (this.runs.get(key) === run) this.runs.delete(key)
+      if (handoff) await this.ipcHost?.resumePending([taskId])
     }).catch(() => undefined)
   }
 }

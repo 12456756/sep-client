@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { VideoRunPort, VideoHostTools } from '../domain/video-tools'
 import type { VideoScope } from '../domain/video-media'
-import { videoDefaultRecoveryExclusions } from '../domain/video-media'
+import { videoDefaultRecoveryExclusions, videoJobGenerationState } from '../domain/video-media'
 import { abortableVideo } from '../data/video-files'
 import { AppError } from '../errors/app-error'
 import { isErrorCode } from '../errors/error-codes'
@@ -73,9 +73,11 @@ export class ConversationVideoRunService implements VideoRunPort {
       this.validate(run)
       const excluded = videoDefaultRecoveryExclusions(existing)
       for (const job of existing) {
+        if (!input.recoverJobIds && job.runId !== input.runId) continue
         if (input.recoverJobIds ? !input.recoverJobIds.includes(job.jobId) : excluded.has(job.jobId)) continue
-        if (job.submission !== 'NOT_SENT' && (generating.has(job.receipt?.status ?? 'SUBMISSION_UNKNOWN') ||
-          ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.receipt?.status ?? '') && job.saveStatus !== 'SAVED')) jobs.add(job.jobId)
+        const status = videoJobGenerationState(job)
+        if (job.submission !== 'NOT_SENT' && (generating.has(status) ||
+          ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(status) && job.saveStatus !== 'SAVED')) jobs.add(job.jobId)
       }
     } catch (error) {
       await this.stopTask(input.taskId)
@@ -127,8 +129,10 @@ export class ConversationVideoRunService implements VideoRunPort {
       const relevant = jobs.filter(job => job.taskId === run.input.taskId && run.jobs.has(job.jobId))
       const denied = relevant.find(job => job.trackingStatus === 'AUTH_REQUIRED')
       if (denied) throw new AppError(denied.error === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED', { cause: original })
-      const pending = relevant.filter(job => job.submission !== 'NOT_SENT' && generating.has(job.receipt?.status ?? 'SUBMISSION_UNKNOWN'))
-      const failedSave = relevant.find(job => ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.receipt?.status ?? '') &&
+      const state = videoJobGenerationState
+      const pending = relevant.filter(job => job.submission !== 'NOT_SENT' && (generating.has(state(job)) ||
+        job.receipt?.receiptVersion === 2 && job.receipt.clientActions?.pollPurpose === 'delivery' && job.receipt.clientActions.shouldPoll))
+      const failedSave = relevant.find(job => ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(state(job)) &&
         ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
       const downloadable = failedSave?.receipt?.recovery.canDownload ? failedSave : undefined
       if (!pending.length && !downloadable) {

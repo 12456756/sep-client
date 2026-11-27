@@ -7,7 +7,7 @@ export type MediaToolName = PlatformMediaToolName | 'media_replace_images'
 export interface MediaJobCreated {
   kind: 'image' | 'video'
   jobId: string
-  operation: 'generate' | 'edit' | 'image-to-video' | 'text-to-video'
+  operation: 'generate' | 'edit' | 'image-to-video' | 'text-to-video' | 'video-to-video'
   localAssetIds: readonly string[]
   /** Stop waiting on these older jobs after the user approves an independent new request; keep their durable state. */
   previousUnconfirmedJobIds?: readonly string[]
@@ -32,7 +32,7 @@ export interface MediaRunPort {
     onJobCreated?: (job: MediaJobCreated) => Promise<void>
     recoverJobIds?: readonly string[]
   }): Promise<MediaHostTools | undefined>
-  waitForRun(taskId: string, runId: string, options?: { recoverOriginal?: boolean; allowIncomplete?: boolean; signal?: AbortSignal }): Promise<void>
+  waitForRun(taskId: string, runId: string, options?: { recoverOriginal?: boolean; allowIncomplete?: boolean; continueRecovery?: boolean; signal?: AbortSignal }): Promise<void>
   stopTask(taskId: string): Promise<void>
   resume?(taskId: string, jobId: string): Promise<void>
 }

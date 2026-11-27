@@ -1,10 +1,12 @@
 import { z } from 'zod'
+import { MAX_VIDEO_REFERENCES, type VideoReferenceView } from './video-references'
 import { videoParametersSchema, videoOperationSchema, type VideoOutput, type VideoRuntime, type VideoReceipt, type VideoSpecFailure } from './video-media'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec, type VideoRequestedSpec, type MediaParameterSources } from './media-spec-contract'
 import { mediaReferenceSourceSchema } from './media-host'
 import { MAX_MEDIA_REFERENCES } from './media-references'
 import type { MediaUpstreamError } from './media-upstream-error'
 import type { MediaFailure } from './media-failure'
+import type { MediaExecutionFields } from './media-execution'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const profileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
@@ -12,11 +14,17 @@ export const videoGenerationInputSchema = z.object({
   profileId,
   operation: videoOperationSchema,
   localAssetIds: z.array(id).max(MAX_MEDIA_REFERENCES),
+  localVideoAssetIds: z.array(id).max(MAX_VIDEO_REFERENCES).optional(),
   creativeBrief: z.string().trim().min(1).max(4000),
   parameters: videoRequestedSpecSchema,
   protocolVersion: z.literal(3).optional(), requestedSpec: videoRequestedSpecSchema.optional(),
   specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(), parameterSources: mediaSpecMetadataSchema.shape.parameterSources.optional(),
 }).strict().superRefine((value, context) => {
+  const videos = value.localVideoAssetIds ?? []
+  if (new Set(videos).size !== videos.length || (value.operation === 'video-to-video'
+    ? value.protocolVersion !== 3 || videos.length < 1 : videos.length !== 0)) {
+    context.addIssue({ code: 'custom', path: ['localVideoAssetIds'], message: 'Invalid video reference selection.' })
+  }
   if (value.protocolVersion === 3 ? !value.requestedSpec || value.specRevision === undefined || !value.parameterSources || !mediaSpecsEqual(value.parameters, value.requestedSpec)
     : !videoParametersSchema.safeParse(value.parameters).success || value.requestedSpec !== undefined || value.specRevision !== undefined || value.parameterSources !== undefined) {
     context.addIssue({ code: 'custom', path: ['parameters'], message: 'Video specification version is incomplete or contradictory.' })
@@ -33,6 +41,7 @@ export const videoToolGenerationInputSchema = z.object({
   requirementId: z.string().trim().min(1).max(128).optional(),
   creativeBrief: z.string().trim().min(1).max(4000),
   localAssetIds: z.array(id).max(MAX_MEDIA_REFERENCES).default([]),
+  localVideoAssetIds: z.array(id).max(MAX_VIDEO_REFERENCES).optional(),
   parameters: videoRequestedSpecSchema.optional(),
   protocolVersion: z.literal(3).optional(), requestedSpec: videoRequestedSpecSchema.optional(),
   specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(), parameterSources: mediaSpecMetadataSchema.shape.parameterSources.optional(),
@@ -40,6 +49,7 @@ export const videoToolGenerationInputSchema = z.object({
   profileId: profileId.optional(),
   operation: videoOperationSchema.optional(),
 }).strict().refine(value => new Set(value.localAssetIds).size === value.localAssetIds.length)
+  .refine(value => new Set(value.localVideoAssetIds).size === (value.localVideoAssetIds?.length ?? 0))
   .refine(value => value.parameters === undefined || value.protocolVersion === 3 || videoParametersSchema.partial().safeParse(value.parameters).success,
     'Legacy video parameters are invalid.')
   .refine(value => !value.parameters || !value.requestedSpec || mediaSpecsEqual(value.parameters, value.requestedSpec), 'Video specifications conflict.')
@@ -51,7 +61,9 @@ export const videoReferenceSourceSchema = mediaReferenceSourceSchema
 export type VideoReferenceSource = z.infer<typeof videoReferenceSourceSchema>
 
 /** No disk paths, remote reference IDs, prompts, quotes or upstream metadata. */
-export interface VideoJobView {
+export interface VideoJobView extends MediaExecutionFields {
+  runId?: string
+  platformStatus?: string
   jobId: string
   taskId: string
   profileId: string
@@ -67,13 +79,14 @@ export interface VideoJobView {
   generationStatus: string
   trackingStatus: 'ACTIVE' | 'INTERRUPTED' | 'AUTH_REQUIRED' | 'STOPPED'
   saveStatus: 'PENDING' | 'SAVING' | 'SAVED' | 'SAVE_FAILED' | 'MISSING'
-  billingStatus: VideoReceipt['billingStatus']
+  billingStatus: VideoReceipt['billingStatus'] | 'UNKNOWN'
   amountCny?: string
   actualCostCny?: string
   amountUsd?: string
   createdAt: number
   updatedAt: number
   lastQueriedAt?: number
+  rateLimitRetryAt?: number
   /** Submission-to-observed-provider-terminal duration; includes queue time. */
   providerWaitMs?: number
   /** Duration of the most recent complete save round across all outputs. */
@@ -94,4 +107,5 @@ export interface VideoTaskView {
   mock: boolean
   runtime: VideoRuntime
   jobs: VideoJobView[]
+  referenceVideos?: VideoReferenceView[]
 }

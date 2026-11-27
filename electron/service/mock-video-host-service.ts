@@ -1,5 +1,9 @@
 import { randomUUID, createHash } from 'node:crypto'
+import { uploadedVideoReferenceSchema, videoReferenceProblem, videoReferenceViewSchema, type UploadedVideoReference, type VideoReferenceView } from '../../src/shared/video-references'
+import type { VideoReferencePort } from '../domain/video-references'
 import type { z } from 'zod'
+import { mediaExecutionSnapshot, mediaGenerationState } from '../../src/shared/media-execution'
+import { mediaFailureBillingStatus } from '../../src/shared/media-failure'
 import { videoGenerationInputSchema, videoToolGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../src/shared/video-host'
 import { videoAllowedAudioModes, videoBillingPending, videoRuntimeSchema, videoReferenceSchema, videoParametersSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema } from '../../src/shared/media-spec-contract'
@@ -9,6 +13,7 @@ import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
 import { videoDefaultRecoveryExclusions, videoSubmissionRejected, videoSpecAcceptance, videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
+import { retryRateLimited } from '../common/rate-limit-retry'
 import { logger } from '../common/logger'
 import { abortableVideo } from '../data/video-files'
 import { requireScope, type ScopeSource } from './scope-guard'
@@ -25,9 +30,15 @@ const log = logger.child('mock-video-host')
 // cannot protect a task while approval, upload or submit is still in flight.
 const submissions = new Set<string>()
 const trackingOwners = new Map<string, symbol>()
+const videoUploads = new Map<string, { controller: AbortController; status: 'UPLOADING' | 'UPLOADED' | 'FAILED'; progress: number; error?: string }>()
+const videoReferenceLocks = new Set<string>()
+const activeVideoUploads = new Set<string>()
+const pendingVideoUploads = new Map<string, { profileId: string; configVersion: string; promise: Promise<string> }>()
+const videoTool = (operation: VideoGenerationInput['operation']) => operation === 'video-to-video' ? 'video_from_video' : operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
 const VIDEO_BRIEF_PREFIX = {
   'text-to-video': 'Create a new video from the following text description.',
   'image-to-video': 'Animate the provided image(s) according to the following instructions.',
+  'video-to-video': 'Edit the provided video(s) according to the following instructions.',
 } as const
 
 function videoBriefWithMode(operation: VideoGenerationInput['operation'], brief: string): string {
@@ -37,6 +48,7 @@ function videoBriefWithMode(operation: VideoGenerationInput['operation'], brief:
 
 export interface MockVideoHostGateway extends VideoGatewayPort {
   uploadReference(bytes: Uint8Array, signal: AbortSignal): Promise<z.infer<typeof videoReferenceSchema>>
+  uploadVideoReference?(input: { file: Blob; sha256: string; profileId: string; configVersion: string }, signal: AbortSignal, onProgress?: (percent: number) => void): Promise<UploadedVideoReference>
 }
 interface VideoHostOptionsBase {
   scope: ScopeSource
@@ -55,6 +67,7 @@ interface VideoHostOptionsBase {
     list(scope: VideoScope, taskId: string): Promise<MediaAssetView[]>
     import(scope: VideoScope, taskId: string, paths: readonly string[], signal: AbortSignal, validate: () => void): Promise<MediaAssetView[]>
   }
+  videoReferences?: VideoReferencePort
   exportOutput?(scope: VideoScope, taskId: string, jobId: string, outputId: string, path: string, signal: AbortSignal, validate: () => void): Promise<void>
   openOutput?(scope: VideoScope, taskId: string, jobId: string, outputId: string, signal: AbortSignal, validate: () => void): Promise<void>
   requestApproval: Approval
@@ -89,13 +102,15 @@ function jobView(job: LocalVideoJob): VideoJobView {
   const acceptance = job.receipt?.acceptance ?? job.receipt?.deliveryStatus ??
     (job.receipt?.errorCode === 'OUTPUT_SPEC_MISMATCH' ? 'mismatched' : measured.acceptance)
   return {
-    jobId: job.jobId, taskId: job.taskId, profileId: job.request.profileId, operation: job.request.operation,
-    parameters: { ...job.request.parameters }, generationStatus: job.receipt?.status ?? (job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : rejected ? 'FAILED' : 'SUBMISSION_UNKNOWN'),
+    ...mediaExecutionSnapshot(job.receipt ?? {}), platformStatus: job.receipt?.status,
+    jobId: job.jobId, taskId: job.taskId, runId: job.runId, profileId: job.request.profileId, operation: job.request.operation,
+    parameters: { ...job.request.parameters }, generationStatus: job.receipt ? mediaGenerationState(job.receipt.status, job.receipt) : (job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : rejected ? 'FAILED' : 'SUBMISSION_UNKNOWN'),
     ...(job.request.protocolVersion === 3 ? { protocolVersion: 3, requestedSpec: job.request.requestedSpec, specRevision: job.request.specRevision, parameterSources: job.request.parameterSources,
       effectiveSpec: job.quote.effectiveSpec, actualSpec: measured.actualSpec } : {}),
     ...(job.receipt ? { acceptance, canDownload: job.receipt.recovery.canDownload } : {}),
-    trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: job.receipt?.billingStatus ?? ((job.executionMode ?? 'mock') === 'real'
-      ? job.submission === 'NOT_SENT' || rejected ? 'NOT_RESERVED' : 'RECONCILING' : 'MOCK_NOT_CHARGED'),
+    trackingStatus: job.trackingStatus, saveStatus: job.saveStatus,
+    rateLimitRetryAt: job.trackingStatus === 'ACTIVE' ? job.rateLimitRetryAt : undefined, billingStatus: job.receipt?.billingStatus ?? ((job.executionMode ?? 'mock') === 'real'
+      ? rejected ? mediaFailureBillingStatus(job.submissionFailure ?? job.failure) : job.submission === 'NOT_SENT' ? 'NOT_RESERVED' : 'UNKNOWN' : 'MOCK_NOT_CHARGED'),
     ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
       ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
     ...(job.specFailure ? { specFailure: structuredClone(job.specFailure) } : {}),
@@ -156,7 +171,8 @@ export class MockVideoHostService {
   }
   private async runtime(scope: VideoScope, epoch: number, signal: AbortSignal, execution = true): Promise<VideoRuntime> {
     this.assert(scope, epoch, signal)
-    const result = videoRuntimeSchema.safeParse(await abortableVideo(this.options.authorize(scope.subscriptionId, signal), signal))
+    const result = videoRuntimeSchema.safeParse(await retryRateLimited(bounded => this.options.authorize(scope.subscriptionId, bounded),
+      { signal, timeoutMs: this.options.operationTimeoutMs ?? 60_000 }))
     this.assert(scope, epoch, signal)
     if (!result.success || (result.data.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real')) throw new AppError('PERMISSION_DENIED')
     this.runtimes.set(JSON.stringify(scope), result.data)
@@ -167,7 +183,7 @@ export class MockVideoHostService {
     videoLocalIdSchema.parse(taskId)
     let task = this.taskSessions.get(taskId)
     if (!task) { task = new AbortController(); this.taskSessions.set(taskId, task) }
-    return AbortSignal.any([this.session.signal, task.signal, ...(parent ? [parent] : []), AbortSignal.timeout(this.options.operationTimeoutMs ?? 60_000)])
+    return AbortSignal.any([this.session.signal, task.signal, ...(parent ? [parent] : [])])
   }
   private async sideEffect(scope: VideoScope, epoch: number, taskId: string, toolName: string, signal: AbortSignal, revision: number): Promise<() => void> {
     if (!Number.isSafeInteger(revision) || revision < 0) throw new AppError('AUTH_REQUIRED')
@@ -190,7 +206,7 @@ export class MockVideoHostService {
     this.signal(taskId)
     const session = AbortSignal.any([this.session.signal, this.taskSessions.get(taskId)!.signal])
     const authorized = async <T>(parent: AbortSignal, call: (signal: AbortSignal, revision: number) => Promise<T>, execution = true): Promise<T> => {
-      const signal = AbortSignal.any([parent, session, AbortSignal.timeout(this.options.operationTimeoutMs ?? 60_000)])
+      const signal = AbortSignal.any([parent, session, AbortSignal.timeout(this.options.operationTimeoutMs ?? (this.options.mock ? 60_000 : 360_000))])
       const revisionNow = () => execution ? this.options.authorizationRevision() : this.recoveryRevision()
       const revision = revisionNow()
       if (!execution && this.options.authorizeRecovery) {
@@ -208,7 +224,7 @@ export class MockVideoHostService {
     const gateway: VideoGatewayPort = {
       quote: (input, signal) => authorized(signal, bounded => source.quote(input, bounded)),
       submit: (input, signal) => authorized(signal, async (bounded, revision) => {
-        const dispatch = await this.sideEffect(scope, epoch, taskId, input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate', bounded, revision)
+        const dispatch = await this.sideEffect(scope, epoch, taskId, videoTool(input.operation), bounded, revision)
         dispatch()
         return source.submit(input, bounded)
       }),
@@ -237,11 +253,15 @@ export class MockVideoHostService {
         })()
       }, false),
     }
-    const service = new VideoService({ scope, executionMode: this.options.mock ? 'mock' : 'real', store: this.options.store, gateway, now: this.now })
+    const service = new VideoService({ scope, executionMode: this.options.mock ? 'mock' : 'real', store: this.options.store, gateway, now: this.now,
+      operationTimeoutMs: this.options.operationTimeoutMs })
     const trackingOwner = Symbol('video-tracker')
     const trackedKeys = new Set<string>()
     const context: Context = {
       taskId, scope, service, trackingOwner, trackedKeys, tracker: new VideoTracker({ ...this.options.tracker, service: {
+        hasRateLimitWait: async () => (await service.listJobsSnapshot(taskId)).some(job =>
+          job.rateLimitRetryAt !== undefined || (job.nextPollAt ?? 0) > this.now()),
+        recoveredFromRateLimitAt: () => service.recoveredFromRateLimitAt(),
         resume: (id, jobId, signal) => service.resume(id, jobId, signal),
         recover: async signal => {
           const jobs = await service.listJobsSnapshot(taskId)
@@ -262,18 +282,18 @@ export class MockVideoHostService {
           return restored
         },
       } }),
-      uploadReference: (taskId, toolName, bytes, signal) => authorized(signal, async (bounded, revision) => {
+      uploadReference: (taskId, toolName, bytes, signal) => retryRateLimited(attempt => authorized(attempt, async (bounded, revision) => {
         const dispatch = await this.sideEffect(scope, epoch, taskId, toolName, bounded, revision)
         dispatch()
         return source.uploadReference(bytes, bounded)
-      }),
+      }), { signal }),
     }
     this.contexts.set(key, context)
     return context
   }
   private profile(runtime: VideoRuntime, input: VideoGenerationInput, configVersion?: string) {
     const profile = runtime.profiles.find(candidate => candidate.profileId === input.profileId)
-    const tool = input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
+    const tool = videoTool(input.operation)
     if (!runtime.executionAvailable || !runtime.tools.includes(tool) || !profile ||
       configVersion !== undefined && configVersion !== profile.configVersion || !profile.operations.includes(input.operation)) {
       throw new AppError('PERMISSION_DENIED')
@@ -283,6 +303,12 @@ export class MockVideoHostService {
       throw new AppError('INVALID_ARGUMENT', { details: { field: 'localAssetIds', source: 'platform' } })
     }
     if (input.localAssetIds.length > profile.capabilities.maxReferenceCount) throw new AppError('ADAPTER_FIELD_UNMAPPED', { details: { field: 'localAssetIds', source: 'adapter' } })
+    if (input.operation === 'video-to-video') {
+      this.videoProfile(runtime, profile.profileId)
+      const count = input.localVideoAssetIds?.length ?? 0
+      const rule = profile.videoReferenceRules?.find(rule => rule.operation === 'video-to-video')
+      if (!rule || count < rule.minCount || count > profile.videoReferenceSupport!.maxCount) throw new AppError('INVALID_ARGUMENT', { message: '参考视频数量不符合当前模型要求。' })
+    }
     if (runtime.protocolVersion === 3 && input.protocolVersion !== 3) throw new AppError('MISSING_SPEC', { details: { field: 'specRevision', source: 'client' } })
     if (input.protocolVersion === 3) {
       if (runtime.protocolVersion !== 3) throw new AppError('UPGRADE_REQUIRED')
@@ -380,7 +406,123 @@ export class MockVideoHostService {
     }
     this.assert(scope, epoch, signal)
     if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
-    return { mock: this.options.mock, runtime, jobs: views }
+    const referenceVideos = this.options.videoReferences ? await this.referenceVideos(scope, taskId) : undefined
+    this.assert(scope, epoch, signal)
+    if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
+    return { mock: this.options.mock, runtime, jobs: views, ...(referenceVideos ? { referenceVideos } : {}) }
+  }
+  private referenceKey(scope: VideoScope, taskId: string, id: string): string { return JSON.stringify([scope, taskId, id]) }
+  private referenceLockKey(scope: VideoScope, taskId: string, id: string): string { return JSON.stringify([scope.enterpriseId, scope.memberId, taskId, id]) }
+  private videoProfile(runtime: VideoRuntime, profileId: string) {
+    const profile = runtime.profiles.find(profile => profile.profileId === profileId)
+    if (this.options.mock || runtime.protocolVersion !== 3 || !runtime.executionAvailable || !runtime.tools.includes('video_from_video')
+      || !profile?.operations.includes('video-to-video') || !profile.capabilities.supportsVideoToVideo || !profile.videoReferenceSupport?.maxCount
+      || !profile.videoReferenceRules?.some(rule => rule.operation === 'video-to-video' && rule.minCount >= 1)) throw new AppError('PERMISSION_DENIED')
+    return profile
+  }
+  private async referenceVideos(scope: VideoScope, taskId: string): Promise<VideoReferenceView[]> {
+    const refs = await this.options.videoReferences?.list(scope, taskId) ?? []
+    return refs.map(ref => {
+      const state = videoUploads.get(this.referenceKey(scope, taskId, ref.localAssetId))
+      return videoReferenceViewSchema.parse({ localAssetId: ref.localAssetId, taskId: ref.taskId, name: ref.name, mime: ref.mime, size: ref.size, status: ref.status,
+        ...(ref.uploaded ? { uploadProfileId: ref.uploaded.profileId, uploadConfigVersion: ref.uploaded.configVersion, uploadExpiresAt: ref.uploaded.expiresAt } : {}),
+        uploadStatus: state?.status ?? (ref.uploaded && Date.parse(ref.uploaded.expiresAt) > this.now() ? 'UPLOADED' : 'LOCAL'),
+        ...(state ? { uploadProgress: state.progress, ...(state.error ? { uploadError: state.error } : {}) } : {}) })
+    })
+  }
+  private async uploadVideo(scope: VideoScope, epoch: number, taskId: string, id: string, profile: VideoRuntime['profiles'][number], parent: AbortSignal): Promise<string> {
+    const key = this.referenceKey(scope, taskId, id)
+    const previous = pendingVideoUploads.get(key)
+    if (previous) {
+      if (previous.profileId !== profile.profileId || previous.configVersion !== profile.configVersion) throw new AppError('CONFLICT', { message: '参考视频正在上传到另一模型配置，请等待完成。' })
+      const revision = this.options.authorizationRevision()
+      const result = await abortableVideo(previous.promise, parent)
+      this.assert(scope, epoch, parent)
+      if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+      return result
+    }
+    const pending = { profileId: profile.profileId, configVersion: profile.configVersion,
+      promise: this.performVideoUpload(scope, epoch, taskId, id, profile, parent) }
+    pendingVideoUploads.set(key, pending)
+    try { return await pending.promise }
+    finally { if (pendingVideoUploads.get(key) === pending) pendingVideoUploads.delete(key) }
+  }
+  private async performVideoUpload(scope: VideoScope, epoch: number, taskId: string, id: string, profile: VideoRuntime['profiles'][number], parent: AbortSignal): Promise<string> {
+    if (!this.options.videoReferences || !profile.videoReferenceSupport) throw new AppError('SERVICE_UNAVAILABLE')
+    const key = this.referenceKey(scope, taskId, id)
+    const lockKey = this.referenceLockKey(scope, taskId, id)
+    if (activeVideoUploads.has(lockKey)) throw new AppError('CONFLICT', { message: '参考视频正在上传，请等待完成。' })
+    const controller = new AbortController()
+    const signal = AbortSignal.any([parent, controller.signal])
+    const revision = this.options.authorizationRevision()
+    const validate = () => { this.assert(scope, epoch, signal); if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED') }
+    const state: { controller: AbortController; status: 'UPLOADING' | 'UPLOADED' | 'FAILED'; progress: number; error?: string } = { controller, status: 'UPLOADING', progress: 0 }
+    videoUploads.set(key, state)
+    activeVideoUploads.add(lockKey)
+    try {
+      const { asset, file } = await this.options.videoReferences.open(scope, taskId, id)
+      validate()
+      const problem = videoReferenceProblem([asset], profile.videoReferenceSupport)
+      if (problem) throw new AppError('INVALID_ARGUMENT', { message: problem })
+      const previous = asset.uploaded
+      if (previous?.profileId === profile.profileId && previous.configVersion === profile.configVersion && Date.parse(previous.expiresAt) > this.now() + 30_000) {
+        state.status = 'UPLOADED'; state.progress = 100
+        return previous.referenceId
+      }
+      const dispatch = await this.sideEffect(scope, epoch, taskId, 'video_from_video', signal, revision)
+      dispatch()
+      const gateway = this.options.gateway(scope)
+      if (!gateway.uploadVideoReference) throw new AppError('SERVICE_UNAVAILABLE')
+      const uploaded = uploadedVideoReferenceSchema.parse(await retryRateLimited(bounded => {
+        validate()
+        dispatch()
+        return gateway.uploadVideoReference!({ file, sha256: asset.sha256,
+          profileId: profile.profileId, configVersion: profile.configVersion }, bounded, progress => { validate(); state.progress = progress })
+      }, { signal, timeoutMs: this.options.operationTimeoutMs ?? 300_000 }))
+      validate()
+      if (uploaded.profileId !== profile.profileId || uploaded.configVersion !== profile.configVersion || Date.parse(uploaded.expiresAt) <= this.now()
+        || uploaded.sha256.toLowerCase() !== asset.sha256 || uploaded.byteLength !== asset.size || uploaded.mimeType !== asset.mime) throw new AppError('INVALID_STATE')
+      await this.options.videoReferences.saveUpload(scope, taskId, id, uploaded)
+      validate()
+      state.status = 'UPLOADED'; state.progress = 100
+      return uploaded.referenceId
+    } catch (error) {
+      state.status = 'FAILED'
+      state.error = (controller.signal.aborted ? '上传已取消，可重试原参考视频。' : signal.aborted ? '参考视频上传超时或中断，请重试上传。' : error instanceof AppError ? error.message : '参考视频上传失败，请重试。').slice(0, 2000)
+      throw error
+    } finally { activeVideoUploads.delete(lockKey) }
+  }
+  async retryVideoReferenceUpload(taskId: string, id: string, profileId: string): Promise<void> {
+    videoReferenceViewSchema.shape.localAssetId.parse(id)
+    const signal = this.signal(taskId)
+    await this.operation(taskId, async () => {
+      const { scope, epoch, runtime } = await this.binding(taskId, signal)
+      await this.uploadVideo(scope, epoch, taskId, id, this.videoProfile(runtime, profileId), signal)
+    })
+  }
+  async cancelVideoReferenceUpload(taskId: string, id: string): Promise<void> {
+    videoReferenceViewSchema.shape.localAssetId.parse(id)
+    const { scope } = await this.localBinding(taskId, this.signal(taskId))
+    const upload = videoUploads.get(this.referenceKey(scope, taskId, id))
+    if (upload?.status === 'UPLOADING') upload.controller.abort()
+  }
+  async removeVideoReference(taskId: string, id: string): Promise<void> {
+    videoReferenceViewSchema.shape.localAssetId.parse(id)
+    const signal = this.signal(taskId)
+    await this.operation(taskId, async () => {
+      const { scope, epoch } = await this.localBinding(taskId, signal)
+      const key = this.referenceKey(scope, taskId, id)
+      const lockKey = this.referenceLockKey(scope, taskId, id)
+      if (activeVideoUploads.has(lockKey) || videoReferenceLocks.has(lockKey)) throw new AppError('CONFLICT', { message: '参考视频正在使用，请等待当前操作完成。' })
+      this.assert(scope, epoch, signal)
+      if (!this.options.videoReferences) throw new AppError('SERVICE_UNAVAILABLE')
+      videoReferenceLocks.add(lockKey)
+      try {
+        await this.options.videoReferences.remove(scope, taskId, id)
+        this.assert(scope, epoch, signal)
+        videoUploads.delete(key)
+      } finally { videoReferenceLocks.delete(lockKey) }
+    })
   }
   async getReferences(taskId: string): Promise<MediaAssetView[]> {
     const signal = this.signal(taskId)
@@ -410,6 +552,15 @@ export class MockVideoHostService {
     }
     validate()
     return {
+      importVideos: async (paths: readonly string[], profileId: string) => this.operation(taskId, async () => {
+        validate(); await validateTask()
+        const runtime = await this.runtime(scope, epoch, signal)
+        const profile = this.videoProfile(runtime, profileId)
+        if (!this.options.videoReferences) throw new AppError('SERVICE_UNAVAILABLE')
+        const result = await this.options.videoReferences.import(scope, taskId, paths, profile.videoReferenceSupport!, signal, validate)
+        validate()
+        return result.map(ref => videoReferenceViewSchema.parse({ localAssetId: ref.localAssetId, taskId: ref.taskId, name: ref.name, mime: ref.mime, size: ref.size, status: ref.status }))
+      }),
       import: async (paths: readonly string[]) => this.operation(taskId, async () => {
         validate()
         await validateTask()
@@ -458,15 +609,15 @@ export class MockVideoHostService {
     const input = videoGenerationInputSchema.parse(value)
     return this.generateRequest(taskId, () => input, parent, run)
   }
-  async generateTool(taskId: string, name: 'video_generate' | 'video_from_image', raw: unknown, parent?: AbortSignal, run?: GenerationRun): Promise<VideoJobView> {
+  async generateTool(taskId: string, name: 'video_generate' | 'video_from_image' | 'video_from_video', raw: unknown, parent?: AbortSignal, run?: GenerationRun): Promise<VideoJobView> {
     const parsed = videoToolGenerationInputSchema.safeParse(raw)
     if (!parsed.success) throw new AppError('INVALID_ARGUMENT')
     const { requirementId: _requirementId, ...request } = parsed.data
-    const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
+    const operation = name === 'video_from_video' ? 'video-to-video' : name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
     if (request.operation !== undefined && request.operation !== operation || (operation === 'image-to-video' ? request.localAssetIds.length < 1 : request.localAssetIds.length !== 0)) throw new AppError('INVALID_ARGUMENT')
     return this.generateRequest(taskId, runtime => {
       const profiles = runtime.profiles.filter(profile => profile.operations.includes(operation) &&
-        (operation === 'image-to-video' ? profile.capabilities.supportsImageToVideo : profile.capabilities.supportsTextToVideo))
+        (operation === 'video-to-video' ? profile.capabilities.supportsVideoToVideo : operation === 'image-to-video' ? profile.capabilities.supportsImageToVideo : profile.capabilities.supportsTextToVideo))
       const profile = request.profileId ? profiles.find(profile => profile.profileId === request.profileId)
         : profiles.find(profile => profile.profileId === runtime.defaultProfileId) ?? profiles[0]
       if (!profile) throw new AppError('PERMISSION_DENIED')
@@ -491,9 +642,16 @@ export class MockVideoHostService {
       const key = JSON.stringify([owner.enterpriseId, owner.memberId, taskId])
       if (submissions.has(key)) throw new AppError('CONFLICT')
       submissions.add(key)
+      const referenceKeys: string[] = []
       try {
         const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
         const input = videoGenerationInputSchema.parse(resolve(runtime))
+        const localReferences = input.operation === 'video-to-video' ? input.localVideoAssetIds! : input.localAssetIds
+        for (const id of input.localVideoAssetIds ?? []) {
+          const key = this.referenceLockKey(scope, taskId, id)
+          if (videoReferenceLocks.has(key)) throw new AppError('CONFLICT')
+          videoReferenceLocks.add(key); referenceKeys.push(key)
+        }
         const briefForRequest = (brief: string) => this.options.mock ? brief : videoBriefWithMode(input.operation, brief)
         const creativeBrief = briefForRequest(input.creativeBrief)
         const jobs = await context.service.listJobsSnapshot(taskId)
@@ -501,13 +659,18 @@ export class MockVideoHostService {
         const runId = run?.runId ?? randomUUID()
         // Tool retries in one run must observe the original durable job. This
         // avoids a second quote/submit after a successful response was lost.
-        const duplicate = input.localAssetIds.length === 0 ? jobs.find(job => job.taskId === taskId && job.runId === runId && !videoSubmissionRejected(job) &&
-          job.request.operation === input.operation && job.request.profileId === input.profileId &&
-          briefForRequest(job.request.creativeBrief) === creativeBrief &&
-          job.request.specRevision === input.specRevision && mediaSpecsEqual(job.request.parameters, input.parameters) && job.request.referenceIds.length === 0) : undefined
+        const sameRequest = (job: LocalVideoJob) => job.request.operation === input.operation && job.request.profileId === input.profileId &&
+          briefForRequest(job.request.creativeBrief) === creativeBrief && job.request.specRevision === input.specRevision &&
+          mediaSpecsEqual(job.request.parameters, input.parameters) &&
+          (job.localReferenceIds ? job.localReferenceIds.length === localReferences.length && job.localReferenceIds.every((id, index) => id === localReferences[index])
+            : job.request.referenceIds.length === localReferences.length && input.operation !== 'video-to-video')
+        const duplicate = jobs.find(job => job.taskId === taskId && job.runId === runId && !videoSubmissionRejected(job) &&
+          sameRequest(job) && (job.localReferenceIds !== undefined || localReferences.length === 0))
         if (duplicate) return jobView(duplicate)
-        const unconfirmed = jobs.filter(job => job.taskId === taskId && !videoSubmissionRejected(job)
-          && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))
+        const unconfirmed = jobs.filter(job => job.taskId === taskId && !videoSubmissionRejected(job) && sameRequest(job)
+          && (job.submission === 'MAYBE_SENT' || job.receipt && ['SUBMITTING', 'SUBMISSION_UNKNOWN'].includes(mediaGenerationState(job.receipt.status, job.receipt))))
+        const recoverOriginal = unconfirmed.find(job => job.receipt?.receiptVersion === 2 && job.receipt.clientActions?.canStartNewRequest === false)
+        if (recoverOriginal) return jobView(recoverOriginal)
         if (unconfirmed.some(job => job.runId === runId)) throw new AppError('CONFLICT', { message: '本轮视频提交结果尚未确认，请查询原任务；如需重新生成，请在后续消息中明确提出。' })
         if (!videoGenerationInputSchema.shape.creativeBrief.safeParse(creativeBrief).success) {
           throw new AppError('INVALID_ARGUMENT', { message: '视频创作提示过长，请缩短正文，为自动添加的模式说明留出空间。',
@@ -516,7 +679,7 @@ export class MockVideoHostService {
         }
         const profile = this.profile(runtime, input)
         const policy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
-        const toolName = input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
+        const toolName = videoTool(input.operation)
         if (policy && (policy.preset === 'read-only' || policy.preset !== 'full-local' && !policy.allowedTools.includes(toolName))) throw new AppError('PERMISSION_DENIED')
         const approve = async (details: Record<string, unknown>, force = false) => {
           this.assert(scope, epoch, signal)
@@ -557,9 +720,20 @@ export class MockVideoHostService {
             referenceIds.push(uploaded.referenceId)
           }
         }
-        const { localAssetIds: _localAssetIds, ...semantic } = input
-        const job = await context.service.prepare(taskId, { ...semantic, creativeBrief, configVersion: profile.configVersion, referenceIds }, signal, runId,
-          unconfirmed.map(previous => previous.jobId))
+        const videoReferenceIds: string[] = []
+        if (input.operation === 'video-to-video') {
+          const assets = await this.options.videoReferences?.list(scope, taskId) ?? []
+          const selected = localReferences.map(id => assets.find(asset => asset.localAssetId === id))
+          if (selected.some(asset => !asset)) throw new AppError('INVALID_ARGUMENT', { message: '所选参考视频不存在，请重新导入。' })
+          const problem = videoReferenceProblem(selected.filter((asset): asset is NonNullable<typeof asset> => !!asset), profile.videoReferenceSupport!)
+          if (problem) throw new AppError('INVALID_ARGUMENT', { message: problem })
+          await approve({ operation: 'upload-references', referenceCount: localReferences.length, referenceKind: 'video', mock: false })
+          for (const id of localReferences) videoReferenceIds.push(await this.uploadVideo(scope, epoch, taskId, id, profile, signal))
+        }
+        const { localAssetIds: _localAssetIds, localVideoAssetIds: _localVideoAssetIds, ...semantic } = input
+        const job = await context.service.prepare(taskId, { ...semantic, creativeBrief, configVersion: profile.configVersion, referenceIds,
+          ...(input.operation === 'video-to-video' ? { videoReferenceIds } : {}) }, signal, runId,
+          unconfirmed.map(previous => previous.jobId), localReferences)
         if (this.options.mock ? job.quote.amount !== '0.000000' || job.quote.currency !== 'MOCK' : job.quote.currency !== 'CNY' || !/^\d+\.\d{6}$/.test(job.quote.amount ?? '')) throw new AppError('PERMISSION_DENIED')
         await approve({ profile: profile.displayName, parameters: input.parameters, creativeBrief,
           mock: this.options.mock, quote: { amount: job.quote.amount, currency: job.quote.currency, expiresAt: job.quote.expiresAt,
@@ -569,14 +743,14 @@ export class MockVideoHostService {
         const current = await this.task(taskId, signal)
         if (JSON.stringify(current.scope) !== JSON.stringify(scope)) throw new AppError('AUTH_REQUIRED')
         if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
-        await run?.onJobCreated?.({ kind: 'video', jobId: job.jobId, operation: input.operation, localAssetIds: input.localAssetIds,
+        await run?.onJobCreated?.({ kind: 'video', jobId: job.jobId, operation: input.operation, localAssetIds: localReferences,
           ...(unconfirmed.length ? { previousUnconfirmedJobIds: unconfirmed.map(previous => previous.jobId) } : {}) })
         this.assert(scope, epoch, signal)
         if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
         const submitted = await context.service.submit(taskId, job.jobId, signal)
         this.assert(scope, epoch, signal)
         return jobView(submitted)
-      } finally { submissions.delete(key) }
+      } finally { submissions.delete(key); for (const key of referenceKeys) videoReferenceLocks.delete(key) }
     })
   }
   async resume(taskId: string, jobId: string, parent?: AbortSignal): Promise<VideoJobView> {

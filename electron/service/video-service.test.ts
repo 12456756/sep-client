@@ -9,11 +9,12 @@ import { VideoStore } from '../data/video-store'
 import { VideoFiles } from '../data/video-files'
 import { VideoService } from './video-service'
 import type { LocalVideoJob, VideoScope } from '../domain/video-media'
-import { videoDefaultRecoveryExclusions } from '../domain/video-media'
+import { videoDefaultRecoveryExclusions, videoSubmissionRejected } from '../domain/video-media'
 import type { VideoGatewayPort, VideoReceipt } from '../../src/shared/video-media'
 import { ScopePath, encodeTaskScopeSegment } from '../data/scope-path'
 import { AppError } from '../errors/app-error'
 import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
+import { mediaGenerationState } from '../../src/shared/media-execution'
 
 const scope: VideoScope = { enterpriseId: 'enterprise-a', memberId: 'member-a', subscriptionId: 'subscription-a' }
 const directories: string[] = []
@@ -43,6 +44,197 @@ async function finish(service: VideoService, job: LocalVideoJob): Promise<LocalV
 }
 
 describe('VideoService mock submission, disk recovery and original delivery', () => {
+  it('honors the initial receipt polling deadline after restart before its first GET', async context => {
+    const f = await fixture()
+    const submit = f.gateway.submit.bind(f.gateway), get = f.gateway.getReceipt.bind(f.gateway)
+    let notBefore = 0, gets = 0
+    context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+      const receipt = await submit(...args)
+      notBefore = Date.now() + 1000
+      return { ...receipt, pollAfterMs: 1000 }
+    })
+    context.mock.method(f.gateway, 'getReceipt', async (...args: Parameters<typeof get>) => {
+      gets++
+      assert.ok(Date.now() >= notBefore, 'Initial polling must not bypass the platform wait')
+      return get(...args)
+    })
+    const created = await f.service.generate('task-a', input())
+    assert.equal(gets, 0)
+    assert.ok(created.nextPollAt! >= notBefore)
+    f.service.close()
+    const reopened = f.rebuilt()
+    context.after(() => reopened.close())
+    await reopened.resume('task-a', created.jobId)
+    assert.equal(gets, 1)
+  })
+  for (const status of [400, 401, 403, 409, 422, 429, 500, 502, 503]) it(`restores a stored video HTTP ${status} after restart without replaying creation`, async context => {
+    const f = await fixture()
+    const submit = f.gateway.submit.bind(f.gateway), get = f.gateway.getReceipt.bind(f.gateway)
+    let posts = 0, queries = 0, notBefore = 0
+    context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+      assert.equal(++posts, 1, 'A stored request must only recover through GET')
+      const receipt = await submit(...args)
+      notBefore = Date.now() + (status === 429 ? 80 : 0)
+      throw new AppError('SERVICE_UNAVAILABLE', { diagnostic: { httpStatus: status, source: 'upstream',
+        sepReceiptId: receipt.receiptId, clientRequestId: receipt.clientRequestId,
+        headers: { 'x-sep-receipt-id': receipt.receiptId, 'x-sep-client-request-id': receipt.clientRequestId,
+          ...(status === 429 ? { 'retry-after': '0.08' } : {}) }, body: { error: { message: 'Original failure' } } } })
+    })
+    context.mock.method(f.gateway, 'findReceipt', async () => assert.fail('Use the correlated SEP receipt ID'))
+    context.mock.method(f.gateway, 'getReceipt', async (...args: Parameters<typeof get>) => {
+      queries++
+      assert.ok(Date.now() >= notBefore)
+      return get(...args)
+    })
+    const job = await f.service.generate('task-a', input())
+    assert.equal(job.trackingStatus, 'ACTIVE')
+    f.service.close()
+    const reopened = f.rebuilt()
+    context.after(() => reopened.close())
+    const saved = await finish(reopened, await reopened.resume('task-a', job.jobId))
+    assert.equal(saved.saveStatus, 'SAVED')
+    assert.equal(saved.rateLimitRetryAt, undefined)
+    assert.equal(posts, 1)
+    assert.ok(queries > 0)
+  })
+  it('clears recovered video query errors without losing the original generation failure', async context => {
+    const f = await fixture()
+    const submit = f.gateway.submit.bind(f.gateway)
+    let original: VideoReceipt
+    const taskError = { message: 'Original generation failure' }
+    const operationError = { status: 429, headers: { 'retry-after': '600' }, body: 'Old query failure' }
+    const receipt = (recovered: boolean): VideoReceipt => ({ ...original, mock: false, receiptVersion: 2,
+      status: 'FAILED', outputs: [], fileStatus: 'unavailable', billingStatus: recovered ? 'RELEASED' : 'RECONCILING',
+      execution: { requestId: 'upstream-original', taskId: 'task-original', submissionStatus: 'accepted', generationStatus: 'failed',
+        isFinal: true, observedAt: 1, statusSource: 'upstream', operation: 'query', taskError,
+        billing: { status: 'not_charged', actualCostUsd: '0' }, ...(recovered ? {} : { operationError }) },
+      clientActions: { submissionFinished: true, generationFinished: true, shouldPoll: !recovered,
+        pollPurpose: recovered ? 'none' : 'billing', canStartNewRequest: true, canRetryDownload: false },
+      pollAfterMs: recovered ? null : 1, recovery: { canQuery: true, canDownload: false, canCancel: false },
+      ...(recovered ? {} : { upstreamError: operationError }) })
+    context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+      original = await submit(...args)
+      return receipt(false)
+    })
+    context.mock.method(f.gateway, 'getReceipt', async () => receipt(true))
+    const service = new VideoService({ scope, store: f.store, executionMode: 'real', gateway: {
+      quote: async (value, signal) => ({ ...await f.gateway.quote(value, signal), amount: '0.900000', currency: 'CNY' }),
+      submit: f.gateway.submit.bind(f.gateway), getReceipt: f.gateway.getReceipt.bind(f.gateway),
+      findReceipt: f.gateway.findReceipt.bind(f.gateway), content: f.gateway.content.bind(f.gateway),
+    } })
+    context.after(() => service.close())
+    const created = await service.generate('task-a', input())
+    assert.equal(created.rateLimitRetryAt, undefined)
+    const recovered = await service.resume('task-a', created.jobId)
+    assert.equal(recovered.receipt?.status, 'FAILED')
+    assert.equal(recovered.trackingStatus, 'STOPPED')
+    assert.equal(recovered.receipt?.upstreamError, undefined)
+    assert.equal(recovered.receipt?.execution?.operationError, undefined)
+    assert.deepEqual(recovered.receipt?.execution?.taskError, taskError)
+  })
+
+  it('waits through HTTP 429 on video submit and download without changing request identity', async context => {
+    const f = await fixture()
+    const submit = f.gateway.submit.bind(f.gateway), content = f.gateway.content.bind(f.gateway)
+    const identities: string[] = []
+    let downloads = 0
+    context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+      identities.push(args[0].clientRequestId)
+      if (identities.length <= 2) throw new AppError('RATE_LIMITED', { diagnostic: { httpStatus: 429, headers: { 'retry-after': '0.05' } } })
+      return submit(...args)
+    })
+    context.mock.method(f.gateway, 'content', async (...args: Parameters<typeof content>) => {
+      if (++downloads <= 2) throw new AppError('RATE_LIMITED', { diagnostic: { httpStatus: 429, body: { retryAfterSeconds: 0.05 } } })
+      return content(...args)
+    })
+    const job = await f.service.generate('task-a', input())
+    const saved = await finish(f.service, job)
+    assert.equal(saved.saveStatus, 'SAVED')
+    assert.equal(saved.rateLimitRetryAt, undefined)
+    assert.equal(new Set(identities).size, 1)
+    assert.equal(identities.length, 3)
+    assert.equal(downloads, 3)
+    assert.equal(f.gateway.calls.quote, 1)
+  })
+  it('preserves proven video non-submission when a billing lookup returns an unknown receipt', async context => {
+    const f = await fixture()
+    context.mock.method(f.gateway, 'submit', async () => { throw new AppError('SERVICE_UNAVAILABLE', { details: {
+      stage: 'video-submit', submissionState: 'not_submitted', billingState: 'unknown', submissionConfirmedNotSent: true } }) })
+    const job = await f.service.generate('task-a', input())
+    context.mock.method(f.gateway, 'findReceipt', async () => ({ mock: true, receiptId: 'unconfirmed-receipt',
+      clientRequestId: job.request.clientRequestId, profileId: job.request.profileId, configVersion: job.request.configVersion,
+      operation: job.request.operation, status: 'SUBMISSION_UNKNOWN', outputs: [], pollAfterMs: 1000, billingStatus: 'MOCK_NOT_CHARGED',
+      errorCode: null, recovery: { canQuery: true, canDownload: false, canCancel: false } }))
+    const restored = await f.service.resume('task-a', job.jobId)
+    assert.equal(videoSubmissionRejected(restored), true)
+    assert.equal(restored.submissionFailure?.billingState, 'unknown')
+    assert.equal(restored.receipt, null)
+  })
+  for (const status of [400, 401, 403, 409, 422, 500, 502, 503]) it(`ends a proven video HTTP ${status} rejection across restarts`, async () => {
+    const f = await fixture()
+    const real = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: scope.subscriptionId,
+      token: async () => 'test-token', fetch: async () => new Response(JSON.stringify({ error: { code: 'INVALID_PARAMETER', source: 'platform',
+        requestId: 'sep-rejected', submissionState: 'not_submitted', billingState: 'not_reserved', message: 'Original rejection' } }),
+      { status, headers: { 'Content-Type': 'application/json' } }) })
+    const gateway: VideoGatewayPort = { quote: async (value, signal) => ({ ...await f.gateway.quote(value, signal), amount: '1.000000', currency: 'CNY' }),
+      submit: real.submit.bind(real), getReceipt: async () => assert.fail('Must not query a rejected request'),
+      findReceipt: async () => assert.fail('Must not recover a rejected request'), content: f.gateway.content.bind(f.gateway) }
+    const service = new VideoService({ scope, executionMode: 'real', store: f.store, gateway })
+    const job = await service.generate('task-a', input())
+    assert.equal(job.trackingStatus, 'STOPPED')
+    assert.equal(job.submissionFailure?.submissionState, 'not_submitted')
+    assert.equal(job.failure?.httpStatus, status)
+    assert.equal(videoSubmissionRejected(job), true)
+    const reopened = new VideoService({ scope, executionMode: 'real', store: new VideoStore(f.root), gateway })
+    const [restored] = await reopened.recover()
+    assert.equal(videoSubmissionRejected(restored), true)
+    assert.equal(restored.submissionFailure?.billingState, 'not_reserved')
+    service.close(); reopened.close()
+  })
+  it('restores receipt v2 completed generation, retries original delivery and settles billing independently', async () => {
+    const f = await fixture()
+    let original: VideoReceipt
+    let queries = 0
+    const receipt = (available: boolean, settled = false): VideoReceipt => ({ ...original, mock: false,
+      status: available ? 'SUCCEEDED' : 'RUNNING', outputs: available ? original.outputs : [],
+      billingStatus: settled ? 'SETTLED' : 'RECONCILING', receiptVersion: 2,
+      execution: { requestId: 'upstream-original', taskId: 'original-task', submissionStatus: 'accepted',
+        generationStatus: 'completed', isFinal: true, observedAt: 100, statusSource: 'upstream',
+        billing: { status: settled ? 'settled' : 'unknown', actualCostUsd: settled ? '0.12' : null } },
+      fileStatus: available ? 'available' : 'download_failed',
+      clientActions: { submissionFinished: true, generationFinished: true, shouldPoll: !settled,
+        pollPurpose: settled ? 'none' : available ? 'billing' : 'delivery', canStartNewRequest: true, canRetryDownload: !available },
+      pollAfterMs: settled ? null : 15, recovery: { canQuery: !settled, canDownload: available, canCancel: false } })
+    const gateway: VideoGatewayPort = {
+      quote: async (value, signal) => ({ ...await f.gateway.quote(value, signal), amount: '0.900000', currency: 'CNY' }),
+      submit: async (value, signal) => {
+        original = await f.gateway.submit(value, signal)
+        original = await f.gateway.getReceipt(original.receiptId, signal)
+        original = await f.gateway.getReceipt(original.receiptId, signal)
+        return receipt(false)
+      },
+      getReceipt: async () => { queries++; return receipt(true, queries > 1) },
+      findReceipt: async () => receipt(false), content: f.gateway.content.bind(f.gateway),
+    }
+    const service = new VideoService({ scope, store: f.store, gateway, executionMode: 'real' })
+    const created = await service.generate('task-a', input())
+    assert.equal(created.receipt?.status, 'RUNNING')
+    assert.equal(mediaGenerationState(created.receipt!.status, created.receipt!), 'SUCCEEDED')
+    assert.equal(created.saveStatus, 'PENDING')
+    service.close()
+    const reopened = new VideoService({ scope, store: new VideoStore(f.root), gateway, executionMode: 'real' })
+    const saved = await reopened.resume('task-a', created.jobId)
+    assert.equal(saved.saveStatus, 'SAVED')
+    assert.equal(saved.receipt?.billingStatus, 'RECONCILING')
+    assert.equal(saved.receipt?.execution?.billing.actualCostUsd, null)
+    const settled = await reopened.resume('task-a', created.jobId)
+    assert.equal(settled.trackingStatus, 'STOPPED')
+    assert.equal(settled.receipt?.billingStatus, 'SETTLED')
+    assert.equal(f.gateway.calls.submit, 1)
+    assert.equal(f.gateway.calls.quote, 1)
+    assert.equal(f.gateway.calls.content, 1)
+    reopened.close()
+  })
   it('freezes independent-request predecessors without excluding recovery before submission', async () => {
     const f = await fixture()
     const job = await f.service.prepare('task-a', input(), undefined, 'new-run', ['original-job'])

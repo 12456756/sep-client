@@ -1,8 +1,13 @@
 import type { LocalVideoJob } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { videoBillingPending } from '../../src/shared/video-media'
+import { mediaReceiptNeedsPoll } from '../../src/shared/media-execution'
+import { MEDIA_RECOVERY_DEFAULTS, mediaRecoveryDelay } from '../common/media-recovery'
+import { waitForRetry } from '../common/rate-limit-retry'
 
 export interface VideoTrackerPort {
+  hasRateLimitWait?(): Promise<boolean>
+  recoveredFromRateLimitAt?(): number
   recover(signal?: AbortSignal): Promise<LocalVideoJob[]>
   resume(taskId: string, jobId: string, signal?: AbortSignal): Promise<LocalVideoJob>
 }
@@ -28,18 +33,11 @@ function positive(value: number, name: string, maximum = MAX_TIMER_MS): number {
   return value
 }
 
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    signal.throwIfAborted()
-    const aborted = (): void => { clearTimeout(timer); signal.removeEventListener('abort', aborted); reject(signal.reason) }
-    const timer = setTimeout(() => { signal.removeEventListener('abort', aborted); resolve() }, ms)
-    signal.addEventListener('abort', aborted, { once: true })
-  })
-}
-
 function pollable(job: LocalVideoJob): boolean {
   if (job.submission === 'NOT_SENT' || job.trackingStatus === 'STOPPED') return false
   if (!job.receipt) return true
+  const shouldPoll = mediaReceiptNeedsPoll(job.receipt)
+  if (shouldPoll !== undefined) return shouldPoll && job.receipt.recovery.canQuery
   const billingPending = !job.receipt.mock && videoBillingPending(job.receipt.billingStatus)
   return (!terminal.has(job.receipt.status) || billingPending) && job.receipt.recovery.canQuery && (job.receipt.pollAfterMs !== null || billingPending)
 }
@@ -59,13 +57,13 @@ export class VideoTracker {
 
   constructor(options: VideoTrackerOptions) {
     this.service = options.service
-    this.floorMs = positive(options.floorMs ?? 1000, 'floorMs')
-    this.maxDelayMs = positive(options.maxDelayMs ?? 30_000, 'maxDelayMs')
-    this.maxAttempts = positive(options.maxAttempts ?? 120, 'maxAttempts', Number.MAX_SAFE_INTEGER)
-    this.budgetMs = positive(options.budgetMs ?? 30 * 60_000, 'budgetMs')
+    this.floorMs = positive(options.floorMs ?? MEDIA_RECOVERY_DEFAULTS.floorMs, 'floorMs')
+    this.maxDelayMs = positive(options.maxDelayMs ?? MEDIA_RECOVERY_DEFAULTS.maxDelayMs, 'maxDelayMs')
+    this.maxAttempts = positive(options.maxAttempts ?? MEDIA_RECOVERY_DEFAULTS.maxAttempts, 'maxAttempts', Number.MAX_SAFE_INTEGER)
+    this.budgetMs = positive(options.budgetMs ?? MEDIA_RECOVERY_DEFAULTS.budgetMs, 'budgetMs')
     if (this.maxDelayMs < this.floorMs) throw new RangeError('Video tracker maxDelayMs is below floorMs.')
     this.now = options.now ?? Date.now
-    this.delay = options.delay ?? delay
+    this.delay = options.delay ?? waitForRetry
   }
 
   /** Idempotent startup; resolves when idle, paused, bounded or stopped. */
@@ -105,18 +103,39 @@ export class VideoTracker {
   private async run(controller: AbortController): Promise<void> {
     const { signal } = controller
     if (signal.aborted) return
-    const startedAt = this.now()
-    const deadline = this.delay(this.budgetMs, signal).then(() => controller.abort(), error => {
+    let startedAt = this.now()
+    let pollWaitingUntil: number | undefined
+    let budgetChanged = new AbortController()
+    const deadline = (async () => {
+      for (;;) {
+        const reschedule = budgetChanged.signal
+        try {
+          await this.delay(Math.max(1, pollWaitingUntil === undefined
+            ? this.budgetMs - (this.now() - startedAt) : pollWaitingUntil - this.now() + this.budgetMs),
+          AbortSignal.any([signal, reschedule]))
+        } catch (error) {
+          if (signal.aborted) return
+          if (reschedule.aborted) continue
+          throw error
+        }
+        startedAt = Math.max(startedAt, this.service.recoveredFromRateLimitAt?.() ?? 0)
+        if (pollWaitingUntil !== undefined) continue
+        if (await this.service.hasRateLimitWait?.()) { startedAt = this.now(); continue }
+        if (this.now() - startedAt >= this.budgetMs) { controller.abort(); return }
+      }
+    })().catch(error => {
       if (!signal.aborted) { controller.abort(); throw error }
     })
     void deadline.catch(() => undefined)
     let failures = 0
     try {
       for (let attempt = 0; attempt < this.maxAttempts && !signal.aborted; attempt++) {
+        startedAt = Math.max(startedAt, this.service.recoveredFromRateLimitAt?.() ?? 0)
         if (this.now() - startedAt >= this.budgetMs) return
         let waitMs: number
         try {
           const jobs = await this.service.recover(signal)
+          startedAt = Math.max(startedAt, this.service.recoveredFromRateLimitAt?.() ?? 0)
           if (signal.aborted || jobs.some(job => job.trackingStatus === 'AUTH_REQUIRED')) return
           const pending = jobs.filter(pollable)
           if (!pending.length) return
@@ -133,9 +152,16 @@ export class VideoTracker {
           waitMs = this.backoff(++failures)
         }
         if (attempt + 1 >= this.maxAttempts) return
-        const remaining = this.budgetMs - (this.now() - startedAt)
-        if (remaining <= waitMs || signal.aborted) return
-        await this.delay(waitMs, signal)
+        if (this.now() - startedAt >= this.budgetMs || signal.aborted) return
+        const waitStartedAt = this.now()
+        pollWaitingUntil = waitStartedAt + waitMs
+        try { await this.delay(waitMs, signal) }
+        finally {
+          startedAt += this.now() - waitStartedAt; pollWaitingUntil = undefined
+          const previous = budgetChanged
+          budgetChanged = new AbortController()
+          previous.abort()
+        }
       }
     } catch (error) {
       if (!signal.aborted) throw error
@@ -146,6 +172,6 @@ export class VideoTracker {
   }
 
   private backoff(failures: number): number {
-    return Math.min(this.maxDelayMs, this.floorMs * 2 ** Math.min(failures - 1, 52))
+    return mediaRecoveryDelay(failures, this.floorMs, 0, this.maxDelayMs)
   }
 }

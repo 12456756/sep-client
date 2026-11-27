@@ -196,11 +196,16 @@ describe('knowledge platform adapter', () => {
       assert.ok(call.body instanceof FormData)
     }
   })
-  it('rejects an excessive server wait without shortening it or replaying creation', async () => {
+  it('waits past five minutes before retrying the same throttled creation', async () => {
     let count = 0
-    const api = new KnowledgeApi({ getAccessToken: async () => 'token', fetch: async () => { count++; return new Response('{}', { status: 429, headers: { 'Retry-After': '301' } }) } })
-    await assert.rejects(api.execute({ requestId, action: 'createBase', name: '制度' }), KnowledgeApiError)
-    assert.equal(count, 1)
+    const delays: number[] = []
+    const api = new KnowledgeApi({ getAccessToken: async () => 'token', sleep: async ms => { delays.push(ms) }, fetch: async () => {
+      if (++count === 1) return new Response('{}', { status: 429, headers: { 'Retry-After': '600' } })
+      return Response.json({ id: 'kb', name: '制度', permissions: {} })
+    } })
+    await api.execute({ requestId, action: 'createBase', name: '制度' })
+    assert.deepEqual(delays, [600000])
+    assert.equal(count, 2)
   })
   it('preserves opaque ETags and never parses 204 as JSON', async () => {
     const api = new KnowledgeApi({ getAccessToken: async () => 'token', fetch: async (url, init) => {

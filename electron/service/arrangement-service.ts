@@ -192,7 +192,7 @@ export class ArrangementService {
     const requiredMediaTools = requiredArrangementMediaTools(node)
     const available = authorized.filter(employee => employee.subscriptionId !== node.subscriptionId && employee.status === 'ACTIVE' &&
       employee.canExecute !== false && employee.allowedModels.includes(node.modelId) &&
-      requiredMediaTools.every(tool => employee.mediaTools?.[tool].state === 'available'))
+      requiredMediaTools.every(tool => employee.mediaTools?.[tool]?.state === 'available'))
     const replacement = await search('authorized', available)
     if (replacement) return { replacement, candidates: [] }
     for (const stage of ['enterprise', 'platform'] as const) {
@@ -284,7 +284,7 @@ export class ArrangementService {
                 }
                 this.assertPlanningScope(scope, generation)
               }
-              if (requiredMediaTools.every(tool => mediaTools?.[tool].state === 'available')) resumeNodeId ??= node.nodeId
+              if (requiredMediaTools.every(tool => mediaTools?.[tool]?.state === 'available')) resumeNodeId ??= node.nodeId
             }
           }
         }

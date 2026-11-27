@@ -7,7 +7,7 @@ export function isBrowserHandoffRequest(request: { toolName: string; input: unkn
 }
 
 export function isMediaResubmissionRequest(request: { toolName: string; input: unknown }): boolean {
-  if (!['media_generate_image', 'video_generate', 'video_from_image'].includes(request.toolName)
+  if (!['media_generate_image', 'video_generate', 'video_from_image', 'video_from_video'].includes(request.toolName)
     || typeof request.input !== 'object' || request.input === null || Array.isArray(request.input)) return false
   const input = request.input as Record<string, unknown>
   return input.operation === 'confirm-new-generation' && Number.isSafeInteger(input.unconfirmedJobCount)

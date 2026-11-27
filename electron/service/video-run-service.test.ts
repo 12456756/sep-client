@@ -619,11 +619,11 @@ test('missing, malformed, disabled and empty-tools video cannot expose or execut
   await f.service.stopAll()
 })
 
-test('new run restores uncertain original receipt without another submission', async () => {
+test('explicit recovery restores the selected original receipt without another submission', async () => {
   const f = await setup('submission-unknown')
   const original = await new MockVideoHostService(f.options).generate('task-a', input())
   assert.equal(original.generationStatus, 'SUBMISSION_UNKNOWN')
-  const tools = await f.service.prepareRun(f.runInput)
+  const tools = await f.service.prepareRun({ ...f.runInput, recoverJobIds: [original.jobId] })
   assert.ok(tools)
   await f.service.waitForRun('task-a', 'run-a')
   assert.equal((await f.store.getJob(scope, 'task-a', original.jobId))?.saveStatus, 'SAVED')
@@ -701,14 +701,14 @@ test('new run cannot quote or submit again when the user declines the unresolved
   } finally { await f.service.stopAll() }
 })
 
-test('the same video run cannot turn an uncertain response into another upload, quote or approval', async context => {
+test('repeating the same video request returns to the original job without another upload, quote or approval', async context => {
   const f = await setup('submission-unknown')
   context.mock.method(f.gateway, 'findReceipt', async () => null)
   const tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)
   try {
     await assert.rejects(tools.execute('video_from_image', input()))
-    await assert.rejects(tools.execute('video_from_image', { ...input(), creativeBrief: 'Changed during an automatic retry' }), { code: 'CONFLICT' })
+    await assert.rejects(tools.execute('video_from_image', input()), { code: 'INVALID_STATE' })
     assert.equal(f.gateway.calls.quote, 1)
     assert.equal(f.gateway.calls.submit, 1)
     assert.equal(f.state.uploads, 1)
@@ -792,10 +792,11 @@ test('stopped run waits for interrupted content to settle and never reports comp
   const waiting = new Promise<void>(resolve => { entered = resolve })
   context.mock.method(f.gateway, 'content', async () => { entered(); return new Promise<AsyncIterable<Uint8Array>>(() => undefined) })
   const tools = await f.service.prepareRun(f.runInput)
-  await tools!.execute('video_from_image', input())
+  const rejectedExecution = assert.rejects(tools!.execute('video_from_image', input()))
   const rejected = assert.rejects(f.service.waitForRun('task-a', 'run-a'))
   await waiting
   await f.service.stopTask('task-a')
+  await rejectedExecution
   await rejected
   assert.equal((await f.store.listJobs(scope))[0].saveStatus, 'SAVE_FAILED')
   assert.equal(f.gateway.calls.submit, 1)

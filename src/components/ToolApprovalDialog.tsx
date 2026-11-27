@@ -28,6 +28,7 @@ const messages: Readonly<Record<string, string>> = {
   media_cancel_job: '允许请求平台取消图片任务？取消结果以平台返回为准，不代表退款。',
   video_generate: '允许员工按已确认的要求生成视频？',
   video_from_image: '允许员工上传所选参考图或生成视频？',
+  video_from_video: '允许员工上传所选参考视频或生成视频？',
 }
 
 /** The main process owns the deadline; queueing never restarts its approval budget. */
@@ -53,7 +54,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       else onDeny()
     }
     const quote = paidQuote.safeParse(request.input)
-    const isVideo = request.toolName === 'video_generate' || request.toolName === 'video_from_image'
+    const isVideo = request.toolName === 'video_generate' || request.toolName === 'video_from_image' || request.toolName === 'video_from_video'
     const raw = z.object({ mock: z.boolean().optional() }).safeParse(request.input)
     const input = z.record(z.string(), z.unknown()).safeParse(request.input)
     const browserHandoff = isBrowserHandoffRequest(request)

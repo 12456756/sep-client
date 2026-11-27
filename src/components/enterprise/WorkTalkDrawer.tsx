@@ -27,6 +27,8 @@ import { ModelSelector } from './ModelSelector';
 import { ConversationEmployeePicker } from './ConversationEmployeePicker';
 import { mediaRetryNotice, type MediaRetryState } from '../../shared/media-retry';
 import { FileAttachmentTarget, type AddFileToConversation } from '../workspace/file-menu-actions';
+import { ReferenceVideoPanel } from '../workspace/ReferenceVideoPanel';
+import '../../styles/video-artifacts.css';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -250,6 +252,7 @@ export function WorkConversation({ work, workspace, onClose, mediaRetryState = '
           {canSkip ? <button type="button" className="ent-btn sm ent-conversation-skip" disabled={queued.busy || workspace.busy || sending} onClick={() => void queued.skip()}><SkipForward size={13} aria-hidden />跳过本轮，继续对话</button> : null}
           {unstarted ? <button type="button" className="ent-btn sm" disabled={queued.busy || workspace.busy} onClick={() => void queued.resume()}>开始执行</button> : null}
           <div className="ent-ask">
+          {mediaState.videos && <ReferenceVideoPanel key={`${workspace.attachmentScopeKey}:${work.id}`} taskId={work.id} runtime={mediaState.videos.runtime} assets={mediaState.videos.referenceVideos ?? []} onChanged={async () => { mediaState.retry(); }} />}
           <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
           <FileMentionEditor mention={mention}
             data-composer-id={composerId}

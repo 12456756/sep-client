@@ -7,6 +7,18 @@ const headers = { 'content-type': 'text/event-stream', 'x-request-id': 'sep-1', 
   'x-upstream-request-id': 'upstream-3', 'x-sep-execution-id': 'execution-4' }
 const text = 'data: {"choices":[{"delta":{"content":"partial text"},"finish_reason":null}]}\n\n'
 
+it('recognizes SSE 429 evidence without changing the outer HTTP success status', async () => {
+  const failures: GatewayResponseFailure[] = []
+  const response = await guardGatewayResponse(new Response('event: error\ndata: {"httpStatus":429,"message":"Too many requests","diagnosticHeaders":{"retry-after":"600"}}\n\n', { headers }), {
+    onFailure: failure => failures.push(failure),
+  })
+  await assert.rejects(response.text(), /429/)
+  assert.equal(failures[0]?.diagnostic.httpStatus, 200)
+  assert.equal(failures[0]?.diagnostic.computeStatus, 429)
+  assert.equal(failures[0]?.diagnostic.headers?.['retry-after'], '600')
+  assert.equal(failures[0]?.diagnostic.retryable, true)
+})
+
 for (const event of ['error', 'response.failed', 'response.error', 'data-error', 'nested-response'] as const) {
   for (const ending of ['data: [DONE]\n\n', '']) {
     it(`keeps ${event} failed after ${ending ? 'DONE' : 'EOF'}, retaining text and actual diagnostic IDs`, async () => {

@@ -170,7 +170,7 @@ export class ConversationExecutor {
       if (active?.control !== 'none') return
       try {
         await Promise.all([
-          this.options.media?.waitForRun(taskId, runId, { recoverOriginal: true, signal: mediaSignal }),
+          this.options.media?.waitForRun(taskId, runId, { recoverOriginal: true, continueRecovery: true, signal: mediaSignal }),
           this.options.video?.waitForRun(taskId, runId, { recoverOriginal: true, signal: mediaSignal }),
         ])
       } catch (error) {
@@ -351,7 +351,7 @@ export class ConversationExecutor {
       } else if (artifactDirectory?.status === 'retry-in-prompt') {
         workerPrompt += `\n\n【本任务成果目录】客户端未能创建普通文件的成果目录。本轮需要通过文件工具保存普通文件时，请尝试在工作目录下创建“${artifactDirectory.relativePath}”，并将普通文件放入该目录；只能使用这个固定路径，不要改用其他目录。若创建失败，继续完成可在对话中交付的工作，不要反复重试创建目录。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
       }
-      if (mediaTools?.names.length || videoTools?.names.length) workerPrompt += `\n\n${CONVERSATION_MEDIA_DELIVERY_PROMPT}`
+      if (mediaTools?.names.length || videoTools?.names.length) workerPrompt += `\n\n${CONVERSATION_MEDIA_DELIVERY_PROMPT}\n\n【媒体状态与恢复】分别判断提交、生成、平台文件、本地保存和费用。receiptVersion=2 时优先使用 execution、fileStatus 和 clientActions；顶层 status 可能仍为 RUNNING，但 generationStatus=completed 表示生成已完成。费用待核对不等于仍在生成，未知金额不等于免费。下载或保存失败只恢复原结果，不重新生成。同一项提交异常后不得自行再次生成，先查询原 jobId；其他独立任务可以继续。用户明确要求重新生成时，遵守对应原任务的 canStartNewRequest、工具审批与重复计费确认；不得用新 ID 绕过原任务的提交不明状态。`
       if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
       if (resolvedAttachments.length && /（本轮附件 \d+）/u.test(queued.prompt)) workerPrompt += `\n\n【本轮附件编号】按此目录解析正文中的本轮附件编号，不使用历史目录的序号：\n${JSON.stringify(resolvedAttachments.map((file, index) => ({ number: index + 1, name: file.displayName, attachmentId: file.attachmentId })))}`
@@ -362,6 +362,7 @@ export class ConversationExecutor {
       if (mediaTools?.names.includes('media_generate_image') && this.options.conversationMedia) workerPrompt += '\n\n【图片参考素材】需要修改上传图片或本任务已生成的图片时，先查询 media_get_capabilities({})。referenceSources 将本会话附件名称、attachmentId 或已生成图片 sourceArtifactId 对应到可用参考图 localAssetId。调用 media_generate_image 时指定 operation="edit" 和 localAssetIds=[按用户指定顺序排列的参考图ID]，只传用户选中的图片，不得超过当前能力返回的上限；候选来源不明确时先询问，不默认选择第一张。新建图片使用 operation="generate"、localAssetIds=[]，不得因为有附件就自动编辑，也不得将编辑请求降级为文生图。'
       if (mediaTools?.names.includes('media_replace_images')) workerPrompt += '\n\n【图片提交未确认】同轮有多张独立图片时，某张提交结果不明，不要重提那张，但继续生成其他图片。“补图”先区分未提交的新图和已有任务；只有用户明确要求重做指定旧图时，才从 unconfirmedJobs 选择对应且可替换的原任务 ID，一次提交整批给 media_replace_images。已拒绝、已处理或不能确认对应关系的原任务，不改用普通生图绕过。'
       if (videoTools?.names.includes('video_from_image') && this.options.conversationMedia) workerPrompt += '\n\n【视频参考图片】需要使用上传图片或本任务已生成的图片制作视频时，先查询 video_get_job({})。referenceSources 将本会话附件名称、attachmentId、已生成图片的 sourceArtifactId 与可用参考图 localAssetId 对应起来；使用用户指定的真实图片，不得因为图片以附件上传就改用文生视频。存在多张候选图且来源不明确时先询问，不默认选择第一张。'
+      if (videoTools?.names.includes('video_from_video')) workerPrompt += '\n\n【参考视频】先查询 video_get_job({})，使用 referenceVideos 中真实已导入的本任务视频，通过 video_from_video 的 localVideoAssetIds 按用户指定顺序传入。遵循所选模型 videoReferenceSupport 与 videoReferenceRules，不混入图片参考、不编造 ID 或路径。'
       const selection = queued.knowledge ?? queued.arrangement?.knowledge
       let trustedNames: string[] = []
       if (selection?.mode === 'auto' && this.options.knowledgeSearch?.describe && active.control === 'none') {
@@ -419,7 +420,9 @@ export class ConversationExecutor {
           log.warn('conversation diagnostic could not be stored', { taskId, runId })
         }
       }
-      await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)]).catch(() => undefined)
+      if (!active || active.control !== 'none') {
+        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)]).catch(() => undefined)
+      }
       log.error('conversation run failed', {
         taskId,
         runId,

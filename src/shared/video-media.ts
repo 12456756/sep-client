@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { MAX_VIDEO_REFERENCES, MAX_VIDEO_REFERENCE_BYTES, videoReferenceSupportSchema, type VideoReferenceSupport } from './video-references'
+import { mediaExecutionFields, refineMediaExecution } from './media-execution'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoActualSpecSchema, videoRequestedSpecSchema, type VideoRequestedSpec } from './media-spec-contract'
 import { MAX_MEDIA_REFERENCE_BYTES, MAX_MEDIA_REFERENCES, mediaReferenceSupportSchema, type MediaReferenceSupport } from './media-references'
 import { mediaUpstreamErrorSchema } from './media-upstream-error'
@@ -19,7 +21,7 @@ export const videoSpecFailureSchema = z.object({
 }).strip().refine(value => value.requestedValue === undefined || !!value.field && videoRequestedSpecSchema.safeParse({ [value.field.split('.').at(-1)!]: value.requestedValue }).success)
 export type VideoSpecFailure = z.infer<typeof videoSpecFailureSchema>
 
-export const videoOperationSchema = z.enum(['image-to-video', 'text-to-video'])
+export const videoOperationSchema = z.enum(['image-to-video', 'text-to-video', 'video-to-video'])
 export type VideoOperation = z.infer<typeof videoOperationSchema>
 
 export const videoParametersSchema = z.object({
@@ -71,6 +73,7 @@ export type VideoCapabilities = Omit<z.infer<typeof videoCapabilitiesV1RefinedSc
   supportsTextToVideo: boolean
   supportsImageToVideo: boolean
   supportsAudio: boolean
+  supportsVideoToVideo?: boolean
   audioModes?: boolean[]
   defaultAudio?: boolean
   defaults?: z.infer<typeof videoDefaultsSchema>
@@ -138,6 +141,7 @@ const videoRuntimeV2Schema = z.object({
   }
 })
 const videoCapabilitiesV3Schema = videoCapabilitiesV1Schema.omit({ durationsSeconds: true, aspectRatios: true, resolutions: true, frameRates: true, outputFormats: true, supportsTaskQuery: true }).extend({
+  supportsVideoToVideo: z.boolean().optional(),
   maxReferenceCount: z.number().int().min(0).max(MAX_MEDIA_REFERENCES),
   durationsSeconds: z.array(z.number().finite().positive()).max(32),
   aspectRatios: z.array(z.string().regex(/^[1-9]\d*:[1-9]\d*$/).max(32)).max(32),
@@ -178,9 +182,10 @@ const sepVideoRuntimeV3ProfileSchema = z.object({ profileId: z.string().regex(/^
 const normalizedVideoRuntimeV3ProfileSchema = z.object({
   profileId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/), configVersion: z.string().trim().min(1).max(80),
   kind: z.literal('video'), displayName: z.string().trim().min(1).max(80),
-  operations: z.array(videoOperationSchema).max(2), executionMode: z.literal('async-query'),
+  operations: z.array(videoOperationSchema).max(3), executionMode: z.literal('async-query'),
   capabilities: videoCapabilitiesV3Schema,
   referenceSupport: mediaReferenceSupportSchema.optional(),
+  videoReferenceSupport: videoReferenceSupportSchema.optional(),
   adapterId: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/).optional(),
   adapterVersion: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/).optional(),
   capabilityHints: z.array(mediaV3HintSchema).max(32),
@@ -203,7 +208,7 @@ const normalizedSepVideoRuntimeV3Schema = z.object({ protocolVersion: z.literal(
 const normalizedInternalVideoRuntimeV3Schema = z.object({
   protocolVersion: z.literal(3), executionMode: z.enum(['mock', 'real', 'disabled']), executionAvailable: z.boolean(),
   defaultProfileId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/).nullable(),
-  tools: z.array(z.enum(['video_from_image', 'video_generate', 'video_get_job', 'video_cancel_job'])).max(4),
+  tools: z.array(z.enum(['video_from_image', 'video_from_video', 'video_generate', 'video_get_job', 'video_cancel_job'])).max(5),
   profiles: z.array(normalizedVideoRuntimeV3ProfileSchema).max(64),
 }).strict()
 const currentSepVideoRuntimeSchema = sepRuntimeV3Schema('video').transform((runtime): z.input<typeof normalizedInternalVideoRuntimeV3Schema> => {
@@ -211,11 +216,16 @@ const currentSepVideoRuntimeSchema = sepRuntimeV3Schema('video').transform((runt
     if (!runtime.executionAvailable || !profile.authorized || !profile.adapter.available
       || !profile.adapter.supportsTaskQuery || profile.executionMode !== 'async-query') return []
     const reference = profile.referenceRules.find(rule => rule.operation === 'image-to-video')
+    const videoReference = profile.videoReferenceRules?.find(rule => rule.operation === 'video-to-video')
     const operations = profile.operations.filter((op): op is VideoOperation => profile.adapter.operations.includes(op)
       && (op === 'text-to-video' && runtime.tools.includes('video_generate')
         || op === 'image-to-video' && runtime.tools.includes('video_from_image')
           && !!reference && reference.maxCount >= 1 && reference.minCount <= MAX_MEDIA_REFERENCES
-          && reference.mimeTypes.some(mime => ['image/jpeg', 'image/png', 'image/webp'].includes(mime))))
+          && reference.mimeTypes.some(mime => ['image/jpeg', 'image/png', 'image/webp'].includes(mime))
+        || op === 'video-to-video' && runtime.tools.includes('video_from_video') && runtime.executionMode === 'real'
+          && !!videoReference && videoReference.minCount >= 1 && videoReference.maxCount >= videoReference.minCount
+          && videoReference.minCount <= MAX_VIDEO_REFERENCES && videoReference.maxInputBytes > 0
+          && videoReference.mimeTypes.some(mime => ['video/mp4', 'video/quicktime'].includes(mime))))
     if (!operations.length) return []
     const referenceSupport = reference && operations.includes('image-to-video') ? {
       maxCount: Math.min(MAX_MEDIA_REFERENCES, reference.maxCount),
@@ -223,10 +233,16 @@ const currentSepVideoRuntimeSchema = sepRuntimeV3Schema('video').transform((runt
       mimeTypes: reference.mimeTypes.filter(mime => ['image/jpeg', 'image/png', 'image/webp'].includes(mime)),
     } : undefined
     const audioModes = [...new Set(profile.parameters.audio?.values?.filter((value): value is boolean => typeof value === 'boolean') ?? [])]
+    const videoReferenceSupport = videoReference && operations.includes('video-to-video') ? videoReferenceSupportSchema.parse({
+      maxCount: Math.min(MAX_VIDEO_REFERENCES, videoReference.maxCount),
+      maxInputBytes: Math.min(MAX_VIDEO_REFERENCE_BYTES, videoReference.maxInputBytes),
+      mimeTypes: videoReference.mimeTypes.filter(mime => ['video/mp4', 'video/quicktime'].includes(mime)),
+    }) : undefined
     return [{ profileId: profile.profileId, configVersion: profile.configVersion, kind: 'video' as const,
       displayName: profile.displayName, executionMode: 'async-query' as const, operations,
       capabilities: {
         supportsTextToVideo: operations.includes('text-to-video'), supportsImageToVideo: operations.includes('image-to-video'),
+        ...(videoReferenceSupport ? { supportsVideoToVideo: true } : {}),
         supportsAudio: audioModes.includes(true), audioModes, durationsSeconds: [], aspectRatios: [], resolutions: [],
         frameRates: [], outputFormats: [], maxInputBytes: referenceSupport?.maxInputBytes ?? 0,
         maxReferenceCount: referenceSupport?.maxCount ?? 0, supportsTaskQuery: true,
@@ -234,6 +250,7 @@ const currentSepVideoRuntimeSchema = sepRuntimeV3Schema('video').transform((runt
       },
       adapterId: profile.adapter.id, adapterVersion: profile.adapter.version, capabilityHints: [],
       ...(referenceSupport ? { referenceSupport } : {}),
+      ...(videoReferenceSupport ? { videoReferenceSupport } : {}),
       ...readSepRuntimeV3Metadata(profile),
     }]
   })
@@ -245,18 +262,19 @@ const currentSepVideoRuntimeSchema = sepRuntimeV3Schema('video').transform((runt
     tools: [...new Set(runtime.tools)].filter((tool): tool is VideoRuntime['tools'][number] => profiles.some(profile =>
       tool === 'video_generate' && profile.capabilities.supportsTextToVideo
       || tool === 'video_from_image' && profile.capabilities.supportsImageToVideo
+      || tool === 'video_from_video' && profile.capabilities.supportsVideoToVideo
       || tool === 'video_get_job' && profile.capabilities.supportsTaskQuery
       || tool === 'video_cancel_job' && profile.capabilities.supportsCancel)),
   }
 }).pipe(normalizedInternalVideoRuntimeV3Schema)
-export const videoRuntimeSchema = z.union([currentSepVideoRuntimeSchema, videoRuntimeV1Schema, videoRuntimeV2Schema, videoRuntimeV3Schema, normalizedSepVideoRuntimeV3Schema, normalizedInternalVideoRuntimeV3Schema])
-export type VideoRuntimeProfile = Omit<z.infer<typeof videoRuntimeProfileSchema>, 'capabilities'> & Partial<SepRuntimeV3ProfileMetadata> & { capabilities: Omit<VideoCapabilities, 'resolutions' | 'outputFormats' | 'supportsTaskQuery'> & { resolutions: string[]; outputFormats: string[]; supportsTaskQuery: boolean }; referenceSupport?: MediaReferenceSupport; adapterId?: string; adapterVersion?: string; capabilityHints?: z.infer<typeof mediaV3HintSchema>[] | z.infer<typeof videoRuntimeV3ProfileSchema>['capabilityHints'] }
+export const videoRuntimeSchema: z.ZodType<VideoRuntime> = z.union([currentSepVideoRuntimeSchema, videoRuntimeV1Schema, videoRuntimeV2Schema, videoRuntimeV3Schema, normalizedSepVideoRuntimeV3Schema, normalizedInternalVideoRuntimeV3Schema])
+export type VideoRuntimeProfile = Omit<z.infer<typeof videoRuntimeProfileSchema>, 'capabilities'> & Partial<SepRuntimeV3ProfileMetadata> & { capabilities: Omit<VideoCapabilities, 'resolutions' | 'outputFormats' | 'supportsTaskQuery'> & { resolutions: string[]; outputFormats: string[]; supportsTaskQuery: boolean }; referenceSupport?: MediaReferenceSupport; videoReferenceSupport?: VideoReferenceSupport; adapterId?: string; adapterVersion?: string; capabilityHints?: z.infer<typeof mediaV3HintSchema>[] | z.infer<typeof videoRuntimeV3ProfileSchema>['capabilityHints'] }
 export interface VideoRuntime {
   protocolVersion: 1 | 2 | 3
   executionMode?: 'mock' | 'real' | 'disabled'
   executionAvailable: boolean
   defaultProfileId: string | null
-  tools: Array<'video_from_image' | 'video_generate' | 'video_get_job' | 'video_cancel_job'>
+  tools: Array<'video_from_image' | 'video_from_video' | 'video_generate' | 'video_get_job' | 'video_cancel_job'>
   profiles: VideoRuntimeProfile[]
 }
 
@@ -272,6 +290,7 @@ const videoRequestBaseSchema = z.object({
   configVersion: z.string().trim().min(1).max(128).regex(/^[^\p{Cc}\p{Cf}]+$/u),
   operation: videoOperationSchema,
   referenceIds: z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)).max(MAX_MEDIA_REFERENCES),
+  videoReferenceIds: z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)).max(MAX_VIDEO_REFERENCES).optional(),
   creativeBrief: z.string().trim().min(1).max(4000),
   parameters: videoRequestedSpecSchema,
   protocolVersion: z.literal(3).optional(),
@@ -280,6 +299,10 @@ const videoRequestBaseSchema = z.object({
   specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(),
 }).strict()
 function refineVideoRequest(value: z.infer<typeof videoRequestBaseSchema>, context: z.RefinementCtx): void {
+  const videos = value.videoReferenceIds ?? []
+  if (new Set(videos).size !== videos.length || (value.operation === 'video-to-video'
+    ? value.protocolVersion !== 3 || videos.length < 1 || value.referenceIds.length !== 0 || !Number.isInteger(value.requestedSpec?.durationSeconds)
+    : videos.length !== 0)) context.addIssue({ code: 'custom', path: ['videoReferenceIds'], message: 'Video references require V3 video-to-video without image references.' })
   if (value.protocolVersion === 3) {
     if (!value.requestedSpec || !value.parameterSources || value.specRevision === undefined || !mediaSpecsEqual(value.parameters, value.requestedSpec)) context.addIssue({ code: 'custom', path: ['requestedSpec'], message: 'Versioned video specifications must match the frozen parameters.' })
     if (value.parameterSources && Object.keys(value.parameterSources).some(key => value.requestedSpec?.[key as keyof typeof value.requestedSpec] === undefined)) context.addIssue({ code: 'custom', path: ['parameterSources'], message: 'Specification sources must describe present video fields.' })
@@ -332,6 +355,7 @@ const videoReceiptBaseSchema = z.object({
   profileId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/),
   configVersion: z.string().trim().min(1).max(128).regex(/^[^\p{Cc}\p{Cf}]+$/u),
   operation: videoOperationSchema,
+  ...mediaExecutionFields,
   status: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED', 'SUBMISSION_UNKNOWN']),
   pollAfterMs: z.number().int().nonnegative().nullable(),
   outputs: z.array(videoOutputSchema).max(4),
@@ -365,6 +389,15 @@ export const videoRealReceiptSchema = videoReceiptBaseSchema.extend({
   amountCny: decimalCny.optional(), actualCostCny: decimalCny.optional(), amountUsd: decimalUsd.optional(),
 }).strict()
 export const videoReceiptSchema = z.discriminatedUnion('mock', [videoMockReceiptSchema, videoRealReceiptSchema]).superRefine((value, context) => {
+  if (value.receiptVersion === 2) {
+    refineMediaExecution(value, context)
+    if (!value.execution || !value.clientActions || !value.fileStatus || new Set(value.outputs.map(output => output.outputId)).size !== value.outputs.length
+      || value.recovery.canDownload && (value.fileStatus !== 'available' || value.outputs.length === 0)
+      || value.clientActions.shouldPoll && !value.recovery.canQuery) {
+      context.addIssue({ code: 'custom', message: 'Inconsistent execution receipt.' })
+    }
+    return
+  }
   const delivered = value.status === 'SUCCEEDED' || value.status === 'PARTIAL_SUCCEEDED'
   const terminal = delivered || ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(value.status)
   const billingPending = !value.mock && videoBillingPending(value.billingStatus)
@@ -377,7 +410,7 @@ export const videoReceiptSchema = z.discriminatedUnion('mock', [videoMockReceipt
 })
 export type VideoReceipt = z.infer<typeof videoReceiptSchema>
 
-export function videoBillingPending(status: VideoReceipt['billingStatus']): boolean {
+export function videoBillingPending(status: VideoReceipt['billingStatus'] | 'UNKNOWN'): boolean {
   return status === 'RESERVED' || status === 'RECONCILING'
 }
 

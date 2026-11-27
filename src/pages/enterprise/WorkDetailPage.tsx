@@ -223,7 +223,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           </section>
           <section className="ent-panel ent-wk-inspector-content" aria-label="产出结果" hidden={panel !== 'results'}>
             <FileAttachmentTarget.Provider value={isConversation ? addFromResults : null}>
-            {isConversation ? <MediaArtifactsPanel taskId={work.id} visible={panel === 'results'} onSummary={handleMediaSummary} presentation="results" /> : null}
+            {isConversation ? <MediaArtifactsPanel taskId={work.id} retryRunId={work.lastRunId} visible={panel === 'results'} onSummary={handleMediaSummary} presentation="results" /> : null}
             {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel media={work.arrangementExecution.media} deliverables={work.deliverables} /> : null}
             {work.deliverables.length ? (
               <div className="ent-wk-final-files">

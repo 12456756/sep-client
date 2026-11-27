@@ -33,6 +33,294 @@ import { PiTaskWorker } from '../pi/sdk/pi-task-worker'
 import { runtimeFeedback } from '../errors/runtime-feedback'
 
 const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+
+for (const status of [400, 401, 403, 409, 422, 429, 500, 502, 503]) it(`recovers a stored image HTTP ${status} through GET without replaying its POST`, async context => {
+  const f = await fixture({ tracker: { budgetMs: 1000 } }, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+  const submit = f.gateway.submit.bind(f.gateway), get = f.gateway.getReceipt.bind(f.gateway)
+  let posts = 0, queries = 0, notBefore = 0
+  context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+    assert.equal(++posts, 1, 'A stored request must only recover through GET')
+    const receipt = await submit(...args)
+    notBefore = Date.now() + (status === 429 ? 1100 : 0)
+    throw new AppError('SERVICE_UNAVAILABLE', { diagnostic: { httpStatus: status, source: 'upstream',
+      sepReceiptId: receipt.receiptId, clientRequestId: receipt.clientRequestId,
+      headers: { 'x-sep-receipt-id': receipt.receiptId, 'x-sep-client-request-id': receipt.clientRequestId,
+        ...(status === 429 ? { 'retry-after': '1.1' } : {}) }, body: { error: { message: 'Original failure' } } } })
+  })
+  context.mock.method(f.gateway, 'findReceipt', async () => assert.fail('Use the correlated SEP receipt ID'))
+  context.mock.method(f.gateway, 'getReceipt', async (...args: Parameters<typeof get>) => {
+    queries++
+    assert.ok(Date.now() >= notBefore, 'Recovery must honor the current Retry-After')
+    return get(...args)
+  })
+  const created = await f.service.generateTaskMedia('task-a', input())
+  await waitUntil(async () => (await f.store.getJob(owner, 'task-a', created.jobId))?.saveStatus === 'SAVED', 4000)
+  const saved = (await f.store.getJob(owner, 'task-a', created.jobId))!
+  assert.equal(saved.generationStatus, 'SUCCEEDED')
+  assert.equal(saved.rateLimitRetryAt, undefined)
+  assert.equal(posts, 1)
+  assert.equal(queries, 1)
+})
+
+it('clears recovered image operation errors while retaining the true generation failure', async context => {
+  const f = await fixture()
+  const submit = f.gateway.submit.bind(f.gateway)
+  const taskError = { message: 'Original generation failed' }
+  const operationError = { status: 429, headers: { 'retry-after': '600' }, body: { error: { message: 'Old query limit' } } }
+  let original: Awaited<ReturnType<typeof submit>>
+  const receipt = (recovered: boolean) => ({ ...original, status: 'FAILED', outputs: [], receiptVersion: 2,
+    fileStatus: 'unavailable', billingStatus: recovered ? 'RELEASED' : 'RECONCILING', pollAfterMs: recovered ? null : 1,
+    execution: { requestId: 'original-upstream', taskId: 'original-task', submissionStatus: 'accepted', generationStatus: 'failed',
+      isFinal: true, observedAt: 1, statusSource: 'upstream', operation: 'query', taskError,
+      billing: { status: 'not_charged', actualCostUsd: '0' }, ...(recovered ? {} : { operationError }) },
+    clientActions: { submissionFinished: true, generationFinished: true, shouldPoll: !recovered,
+      pollPurpose: recovered ? 'none' : 'billing', canStartNewRequest: true, canRetryDownload: false },
+    recovery: { canQuery: true, canDownload: false, canCancel: false },
+    ...(recovered ? {} : { upstreamError: operationError, billingError: { status: 503, body: 'Old billing error' } }) })
+  context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+    original = await submit(...args)
+    return receipt(false)
+  })
+  context.mock.method(f.gateway, 'getReceipt', async () => receipt(true))
+  const created = await f.service.generateTaskMedia('task-a', input())
+  assert.equal(created.rateLimitRetryAt, undefined)
+  await waitUntil(async () => (await f.store.getJob(owner, 'task-a', created.jobId))?.trackingStatus === 'STOPPED')
+  const saved = (await f.store.getJob(owner, 'task-a', created.jobId))!
+  assert.equal(saved.generationStatus, 'FAILED')
+  assert.equal(saved.upstreamError, undefined)
+  assert.equal(saved.execution?.operationError, undefined)
+  assert.equal(saved.billingError, undefined)
+  assert.deepEqual(saved.execution?.taskError, taskError)
+})
+
+it('waits through HTTP 429 on image submit and download without failed states or new identities', async context => {
+  const f = await fixture({ tracker: { budgetMs: 1000 } }, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+  const submit = f.gateway.submit.bind(f.gateway), content = f.gateway.content.bind(f.gateway)
+  const identities: string[] = []
+  let downloads = 0
+  context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+    identities.push(args[1].clientRequestId)
+    if (identities.length <= 2) throw new AppError('RATE_LIMITED', { diagnostic: { httpStatus: 429, headers: { 'retry-after': '1.1' } } })
+    return submit(...args)
+  })
+  context.mock.method(f.gateway, 'content', async (...args: Parameters<typeof content>) => {
+    if (++downloads <= 2) throw new AppError('RATE_LIMITED', { diagnostic: { httpStatus: 429, body: { retryAfterSeconds: 1.1 } } })
+    return content(...args)
+  })
+  const execution = f.service.generateTaskMedia('task-a', input())
+  let job: LocalMediaJob | undefined
+  await waitUntil(async () => { job = (await f.store.listJobs(owner, 'task-a'))[0]; return job?.rateLimitRetryAt !== undefined })
+  assert.equal(job?.generationStatus, 'SUBMITTING')
+  assert.notEqual(job?.saveStatus, 'SAVE_FAILED')
+  const created = await execution
+  await f.service.waitForRun('task-a', created.runId, { recoverOriginal: true, continueRecovery: true })
+  assert.equal(new Set(identities).size, 1)
+  assert.equal(identities.length, 3)
+  assert.equal(downloads, 3)
+  const saved = await f.store.getJob(owner, 'task-a', created.jobId)
+  assert.equal(saved?.saveStatus, 'SAVED')
+  assert.equal(saved?.rateLimitRetryAt, undefined)
+  assert.equal(f.gateway.calls.quote.length, 1)
+})
+
+for (const status of [400, 401, 403, 409, 422, 500, 502, 503]) it(`ends a proven image HTTP ${status} rejection without querying or blocking replay`, async context => {
+  const f = await fixture()
+  f.employee.media = { ...MOCK_MEDIA_CAPABILITIES, profiles: MOCK_MEDIA_CAPABILITIES.profiles.map(profile => ({ ...profile,
+    allowedSizes: ['1024x1024'], allowedQualities: ['medium'] })) }
+  const real = new SepRealMediaGateway({ baseUrl: 'https://sep.invalid/api', token: async () => 'test-token',
+    fetch: async () => new Response(JSON.stringify({ error: { code: 'INVALID_PARAMETER', source: 'platform', requestId: 'sep-reject',
+      message: 'Original rejection', submissionState: 'not_submitted', billingState: 'not_reserved' } }),
+    { status, headers: { 'Content-Type': 'application/json' } }) })
+  context.mock.method(f.gateway, 'submit', real.submit.bind(real))
+  context.mock.method(f.gateway, 'findReceipt', async () => assert.fail('A proven pre-reserve rejection needs no recovery'))
+  const created = await f.service.generateTaskMedia('task-a', input({ parameters: { aspectRatio: '1:1', size: '1024x1024', count: 1, quality: 'medium' } }))
+  assert.equal(created.generationStatus, 'FAILED', JSON.stringify(created.failure))
+  assert.equal(created.trackingStatus, 'STOPPED')
+  assert.equal(created.billingStatus, 'NOT_RESERVED')
+  assert.equal(created.failure?.httpStatus, status)
+  const stored = await new MediaStore(f.root).getJob(owner, 'task-a', created.jobId)
+  assert.equal(stored?.submissionFailure?.submissionState, 'not_submitted')
+  assert.match(mediaIssueMessage(created, 'image')!, /未提交.*Original rejection/)
+  await assert.rejects(f.service.waitForRun('task-a', created.runId, { recoverOriginal: true, continueRecovery: true }), error => {
+    assert.equal(runtimeFeedback(error).code, 'MEDIA_SUBMISSION_REJECTED'); return true
+  })
+  await f.service.resume('task-a', created.jobId)
+  assert.equal((await f.store.getJob(owner, 'task-a', created.jobId))?.generationStatus, 'FAILED')
+})
+
+it('ends image protocol errors while allowing independent billing reconciliation', async context => {
+  const f = await fixture()
+  const submit = f.gateway.submit.bind(f.gateway)
+  context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => ({ ...await submit(...args),
+    receiptVersion: 2, status: 'FAILED', billingStatus: 'RECONCILING', fileStatus: 'unavailable', outputs: [],
+    execution: { requestId: 'original', taskId: 'diagnostic-task', submissionStatus: 'protocol_error', generationStatus: null,
+      isFinal: null, observedAt: null, statusSource: null, operation: 'query', submissionError: { message: 'Model mismatch' },
+      submissionHttpStatus: 502, billing: { status: 'unknown', actualCostUsd: null } },
+    clientActions: { submissionFinished: true, generationFinished: true, shouldPoll: true,
+      pollPurpose: 'billing', canStartNewRequest: true, canRetryDownload: false },
+    recovery: { canQuery: true, canDownload: false, canCancel: false }, pollAfterMs: 15_000 }))
+  const created = await f.service.generateTaskMedia('task-a', input())
+  assert.equal(created.generationStatus, 'FAILED')
+  assert.equal(created.clientActions?.canStartNewRequest, true)
+  await assert.rejects(f.service.waitForRun('task-a', created.runId, { recoverOriginal: true, continueRecovery: true }), error => {
+    assert.equal(runtimeFeedback(error).code, 'MEDIA_SUBMISSION_REJECTED'); return true
+  })
+})
+
+it('preserves a proven image rejection through unknown billing recovery responses', async context => {
+  const f = await fixture({ tracker: { maxAttempts: 1 } })
+  const submit = f.gateway.submit.bind(f.gateway)
+  context.mock.method(f.gateway, 'submit', async () => { throw new AppError('SERVICE_UNAVAILABLE', { details: {
+    stage: 'image-submit', submissionState: 'not_submitted', billingState: 'unknown', submissionConfirmedNotSent: true } }) })
+  context.mock.method(f.gateway, 'findReceipt', async (subscriptionId: string, clientRequestId: string, signal: AbortSignal) => {
+    const saved = (await f.store.listJobs(owner))[0]!
+    return { ...await submit(subscriptionId, saved.request, signal), clientRequestId, status: 'SUBMISSION_UNKNOWN' }
+  })
+  const created = await f.service.generateTaskMedia('task-a', input())
+  await waitUntil(async () => (await f.store.getJob(owner, 'task-a', created.jobId))?.trackingStatus !== 'ACTIVE')
+  const stored = (await f.store.getJob(owner, 'task-a', created.jobId))!
+  assert.equal(stored.generationStatus, 'FAILED')
+  assert.equal(stored.submissionFailure?.submissionState, 'not_submitted')
+  assert.equal(stored.billingStatus, 'UNKNOWN')
+})
+
+it('continues original image polling across bounded rounds in a conversation without submitting again', { timeout: 5000 }, async () => {
+  const f = await fixture({ tracker: { maxAttempts: 1, budgetMs: 1000 } })
+  const created = await f.service.generateTaskMedia('task-a', input())
+  await f.service.waitForRun('task-a', created.runId, { recoverOriginal: true, continueRecovery: true })
+  const stored = await f.store.getJob(owner, 'task-a', created.jobId)
+  assert.equal(stored?.saveStatus, 'SAVED')
+  assert.equal(f.gateway.calls.submit.length, 1)
+  assert.equal(f.gateway.calls.quote.length, 1)
+})
+
+it('keeps finding a lost image submission beyond eight failed lookups within the shared round budget', { timeout: 5000 }, async context => {
+  const gateway = new MockMediaGateway({ initialStatus: 'SUCCEEDED' })
+  const f = await fixture({ maxAttempts: undefined, tracker: { maxDelayMs: 1 } }, gateway)
+  const submit = gateway.submit.bind(gateway), find = gateway.findReceipt.bind(gateway)
+  let lookups = 0
+  context.mock.method(gateway, 'submit', async (...args: Parameters<typeof submit>) => { await submit(...args); throw new Error('Lost response') })
+  context.mock.method(gateway, 'findReceipt', async (...args: Parameters<typeof find>) => ++lookups <= 10 ? null : find(...args))
+  const created = await f.service.generateTaskMedia('task-a', input())
+  await waitUntil(async () => (await f.store.getJob(owner, 'task-a', created.jobId))?.trackingStatus !== 'ACTIVE')
+  const stored = await f.store.getJob(owner, 'task-a', created.jobId)
+  assert.equal(lookups, 11)
+  assert.equal(stored?.saveStatus, 'SAVED')
+  assert.equal(gateway.calls.submit.length, 1)
+})
+
+it('pauses an image recovery round at its query cap without declaring generation failed', async context => {
+  const f = await fixture({ tracker: { maxAttempts: 2, budgetMs: 1000 } })
+  const job = await pendingJob(f)
+  const get = f.gateway.getReceipt.bind(f.gateway)
+  let polls = 0
+  context.mock.method(f.gateway, 'getReceipt', async (...args: Parameters<typeof get>) => {
+    polls++
+    const receipt = await get(...args)
+    return { ...receipt, status: 'RUNNING', outputs: [], pollAfterMs: 1 }
+  })
+  await f.service.resume('task-a', job.jobId)
+  await waitUntil(async () => (await f.store.getJob(owner, 'task-a', job.jobId))?.trackingStatus !== 'ACTIVE')
+  const view = (await f.service.getTaskMedia('task-a')).jobs[0]!
+  assert.equal(polls, 2)
+  assert.equal(view.generationStatus, 'RUNNING')
+  assert.equal(view.trackingStatus, 'INTERRUPTED')
+  assert.equal(view.error, 'TRACKING_LIMIT')
+})
+
+it('aborts an in-flight original image lookup at the round deadline while preserving its request', async context => {
+  const f = await fixture({ tracker: { budgetMs: 200 } })
+  const job = await pendingJob(f)
+  let aborted = false
+  context.mock.method(f.gateway, 'getReceipt', async (...args: Parameters<typeof f.gateway.getReceipt>) => {
+    const signal = args[2]
+    await delay(10_000, undefined, { signal }).catch(error => { aborted = true; throw error })
+    throw new Error('must abort')
+  })
+  await f.service.resume('task-a', job.jobId)
+  await waitUntil(async () => (await f.store.getJob(owner, 'task-a', job.jobId))?.trackingStatus !== 'ACTIVE')
+  const stored = await f.store.getJob(owner, 'task-a', job.jobId)
+  assert.equal(aborted, true)
+  assert.equal(stored?.trackingStatus, 'INTERRUPTED')
+  assert.equal(stored?.generationStatus, job.generationStatus)
+  assert.equal((await f.service.getTaskMedia('task-a')).jobs[0]?.error, 'TRACKING_LIMIT')
+})
+
+it('continues retryable original image downloads beyond three attempts in a conversation', { timeout: 5000 }, async context => {
+  const f = await fixture({ tracker: { maxDelayMs: 1 } }, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+  const content = f.gateway.content.bind(f.gateway)
+  let downloads = 0
+  context.mock.method(f.gateway, 'content', async (...args: Parameters<typeof content>) => {
+    if (++downloads <= 5) throw new AppError('RATE_LIMITED')
+    return content(...args)
+  })
+  const created = await f.service.generateTaskMedia('task-a', input())
+  await f.service.waitForRun('task-a', created.runId, { recoverOriginal: true, continueRecovery: true })
+  assert.equal((await f.store.getJob(owner, 'task-a', created.jobId))?.saveStatus, 'SAVED')
+  assert.equal(downloads, 6)
+  assert.equal(f.gateway.calls.submit.length, 1)
+})
+
+it('cancels conversation image recovery between rounds without changing the original identity', { timeout: 5000 }, async context => {
+  const f = await fixture({ tracker: { maxAttempts: 1, budgetMs: 1000 } })
+  const submit = f.gateway.submit.bind(f.gateway)
+  context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof submit>) => { await submit(...args); throw new Error('Lost response') })
+  let lookups = 0
+  context.mock.method(f.gateway, 'findReceipt', async () => { lookups++; return null })
+  const created = await f.service.generateTaskMedia('task-a', input())
+  const controller = new AbortController()
+  const waiting = f.service.waitForRun('task-a', created.runId, { recoverOriginal: true, continueRecovery: true, signal: controller.signal })
+  const rejected = assert.rejects(waiting)
+  await waitUntil(async () => lookups >= 3)
+  controller.abort(new Error('User stopped waiting'))
+  await rejected
+  await f.service.stopTask('task-a')
+  const stored = await f.store.getJob(owner, 'task-a', created.jobId)
+  assert.equal(stored?.generationStatus, 'SUBMISSION_UNKNOWN')
+  assert.equal(stored?.clientRequestId, f.gateway.calls.submit[0]?.request.clientRequestId)
+  assert.equal(f.gateway.calls.submit.length, 1)
+})
+
+it('does not restart image polling when the user explicitly stopped the original job', async context => {
+  const f = await fixture()
+  const job = await pendingJob(f)
+  await f.service.cancel('task-a', job.jobId, false)
+  context.mock.method(f.gateway, 'getReceipt', async () => assert.fail('A stopped original must not restart'))
+  await assert.rejects(f.service.waitForRun('task-a', job.runId, { recoverOriginal: true, continueRecovery: true }), error => {
+    assert.equal(runtimeFeedback(error).code, 'MEDIA_QUERY_UNAVAILABLE')
+    return true
+  })
+})
+it('receipt v2 recovers delivery without treating completed generation or pending billing as unknown', async context => {
+  const gateway = new MockMediaGateway({ initialStatus: 'SUCCEEDED' })
+  const f = await fixture({}, gateway)
+  const submit = gateway.submit.bind(gateway)
+  let original: Awaited<ReturnType<typeof submit>>
+  const evidence = (available: boolean) => ({ receiptVersion: 2 as const,
+    execution: { requestId: 'original-upstream-request', taskId: 'original-upstream-task', submissionStatus: 'accepted' as const,
+      generationStatus: 'completed' as const, isFinal: true, observedAt: Date.now(), statusSource: 'upstream' as const,
+      billing: { status: 'unknown' as const, actualCostUsd: null } },
+    fileStatus: available ? 'available' as const : 'download_failed' as const,
+    clientActions: { submissionFinished: true, generationFinished: true, shouldPoll: true,
+      pollPurpose: available ? 'billing' as const : 'delivery' as const, canStartNewRequest: true, canRetryDownload: !available } })
+  context.mock.method(gateway, 'submit', async (...args: Parameters<typeof submit>) => {
+    original = await submit(...args)
+    return { ...original, ...evidence(false), status: 'RUNNING', outputs: [], billingStatus: 'RECONCILING',
+      recovery: { canQuery: true, canDownload: false, canCancel: false }, pollAfterMs: 1 }
+  })
+  context.mock.method(gateway, 'getReceipt', async () => ({ ...original, ...evidence(true),
+    billingStatus: 'RECONCILING', recovery: { canQuery: true, canDownload: true, canCancel: false }, pollAfterMs: 15_000 }))
+  const view = await f.service.generateTaskMedia('task-a', input())
+  await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.saveStatus === 'SAVED')
+  await f.service.waitForRun('task-a', view.runId, { recoverOriginal: true })
+  const stored = await new MediaStore(f.root).getJob(owner, 'task-a', view.jobId)
+  assert.equal(stored?.generationStatus, 'SUCCEEDED')
+  assert.equal(stored?.fileStatus, 'available')
+  assert.equal(stored?.execution?.billing.actualCostUsd, null)
+  assert.equal(stored?.billingStatus, 'RECONCILING')
+  assert.notEqual(stored?.errorCode, 'OUTPUT_SPEC_MISMATCH')
+  assert.equal(gateway.calls.submit.length, 1)
+})
 const GENERATE_PREFIX = 'Create a new image from the following text description.\n\n'
 const EDIT_PREFIX = 'Edit the provided image(s) according to the following instructions.\n\n'
 
@@ -175,7 +463,7 @@ async function realFixture(initial: {
   status?: 'SUCCEEDED' | 'PARTIAL_SUCCEEDED' | 'FAILED'
   canQuery?: boolean
   lostSubmit?: boolean
-  submitRejection?: { code: string; status: number; source: string }
+  submitRejection?: { code: string; status: number; source: string; savedReceipt?: boolean }
 } = {}) {
   const state = { billingStatus: initial.billingStatus ?? 'RECONCILING', status: initial.status ?? 'SUCCEEDED',
     canQuery: initial.canQuery ?? true, queryFailure: 0, clientRequestId: '' }
@@ -216,6 +504,8 @@ async function realFixture(initial: {
           return new Response(JSON.stringify({ error: { code, type: 'invalid_request_error', upstream_status: status,
             message: 'Private upstream rejection text' } }), { status, headers: {
             'Content-Type': 'application/json', 'X-SEP-Error-Source': source, 'X-Request-Id': 'req-image-rejection',
+            ...(initial.submitRejection.savedReceipt ? { 'X-SEP-Receipt-ID': 'real-receipt',
+              'X-SEP-Client-Request-ID': state.clientRequestId, 'Retry-After': '0.05' } : {}),
           } })
         }
         return json(receipt(), 202)
@@ -240,6 +530,16 @@ async function realFixture(initial: {
 }
 
 describe('real media billing recovery and canonical sizes', () => {
+  for (const status of [403, 429, 502]) it(`recovers real SEP HTTP ${status} through the correlated receipt instead of another POST`, async () => {
+    const f = await realFixture({ billingStatus: 'SETTLED', canQuery: false,
+      submitRejection: { code: 'temporary_upstream_failure', source: 'upstream', status, savedReceipt: true } })
+    const created = await f.generate()
+    await waitUntil(async () => (await f.store.getJob(owner, 'task-a', created.jobId))?.saveStatus === 'SAVED')
+    assert.equal((await f.store.getJob(owner, 'task-a', created.jobId))?.recoveryReceiptId, 'real-receipt')
+    assert.equal(f.calls.filter(call => call.path === '/requests' && call.method === 'POST').length, 1)
+    assert.ok(f.calls.some(call => call.path === '/requests/real-receipt' && call.method === 'GET'))
+    assert.ok(!f.calls.some(call => call.path.includes('by-client-id')))
+  })
   it('rejects mismatched size and ratio before quote, approval or submission', async () => {
     const f = await realFixture({})
     await assert.rejects(f.generate({ aspectRatio: '1:1', size: '1536x1024', count: 1, quality: 'medium' }), code('INVALID_ARGUMENT'))

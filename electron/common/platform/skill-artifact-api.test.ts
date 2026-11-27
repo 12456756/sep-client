@@ -67,15 +67,11 @@ describe('skill artifact rate limit recovery', () => {
     assert.equal(calls, 2)
   })
 
-  it('backs off for 2, 4 and 8 seconds and stops after three retries', async t => {
+  it('backs off for 2, 4 and 8 seconds and keeps waiting until the original download succeeds', async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] })
     let calls = 0
-    globalThis.fetch = async () => { calls++; return new Response(null, { status: 429 }) }
-    const rejected = assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), error => {
-      assert.ok(error instanceof AuthApiError)
-      assert.equal(error.statusCode, 429)
-      return true
-    })
+    globalThis.fetch = async () => ++calls <= 3 ? new Response(null, { status: 429 }) : new Response(bytes, { headers: headers() })
+    const pending = downloadSkillArtifact('sub-1', artifact, 'access')
     await flush()
     for (const [index, delay] of [2000, 4000, 8000].entries()) {
       t.mock.timers.tick(delay - 1)
@@ -85,7 +81,7 @@ describe('skill artifact rate limit recovery', () => {
       await flush()
       assert.equal(calls, index + 2)
     }
-    await rejected
+    assert.deepEqual(await pending, bytes)
   })
 
   it('supports HTTP date retry hints without retrying before the specified time', async t => {
@@ -104,21 +100,21 @@ describe('skill artifact rate limit recovery', () => {
     assert.deepEqual(await pending, bytes)
   })
 
-  it('does not shorten excessive server hints or exceed the cumulative five minute wait budget', async t => {
+  it('waits beyond five minutes and allows cancellation without retrying early', async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] })
-    for (const hint of ['301', '9'.repeat(400)]) {
+    for (const hint of ['301', '600']) {
       let calls = 0
+      const controller = new AbortController()
       globalThis.fetch = async () => { calls++; return new Response(null, { status: 429, headers: { 'Retry-After': hint } }) }
-      await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), error => error instanceof AuthApiError && error.statusCode === 429)
+      const pending = downloadSkillArtifact('sub-1', artifact, 'access', { signal: controller.signal })
+      const rejected = assert.rejects(pending, { name: 'AbortError' })
+      await flush()
+      t.mock.timers.tick(Number(hint) * 1000 - 1)
+      await flush()
       assert.equal(calls, 1)
+      controller.abort()
+      await rejected
     }
-    let calls = 0
-    globalThis.fetch = async () => { calls++; return new Response(null, { status: 429, headers: { 'Retry-After': '180' } }) }
-    const rejected = assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), error => error instanceof AuthApiError && error.statusCode === 429)
-    await flush()
-    t.mock.timers.tick(180_000)
-    await rejected
-    assert.equal(calls, 2)
   })
 
   it('uses fallback backoff for malformed hints and does not retry a subsequent permission failure', async t => {

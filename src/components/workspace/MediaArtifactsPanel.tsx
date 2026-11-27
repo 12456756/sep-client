@@ -2,11 +2,12 @@ import { Copy, Download, ImagePlus, Image as ImageIcon, LoaderCircle, Play, Refr
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaOperation, MediaPreview, MediaProfile, MediaTaskView } from '../../shared/media'
-import { mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile } from '../../shared/media-view'
+import { mediaGenerationLabels, mediaJobGenerationLabel, mediaInputProblem, mediaJobActions, mediaJobSaveLabel, mediaSaveLabels, mediaStopTrackingMessage, mediaTrackingLabels, selectMediaProfile } from '../../shared/media-view'
+import { mediaGenerationFinished } from '../../shared/media-execution'
 import { videoRuntimeSchema } from '../../shared/video-media'
 import { imageReferenceSupport, mediaReferenceProblem } from '../../shared/media-references'
 import { VideoTaskPanel } from './VideoArtifactsPanel'
-import { mediaRetryState, type MediaJobSummary, type MediaRetryState } from '../../shared/media-retry'
+import { mediaReplayJobs, mediaRetryState, type MediaJobSummary, type MediaRetryState } from '../../shared/media-retry'
 import { useMediaParameterPreferences } from './media-preference-scope'
 import { imageRequestedSpecSchema, type ImageRequestedSpec, type MediaParameterSources } from '../../shared/media-spec-contract'
 
@@ -59,6 +60,7 @@ function failure(result: IpcCommandResult, operation: FeedbackOperation): string
 
 export function mediaTaskIssue(jobs: MediaJobView[]): string | null {
   for (const job of jobs) {
+    if (job.rateLimitRetryAt !== undefined) continue
     const message = mediaIssueMessage(job, 'image')
     if (message) return message
   }
@@ -239,8 +241,8 @@ export function MediaJobList({ jobs, archived, busy, onAction, compact = false }
     if (compact) {
       const pending = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
       if (!issue && !pending && !actions.retrySave && !actions.resumeTracking) return null
-      const label = issue || (pending ? mediaGenerationLabels[job.generationStatus as keyof typeof mediaGenerationLabels]?.label || '正在生成图片' : mediaSaveLabels[job.saveStatus].label)
-      return <div className="media-result-status" key={job.jobId} role={issue ? 'alert' : 'status'}>
+      const label = issue || (pending ? mediaGenerationLabels[job.generationStatus as keyof typeof mediaGenerationLabels]?.label || '正在生成图片' : mediaJobSaveLabel(job).label)
+      return <div className="media-result-status" key={job.jobId} role={issue && job.rateLimitRetryAt === undefined ? 'alert' : 'status'}>
         <span>{label}</span>
         <div className="media-job-actions">
           {actions.resumeTracking && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />继续</button>}
@@ -256,7 +258,7 @@ export function MediaJobList({ jobs, archived, busy, onAction, compact = false }
       {job.requestedSpec && !job.actualSpec && <small>实际规格尚未核验，请查看已保存文件的尺寸。</small>}
       <small className="media-job-id">配置 {job.profileId}{job.parameters.size ? ` · ${job.parameters.size}` : ''}{job.parameters.quality ? ` · ${job.parameters.quality}` : ''}</small>
       <small className="media-job-id">任务 {job.jobId}</small>
-      <div className="media-job-states" aria-live="polite">{[mediaGenerationLabels[job.generationStatus], mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
+      <div className="media-job-states" aria-live="polite">{[mediaJobGenerationLabel(job), mediaTrackingLabels[job.trackingStatus], mediaJobSaveLabel(job)].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
       <small>账务状态：{job.billingStatus || '未确认'}</small>
       <div className="media-job-timings">
         {queryLabel(job.lastQueriedAt) && <small>最近查询：{queryLabel(job.lastQueriedAt)}</small>}
@@ -265,9 +267,9 @@ export function MediaJobList({ jobs, archived, busy, onAction, compact = false }
       </div>
       {issue && <p className="media-notice">{issue}</p>}
       {job.trackingStatus === 'AUTH_REQUIRED' && <p className="media-notice">认证恢复后可继续跟踪原任务。</p>}
-      {job.trackingStatus === 'STOPPED' && <p className="media-notice">仅停止本地跟踪，上游可能继续生成和计费。</p>}
+      {job.trackingStatus === 'STOPPED' && !mediaGenerationFinished(job) && <p className="media-notice">{mediaStopTrackingMessage(job)}</p>}
       <div className="media-job-actions">
-        {actions.stopTracking && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'cancel', false)} title="停止本地跟踪，上游可能继续计费"><Square size={13} />停止跟踪</button>}
+        {actions.stopTracking && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'cancel', false)} title={mediaStopTrackingMessage(job)}><Square size={13} />停止跟踪</button>}
         {actions.cancelUpstream && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'cancel', true)} title="请求上游取消，不代表退款"><X size={13} />请求上游取消</button>}
         {actions.resumeTracking && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />恢复跟踪</button>}
         {actions.retrySave && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'retry')} title="重新保存原结果，不重新生成"><Download size={13} />重新保存</button>}
@@ -297,7 +299,7 @@ function imageResultFile(asset: MediaAssetView): WorkDeliverable {
   return { id: asset.localAssetId, name: `图片成果.${asset.mime.split('/')[1] || 'bin'}`, path: '', note: '', format: asset.mime.split('/')[1], sourceArtifact: { kind: 'image', artifactId: asset.localAssetId, sha256: '' } }
 }
 
-function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: MediaJobSummary) => void; presentation?: 'full' | 'results' }) {
+function MediaTaskPanel({ taskId, retryRunId, visible = true, onSummary, presentation = 'full' }: { taskId: string; retryRunId?: string | null; visible?: boolean; onSummary?: (summary: MediaJobSummary) => void; presentation?: 'full' | 'results' }) {
   const [view, setView] = useState<MediaTaskView | null>(null)
   const [videoReferenceAvailable, setVideoReferenceAvailable] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -403,7 +405,7 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
       }
     }
     if (action !== 'cancel' && action !== 'redo') { void run(action, execute); return }
-    const message = action === 'redo' ? '确认重新生成图片？本次将创建新任务，可能产生费用。' : cancelUpstream ? '确认请求平台取消此任务？取消结果以平台返回为准，不代表退款。' : '确认停止本地跟踪？平台任务可能继续生成和计费。'
+    const message = action === 'redo' ? '确认重新生成图片？本次将创建新任务，可能产生费用。' : cancelUpstream ? '确认请求平台取消此任务？取消结果以平台返回为准，不代表退款。' : `确认停止本地跟踪？${mediaStopTrackingMessage(job)}`
     void feedbackController.confirm({ key: `image-action:${taskId}:${job.jobId}:${action}:${cancelUpstream}`, message,
       actionLabel: action === 'redo' ? '重新生成' : cancelUpstream ? '请求取消' : '停止跟踪', busyLabel: '正在处理',
       onConfirm: async () => {
@@ -421,7 +423,7 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
   const outputCount = savedImageOutputCount(taskId, view, jobs, Boolean(error))
   const taskIssue = mediaTaskIssue(jobs)
   const summaryError = error || taskIssue
-  const retryState = mediaRetryState(jobs.map(job => job.generationStatus), view !== null, Boolean(error))
+  const retryState = mediaRetryState(mediaReplayJobs(jobs, retryRunId).map(job => job.generationStatus), view !== null, Boolean(error))
   useEffect(() => { onSummary?.({ outputs: outputCount, error: summaryError, retryState }) }, [onSummary, outputCount, summaryError, retryState])
   const busy = pending !== null
   const feedback = { pending }
@@ -453,7 +455,7 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
 export interface MediaArtifactsSummary { images: number | null; videos: number | null; error: string | null; retryState: MediaRetryState }
 const initialSummary: MediaJobSummary = { outputs: null, error: null, retryState: 'checking' }
 
-export function MediaArtifactsPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: MediaArtifactsSummary) => void; presentation?: 'full' | 'results' }) {
+export function MediaArtifactsPanel({ taskId, retryRunId, visible = true, onSummary, presentation = 'full' }: { taskId: string; retryRunId?: string | null; visible?: boolean; onSummary?: (summary: MediaArtifactsSummary) => void; presentation?: 'full' | 'results' }) {
   const [imageSummary, setImageSummary] = useState(initialSummary)
   const [videoSummary, setVideoSummary] = useState(initialSummary)
   const imageCount = imageSummary.outputs
@@ -462,5 +464,5 @@ export function MediaArtifactsPanel({ taskId, visible = true, onSummary, present
   const states = [imageSummary.retryState, videoSummary.retryState]
   const retryState = states.includes('unconfirmed') ? 'unconfirmed' : states.includes('unavailable') ? 'unavailable' : states.includes('checking') ? 'checking' : 'clear'
   useEffect(() => { onSummary?.({ images: imageCount, videos: videoCount, error: mediaError, retryState }) }, [imageCount, mediaError, onSummary, retryState, videoCount])
-  return <><MediaTaskPanel key={taskId} taskId={taskId} visible={visible} onSummary={setImageSummary} presentation={presentation} /><VideoTaskPanel taskId={taskId} visible={visible} onSummary={setVideoSummary} presentation={presentation} /></>
+  return <><MediaTaskPanel key={taskId} taskId={taskId} retryRunId={retryRunId} visible={visible} onSummary={setImageSummary} presentation={presentation} /><VideoTaskPanel taskId={taskId} retryRunId={retryRunId} visible={visible} onSummary={setVideoSummary} presentation={presentation} /></>
 }

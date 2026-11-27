@@ -77,7 +77,7 @@ for (const scenario of [500, 502, 503, 504, 524, 'server-15-seconds', 'backoff-r
   })
 }
 
-for (const scenario of ['recover', 'token-rotation', 'cancel', 'too-long', 'non-retryable', 'exhausted', 'next-turn'] as const) {
+for (const scenario of ['recover', 'body-hint', 'sse-rate-limit', 'token-rotation', 'cancel', 'long-wait-cancel', 'non-retryable', 'beyond-five', 'next-turn'] as const) {
   it(`real gateway: ${scenario}`, { timeout: 10000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-gateway-retry-'))
     const requests: Array<{ time: number; payload: Record<string, unknown>; authorization: string | undefined }> = []
@@ -91,16 +91,22 @@ for (const scenario of ['recover', 'token-rotation', 'cancel', 'too-long', 'non-
       request.on('end', () => {
         requests.push({ time: Date.now(), payload: JSON.parse(body) as Record<string, unknown>, authorization: request.headers.authorization })
         const count = requests.length
-        if ((['recover', 'token-rotation'].includes(scenario) && count === 2) || (scenario === 'next-turn' && count === 3)) {
+        if ((['recover', 'body-hint', 'sse-rate-limit', 'token-rotation'].includes(scenario) && count === 2) || (scenario === 'next-turn' && count >= 2)
+          || scenario === 'beyond-five' && count === 8) {
           success(response)
+          return
+        }
+        if (scenario === 'sse-rate-limit') {
+          response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+          response.end('event: error\ndata: {"httpStatus":429,"message":"Too many requests","retryAfterSeconds":0.05}\n\n')
           return
         }
         response.writeHead(429, {
           'Content-Type': 'application/json',
-          'Retry-After': scenario === 'cancel' ? '90' : scenario === 'too-long' || (scenario === 'next-turn' && count === 1) ? '301' : scenario === 'token-rotation' ? '0.3' : '0.05',
+          ...(scenario === 'body-hint' ? {} : { 'Retry-After': scenario === 'cancel' ? '90' : scenario === 'long-wait-cancel' ? '600' : scenario === 'token-rotation' ? '0.3' : '0.05' }),
           ...(scenario === 'non-retryable' ? { 'x-should-retry': 'false' } : {}),
         })
-        response.end(JSON.stringify({ error: { message: 'Too many requests', type: 'rate_limit_error' } }))
+        response.end(JSON.stringify({ error: { message: 'Too many requests', type: 'rate_limit_error', rateLimit: { retryAfterSeconds: 0.05 } } }))
       })
     })
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -115,7 +121,7 @@ for (const scenario of ['recover', 'token-rotation', 'cancel', 'too-long', 'non-
     let cancellation: ReturnType<typeof setTimeout> | undefined
     session.subscribe(event => {
       events.push(event)
-      if (scenario === 'cancel' && event.type === 'auto_retry_start') {
+      if (['cancel', 'long-wait-cancel'].includes(scenario) && event.type === 'auto_retry_start') {
         cancellation = setTimeout(() => { void session.abort() }, 20)
       }
       if (scenario === 'token-rotation' && event.type === 'auto_retry_start') {
@@ -127,7 +133,7 @@ for (const scenario of ['recover', 'token-rotation', 'cancel', 'too-long', 'non-
       await session.prompt('Hello')
       if (scenario === 'next-turn') await session.prompt('Try again')
       assert.ok(Date.now() - started < 5000, 'must not add a second 2/4/8-second wait')
-      const expected = ['recover', 'token-rotation'].includes(scenario) ? 2 : scenario === 'exhausted' ? 6 : scenario === 'next-turn' ? 3 : 1
+      const expected = ['recover', 'body-hint', 'sse-rate-limit', 'token-rotation'].includes(scenario) ? 2 : scenario === 'beyond-five' ? 8 : scenario === 'next-turn' ? 3 : 1
       assert.equal(requests.length, expected)
       for (const { payload } of requests) {
         assert.equal('max_tokens' in payload, false)
@@ -135,15 +141,15 @@ for (const scenario of ['recover', 'token-rotation', 'cancel', 'too-long', 'non-
         assert.deepEqual(payload.stream_options, { include_usage: true })
       }
       const retries = events.filter(event => event.type === 'auto_retry_start')
-      assert.equal(retries.length, scenario === 'exhausted' ? 5 : ['recover', 'token-rotation', 'cancel', 'next-turn'].includes(scenario) ? 1 : 0)
+      assert.equal(retries.length, scenario === 'beyond-five' ? 7 : ['recover', 'body-hint', 'sse-rate-limit', 'token-rotation', 'cancel', 'long-wait-cancel', 'next-turn'].includes(scenario) ? 1 : 0)
       if (scenario === 'token-rotation') {
         assert.equal(requests[0]!.authorization, 'Bearer test-token')
         assert.equal(requests[1]!.authorization, 'Bearer rotated-token')
         assert.ok(requests[1]!.time - requests[0]!.time >= 300)
         assert.equal(events.filter(event => event.type === 'agent_end').at(-1)?.failure, undefined)
       }
-      if (scenario === 'recover' || scenario === 'next-turn') {
-        const start = scenario === 'next-turn' ? 1 : 0
+      if (['recover', 'body-hint', 'sse-rate-limit', 'next-turn'].includes(scenario)) {
+        const start = 0
         assert.ok(requests[start + 1]!.time - requests[start]!.time >= 50)
         assert.equal((retries[0]!.data as { delayMs: number }).delayMs, 50)
         const endings = events.filter(event => event.type === 'agent_end')
@@ -152,8 +158,8 @@ for (const scenario of ['recover', 'token-rotation', 'cancel', 'too-long', 'non-
         assert.equal(finalMessage.message.usage.input, 20)
         assert.equal(finalMessage.message.usage.output, 2)
       }
-      if (scenario === 'too-long') {
-        assert.match(events.find(event => event.type === 'agent_end')?.failure ?? '', /300000/)
+      if (scenario === 'long-wait-cancel') {
+        assert.equal((retries[0]!.data as { delayMs: number }).delayMs, 600000)
       }
       if (scenario === 'cancel') {
         assert.equal((retries[0]!.data as { delayMs: number }).delayMs, 90000)

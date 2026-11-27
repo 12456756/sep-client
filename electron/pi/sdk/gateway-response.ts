@@ -1,5 +1,5 @@
 import { createParser } from 'eventsource-parser'
-import { readApiDiagnostic } from '../../common/platform/api-diagnostic'
+import { readApiDiagnostic, safeApiDiagnostic } from '../../common/platform/api-diagnostic'
 import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { gatewayFailureMessage, gatewaySdkErrorBody } from '../../errors/gateway-response-error'
@@ -102,8 +102,17 @@ export async function guardGatewayResponse(response: Response, options: {
             const data = nested.error ? JSON.stringify({ body: failedValue, error: nested.error }) : failedFrame
             const diagnostic = await readApiDiagnostic(new Response(data, { headers: response.headers }), 'gateway.chat', { secrets: options.secrets })
             diagnostic.httpStatus = response.status
+            const rawError = item.error ?? nested.error
+            const error = rawError && typeof rawError === 'object' ? rawError as Record<string, unknown> : {}
+            if ([item.httpStatus, item.statusCode, error.status, error.statusCode, error.httpStatus].includes(429)
+              || error.type === 'rate_limit_error' || item.type === 'rate_limit_error') {
+              diagnostic.computeStatus = 429
+              diagnostic.retryable ??= true
+              const embedded = safeApiDiagnostic({ headers: item.diagnosticHeaders ?? error.headers })
+              if (embedded?.headers) diagnostic.headers = { ...diagnostic.headers, ...embedded.headers }
+            }
             report('sse', diagnostic)
-            failure = new Error(gatewayFailureMessage(diagnostic))
+            failure = new Error(`${diagnostic.computeStatus === 429 ? '429: ' : ''}${gatewayFailureMessage(diagnostic)}`)
           } else if (failure) {
             const diagnostic = await readApiDiagnostic(new Response(null, { headers: response.headers }), 'gateway.chat', { secrets: options.secrets })
             report('incomplete', { ...diagnostic, httpStatus: response.status, message: 'SSE ended without a complete response',

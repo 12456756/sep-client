@@ -9,6 +9,7 @@ import { logger } from '../logger'
 import { AuthApiError } from './platform-api'
 import { parseRetryAfter, readApiDiagnostic, safeApiDiagnostic, transportApiDiagnostic } from './api-diagnostic'
 import type { ApiDiagnostic } from '../../../src/shared/api-diagnostic'
+import { rateLimitRetryDelay } from '../rate-limit-retry'
 
 export class KnowledgeApiError extends Error {
   readonly diagnostic: ApiDiagnostic | undefined
@@ -121,7 +122,6 @@ export class KnowledgeApi {
     let refreshed = false
     let forceRefresh = false
     let retries = 0
-    let waited = 0
     for (;;) {
       if (control.aborted) throw new KnowledgeApiError(499)
       const timeout = AbortSignal.timeout(endpoint.file ? this.options.uploadTimeoutMs ?? 60_000 : this.options.requestTimeoutMs ?? 15_000)
@@ -151,10 +151,9 @@ export class KnowledgeApi {
           if (error.isUnauthorized && !refreshed) {
             refreshed = true; forceRefresh = true; continue
           }
-          if (response.status === 429 && request.action !== 'createBase' && retries < 3) {
-            const delay = error.retryAfterMs ?? 2000 * 2 ** retries
-            if (waited + delay > 300_000) throw new KnowledgeApiError(429, 'WAIT_LIMIT_EXCEEDED', error.requestId, delay, error.diagnostic)
-            waited += delay; retries++
+          if (response.status === 429) {
+            const delay = rateLimitRetryDelay(error.diagnostic ?? {}) ?? error.retryAfterMs ?? Math.min(30_000, 2000 * 2 ** Math.min(retries, 4))
+            retries++
             await knowledgeAbortable((this.options.sleep ?? sleep)(delay, control), control)
             continue
           }

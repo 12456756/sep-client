@@ -6,6 +6,31 @@ import type { ArrangementMediaLink } from '../domain/arrangement-media'
 import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoReceiptSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 
+test('video-to-video arrangement uses video references in order and cannot fall back to text or image generation', async () => {
+  const scope = { enterpriseId: 'enterprise', memberId: 'member' }
+  const node: ArrangementNode = { id: 'node', subscriptionId: 'employee', modelId: 'model', title: 'Edit', instruction: 'Edit video', expectedOutput: 'Video', dependsOn: [], skillIds: [],
+    mediaRequirements: [{ id: 'video', kind: 'video', operation: 'video-to-video', specRevision: 1, requiredSpec: { durationSeconds: 5 }, generationMethod: 'ai-generated' }] }
+  const assets = ['video-a', 'video-b'].map(localAssetId => ({ localAssetId, taskId: 'task', name: `${localAssetId}.mp4`, mime: 'video/mp4', size: 32, sha256: 'a'.repeat(64), status: 'SAVED' }))
+  const options = { scope: { currentScope: () => scope }, getTask: async () => ({ subscriptionId: 'employee' }),
+    plans: { get: async () => ({ planHash: 'hash', nodes: [node], workspace: { path: '/workspace' } }) },
+    checkpoints: { get: async () => null }, runs: { list: async () => [] }, links: { list: async () => [] },
+    images: { listJobs: async () => [] }, assets: {}, media: {}, videoReferences: { list: async () => assets },
+  } as unknown as ArrangementMediaServiceOptions
+  const session = await new ArrangementMediaService(options).prepareNode({ taskId: 'task', arrangementRunId: 'arrangement', nodeRunId: 'run', attempt: 1, planHash: 'hash', node, signal: new AbortController().signal })
+  const calls: unknown[] = []
+  const tools = session.bind(undefined, { names: ['video_from_video', 'video_get_job'], execute: async (name, input) => {
+    calls.push({ name, input }); return { jobId: 'new-video' }
+  } }).video!
+  await tools.execute('video_from_video', { creativeBrief: 'Edit', localVideoAssetIds: ['video-b', 'video-a'] })
+  assert.equal((calls[0] as { name: string }).name, 'video_from_video')
+  const input = (calls[0] as { input: { localVideoAssetIds: string[]; localAssetIds: string[]; requestedSpec: { durationSeconds: number } } }).input
+  assert.deepEqual(input.localVideoAssetIds, ['video-b', 'video-a']); assert.deepEqual(input.localAssetIds, [])
+  assert.equal(input.requestedSpec.durationSeconds, 5)
+  await assert.rejects(tools.execute('video_from_video', { creativeBrief: 'Edit', localVideoAssetIds: ['foreign'] }), { code: 'PERMISSION_DENIED' })
+  await assert.rejects(tools.execute('video_from_video', { creativeBrief: 'Edit', localVideoAssetIds: ['video-a'], localAssetIds: ['image-a'] }), { code: 'INVALID_ARGUMENT' })
+  assert.equal(calls.length, 1)
+})
+
 async function imageFixture(operation: 'generate' | 'edit', count = 1, source = false) {
   const owner = { memberId: 'member', enterpriseId: 'enterprise' }
   const node: ArrangementNode = { id: 'node', subscriptionId: 'employee', modelId: 'model', title: 'Image', instruction: 'Image',

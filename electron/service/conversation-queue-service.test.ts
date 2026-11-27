@@ -289,9 +289,10 @@ for (const kind of ['original', 'failed message'] as const) {
     const f = await fixture()
     const owner = { memberId: 'member', enterpriseId: 'enterprise' }
     let blocked = true
-    const service = new ConversationQueueService({ ...f.options, assertReplayAllowed: async (scope, task) => {
+    const service = new ConversationQueueService({ ...f.options, assertReplayAllowed: async (scope, task, runId) => {
       assert.deepEqual(scope, owner)
       assert.equal(task.id, 'task')
+      assert.equal(runId, kind === 'original' ? 'initial' : 'original-run')
       if (blocked) throw new AppError('MEDIA_REPLAY_BLOCKED')
     } })
     try {

@@ -334,6 +334,7 @@ candidateMatches 中每项结构：
 | generate | image | 文生图，无图片输入时省略 inputFrom、inputSelection 和媒体附件绑定 |
 | edit | image | 图片编辑，必须的操作须有明确图片来源，主示例展示唯一已核验附件绑定 |
 | image-to-video | video | 图生视频，必须的操作须有明确图片来源，主示例展示前置图片交付物 |
+| video-to-video | video | 视频生视频，使用本任务已导入的参考视频，通过 video_get_job 的 referenceVideos 获取真实 ID，以 localVideoAssetIds 保留顺序，不混用参考图片 |
 | text-to-video | video | 文生视频，不填写 inputFrom，无图片输入时省略 inputSelection |
 
 - inputFrom 是单个对象，仅含 nodeId、deliverableId、artifactId，至少填写 nodeId 或 artifactId；deliverableId 不能脱离 nodeId，必须属于该前置节点，nodeId 同时写入 dependsOn。图生视频引用图片，不得伪造前置节点或资产。
