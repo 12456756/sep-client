@@ -609,3 +609,78 @@ test('recovering interrupted configuration does not automatically call a model o
     restarted.stop()
   } finally { h.stop() }
 })
+
+test('creation progress retries an interrupted conversation draft from its checkpoint without creating a second definition', async () => {
+  const h = harness()
+  const review = { signal: new AbortController().signal, receivedAt: Date.parse('2026-10-21T08:00:00Z'),
+    conversationId: 'chat', approve: async () => true }
+  try {
+    h.setPlanner(async () => { throw new Error('Interrupted') })
+    assert.equal((await h.creation.submitConversation(request, review)).status, 'failed')
+    const draft = h.data.creations![0]
+    assert.ok(draft.definitionId)
+    const retry = { ...draft.request, requestId: draft.id, expectedRevision: draft.revision, resumeFromProgress: 'retry' as const }
+    await assert.rejects(h.creation.submit({ ...retry, message: 'Different task' }), { code: 'INVALID_ARGUMENT' })
+    h.setPlanner(async () => plan)
+    const [created, replay] = await Promise.all([h.creation.submit(retry), h.creation.submit(retry)])
+    assert.equal(created.stage, 'completed')
+    assert.equal(replay.id, draft.id)
+    assert.equal(created.definitionId, draft.definitionId)
+    assert.equal(created.conversationId, 'chat')
+    assert.deepEqual(created.messages, draft.messages)
+    assert.equal(h.interpretations, 1)
+    assert.equal(h.plans, 2)
+    assert.equal(h.data.definitions.length, 1)
+    assert.equal(h.data.definitions[0].enabled, true)
+    await assert.rejects(h.creation.submit(retry), { code: 'DRAFT_REVISION_CONFLICT' })
+    assert.equal(h.launches, 0)
+  } finally { h.stop() }
+})
+
+test('creation progress can supplement conversation drafts that need input or adjustments', async () => {
+  for (const stage of ['needs_input', 'blocked'] as const) {
+    const h = harness()
+    try {
+      h.setInterpret(async () => ({ ...interpretation, status: stage,
+        questions: stage === 'needs_input' ? [{ field: 'goal', question: 'What output is needed?' }] : [],
+        reasons: stage === 'blocked' ? [{ code: 'CAPABILITY_MISMATCH', message: 'Adjust the task goal.' }] : [] }))
+      const receipt = await h.creation.submitConversation(request, { signal: new AbortController().signal, conversationId: 'chat',
+        receivedAt: Date.parse('2026-10-21T08:00:00Z'), approve: async () => assert.fail('incomplete draft must not be offered for approval') })
+      assert.equal(receipt.status, stage)
+      const draft = h.data.creations![0]
+      const message = 'Only generate a Markdown report.'
+      const supplement = { ...draft.request, requestId: draft.id, expectedRevision: draft.revision, message, resumeFromProgress: 'supplement' as const }
+      await assert.rejects(h.creation.submit({ ...supplement, expectedRevision: draft.revision - 1 }), { code: 'DRAFT_REVISION_CONFLICT' })
+      h.setInterpret(async input => {
+        assert.equal(input.fromConversation, true)
+        assert.equal(input.currentDraft?.status, stage)
+        assert.deepEqual(input.messages.map(item => item.content), [request.message, message])
+        return interpretation
+      })
+      const created = await h.creation.submit(supplement)
+      assert.equal(created.id, draft.id)
+      assert.equal(created.stage, 'completed')
+      assert.equal(created.conversationId, 'chat')
+      assert.equal(h.data.definitions.length, 1)
+      assert.equal(h.launches, 0)
+    } finally { h.stop() }
+  }
+})
+
+test('creation progress cannot take over an active conversation confirmation or resume a cancelled draft', async () => {
+  const h = harness()
+  try {
+    await h.creation.submitConversation(request, { signal: new AbortController().signal, conversationId: 'chat',
+      receivedAt: Date.parse('2026-10-21T08:00:00Z'), approve: async () => {
+        const draft = h.data.creations![0]
+        assert.equal(draft.confirmationOutcome, 'pending')
+        const retry = { ...draft.request, requestId: draft.id, expectedRevision: draft.revision, resumeFromProgress: 'retry' as const }
+        await assert.rejects(h.creation.submit(retry), { code: 'CONFLICT' })
+        return false
+      } })
+    const cancelled = h.data.creations![0]
+    await assert.rejects(h.creation.submit({ ...cancelled.request, requestId: cancelled.id, expectedRevision: cancelled.revision,
+      resumeFromProgress: 'retry' }), { code: 'INVALID_STATE' })
+    assert.equal(h.data.definitions.length, 0)
+  } finally { h.stop() }
+})

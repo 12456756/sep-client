@@ -7,7 +7,7 @@ import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterp
 import type { ScheduledTasksModel } from '../../../features/enterprise/use-scheduled-tasks'
 import { definitionLabel, recurrenceLabel, scheduledHomeGroups, scheduledTaskActions } from '../../../features/enterprise/scheduled-task-model'
 import { authorizedScheduledModels, emptyScheduledTaskDraft, SCHEDULE_EXAMPLES } from '../../../features/enterprise/scheduled-task-home'
-import type { ScheduledCreation, ScheduledCreationRequest } from '../../../shared/scheduled-creation'
+import { scheduledCreationProgressAction, type ScheduledCreation, type ScheduledCreationRequest } from '../../../shared/scheduled-creation'
 import { creationAccepted } from '../../../features/enterprise/scheduled-task-client'
 import { ScheduledExecutionFields } from './ScheduledExecutionFields'
 import { ScheduledCreationList } from './ScheduledCreationList'
@@ -52,13 +52,15 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
   const [container] = useState(() => typeof document === 'undefined' ? undefined : document.querySelector<HTMLElement>('.ent-shell') ?? undefined)
   const data = model.data
   const continuation = data?.creations?.find(item => item.id === continuationId && !item.deleted)
+  const canSupplement = continuation && scheduledCreationProgressAction(continuation) === 'supplement'
   const models = authorizedScheduledModels(workspace.myEmployees)
   const { defaultModelId } = useModelPreference()
   const settings = { ...draft.settings, modelId: continuation
     ? draft.settings.modelId || continuation.request.modelId
     : resolveTaskModel(models, defaultModelId, draft.settings.modelId) }
   const pending = model.pendingCreations ?? []
-  const parser = workspace.myEmployees.find(item => item.assignedToMe && !['unavailable', 'needs-auth'].includes(item.availability) && item.allowedModels.includes(settings.modelId))
+  const parsers = workspace.myEmployees.filter(item => item.assignedToMe && !['unavailable', 'needs-auth'].includes(item.availability) && item.allowedModels.includes(settings.modelId))
+  const parser = parsers.find(item => item.id === continuation?.request.parserSubscriptionId) ?? parsers[0]
   const awaiting = pending.some(item => item.request.requestId === continuationId || item.request.requestId === submitted.current?.requestId) || (!continuationId && pending.length > 0)
   const sending = pending.some(item => item.sending && item.request.requestId === submitted.current?.requestId)
   const files = useTextReferenceComposer({ input, value: draft.goal, update: goal => setDraft(value => ({ ...value, goal })), bindingKey: `${workspace.attachmentScopeKey}:${continuationId ?? 'new-schedule'}`, disabled: awaiting })
@@ -96,10 +98,10 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
   const submit = () => {
     if (!draft.goal.trim() || awaiting || files.blocked || !settings.workDir.trim() || !parser) return
     if (settings.permissions.preset === 'read-only') return
-    if (continuationId && (!continuation || !['needs_input', 'blocked'].includes(continuation.stage))) return
+    if (continuationId && !canSupplement) return
     const request: ScheduledCreationRequest = {
       parserSubscriptionId: parser.id,
-      requestId: continuation?.id ?? crypto.randomUUID(), ...(continuation ? { expectedRevision: continuation.revision } : {}),
+      requestId: continuation?.id ?? crypto.randomUUID(), ...(continuation ? { expectedRevision: continuation.revision, resumeFromProgress: 'supplement' as const } : {}),
       message: mention.submissionText.trim(), modelId: settings.modelId, workDir: settings.workDir.trim(), timezone: continuation?.request.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       permissions: { preset: settings.permissions.preset, approvalMode: settings.permissions.approvalMode ?? 'confirm-each' },
       ...(files.referenceFiles ? { referenceFiles: files.referenceFiles } : {}),
@@ -107,9 +109,10 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     submitted.current = request
     submittedText.current = draft.goal.trim()
     void model.submitCreation(request)
+    if (continuation) workspace.replaceRoute({ name: 'scheduled', view: 'creations' })
   }
   const resume = (creation: ScheduledCreation) => {
-    if (awaiting) return
+    if (pending.length || scheduledCreationProgressAction(creation) !== 'supplement') return
     setContinuationId(creation.id)
     setDraft(value => ({ ...value, goal: '', settings: { ...value.settings, workDir: creation.request.workDir, modelId: '', permissions: { ...creation.request.permissions } } }))
     focusComposer()
@@ -201,11 +204,13 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
       {parser && <small>描述解析：{parser.name} · {settings.modelId}</small>}
       <div className="ent-sch-home-compose-actions"><button type="button" className="ent-btn ghost sm" title="设置任务时间和产出目录" onClick={onCreate}>手动设置</button>{!models.length && <small role="status">暂无可用于解析描述的模型。</small>}</div>
       {continuation ? <div className="ent-sch-replying"><span>补充：{continuation.interpretation?.task.title ?? continuation.request.message}</span><button type="button" aria-label="退出补充" title="退出补充" disabled={awaiting} onClick={() => { setContinuationId(null); setDraft(value => ({ ...value, goal: '', settings: { ...value.settings, modelId: '' } })) }}><X size={14} /></button></div> : null}
+      {canSupplement && !!continuation.interpretation?.questions.length ? <ul className="ent-sch-creation-questions">{continuation.interpretation.questions.map((question, index) => <li key={index}>{question.question}</li>)}</ul> : null}
+      {canSupplement ? continuation.interpretation?.reasons.map(reason => <p key={reason.code} className="ent-sch-help">{reason.message}</p>) : null}
       <fieldset ref={composer} disabled={sending} className="ent-sch-composer">
         <label className="sr-only" htmlFor="schedule-home-goal">定时任务工作内容</label><FileMentionEditor mention={mention} id="schedule-home-goal" ref={input} {...mention.editorAria} rows={2} value={draft.goal} maxLength={16000} placeholder={continuation ? '补充缺少的信息…' : '安排一项定期完成的工作…'} onChange={event => mention.change(event.currentTarget, (event.nativeEvent as InputEvent).inputType)} onCompositionStart={mention.compositionStart} onCompositionEnd={event => mention.compositionEnd(event.currentTarget)} onKeyDown={event => { mention.keyDown(event); if (!event.defaultPrevented && event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); submit() } }} />
         <FileMentionChips mention={mention} />
         {(files.referenceFiles || files.error) && <div className="ent-file-reference-tools ent-sch-reference-status">{files.referenceFiles && <small>仅用于创建与补充</small>}{files.error && <span role="alert" className="ent-file-mention-error">{files.error}</span>}</div>}
-        <ScheduledExecutionFields naturalLanguage leadingAction={<FileMentionPicker mention={mention} />} value={{ ...draft, settings }} employees={workspace.myEmployees} onChange={patch => setDraft(value => ({ ...value, ...patch, settings: { ...value.settings, ...patch.settings } }))} action={<button type="submit" className="ent-sch-home-send" aria-label={continuation ? '发送补充信息' : '创建并启用定时任务'} title={continuation ? '发送补充信息' : '创建并启用'} disabled={awaiting || files.blocked || !draft.goal.trim() || !settings.workDir.trim() || !models.includes(settings.modelId)}><ArrowUp size={19} aria-hidden /></button>} onChooseFolder={async path => {
+        <ScheduledExecutionFields naturalLanguage leadingAction={<FileMentionPicker mention={mention} />} value={{ ...draft, settings }} employees={workspace.myEmployees} onChange={patch => setDraft(value => ({ ...value, ...patch, settings: { ...value.settings, ...patch.settings } }))} action={<button type="submit" className="ent-sch-home-send" aria-label={continuation ? '提交补充并继续创建' : '创建并启用定时任务'} title={continuation ? '提交补充并继续创建' : '创建并启用'} disabled={awaiting || files.blocked || !draft.goal.trim() || !settings.workDir.trim() || !models.includes(settings.modelId) || (continuationId !== null && !canSupplement)}><ArrowUp size={19} aria-hidden /></button>} onChooseFolder={async path => {
           try { const chosen = await workspace.chooseFolder(path); setError(null); return chosen }
           catch { setError('无法选择目录，请重试。'); return null }
         }} />

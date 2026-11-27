@@ -79,8 +79,9 @@ const creationRequestFields = {
   referenceFiles: referenceAttachmentSelectionSchema.optional(),
 }
 export const scheduledCreationRequestSchema = z.object({
-  requestId: z.string().uuid(), expectedRevision: z.number().int().positive().optional(), ...creationRequestFields,
-}).strict()
+  requestId: z.string().uuid(), expectedRevision: z.number().int().positive().optional(),
+  resumeFromProgress: z.enum(['retry', 'supplement']).optional(), ...creationRequestFields,
+}).strict().refine(value => !value.resumeFromProgress || value.expectedRevision !== undefined, 'Resuming requires a draft revision.')
 export type ScheduledCreationRequest = z.infer<typeof scheduledCreationRequestSchema>
 
 export const CREATE_SCHEDULED_TASK_TOOL = 'create_scheduled_task'
@@ -155,6 +156,13 @@ export function isScheduledCreationWorking(stage: ScheduledCreation['stage']): b
 
 export function isScheduledCreationFinished(stage: ScheduledCreation['stage']): boolean {
   return stage === 'completed' || stage === 'cancelled'
+}
+
+export function scheduledCreationProgressAction(creation: ScheduledCreation): ScheduledCreationRequest['resumeFromProgress'] {
+  if (creation.deleted || creation.confirmationOutcome === 'pending') return undefined
+  if (creation.stage === 'failed' || creation.stage === 'needs_confirmation') return 'retry'
+  if (creation.stage === 'needs_input' || creation.stage === 'blocked') return 'supplement'
+  return undefined
 }
 
 export interface ScheduledCreationInterpreterInput {

@@ -63,6 +63,9 @@
 .ent-sch-creation:first-of-type { padding-top: 0; }
 .ent-sch-creation > header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; }
 .ent-sch-creation > header strong { font-size: 14px; overflow-wrap: anywhere; }
+.ent-sch-creation-title { min-width: 0; padding: 0; border: 0; background: none; color: inherit; text-align: start; text-decoration: underline; text-decoration-color: var(--ent-line); text-underline-offset: 3px; }
+.ent-sch-creation-title:not(:disabled):hover, .ent-sch-creation-title:focus-visible { color: var(--ent-brand); text-decoration-color: currentColor; }
+.ent-sch-creation-title:disabled { text-decoration: none; }
 .ent-sch-creation-message { white-space: pre-wrap; font-size: var(--ent-fs-body); color: var(--ent-ink-2); margin: 10px 0; }
 .ent-sch-creation-questions { font-size: var(--ent-fs-body); line-height: 1.8; padding-left: 20px; color: var(--ent-ink); overflow-wrap: anywhere; }
 .ent-sch-creation .ent-sch-actions { margin-top: 12px; gap: 8px; align-items: flex-start; }

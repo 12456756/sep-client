@@ -1,6 +1,6 @@
 import { useId } from 'react'
 import { ArrowRight, LoaderCircle, RotateCcw, Trash2, X } from 'lucide-react'
-import { isScheduledCreationFinished, isScheduledCreationWorking, type ScheduledCreation } from '../../../shared/scheduled-creation'
+import { isScheduledCreationFinished, isScheduledCreationWorking, scheduledCreationProgressAction, type ScheduledCreation } from '../../../shared/scheduled-creation'
 import type { ScheduledTasksModel } from '../../../features/enterprise/use-scheduled-tasks'
 import { useFeedback } from '../../feedback/FeedbackProvider'
 
@@ -18,6 +18,19 @@ export function ScheduledCreationList({ model, onResume, onOpen }: {
   const deleteHintPrefix = useId()
   const creations = (model.data?.creations ?? []).filter(item => !item.deleted).sort((a, b) => b.createdAt - a.createdAt)
   const pending = model.pendingCreations ?? []
+  const continueCreation = (creation: ScheduledCreation, action: 'retry' | 'supplement') => {
+    if (action === 'supplement') { onResume(creation); return }
+    const request = { ...creation.request, requestId: creation.id, expectedRevision: creation.revision, resumeFromProgress: action }
+    if (!creation.fromConversation) { void model.submitCreation(request); return }
+    void feedback.confirm({
+      key: `resume-scheduled-creation:${creation.id}`,
+      title: '继续创建定时任务',
+      message: `按已保存的描述和设置继续创建「${creation.interpretation?.task.title ?? '定时工作'}」？创建成功后将启用调度。`,
+      actionLabel: '继续创建并启用',
+      busyLabel: '正在提交…',
+      onConfirm: async () => { void model.submitCreation(request); return { success: true } },
+    })
+  }
   const deleteRecord = (creation: ScheduledCreation) => feedback.confirm({
     key: `delete-scheduled-creation:${creation.id}`,
     message: '确认删除这条创建进度记录？已创建的定时任务和执行记录不受影响。',
@@ -42,13 +55,19 @@ export function ScheduledCreationList({ model, onResume, onOpen }: {
       const working = isScheduledCreationWorking(creation.stage)
       const terminal = isScheduledCreationFinished(creation.stage)
       const cancelling = model.cancellingCreations?.includes(creation.id)
+      const title = creation.interpretation?.task.title ?? '定时工作'
+      const action = scheduledCreationProgressAction(creation)
+      const disabled = cancelling || uncertain?.sending || (action === 'supplement' && !uncertain && pending.length > 0)
+      const resume = uncertain ? () => { void model.submitCreation(uncertain.request) }
+        : action ? () => continueCreation(creation, action) : undefined
+      const canResume = !terminal && !!resume
       const deleteHint = cancelling ? '正在取消创建，暂时无法删除。'
         : working ? '创建中暂不可删除，可等待完成或取消创建。'
           : uncertain?.sending ? '请求提交中，暂时无法删除。'
             : !terminal ? '创建尚未结束，暂不可删除。' : null
       const deleteHintId = deleteHint ? `${deleteHintPrefix}-${creation.id}` : undefined
       return <article className="ent-sch-creation" key={creation.id} aria-label={`创建任务：${creation.interpretation?.task.title ?? creation.request.message}`}>
-        <header><strong>{creation.interpretation?.task.title ?? '定时工作'}</strong><span className={`ent-sch-status ${creation.stage}`} role="status">{working ? <LoaderCircle className="ent-sch-spin" size={13} aria-hidden /> : null}{LABELS[creation.stage]}</span></header>
+        <header>{canResume ? <button type="button" className="ent-sch-creation-title" aria-label={`继续创建：${title}`} title="继续创建" disabled={disabled} onClick={resume}><strong>{title}</strong></button> : <strong>{title}</strong>}<span className={`ent-sch-status ${creation.stage}`} role="status">{working ? <LoaderCircle className="ent-sch-spin" size={13} aria-hidden /> : null}{LABELS[creation.stage]}</span></header>
         <p className="ent-sch-creation-message">{creation.messages[0]?.content}</p>
         {working ? <ol className="ent-sch-creation-steps" aria-label="创建步骤">{['理解任务', '生成计划', '启用调度'].map((label, index) => <li key={label} aria-current={index === ['parsing', 'planning', 'enabling'].indexOf(creation.stage) ? 'step' : undefined}>{label}</li>)}</ol> : null}
         {creation.messages.length > 1 ? <details><summary>已补充的信息</summary>{creation.messages.slice(1).map((message, index) => <p key={index} className="ent-sch-creation-message">{message.content}</p>)}</details> : null}
@@ -58,9 +77,8 @@ export function ScheduledCreationList({ model, onResume, onOpen }: {
         {uncertain?.error ? <p className="ent-sch-modal-error" role="alert">{uncertain.error}</p> : null}
         <footer className="ent-sch-actions">
           {creation.stage === 'completed' && creation.definitionId ? <button type="button" className="ent-btn sm" onClick={() => onOpen(creation.definitionId!)}>查看执行记录<ArrowRight size={14} /></button> : null}
-          {!creation.fromConversation && !uncertain && (creation.stage === 'needs_input' || creation.stage === 'blocked') ? <button type="button" className="ent-btn sm" onClick={() => onResume(creation)}>继续填写<ArrowRight size={14} /></button> : null}
-          {!creation.fromConversation && !terminal && (uncertain || creation.stage === 'failed') ? <button type="button" className="ent-btn sm" disabled={uncertain?.sending} onClick={() => void model.submitCreation(uncertain?.request ?? { ...creation.request, requestId: creation.id, expectedRevision: creation.revision })}><RotateCcw size={14} />重试同一请求</button> : null}
           {!terminal ? <button type="button" className="ent-btn ghost sm" disabled={cancelling} onClick={() => void model.cancelCreation(creation)}><X size={14} />{cancelling ? '正在取消…' : '取消创建'}</button> : null}
+          {canResume ? <button type="button" className="ent-btn sm" disabled={disabled} onClick={resume}>{uncertain?.sending ? <LoaderCircle size={14} className="ent-sch-spin" aria-hidden /> : uncertain || action === 'retry' ? <RotateCcw size={14} aria-hidden /> : <ArrowRight size={14} aria-hidden />}{uncertain?.sending ? '正在提交…' : '继续创建'}</button> : null}
           <div className="ent-sch-creation-delete">
             <button type="button" className="ent-btn danger ghost sm" disabled={deleteHint !== null} aria-describedby={deleteHintId} onClick={() => void deleteRecord(creation)}><Trash2 size={14} aria-hidden />删除记录</button>
             {deleteHint && <span id={deleteHintId} className="ent-sch-help">{deleteHint}</span>}

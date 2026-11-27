@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { isScheduledCreationFinished, isScheduledCreationWorking, scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput, type ConversationScheduleDraft, type ConversationScheduleReceipt, type ScheduleInterpretation } from '../../src/shared/scheduled-creation'
+import { isScheduledCreationFinished, isScheduledCreationWorking, scheduledCreationProgressAction, scheduledCreationRequestSchema, scheduleInterpretationSchema, type ScheduledCreation, type ScheduledCreationRequest, type ScheduledCreationInterpreterInput, type ConversationScheduleDraft, type ConversationScheduleReceipt, type ScheduleInterpretation } from '../../src/shared/scheduled-creation'
 import { retiredScheduledExecutionMessage, type ModelScheduledInput } from '../../src/shared/scheduled-tasks'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import type { TaskOwnerScope } from '../data/scope-path'
@@ -140,8 +140,10 @@ export class ScheduledCreationService {
   }
   private start(raw: ScheduledCreationRequest, review?: CreationReview): Promise<ScheduledCreation> {
     const request = scheduledCreationRequestSchema.parse(raw), scope = this.scope(), generation = this.generation
-    const { requestId, expectedRevision, ...input } = request
-    const submission = review ? ['conversation', input, ...(expectedRevision === undefined ? [] : [expectedRevision])] : input
+    const { requestId, expectedRevision, resumeFromProgress, ...input } = request
+    if (review && resumeFromProgress) throw new AppError('INVALID_ARGUMENT')
+    const submission = resumeFromProgress ? ['creation-progress', resumeFromProgress, expectedRevision, input]
+      : review ? ['conversation', input, ...(expectedRevision === undefined ? [] : [expectedRevision])] : input
     const submissionKey = createHash('sha256').update(JSON.stringify(review?.draftAction || review?.legacySource
       ? [submission, review.draftAction, review.legacySource?.id] : review?.candidate ? [submission, review.candidate] : submission)).digest('hex')
     const key = this.key(scope, requestId), running = this.operations.get(key)
@@ -158,7 +160,7 @@ export class ScheduledCreationService {
     return promise
   }
   private async run(scope: TaskOwnerScope, generation: number, request: ScheduledCreationRequest, submissionKey: string, controller: AbortController, review?: CreationReview): Promise<ScheduledCreation> {
-    const { requestId, expectedRevision, ...submitted } = request
+    const { requestId, expectedRevision, resumeFromProgress, ...submitted } = request
     const proposal = review?.candidate && scheduleInterpretationSchema.parse(review.candidate)
     const retry = review?.continuation === 'review' ? conversationScheduleRetry(submitted.message) : undefined
     const clock = retry?.clock ?? (review && expectedRevision !== undefined ? conversationScheduleClock(submitted.message) : undefined)
@@ -166,19 +168,30 @@ export class ScheduledCreationService {
     if (review && expectedRevision !== undefined && ((!clock && !retry && !proposal && !review.draftAction) || submitted.referenceFiles)) throw new AppError('INVALID_ARGUMENT')
     const signal = review ? AbortSignal.any([controller.signal, review.signal]) : controller.signal
     const guard = () => { this.assertScope(scope, generation); signal.throwIfAborted() }
-    const prior = submitted.referenceFiles ? (await this.options.repository.read(scope)).creations?.find(item => item.id === requestId) : undefined
+    const referenceFiles = resumeFromProgress === 'retry' ? undefined : submitted.referenceFiles
+    const prior = referenceFiles ? (await this.options.repository.read(scope)).creations?.find(item => item.id === requestId) : undefined
     guard()
     const message = { role: 'user' as const, content: submitted.message, receivedAt: review?.receivedAt ?? this.now() }
-    if (submitted.referenceFiles && prior?.submissionKey !== submissionKey && !this.options.attachments) throw new AppError('SERVICE_UNAVAILABLE')
-    const referenceMaterials = submitted.referenceFiles && prior?.submissionKey !== submissionKey
-      ? await this.options.attachments!.referenceMaterials(scope, submitted.referenceFiles) : undefined
+    if (referenceFiles && prior?.submissionKey !== submissionKey && !this.options.attachments) throw new AppError('SERVICE_UNAVAILABLE')
+    const referenceMaterials = referenceFiles && prior?.submissionKey !== submissionKey
+      ? await this.options.attachments!.referenceMaterials(scope, referenceFiles) : undefined
     const messageWithReferences = referenceMaterials ? { ...message, referenceMaterials } : message
     let record = await this.options.repository.update(scope, data => {
       guard()
       const records = data.creations ??= []
       const existing = records.find(item => item.id === requestId)
       if (existing) {
-        if (!!existing.fromConversation !== !!review || existing.conversationId && existing.conversationId !== review?.conversationId) throw new AppError('INVALID_STATE')
+        if (resumeFromProgress) {
+          if (existing.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
+          if (scheduledCreationProgressAction(existing) !== resumeFromProgress) throw new AppError('INVALID_STATE')
+          if (resumeFromProgress === 'retry') {
+            // Replay the checkpoint without adding a duplicate user message or discarding the saved plan input.
+            if (JSON.stringify(existing.request) !== JSON.stringify(submitted)) throw new AppError('INVALID_ARGUMENT')
+            existing.stage = 'parsing'; existing.error = null; delete existing.confirmationOutcome
+            existing.revision++; existing.updatedAt = this.now()
+            return existing
+          }
+        } else if (!!existing.fromConversation !== !!review || existing.conversationId && existing.conversationId !== review?.conversationId) throw new AppError('INVALID_STATE')
         if (existing.submissionKey === submissionKey) return existing
         if (existing.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
         if (existing.deleted || ['completed', 'cancelled'].includes(existing.stage)) throw new AppError('INVALID_STATE', { message: '本次创建已结束，请从任务详情修改配置，或新建任务。' })
@@ -210,6 +223,7 @@ export class ScheduledCreationService {
     })
     this.assertScope(scope, generation)
     if (record.deleted || ['completed', 'cancelled', 'needs_input', 'needs_confirmation', 'blocked'].includes(record.stage)) return record
+    submissionKey = record.submissionKey
     const input = record.request
     const change = async (mutate: (item: ScheduledCreation) => void) => {
       guard()
@@ -237,7 +251,7 @@ export class ScheduledCreationService {
       if (record.parsedSubmissionKey !== submissionKey || !previousDraft) {
         await change(item => { item.stage = 'parsing'; item.error = null })
         const previous = clock ? previousDraft : null
-        const preserve = previousDraft && (actionTime || retry || review?.draftAction || record.confirmationOutcome &&
+        const preserve = previousDraft && (actionTime || retry || review?.draftAction || review && record.confirmationOutcome &&
           previousDraft.questions.every(question => question.field === 'schedule'))
         let parsed = preserve ? (actionTime ? applyConversationScheduleTime(previousDraft, actionTime) ?? timeOnly(previousDraft)
           : clock ? reviseConversationScheduleClock(previousDraft, clock)
@@ -248,7 +262,7 @@ export class ScheduledCreationService {
           const timeout = setTimeout(() => controller.abort(), 45000)
           try {
             const result = await withTimeout(this.options.interpret({ subscriptionId: planningEmployee.subscriptionId, modelId: input.modelId,
-              ...(review ? { fromConversation: true } : {}),
+              ...(record.fromConversation ? { fromConversation: true } : {}),
               referenceNow: record.referenceNow, timezone: input.timezone, employeeCatalog: catalog,
               currentDraft: previousDraft, messages: review?.legacySource ? record.messages.slice(0, 1) : record.messages }, signal), 45000, 'scheduled-creation-interpretation')
             guard()
@@ -277,7 +291,7 @@ export class ScheduledCreationService {
       }
       const candidate = scheduleInterpretationSchema.parse(record.interpretation)
       if (candidate.status === 'ready' && requestsRestrictedWindowsSchedulePath(input.permissions,
-        ...(review ? record.messages.map(message => message.content) : [input.message]), candidate.task.goal ?? '', ...candidate.task.deliverables)) {
+        ...(record.fromConversation ? record.messages.map(message => message.content) : [input.message]), candidate.task.goal ?? '', ...candidate.task.deliverables)) {
         await change(item => {
           item.stage = 'blocked'
           item.interpretation = { ...candidate, status: 'blocked', questions: [],
