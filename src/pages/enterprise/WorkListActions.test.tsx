@@ -102,9 +102,11 @@ function mount(overrides: Partial<Props> = {}, writeText: (text: string) => Prom
     pending.forEach(run => run())
   }
   const click = (label: string) => { const element = find(e => e.type === 'button' && e.props.children === label || e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes(label)); (element.props.onClick as () => void)() }
+  const menuLabels = () => elements.filter(element => element.props.role === 'menuitem')
+    .map(element => React.Children.toArray(element.props.children as React.ReactNode).filter(part => typeof part === 'string').join(''))
   const submit = () => { (find(e => e.type === 'form').props.onSubmit as (event: unknown) => void)({ preventDefault() {} }) }
   render()
-  return { props, menu, dialog, input, trigger, previousRow, nextRow, list, search, doc, items, listeners, find, render, click, submit, copied, notices, cleanup() {
+  return { props, menu, dialog, input, trigger, previousRow, nextRow, list, search, doc, items, listeners, find, render, click, menuLabels, submit, copied, notices, cleanup() {
     feedbackActive = false
     effects.forEach(effect => effect.cleanup?.())
     if (oldWindow === undefined) Reflect.deleteProperty(globalThis, 'window'); else Reflect.set(globalThis, 'window', oldWindow)
@@ -158,12 +160,8 @@ test('menu enables scheduling for confirmed arrangements and targets the origina
   const calls: string[] = []
   const ui = mount({ onRetry: async id => { calls.push(id) } })
   try {
-    const menu = ui.find(e => e.props.role === 'menu')
-    const labels = React.Children.toArray(menu.props.children as React.ReactNode)
-      .flatMap(child => React.isValidElement<{ children: React.ReactNode }>(child) ? React.Children.toArray(child.props.children) : [])
-      .filter((child): child is React.ReactElement<{ children: React.ReactNode }> => React.isValidElement(child) && child.props.role === 'menuitem')
-      .map(child => React.Children.toArray(child.props.children).filter(part => typeof part === 'string').join(''))
-    assert.deepEqual(labels, ['置顶', '重命名', '重新执行', '加入定时任务', '删除'])
+    assert.deepEqual(ui.menuLabels(), ['置顶', '重命名', '重新执行', '加入定时任务', '删除'])
+    assert.equal(ui.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('重新执行')).props.disabled, false)
     assert.equal(ui.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('加入定时任务')).props.disabled, false)
     ui.click('重新执行'); await tick()
     assert.deepEqual(calls, ['a'])
@@ -172,8 +170,11 @@ test('menu enables scheduling for confirmed arrangements and targets the origina
   const scheduled: WorkItem[] = []
   const enabled = mount({ onSchedule: work => scheduled.push(work) })
   try { enabled.click('加入定时任务'); assert.equal(scheduled[0]?.id, 'a'); assert.equal(enabled.props.request, null) } finally { enabled.cleanup() }
-  const conversation = mount({ works: [{ ...work, workType: { state: 'resolved', kind: 'conversation' } }] })
-  try { assert.equal(conversation.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('加入定时任务')).props.disabled, true) } finally { conversation.cleanup() }
+})
+
+test('conversation menu omits retry and scheduling', () => {
+  const ui = mount({ works: [{ ...work, kind: 'conversation', workType: { state: 'resolved', kind: 'conversation' } }] })
+  try { assert.deepEqual(ui.menuLabels(), ['置顶', '重命名', '删除']) } finally { ui.cleanup() }
 })
 
 test('retry is disabled while the workspace is busy or the work is active', () => {
@@ -181,7 +182,6 @@ test('retry is disabled while the workspace is busy or the work is active', () =
     { busy: true },
     { works: [{ ...work, status: 'running' as const, isActive: true }] },
     { works: [{ ...work, status: 'arranging' as const }] },
-    { works: [{ ...work, kind: 'conversation' as const, workType: { state: 'resolved' as const, kind: 'conversation' as const } }] },
     { works: [{ ...work, workType: { state: 'unavailable' as const } }] },
   ]) {
     const ui = mount(props)

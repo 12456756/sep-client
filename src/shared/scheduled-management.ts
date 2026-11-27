@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { isValidCron } from './cron-schedule'
 import { employeeScheduleInputSchema, recurrenceSchema, scheduleTimeRequestSchema, workScheduleTimingSchema } from './scheduled-tasks'
+import { scheduledTaskGroups } from './scheduled-task-state'
 
 export const UPDATE_SCHEDULED_TASK_TOOL = 'update_scheduled_task'
 export const DELETE_SCHEDULED_TASK_TOOL = 'delete_scheduled_task'
@@ -41,7 +42,9 @@ export const updateScheduledTaskToolSchema = z.union([partialUpdateSchema,
 export const deleteScheduledTaskToolSchema = z.object({ target, expectedRevision: revision.optional() }).strict()
 const page = { offset: z.number().int().min(0).max(100000).optional(), limit: z.number().int().min(1).max(25).optional() }
 const query = z.discriminatedUnion('view', [
-  z.object({ view: z.literal('tasks'), ...page, search: title.optional(), includeDeleted: z.boolean().optional() }).strict(),
+  z.object({ view: z.literal('tasks'), ...page, search: title.optional(), includeDeleted: z.boolean().optional(),
+    group: z.enum(scheduledTaskGroups).optional()
+      .describe('Match the sidebar group: disabled (未启用), enabled (已启用), or history (历史记录). Use group and read total for counts; do not count enabled=false. History includes deleted tasks unless includeDeleted=false; ungrouped queries exclude them by default.') }).strict(),
   z.object({ view: z.literal('task'), target, includeGoal: z.literal(true).optional() }).strict(),
   z.object({ view: z.literal('runs'), target, ...page }).strict(),
   z.object({ view: z.literal('run'), runId: id }).strict(),

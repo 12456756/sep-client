@@ -79,8 +79,9 @@ const creationRequestFields = {
   referenceFiles: referenceAttachmentSelectionSchema.optional(),
 }
 export const scheduledCreationRequestSchema = z.object({
-  requestId: z.string().uuid(), expectedRevision: z.number().int().positive().optional(), ...creationRequestFields,
-}).strict()
+  requestId: z.string().uuid(), expectedRevision: z.number().int().positive().optional(),
+  resumeFromProgress: z.enum(['retry', 'supplement']).optional(), ...creationRequestFields,
+}).strict().refine(value => !value.resumeFromProgress || value.expectedRevision !== undefined, 'Resuming requires a draft revision.')
 export type ScheduledCreationRequest = z.infer<typeof scheduledCreationRequestSchema>
 
 export const CREATE_SCHEDULED_TASK_TOOL = 'create_scheduled_task'
@@ -101,10 +102,15 @@ const conversationScheduleCandidate = scheduleInterpretationFields.transform(can
   return candidate.status === 'needs_input' && candidate.questions.length && candidate.reasons.every(reason => reason.code === 'MISSING_INFORMATION')
     ? { ...candidate, reasons: [] } : candidate
 }).pipe(scheduleInterpretationSchema)
+const sourceTurnSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/)
+const sourceTurnsSchema = z.array(sourceTurnSchema).min(1).max(19).refine(ids => new Set(ids).size === ids.length)
 export const conversationScheduleToolInput = z.object({
-  action: z.enum(['new', 'resume']).optional().describe('Use resume for a clarification, correction or request to create the pending task. Use new only for a separate new task.'),
+  action: z.enum(['new', 'resume', 'restart']).optional().describe('Use resume for an explicit follow-up to a scheduling request, with or without a saved draft. Use restart only as an unchanged saved-draft shortcut, and new for a separate explicit task.'),
   candidate: conversationScheduleCandidate.optional().describe('The full task draft assembled from the relevant user turns, with explicit corrections applied.'),
-}).strict().refine(value => !!value.action === !!value.candidate, 'Provide both action and candidate, or use the legacy empty input.')
+  sourceTurns: sourceTurnsSchema.optional().describe('For resume, cite the IDs of the relevant prior user messages from the host-provided scheduling context. Do not cite unrelated tasks or invent IDs.'),
+}).strict().refine(value => (value.action === 'new' || value.action === 'resume') === !!value.candidate,
+  'Provide a candidate for new or resume only. Restart uses the saved draft; legacy empty input is also accepted.')
+  .refine(value => !value.sourceTurns || value.action === 'resume', 'Only resume can cite prior user turns.')
 export type ConversationScheduleToolInput = z.infer<typeof conversationScheduleToolInput>
 export const conversationScheduleApprovalSchema = z.object({
   title: z.string().min(1).max(160), goal: textSchema, timezone: timezoneSchema,
@@ -112,8 +118,9 @@ export const conversationScheduleApprovalSchema = z.object({
 }).strict()
 export const conversationScheduleReceiptSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('pending') }).strict(),
+  z.object({ status: z.literal('needs_context'), message: z.string().min(1).max(4000) }).strict(),
   z.object({ status: z.literal('created'), id: z.string().min(1).max(128), title: z.string().min(1).max(160),
-    nextRunAt: timestampSchema, timezone: timezoneSchema, draft: conversationScheduleDraftSchema.optional() }).strict(),
+    nextRunAt: timestampSchema, timezone: timezoneSchema, draft: conversationScheduleDraftSchema.optional(), sourceTurns: sourceTurnsSchema.optional() }).strict(),
   z.object({ status: z.literal('needs_input'), message: z.string().min(1).max(4000), draft: conversationScheduleDraftSchema.optional(), timeOnly: z.literal(true).optional() }).strict(),
   z.object({ status: z.literal('needs_confirmation'), message: z.string().min(1).max(4000), draft: conversationScheduleDraftSchema }).strict(),
   z.object({ status: z.literal('choose_draft'), message: z.string().min(1).max(4000), drafts: z.array(z.object({
@@ -123,8 +130,12 @@ export const conversationScheduleReceiptSchema = z.discriminatedUnion('status', 
   z.object({ status: z.enum(['blocked', 'failed', 'cancelled']), message: z.string().min(1).max(4000) }).strict(),
 ])
 export type ConversationScheduleReceipt = z.infer<typeof conversationScheduleReceiptSchema>
+export function formatScheduleLocalTime(timestamp: number, timezone: string): string {
+  return new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23' }).format(timestamp)
+}
+
 export function formatScheduleReceiptTime(timestamp: number, timezone: string): string {
-  return `${new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short', hourCycle: 'h23' }).format(timestamp)} (${timezone})`
+  return `${formatScheduleLocalTime(timestamp, timezone)} (${timezone})`
 }
 
 export const scheduledCreationSchema = z.object({
@@ -132,6 +143,7 @@ export const scheduledCreationSchema = z.object({
   fromConversation: z.literal(true).optional(),
   conversationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   conversationTurnId: z.string().uuid().optional(),
+  contextSourceTurns: sourceTurnsSchema.optional(),
   reissuedFrom: z.string().uuid().optional(),
   confirmationOutcome: z.enum(['pending', 'timeout', 'dismissed', 'interrupted']).optional(),
   deleted: z.literal(true).optional(),
@@ -151,6 +163,13 @@ export function isScheduledCreationWorking(stage: ScheduledCreation['stage']): b
 
 export function isScheduledCreationFinished(stage: ScheduledCreation['stage']): boolean {
   return stage === 'completed' || stage === 'cancelled'
+}
+
+export function scheduledCreationProgressAction(creation: ScheduledCreation): ScheduledCreationRequest['resumeFromProgress'] {
+  if (creation.deleted || creation.confirmationOutcome === 'pending') return undefined
+  if (creation.stage === 'failed' || creation.stage === 'needs_confirmation') return 'retry'
+  if (creation.stage === 'needs_input' || creation.stage === 'blocked') return 'supplement'
+  return undefined
 }
 
 export interface ScheduledCreationInterpreterInput {

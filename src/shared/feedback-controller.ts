@@ -7,6 +7,13 @@ export interface FeedbackNotice {
 
 type ConfirmationAction = (value: string, checked: boolean) => Promise<{ success: boolean; message?: string }>
 
+interface FeedbackReview {
+  factsTitle: string
+  facts: readonly { label: string; value: string }[]
+  detailsTitle: string
+  sections: readonly { title: string; text: string }[]
+}
+
 export interface FeedbackConfirmation {
   title?: string
   message: string
@@ -21,6 +28,7 @@ export interface FeedbackConfirmation {
   checkboxRequired?: boolean
   cancelLabel?: string
   cancelPlacement?: 'corner' | 'footer'
+  review?: FeedbackReview
 }
 
 export interface FeedbackItem {
@@ -41,6 +49,7 @@ export interface FeedbackItem {
   checkbox?: { label: string; checked: boolean }
   checkboxRequired?: boolean
   validationMessage?: string
+  review?: FeedbackReview
 }
 
 export function isFeedbackConfirmationBlocked(item: FeedbackItem): boolean {
@@ -87,7 +96,7 @@ export class FeedbackController {
     this.queue.push({
       item: { id: ++this.nextId, key, message: confirmation.message, title: confirmation.title,
         tone: 'confirm', busy: false, actionLabel: confirmation.actionLabel, busyLabel: confirmation.busyLabel,
-        cancelLabel: confirmation.cancelLabel, cancelPlacement: confirmation.cancelPlacement,
+        cancelLabel: confirmation.cancelLabel, cancelPlacement: confirmation.cancelPlacement, review: confirmation.review,
         input: confirmation.input ? { ...confirmation.input } : undefined,
         alternateLabel: confirmation.alternate?.label, alternateBusyLabel: confirmation.alternate?.busyLabel,
         checkboxRequired: confirmation.checkboxRequired,
@@ -98,7 +107,7 @@ export class FeedbackController {
     return promise
   }
 
-  ask = (input: { message: string; actionLabel: string; key?: string; signal?: AbortSignal; alternate?: FeedbackConfirmation['alternate'] }): Promise<boolean> => {
+  ask = (input: Pick<FeedbackConfirmation, 'title' | 'message' | 'actionLabel' | 'key' | 'alternate' | 'review'> & { signal?: AbortSignal }): Promise<boolean> => {
     const { signal, ...confirmation } = input
     const promise = this.confirm({ ...confirmation, busyLabel: input.actionLabel })
     const entry = this.queue.find(item => item.promise === promise)

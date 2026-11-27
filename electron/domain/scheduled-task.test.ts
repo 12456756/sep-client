@@ -39,7 +39,7 @@ test('employee planner accepts a bounded file contract, never a replacement empl
   assert.equal(parseEmployeePlan(JSON.stringify(value)).status, 'ready')
   assert.throws(() => parseEmployeePlan(JSON.stringify({ ...value, subscriptionId: 'other' })))
   assert.throws(() => parseEmployeePlan(JSON.stringify({ ...value, deliverables: [{ ...value.deliverables[0], path: '../report.md' }] })))
-  assert.equal(parseEmployeePlan(JSON.stringify({ status: 'blocked', reasons: ['Missing source file'] })).status, 'blocked')
+  assert.throws(() => parseEmployeePlan(JSON.stringify({ status: 'blocked', reasons: ['External permissions unverified'] })))
 })
 
 test('only explicit transient pre-execution failures permit automatic retries', () => {

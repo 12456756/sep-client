@@ -1,5 +1,7 @@
 import type { ScheduledDefinition, ScheduledOccurrence, ScheduledRunStatus } from '../../shared/scheduled-tasks'
+import { scheduledTaskStateLabels, terminalScheduledRuns, type ScheduledTaskState } from '../../shared/scheduled-task-state'
 export { localDateTime, scheduledInstant } from '../../shared/zoned-time'
+export { terminalScheduledRuns as TERMINAL_RUNS } from '../../shared/scheduled-task-state'
 
 export const RUN_LABELS: Record<ScheduledRunStatus, string> = {
   pending: '等待执行', preparing: '检查执行条件', launching: '正在启动', running: '正在执行',
@@ -7,27 +9,9 @@ export const RUN_LABELS: Record<ScheduledRunStatus, string> = {
   review: '需要核查', cancelling: '正在停止', completed: '已完成', failed: '执行失败',
   cancelled: '已取消', timed_out: '已超时', missed: '已错过',
 }
-export const TERMINAL_RUNS = new Set<ScheduledRunStatus>(['completed', 'failed', 'cancelled', 'timed_out', 'missed'])
 
-export function definitionLabel(definition: ScheduledDefinition, inHistory = false): string {
-  if (definition.deleted) return '已删除'
-  if (inHistory) return '已结束'
-  return definition.enabled ? '已启用' : definition.pausedAt != null ? '已暂停' : definition.plan ? '未启用' : '草稿'
-}
-
-export function scheduledHomeGroups(definitions: ScheduledDefinition[], occurrences: ScheduledOccurrence[]): { active: ScheduledDefinition[]; paused: ScheduledDefinition[]; pending: ScheduledDefinition[]; history: ScheduledDefinition[] } {
-  const unfinished = new Set(occurrences.filter(run => !TERMINAL_RUNS.has(run.status)).map(run => run.definitionId))
-  const executed = new Set(occurrences.map(run => run.definitionId))
-  const active: ScheduledDefinition[] = [], paused: ScheduledDefinition[] = [], pending: ScheduledDefinition[] = [], history: ScheduledDefinition[] = []
-  for (const item of definitions) {
-    if (item.deleted) { history.push(item); continue }
-    if (!item.enabled && item.pausedAt != null) paused.push(item)
-    else if (item.enabled || unfinished.has(item.id)) active.push(item)
-    else if (executed.has(item.id)) history.push(item)
-    else pending.push(item)
-  }
-  const latest = (a: ScheduledDefinition, b: ScheduledDefinition) => b.updatedAt - a.updatedAt
-  return { active: active.sort(latest), paused: paused.sort(latest), pending: pending.sort(latest), history: history.sort(latest) }
+export function definitionLabel(status: ScheduledTaskState): string {
+  return status.state === 'executing' ? RUN_LABELS[status.runStatus] : scheduledTaskStateLabels[status.state]
 }
 
 type ScheduledTaskAction = 'edit' | 'pause' | 'resume' | 'history' | 'reschedule' | 'archive'
@@ -43,7 +27,7 @@ export function scheduledTaskActions(definition: ScheduledDefinition, runs: read
 }): { id: ScheduledTaskAction; disabledReason?: string }[] {
   if (definition.deleted) return [{ id: 'history' }]
   const busyReason = busy ? '正在处理操作，请稍后再试。' : undefined
-  const active = runs.some(run => !TERMINAL_RUNS.has(run.status))
+  const active = runs.some(run => !terminalScheduledRuns.has(run.status))
   const editReason = busyReason ?? (active ? '请先处理或停止当前执行。' : undefined)
   const actions: ReturnType<typeof scheduledTaskActions> = inHistory
     ? [{ id: 'history' }, { id: 'reschedule', disabledReason: editReason }]
@@ -72,7 +56,7 @@ export function recurrenceLabel(definition: ScheduledDefinition): string {
 }
 
 export function runActions(status: ScheduledRunStatus): ('inspect' | 'acknowledge' | 'check' | 'cancel')[] {
-  if (TERMINAL_RUNS.has(status)) return ['inspect']
+  if (terminalScheduledRuns.has(status)) return ['inspect']
   if (status === 'review') return ['inspect', 'acknowledge', 'cancel']
   if (status === 'blocked' || status === 'waiting_auth') return ['inspect', 'check', 'cancel']
   return status === 'cancelling' ? ['inspect'] : ['inspect', 'cancel']

@@ -4,6 +4,7 @@ import { logger, type LogFields } from '../common/logger'
 import { planningErrorFields, type PlanningPhase } from '../errors/planning-diagnostics'
 import { AppError } from '../errors/app-error'
 import { scheduledDeliveryPlanningRules } from '../domain/scheduled-task'
+import { scheduledAssessmentPlanningRule } from '../domain/scheduled-assessment'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import {
   parseArrangementPlannerOutput,
@@ -216,7 +217,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
         })
         try {
           validateSettledResponse(response)
-          plannedResult = parseArrangementPlannerOutput(response.text, draft, employees, nextPhase)
+          plannedResult = parseArrangementPlannerOutput(response.text, draft, employees, nextPhase, input.scheduledDelivery)
         } catch (error) {
           validationError = error
           if (!(error instanceof AppError) || error.code !== 'PLANNING_FAILED' ||
@@ -359,7 +360,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       sessionDir: this.options.getSessionDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'sessions'),
       additionalSkillPaths: this.options.additionalSkillPaths ? [...this.options.additionalSkillPaths] : undefined,
       transformSystemPrompt: systemRules ? () => systemRules : scheduledDelivery
-        ? prompt => `${transformArrangementPlannerSystemPrompt(prompt)}\n\n【定时编排补充协议】\n${scheduledDeliveryPlanningRules}`
+        ? prompt => `${transformArrangementPlannerSystemPrompt(prompt)}\n\n【定时编排补充协议】\n${scheduledDeliveryPlanningRules}\n${scheduledAssessmentPlanningRule}`
         : transformArrangementPlannerSystemPrompt,
       toolPolicy: {
         ...PLANNER_POLICY,

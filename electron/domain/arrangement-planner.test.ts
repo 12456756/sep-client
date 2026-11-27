@@ -56,6 +56,23 @@ describe('authorized candidate node binding', () => {
   })
 })
 
+it('keeps advisory assessment only for scheduled plans without changing executable nodes', () => {
+  const scheduledDraft = { ...draft, goal: '生成接待报告并发送给张三' }
+  const nodes = [{ id: 'node-1', stepId: 'step-1', subscriptionId: authorized.subscriptionId, modelId: 'model-a',
+    title: '接待报告', instruction: '生成接待报告并发送给张三', expectedOutput: '接待报告', dependsOn: [],
+    deliverables: [{ id: 'report', name: '接待报告', format: 'md', path: 'deliverables/report.md',
+      contentOutline: ['接待事项'], acceptanceCriteria: ['包含接待事项'] }] }]
+  const file = { kind: 'file', title: '生成接待报告', source: '生成接待报告', nodeId: 'node-1', deliverableId: 'report' }
+  const send = { kind: 'external', title: '发送报告', source: '发送给张三', target: '张三', includesFile: true }
+  const raw = { title: '报告', intentAnalysis, nodes }
+  const baseline = parseArrangementPlannerOutput(JSON.stringify(raw), scheduledDraft, [authorized])
+  const withAssessment = { ...raw, assessmentItems: [file, send, { ...file, nodeId: 'wrong-node' }, { ...send, target: '李四' }] }
+  assert.deepEqual(parseArrangementPlannerOutput(JSON.stringify(withAssessment), scheduledDraft, [authorized]), baseline)
+  assert.deepEqual(parseArrangementPlannerOutput(JSON.stringify(withAssessment), scheduledDraft, [authorized], undefined, true),
+    { ...baseline, assessmentItems: [file, send] })
+  assert.deepEqual(parseArrangementPlannerOutput(JSON.stringify({ ...raw, assessmentItems: { invalid: true } }), scheduledDraft, [authorized], undefined, true), baseline)
+})
+
 describe('arrangement recommendation output contract', () => {
   for (const source of ['enterprise', 'platform'] as const) {
     const candidate: ArrangementPlannerEmployee = {

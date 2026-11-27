@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { scheduledIssueSchema as issue, scheduleInputSchema, scheduledActionResultSchema, scheduledOperationSchema, scheduledWorkSourceSchema, type ScheduledDefinition, type ScheduledSnapshot } from '../../shared/scheduled-tasks'
+import { scheduledIssueSchema as issue, scheduleInputSchema, scheduledActionResultSchema, scheduledAssessmentItemsSchema, scheduledOperationSchema, scheduledWorkSourceSchema, type ScheduledDefinition, type ScheduledSnapshot } from '../../shared/scheduled-tasks'
 import type { IpcCommandResult } from '../../shared/ipc'
 import { scheduledCreationSchema, type ScheduledCreation, type ScheduledCreationRequest } from '../../shared/scheduled-creation'
 
@@ -7,9 +7,10 @@ const time = z.number().int().nonnegative()
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const deliverables = z.array(z.object({ id: z.string(), name: z.string(), format: z.string(), path: z.string(), contentOutline: z.array(z.string()), acceptanceCriteria: z.array(z.string()) })).min(1)
 const plan = z.union([
-  z.object({ status: z.literal('ready'), kind: z.literal('employee').optional(), objective: z.string().min(1), instruction: z.string().min(1), expectedOutput: z.string().min(1), deliverables }),
+  z.object({ status: z.literal('ready'), kind: z.literal('employee').optional(), objective: z.string().min(1), instruction: z.string().min(1), expectedOutput: z.string().min(1), deliverables, assessmentItems: scheduledAssessmentItemsSchema }),
   z.object({ status: z.literal('ready'), kind: z.literal('arrangement'), title: z.string().min(1),
     source: scheduledWorkSourceSchema.optional(),
+    assessmentItems: scheduledAssessmentItemsSchema,
     nodes: z.array(z.object({ id, subscriptionId: id, modelId: z.string().min(1), title: z.string(), objective: z.string().optional(), instruction: z.string(), expectedOutput: z.string(), deliverables,
       dependsOn: z.array(id), skillIds: z.array(z.string()), requiresUserConfirmation: z.boolean(), stepId: z.string().optional() })).min(1).max(32),
     intentAnalysis: z.object({ summary: z.string(), steps: z.array(z.object({ id: z.string(), title: z.string(), requiredCapabilities: z.array(z.string()), requiredCapabilityIds: z.array(z.string()).optional(), dependsOn: z.array(z.string()) })) }).nullable(),

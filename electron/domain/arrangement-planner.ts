@@ -3,6 +3,8 @@ import { planningContractFailure, planningFailure, planningFieldFailure, type Pl
 import { arrangementMediaKindForFormat, arrangementNodeWorkContractSchema, validateArrangementDraft, type ArrangementCandidateMatch, type ArrangementDraft, type ArrangementIntentAnalysis, type ArrangementNode, type ArrangementUnresolvedStep } from './arrangement-plan'
 import { normalizePlannerMediaContract } from './arrangement-planner-media'
 import type { ArrangementMediaTools } from './arrangement-media-availability'
+import type { ScheduledAssessmentItem } from '../../src/shared/scheduled-tasks'
+import { parseScheduledAssessment } from './scheduled-assessment'
 
 export interface ArrangementPlannerCapability {
   id: string
@@ -67,6 +69,7 @@ export interface ArrangementPlanningResult {
   intentAnalysis?: ArrangementIntentAnalysis
   unresolvedSteps?: ArrangementUnresolvedStep[]
   candidateMatches?: ArrangementCandidateMatch[]
+  assessmentItems?: ScheduledAssessmentItem[]
 }
 
 export type ArrangementPlannerDraft = ArrangementDraft & {
@@ -128,6 +131,7 @@ export function parseArrangementPlannerOutput(
   draft: ArrangementPlannerDraft,
   employees: readonly ArrangementPlannerEmployee[],
   onPhase?: (phase: PlanningPhase) => void,
+  scheduledDelivery?: boolean,
 ): ArrangementPlanningResult {
   onPhase?.('json-extraction')
   const json = extractJson(raw)
@@ -233,12 +237,14 @@ export function parseArrangementPlannerOutput(
   }
   onPhase?.('dag-validation')
   try { validateArrangementDraft(planned) } catch (error) { throw planningFailure('dag-validation', 'invalid-draft', error) }
+  const assessmentItems = scheduledDelivery ? parseScheduledAssessment(record.assessmentItems, draft.goal, nodes) : undefined
   return {
     title: planned.title,
     nodes: structuredClone(nodes),
     ...(intentAnalysis ? { intentAnalysis: structuredClone(intentAnalysis) } : {}),
     ...(unresolvedSteps.length ? { unresolvedSteps: structuredClone(unresolvedSteps) } : {}),
     ...(candidateMatches.length ? { candidateMatches: structuredClone(candidateMatches) } : {}),
+    ...(assessmentItems ? { assessmentItems } : {}),
   }
 }
 

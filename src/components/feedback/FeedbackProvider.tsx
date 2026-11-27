@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog'
-import { AlertCircle, CheckCircle2, TriangleAlert, X } from 'lucide-react'
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { AlertCircle, CheckCircle2, ListChecks, TriangleAlert, X } from 'lucide-react'
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { FeedbackController, isFeedbackConfirmationBlocked, type FeedbackItem } from '../../shared/feedback-controller'
 
 const FeedbackContext = createContext<FeedbackController | null>(null)
@@ -15,7 +15,35 @@ export function useFeedback(): FeedbackController {
   return controller
 }
 
+function FeedbackReview({ item, review }: { item: FeedbackItem; review: NonNullable<FeedbackItem['review']> }) {
+  const factsId = useId()
+  const detailsId = useId()
+  return <>
+    <header className="feedback-review-header">
+      <span className="feedback-review-icon"><ListChecks size={19} aria-hidden /></span>
+      <div>
+        <Dialog.Title className="feedback-title">{item.title}</Dialog.Title>
+        <Dialog.Description className="feedback-review-subject">{item.message}</Dialog.Description>
+      </div>
+    </header>
+    <div className="feedback-review-body">
+      <section className="feedback-review-facts" aria-labelledby={factsId} tabIndex={0}>
+        <h3 id={factsId}>{review.factsTitle}</h3>
+        <dl>{review.facts.map(({ label, value }) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+      </section>
+      <section className="feedback-review-details" aria-labelledby={detailsId} tabIndex={0}>
+        <h3 id={detailsId}>{review.detailsTitle}</h3>
+        {review.sections.map(section => <div className="feedback-review-section" key={section.title}>
+          <h4>{section.title}</h4>
+          <p>{section.text}</p>
+        </div>)}
+      </section>
+    </div>
+  </>
+}
+
 function FeedbackDialog({ controller, item }: { controller: FeedbackController; item: FeedbackItem }) {
+  const content = useRef<HTMLDivElement>(null)
   const cancel = useRef<HTMLButtonElement>(null)
   const acknowledge = useRef<HTMLButtonElement>(null)
   const input = useRef<HTMLInputElement>(null)
@@ -47,11 +75,15 @@ function FeedbackDialog({ controller, item }: { controller: FeedbackController; 
   return <Dialog.Root open onOpenChange={open => { if (!open) controller.dismiss(item.id) }}>
     <Dialog.Portal container={host}>
       <Dialog.Overlay className="feedback-overlay" />
-      <Dialog.Content className={`feedback-dialog feedback-${item.tone}`} onInteractOutside={event => event.preventDefault()}
+      <Dialog.Content ref={content} className={`feedback-dialog feedback-${item.tone}${item.review ? ' feedback-review' : ''}`} onInteractOutside={event => event.preventDefault()}
         onClick={event => event.stopPropagation()}
         onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }}
         onEscapeKeyDown={event => { event.preventDefault(); event.stopPropagation(); if (!item.busy) controller.dismiss(item.id) }}
-        onOpenAutoFocus={event => { event.preventDefault(); (cancel.current ?? acknowledge.current ?? input.current)?.focus() }}
+        onOpenAutoFocus={event => {
+          event.preventDefault()
+          if (item.review) content.current?.focus({ preventScroll: true })
+          else (cancel.current ?? acknowledge.current ?? input.current)?.focus()
+        }}
         onCloseAutoFocus={event => {
           event.preventDefault()
           if (controller.getSnapshot()) return
@@ -62,21 +94,23 @@ function FeedbackDialog({ controller, item }: { controller: FeedbackController; 
         {item.tone === 'confirm' && item.cancelPlacement === 'corner' &&
           <button ref={cancel} type="button" className="feedback-corner-close" aria-label="关闭弹窗" title="关闭弹窗"
             disabled={item.busy} onClick={() => controller.dismiss(item.id)}><X size={16} aria-hidden /></button>}
-        <Icon className="feedback-status" size={24} aria-hidden />
-        <div className="feedback-copy">
-          <Dialog.Title className={item.title ? 'feedback-title' : 'feedback-sr-only'}>{item.title ?? (item.tone === 'success' ? '操作成功' : item.tone === 'confirm' ? '操作确认' : '提醒')}</Dialog.Title>
-          <Dialog.Description className="feedback-description">{item.message}</Dialog.Description>
-          {item.input && <label className="feedback-field">{item.input.label}<input ref={input} value={item.input.value} maxLength={item.input.maxLength} placeholder={item.input.placeholder} disabled={item.busy}
-            aria-invalid={Boolean(item.validationMessage)} aria-describedby={item.validationMessage ? 'feedback-validation' : undefined}
-            onChange={event => controller.setInput(item.id, event.target.value)} /></label>}
-          {item.validationMessage && <p id="feedback-validation" className="feedback-validation" role="alert">{item.validationMessage}</p>}
-          {item.checkbox && <label className="feedback-checkbox"><input type="checkbox" checked={item.checkbox.checked} required={item.checkboxRequired} disabled={item.busy}
-            onChange={event => controller.setChecked(item.id, event.target.checked)} />{item.checkbox.label}</label>}
-        </div>
+        {item.review ? <FeedbackReview item={item} review={item.review} /> : <>
+          <Icon className="feedback-status" size={24} aria-hidden />
+          <div className="feedback-copy">
+            <Dialog.Title className={item.title ? 'feedback-title' : 'feedback-sr-only'}>{item.title ?? (item.tone === 'success' ? '操作成功' : item.tone === 'confirm' ? '操作确认' : '提醒')}</Dialog.Title>
+            <Dialog.Description className="feedback-description">{item.message}</Dialog.Description>
+            {item.input && <label className="feedback-field">{item.input.label}<input ref={input} value={item.input.value} maxLength={item.input.maxLength} placeholder={item.input.placeholder} disabled={item.busy}
+              aria-invalid={Boolean(item.validationMessage)} aria-describedby={item.validationMessage ? 'feedback-validation' : undefined}
+              onChange={event => controller.setInput(item.id, event.target.value)} /></label>}
+            {item.validationMessage && <p id="feedback-validation" className="feedback-validation" role="alert">{item.validationMessage}</p>}
+            {item.checkbox && <label className="feedback-checkbox"><input type="checkbox" checked={item.checkbox.checked} required={item.checkboxRequired} disabled={item.busy}
+              onChange={event => controller.setChecked(item.id, event.target.checked)} />{item.checkbox.label}</label>}
+          </div>
+        </>}
         <footer className="feedback-actions">
           {item.tone === 'confirm' ? <>
             {item.cancelPlacement !== 'corner' &&
-              <button ref={cancel} type="button" disabled={item.busy} onClick={() => controller.dismiss(item.id)}>{item.cancelLabel ?? '取消'}</button>}
+              <button ref={cancel} type="button" className="feedback-cancel" disabled={item.busy} onClick={() => controller.dismiss(item.id)}>{item.cancelLabel ?? '取消'}</button>}
             {item.alternateLabel && <button type="button" disabled={confirmDisabled} onClick={() => void controller.accept(item.id, 'alternate')}>
               {item.activeAction === 'alternate' ? item.alternateBusyLabel : item.alternateLabel}</button>}
             <button type="button" className="feedback-primary" disabled={confirmDisabled} onClick={() => void controller.accept(item.id)}>{item.activeAction === 'primary' ? item.busyLabel : item.actionLabel}</button>

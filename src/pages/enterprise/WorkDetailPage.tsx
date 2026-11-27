@@ -23,6 +23,7 @@ import { FileMentionEditor } from '../../components/enterprise/attachments/FileM
 import { useTextReferenceComposer } from '../../components/enterprise/attachments/use-text-reference-composer';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import { useScheduledTasks } from '../../features/enterprise/use-scheduled-tasks';
+import { ScheduledAssessment } from '../../components/enterprise/scheduled/ScheduledAssessment';
 import { RUN_LABELS, TERMINAL_RUNS } from '../../features/enterprise/scheduled-task-model';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
@@ -222,6 +223,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             </div>
           </section>}
 
+          {scheduledRun && <ScheduledAssessment run={scheduledRun} execution={work.arrangementExecution} scopeKey={workspace.attachmentScopeKey} inline />}
           {isConversation ? <section className="ent-chat-panel" aria-label="工作对话">
             <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} mediaRetryState={mediaSummary.retryState} onSkippedChange={setConversationSkipped} addFileRef={addToConversation} />
           </section> : <ArrangementTranscript work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey}

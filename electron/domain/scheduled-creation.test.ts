@@ -101,6 +101,8 @@ test('fixed creation prompt specifies the full contract and isolates catalog, dr
   for (const value of ['referenceNow', String(now), '2026-10-21T00:00:00.000Z', 'Asia/Shanghai', 'chosen-model', 'researcher', 'currentDraft', 'needs_input', 'UNSUPPORTED_SCHEDULE', 'MODEL_NOT_ALLOWED', 'localDateTime', 'deliverables', 'permissions', 'untrusted', 'five-field', 'DST']) assert.ok(prompt.includes(value), value)
   assert.match(prompt, /no employee is specified, default to general/)
   assert.match(prompt, /Do not ask the user to choose an employee or execution mode/)
+  assert.match(prompt, /External connections, account permissions, tool availability and business-object matches are checked when the job runs/)
+  assert.match(prompt, /Do not block creation or ask for clarification solely to verify those conditions/)
   assert.match(prompt, /needs_input requires empty reasons/)
   assert.match(prompt, /blocked requires empty questions/)
   assert.match(prompt, /Use the user's language/)

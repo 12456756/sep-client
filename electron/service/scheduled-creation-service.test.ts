@@ -1,9 +1,10 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import type { ScheduledSnapshot, EmployeeWorkPlan } from '../../src/shared/scheduled-tasks'
+import type { ScheduledSnapshot, EmployeeWorkPlan, ModelScheduledInput } from '../../src/shared/scheduled-tasks'
 import { scheduleInterpretationSchema, scheduledCreationSchema, type ScheduledCreationInterpreterInput, type ScheduledCreationRequest, type ScheduleInterpretation } from '../../src/shared/scheduled-creation'
 import type { ScheduledRepository } from '../data/scheduled-task-store'
 import { WriteChain } from '../data/write-chain'
+import { PiEmployeePlanner } from '../runtime/pi-employee-planner'
 import { ScheduledTaskService } from './scheduled-task-service'
 import { ScheduledCreationService } from './scheduled-creation-service'
 import { AppError } from '../errors/app-error'
@@ -28,7 +29,7 @@ function harness() {
   let now = Date.parse('2026-10-21T08:00:00Z')
   let interpretations = 0, plans = 0, launches = 0
   let interpret: (input: ScheduledCreationInterpreterInput) => Promise<ScheduleInterpretation> = async () => interpretation
-  let planner: () => Promise<EmployeeWorkPlan> = async () => plan
+  let planner: (input: ModelScheduledInput, employee: unknown, signal: AbortSignal, grantId?: string) => Promise<EmployeeWorkPlan> = async () => plan
   let validate: () => Promise<void> = async () => undefined
   let fault: 'before-enable' | 'after-enable' | null = null
   const writes = new WriteChain()
@@ -46,7 +47,7 @@ function harness() {
   const scopes = { currentScope: () => scope }
   const schedules = new ScheduledTaskService({ repository, scope: scopes, now: () => now, employee: async () => ({}),
     authorizeModel: async modelId => { assert.equal(modelId, 'model'); return { subscriptionId: 'sub' } },
-    planner: async () => { plans++; return planner() },
+    planner: async (...args) => { plans++; return planner(...args) },
     arrangementPlanner: async () => ({ status: 'ready', kind: 'arrangement', title: 'Report', intentAnalysis: null,
       nodes: [{ id: 'work', subscriptionId: 'sub', modelId: 'model', title: 'Report', instruction: plan.instruction,
         expectedOutput: plan.expectedOutput, deliverables: plan.deliverables, dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }),
@@ -95,6 +96,44 @@ test('a general report borrows model authorization and enables without binding a
     assert.equal(h.data.definitions[0].enabled, true)
     assert.equal(h.data.definitions[0].input.mode, 'general')
     assert.equal(h.data.definitions[0].input.subscriptionId, undefined)
+  } finally { h.stop() }
+})
+
+test('conversation enables a scheduled report and send without verifying the external connection', async () => {
+  const h = harness()
+  const goal = '读取钉钉 AI 表格「销售1」，生成统计文档，再发给胡锐。'
+  const workPlan = { ...plan, instruction: `${goal} 执行时检查连接和权限，唯一匹配表格和收件人后再操作；条件不满足则记录未执行。` }
+  const candidate: ScheduleInterpretation = { ...interpretation, task: { ...interpretation.task, goal,
+    deliverables: ['销售1统计文档', '发给胡锐并记录发送结果'], execution: { mode: 'general', subscriptionId: null } } }
+  let confirmations = 0, corrections = 0
+  const planner = new PiEmployeePlanner({ gatewayUrl: 'http://invalid', workspaceRoot: 'planning', getRefreshToken: () => 'test', onAuthenticationRequired() {},
+    createWorker: options => ({
+      async run() {
+        assert.equal(options.context.disableTools, true)
+        assert.ok(options.context.fixedSystemPrompt?.includes(goal))
+        assert.match(options.context.fixedSystemPrompt ?? '', /把这些检查安排在实际执行时/)
+        const correction = await options.onResponseSettled?.({ text: JSON.stringify({ status: 'blocked', reasons: ['当前未提供已连接且获授权的钉钉业务工具。'] }), stopReason: 'stop' })
+        assert.match(correction?.continueWith ?? '', /permission, tool availability and target checks in the execution instructions/)
+        corrections++
+        assert.equal(await options.onResponseSettled?.({ text: JSON.stringify(workPlan), stopReason: 'stop' }), undefined)
+      }, async abort() {}, async dispose() {},
+    }),
+  })
+  const signal = new AbortController().signal
+  h.setPlanner((...args) => planner.plan(...args))
+  try {
+    const receipt = await h.creation.submitConversation({ ...request, message: `每天九点${goal}` }, {
+      candidate, conversationId: 'chat', receivedAt: Date.parse('2026-10-21T08:00Z'), signal,
+      approve: async input => { confirmations++; assert.ok(input.goal.includes(goal)); return true },
+    })
+    assert.equal(receipt.status, 'created')
+    assert.equal(confirmations, 1)
+    assert.equal(corrections, 1)
+    assert.equal(h.interpretations, 0)
+    assert.equal(h.launches, 0)
+    assert.equal(h.data.definitions[0].enabled, true)
+    assert.equal(h.data.definitions[0].connectorRevision, null)
+    assert.deepEqual(h.data.definitions[0].plan, workPlan)
   } finally { h.stop() }
 })
 
@@ -336,6 +375,96 @@ test('legacy cancellation is reissued as a new draft only from verified same-con
   } finally { h.stop() }
 })
 
+test('restart selects only verified discarded drafts, with precedence for the immediately preceding discard', async () => {
+  const h = harness()
+  const signal = new AbortController().signal, receivedAt = Date.parse('2026-10-21T08:00:00Z')
+  const context = { signal, receivedAt, conversationId: 'chat' }
+  const ids = ['22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']
+  const command = { ...request, requestId: ids[2]!, message: '重启这个草稿，并把时间改为17:15' }
+  const forbidden = async () => assert.fail('no approval is allowed without a verified target')
+  try {
+    const createDiscarded = async (requestId: string, conversationId: string, title: string) => {
+      const result = await h.creation.submitConversation({ ...request, requestId }, { ...context, conversationId,
+        candidate: { ...interpretation, task: { ...interpretation.task, title } }, approve: async () => 'dismissed' })
+      assert.equal(result.status, 'needs_confirmation')
+      const discarded = await h.creation.submitConversation(command, { ...context, conversationId, approve: forbidden,
+        draftAction: { kind: 'discard', draft: result.draft } })
+      assert.equal(discarded.status, 'discarded')
+      return discarded.draft
+    }
+    const first = await createDiscarded(request.requestId, 'chat', 'First report')
+    const second = await createDiscarded(ids[0]!, 'chat', 'Second report')
+    const unrelated = await createDiscarded(ids[1]!, 'other-chat', 'Other report')
+    const restart = { ...context, continuation: 'restart' as const, approve: forbidden }
+    const before = structuredClone(h.data)
+    const choice = await h.creation.submitConversation(command, restart)
+    assert.equal(choice.status, 'choose_draft')
+    assert.deepEqual(choice.drafts.map(item => item.draft), [first, second])
+    assert.equal(choice.time, '17:15')
+    for (const precedingDiscard of [unrelated, { ...second, revision: second.revision - 1 }]) {
+      assert.equal((await h.creation.submitConversation(command, { ...restart, precedingDiscard })).status, 'blocked')
+    }
+    assert.deepEqual(h.data, before)
+    const result = await h.creation.submitConversation(command, { ...restart, precedingDiscard: second, approve: async input => {
+      assert.equal(input.name, 'Second report')
+      assert.equal(input.recurrence?.frequency === 'cron' && input.recurrence.expression, '15 17 * * *')
+      assert.deepEqual(h.data.definitions, [])
+      return 'timeout'
+    } })
+    assert.equal(result.status, 'needs_confirmation')
+    assert.deepEqual(h.data.creations!.slice(0, 3), before.creations)
+    assert.equal(h.data.creations![3]!.reissuedFrom, second.id)
+    assert.deepEqual(await h.creation.submitConversation(command, { ...restart, precedingDiscard: second }), result)
+    assert.equal(h.interpretations, 0)
+  } finally { h.stop() }
+})
+
+test('restart preserves an elapsed one-time task and asks only for a new execution time', async () => {
+  const h = harness()
+  const receivedAt = Date.parse('2026-10-21T08:00:00Z')
+  const context = { signal: new AbortController().signal, receivedAt, conversationId: 'chat' }
+  const candidate: ScheduleInterpretation = { ...interpretation, task: { ...interpretation.task,
+    schedule: { kind: 'once', timezone: 'UTC', localDateTime: '2026-10-21T09:00', expression: null, description: null } } }
+  const command = { ...request, requestId: '22222222-2222-4222-8222-222222222222', message: '重启这个草稿' }
+  const forbidden = async () => assert.fail('an elapsed schedule must not request approval')
+  try {
+    const source = await h.creation.submitConversation(request, { ...context, candidate, approve: async () => 'dismissed' })
+    assert.equal(source.status, 'needs_confirmation')
+    await h.creation.cancel(source.draft.id, source.draft.revision)
+    h.advance(Date.parse('2026-10-21T10:00:00Z'))
+    const result = await h.creation.submitConversation(command, { ...context, continuation: 'restart', approve: forbidden })
+    assert.equal(result.status, 'needs_input')
+    assert.equal(result.timeOnly, true)
+    assert.match(result.message, /执行时间已过/)
+    assert.deepEqual(h.data.creations![1]!.interpretation?.task, candidate.task)
+    assert.deepEqual(h.data.definitions, [])
+    assert.equal(h.interpretations, 0)
+  } finally { h.stop() }
+})
+
+test('a draftless one-time proposal that expires during approval does not persist a task or a draft', async () => {
+  const h = harness()
+  const receivedAt = Date.parse('2026-10-21T08:00:00Z')
+  const task: ScheduleInterpretation['task'] = { ...interpretation.task,
+    schedule: { kind: 'once', timezone: 'UTC', localDateTime: '2026-10-21T09:00', expression: null, description: null } }
+  try {
+    const result = await h.creation.submitConversation({ ...request, message: '按前面的要求创建' }, {
+      signal: new AbortController().signal, receivedAt, conversationId: 'chat', continuation: 'contextual',
+      contextSources: [{ id: 'original', content: request.message, receivedAt }], candidate: { ...interpretation, task },
+      approve: async () => {
+        assert.deepEqual(h.data.creations ?? [], [])
+        h.advance(Date.parse('2026-10-21T09:00:00Z'))
+        return true
+      },
+    })
+    assert.equal(result.status, 'needs_input')
+    assert.equal(result.timeOnly, true)
+    assert.equal(result.draft, undefined)
+    assert.deepEqual(h.data, { definitions: [], occurrences: [] })
+    assert.equal(h.plans, 0)
+  } finally { h.stop() }
+})
+
 test('clarification continues the same persisted creation and automatic mode reuses arrangement planning', async () => {
   const h = harness()
   try {
@@ -568,5 +697,80 @@ test('recovering interrupted configuration does not automatically call a model o
     assert.equal(h.plans, 1)
     assert.equal(h.launches, 0)
     restarted.stop()
+  } finally { h.stop() }
+})
+
+test('creation progress retries an interrupted conversation draft from its checkpoint without creating a second definition', async () => {
+  const h = harness()
+  const review = { signal: new AbortController().signal, receivedAt: Date.parse('2026-10-21T08:00:00Z'),
+    conversationId: 'chat', approve: async () => true }
+  try {
+    h.setPlanner(async () => { throw new Error('Interrupted') })
+    assert.equal((await h.creation.submitConversation(request, review)).status, 'failed')
+    const draft = h.data.creations![0]
+    assert.ok(draft.definitionId)
+    const retry = { ...draft.request, requestId: draft.id, expectedRevision: draft.revision, resumeFromProgress: 'retry' as const }
+    await assert.rejects(h.creation.submit({ ...retry, message: 'Different task' }), { code: 'INVALID_ARGUMENT' })
+    h.setPlanner(async () => plan)
+    const [created, replay] = await Promise.all([h.creation.submit(retry), h.creation.submit(retry)])
+    assert.equal(created.stage, 'completed')
+    assert.equal(replay.id, draft.id)
+    assert.equal(created.definitionId, draft.definitionId)
+    assert.equal(created.conversationId, 'chat')
+    assert.deepEqual(created.messages, draft.messages)
+    assert.equal(h.interpretations, 1)
+    assert.equal(h.plans, 2)
+    assert.equal(h.data.definitions.length, 1)
+    assert.equal(h.data.definitions[0].enabled, true)
+    await assert.rejects(h.creation.submit(retry), { code: 'DRAFT_REVISION_CONFLICT' })
+    assert.equal(h.launches, 0)
+  } finally { h.stop() }
+})
+
+test('creation progress can supplement conversation drafts that need input or adjustments', async () => {
+  for (const stage of ['needs_input', 'blocked'] as const) {
+    const h = harness()
+    try {
+      h.setInterpret(async () => ({ ...interpretation, status: stage,
+        questions: stage === 'needs_input' ? [{ field: 'goal', question: 'What output is needed?' }] : [],
+        reasons: stage === 'blocked' ? [{ code: 'CAPABILITY_MISMATCH', message: 'Adjust the task goal.' }] : [] }))
+      const receipt = await h.creation.submitConversation(request, { signal: new AbortController().signal, conversationId: 'chat',
+        receivedAt: Date.parse('2026-10-21T08:00:00Z'), approve: async () => assert.fail('incomplete draft must not be offered for approval') })
+      assert.equal(receipt.status, stage)
+      const draft = h.data.creations![0]
+      const message = 'Only generate a Markdown report.'
+      const supplement = { ...draft.request, requestId: draft.id, expectedRevision: draft.revision, message, resumeFromProgress: 'supplement' as const }
+      await assert.rejects(h.creation.submit({ ...supplement, expectedRevision: draft.revision - 1 }), { code: 'DRAFT_REVISION_CONFLICT' })
+      h.setInterpret(async input => {
+        assert.equal(input.fromConversation, true)
+        assert.equal(input.currentDraft?.status, stage)
+        assert.deepEqual(input.messages.map(item => item.content), [request.message, message])
+        return interpretation
+      })
+      const created = await h.creation.submit(supplement)
+      assert.equal(created.id, draft.id)
+      assert.equal(created.stage, 'completed')
+      assert.equal(created.conversationId, 'chat')
+      assert.equal(h.data.definitions.length, 1)
+      assert.equal(h.launches, 0)
+    } finally { h.stop() }
+  }
+})
+
+test('creation progress cannot take over an active conversation confirmation or resume a cancelled draft', async () => {
+  const h = harness()
+  try {
+    await h.creation.submitConversation(request, { signal: new AbortController().signal, conversationId: 'chat',
+      receivedAt: Date.parse('2026-10-21T08:00:00Z'), approve: async () => {
+        const draft = h.data.creations![0]
+        assert.equal(draft.confirmationOutcome, 'pending')
+        const retry = { ...draft.request, requestId: draft.id, expectedRevision: draft.revision, resumeFromProgress: 'retry' as const }
+        await assert.rejects(h.creation.submit(retry), { code: 'CONFLICT' })
+        return false
+      } })
+    const cancelled = h.data.creations![0]
+    await assert.rejects(h.creation.submit({ ...cancelled.request, requestId: cancelled.id, expectedRevision: cancelled.revision,
+      resumeFromProgress: 'retry' }), { code: 'INVALID_STATE' })
+    assert.equal(h.data.definitions.length, 0)
   } finally { h.stop() }
 })

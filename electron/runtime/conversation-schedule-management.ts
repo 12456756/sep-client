@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { cronPreview } from '../../src/shared/cron-schedule'
 import { scheduledInstant } from '../../src/shared/zoned-time'
+import { groupScheduledTasks, indexScheduledRuns, scheduledTaskState } from '../../src/shared/scheduled-task-state'
 import { DELETE_SCHEDULED_TASK_TOOL, UPDATE_SCHEDULED_TASK_TOOL, SCHEDULE_QUERY_TOOL, SCHEDULE_READ_TOOLS, SCHEDULE_SOURCE_TOOL, SCHEDULE_TIME_TOOL, scheduleManagementSchemas, type ConversationScheduleManagement, type ScheduleActionApproval, type ScheduleManagementApproval, type ScheduleManagementReceipt, type ScheduleManagementRequest } from '../../src/shared/scheduled-management'
 import { formatScheduleReceiptTime } from '../../src/shared/scheduled-creation'
 import { retiredScheduledExecutionMessage, scheduleInputSchema, type ScheduleInput, type ScheduledDefinition, type ScheduledOccurrence, type ScheduledSnapshot, type ScheduledWorkPlan } from '../../src/shared/scheduled-tasks'
@@ -22,6 +23,7 @@ interface Options extends ScheduleManagementServices {
   signal: AbortSignal
   isCurrent(): boolean
   conversationIds(): Promise<ReadonlySet<string>>
+  hasUncreatedConversationSchedule?: boolean
   approve(tool: ScheduleManagementRequest['tool'], input: ScheduleManagementApproval): Promise<boolean>
   approveAction?(tool: ScheduleManagementRequest['tool'], input: ScheduleActionApproval): Promise<boolean>
   now?: () => number
@@ -38,6 +40,10 @@ export function bindConversationScheduleManagement(options: Options): Conversati
       guard()
       const request = { ...rawRequest, input: scheduleManagementSchemas[rawRequest.tool].parse(rawRequest.input) } as ScheduleManagementRequest
       if (options.readOnly && !SCHEDULE_READ_TOOLS.has(request.tool)) throw new AppError('INVALID_STATE', { message: '当前对话仅允许查询定时任务。' })
+      if (options.hasUncreatedConversationSchedule && request.tool === UPDATE_SCHEDULED_TASK_TOOL && 'fromConversation' in request.input.target &&
+        !('inspect' in request.input && request.input.inspect)) {
+        return { status: 'needs_input', message: '会话中还有未创建的定时安排。请先确认要修改已创建的任务，还是继续未创建的安排。' }
+      }
       const operationSignal = signal ? AbortSignal.any([signal, options.signal]) : options.signal
       const lookup = async (target: ScheduleTarget, snapshot?: ScheduledSnapshot, allowDeleted = false) => {
         const ids = 'fromConversation' in target ? await options.conversationIds() : undefined
@@ -202,8 +208,11 @@ async function executeAction(options: Options, request: ScheduleManagementReques
     const snapshot = await list()
     if (input.view === 'tasks') {
       const search = input.search?.toLocaleLowerCase()
-      const rows = snapshot.definitions.filter(item => (input.includeDeleted || !item.deleted) && (!search || safeText(item.input.name).toLocaleLowerCase().includes(search)))
-      return ok({ schedulerState: snapshot.schedulerState, ...pageOf(rows.sort(byUpdated), input, taskView) })
+      const includeDeleted = input.includeDeleted ?? input.group === 'history'
+      const groups = groupScheduledTasks(snapshot.definitions, indexScheduledRuns(snapshot.occurrences))
+      const candidates = input.group ? groups[input.group] : Object.values(groups).flat().sort((a, b) => byUpdated(a.definition, b.definition))
+      const rows = candidates.filter(({ definition }) => (includeDeleted || !definition.deleted) && (!search || safeText(definition.input.name).toLocaleLowerCase().includes(search)))
+      return ok({ schedulerState: snapshot.schedulerState, ...pageOf(rows, input, ({ definition, status }) => ({ ...taskView(definition), ...status })) })
     }
     if (input.view === 'creations') return ok(pageOf((snapshot.creations ?? []).filter(item => !item.deleted).sort(byUpdated), input, creationView))
     if (input.view === 'creation') {
@@ -220,7 +229,8 @@ async function executeAction(options: Options, request: ScheduleManagementReques
     if ('status' in item) return item
     if (input.view === 'runs') return ok(pageOf(snapshot.occurrences.filter(run => run.definitionId === item.id)
       .sort((a, b) => b.scheduledAt - a.scheduledAt || a.id.localeCompare(b.id)), input, run => runView(run)))
-    return ok({ ...taskView(item), mode: item.input.mode ?? 'employee', modelId: safeText(item.input.modelId ?? ''), subscriptionId: item.input.subscriptionId,
+    return ok({ ...taskView(item), ...scheduledTaskState(item, snapshot.occurrences.filter(run => run.definitionId === item.id)),
+      mode: item.input.mode ?? 'employee', modelId: safeText(item.input.modelId ?? ''), subscriptionId: item.input.subscriptionId,
       copiedFromWork: item.plan?.kind === 'arrangement' && !!item.plan.source,
       ...(input.includeGoal ? { goal: safeText(item.input.goal, 16000) } : {}),
       planSummary: planView(item.plan) })

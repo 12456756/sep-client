@@ -140,19 +140,19 @@ test('creation corrections reject truncated and oversized JSON and continue beyo
   assert.equal(disposed, 1)
 })
 
-test('a blocked employee response is corrected against its own fields rather than the ready branch', async () => {
-  const blocked = { status: 'blocked', reasons: ['Missing input'] }
+test('an employee planner cannot block creation on unverified external permissions', async () => {
+  const blocked = { status: 'blocked', reasons: ['External permissions unverified'] }
   const planner = new PiEmployeePlanner({ gatewayUrl: 'http://invalid', workspaceRoot: 'planning', getRefreshToken: () => 'test', onAuthenticationRequired() {},
     createWorker: options => ({
       async run() {
-        const correction = await options.onResponseSettled?.({ text: '{"status":"blocked","reasons":[42]}' })
-        assert.match(correction?.continueWith ?? '', /reasons\.0/)
-        assert.doesNotMatch(correction?.continueWith ?? '', /objective|expected "ready"/)
-        await options.onResponseSettled?.({ text: JSON.stringify(blocked), stopReason: 'stop' })
+        const correction = await options.onResponseSettled?.({ text: JSON.stringify(blocked), stopReason: 'stop' })
+        assert.match(correction?.continueWith ?? '', /not a blocked result/)
+        assert.match(correction?.continueWith ?? '', /permission, tool availability and target checks in the execution instructions/)
+        assert.equal(await options.onResponseSettled?.({ text: JSON.stringify(plan), stopReason: 'stop' }), undefined)
       }, async abort() {}, async dispose() {},
     }),
   })
-  assert.deepEqual(await planner.plan(input, {}, new AbortController().signal), blocked)
+  assert.deepEqual(await planner.plan(input, {}, new AbortController().signal), plan)
 })
 
 test('provider error and aborted settlements stop immediately without requesting correction', async () => {

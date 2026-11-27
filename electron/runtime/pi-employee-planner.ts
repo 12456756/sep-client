@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { scheduleTimeResultSchema, type ScheduleTimeRequest, type ScheduleTimeResult, type EmployeePlanResult, type ModelScheduledInput } from '../../src/shared/scheduled-tasks'
-import { buildEmployeePlanningPrompt, employeePlanResultSchema } from '../domain/scheduled-task'
+import { scheduleTimeResultSchema, type ScheduleTimeRequest, type ScheduleTimeResult, type EmployeeWorkPlan, type ModelScheduledInput } from '../../src/shared/scheduled-tasks'
+import { buildEmployeePlanningPrompt, employeePlanSchema } from '../domain/scheduled-task'
 import { scheduleInterpretationSchema, type ScheduleInterpretation, type ScheduledCreationInterpreterInput } from '../../src/shared/scheduled-creation'
 import { buildScheduleCreationPrompt } from '../domain/scheduled-creation'
 import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
@@ -20,11 +20,11 @@ export interface EmployeePlannerOptions {
 /** Planning uses the existing worker, with business tools explicitly disabled. */
 export class PiEmployeePlanner {
   constructor(private readonly options: EmployeePlannerOptions) {}
-  async plan(input: ModelScheduledInput, employee: unknown, signal: AbortSignal, modelGrantId?: string): Promise<EmployeePlanResult> {
+  async plan(input: ModelScheduledInput, employee: unknown, signal: AbortSignal, modelGrantId?: string): Promise<EmployeeWorkPlan> {
     const subscriptionId = input.mode === 'general' ? modelGrantId : input.subscriptionId
     if (!subscriptionId) throw new AppError('MODEL_NOT_ALLOWED')
-    return this.generate({ subscriptionId, modelId: input.modelId }, buildEmployeePlanningPrompt(input, employee), input.mode === 'general' ? '请分析任务需求，生成通用助手可直接复用的工作计划。' : '请分析指定员工职责和任务需求，生成一次确认、以后直接复用的工作计划。', value => employeePlanResultSchema.parse(value), '规划未返回有效的文件交付计划，请重新生成。', signal,
-      'Contract validation failed. Return only the employee planning JSON from the system prompt: a ready file-delivery plan, or {"status":"blocked","reasons":["specific reason"]}. Do not execute work.')
+    return this.generate({ subscriptionId, modelId: input.modelId }, buildEmployeePlanningPrompt(input, employee), input.mode === 'general' ? '请分析任务需求，生成通用助手可直接复用的工作计划。' : '请分析指定员工职责和任务需求，生成一次确认、以后直接复用的工作计划。', value => employeePlanSchema.parse(value), '规划未返回有效的文件交付计划，请重新生成。', signal,
+      'Return only the complete ready file-delivery plan from the system prompt, not a blocked result. Put external connection, permission, tool availability and target checks in the execution instructions; do not verify them here or remove requested actions. Do not execute work.')
   }
   async interpretTime(input: ScheduleTimeRequest, signal: AbortSignal): Promise<ScheduleTimeResult> {
     const prompt = `你是定时任务的时间解析器，只理解时间，不执行任务，不调用工具，不配置员工、工作目录、权限或工作内容。
@@ -39,7 +39,7 @@ export class PiEmployeePlanner {
     signal.throwIfAborted()
     return this.generate(input, buildScheduleCreationPrompt(input), 'Interpret the supplied creation messages. Return only the complete scheduled-creation JSON contract.',
       value => scheduleInterpretationSchema.parse(value), 'Could not interpret a valid scheduled creation request. Clarify the task and schedule, then retry.', signal,
-      'Contract validation failed. Return the complete strict creation JSON with status, task (title, goal, deliverables, execution, schedule), questions and reasons exactly as specified. Preserve the execution rules in the system prompt. Do not promote ordinary work to employee orchestration. Include the full task in every status; no extra fields or tools.')
+      'Contract validation failed. Return the complete strict creation JSON with status, task (title, goal, deliverables, execution, schedule), questions and reasons exactly as specified. The status needs_input requires empty reasons; blocked requires empty questions. Preserve the execution rules in the system prompt. Do not promote ordinary work to employee orchestration. Do not block creation solely to verify external connections or permissions. Include the full task in every status; no extra fields or tools.')
   }
   private async generate<T>(input: { subscriptionId: string; modelId: string }, prompt: string, request: string, parse: (value: unknown) => T, failure: string, signal: AbortSignal, correctionPrompt: string): Promise<T> {
     signal.throwIfAborted()

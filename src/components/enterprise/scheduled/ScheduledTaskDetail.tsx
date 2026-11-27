@@ -2,18 +2,20 @@ import { useEffect, useRef, useState } from 'react'
 import { FileText, Pencil, Trash2 } from 'lucide-react'
 import type { ScheduledWorkPlan, ScheduledDefinition, ScheduledOccurrence } from '../../../shared/scheduled-tasks'
 import { retiredScheduledExecutionMessage } from '../../../shared/scheduled-tasks'
+import { scheduledTaskState } from '../../../shared/scheduled-task-state'
 import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterpriseWorkspace'
 import type { ScheduledTasksModel } from '../../../features/enterprise/use-scheduled-tasks'
 import { canResumeSchedule, definitionLabel, recurrenceLabel, RUN_LABELS, runActions, scheduleTime, TERMINAL_RUNS } from '../../../features/enterprise/scheduled-task-model'
 import { EmployeeFace } from '../EmployeeFace'
 import { ScheduledOperationResults } from './ScheduledOperationResults'
+import { ScheduledAssessment } from './ScheduledAssessment'
 
 function Plan({ plan }: { plan: ScheduledWorkPlan }) {
   if (plan.kind === 'arrangement') return <section className="ent-sch-card ent-sch-plan" aria-label="只读自动编排计划"><h3>自动编排计划 <small>只读</small></h3><p>{plan.title}</p>{plan.nodes.map((node, index) => <article key={node.id}><h4>{index + 1}. {node.title}</h4><p className="ent-sch-help">员工订阅：{node.subscriptionId} · 模型：{node.modelId}</p>{node.dependsOn.length ? <p className="ent-sch-help">依赖：{node.dependsOn.join('、')}</p> : null}<p>{node.objective ?? node.expectedOutput}</p><ul>{node.deliverables.map(file => <li key={file.id}><FileText size={16} /><div><strong>{file.name}</strong><code>{file.path}</code><p className="ent-sch-help">验收：{file.acceptanceCriteria.join('；')}</p></div></li>)}</ul><details><summary>查看执行指令</summary><p className="ent-sch-instruction">{node.instruction}</p></details></article>)}</section>
   return <section className="ent-sch-card ent-sch-plan" aria-label="只读工作计划"><h3>工作计划 <small>只读</small></h3><p>{plan.objective}</p><h4>最终成果</h4><p>{plan.expectedOutput}</p><ul>{plan.deliverables.map(file => <li key={file.id}><FileText size={16} /><div><strong>{file.name}</strong><code>{file.path}</code><ul>{file.contentOutline.map((text, index) => <li key={index}>{text}</li>)}</ul><p className="ent-sch-help">验收：{file.acceptanceCriteria.join('；')}</p></div></li>)}</ul><details><summary>查看完整执行指令</summary><p className="ent-sch-instruction">{plan.instruction}</p></details></section>
 }
 
-export function ScheduledTaskDetail({ definition, workspace, model, inHistory, onDelete }: { definition: ScheduledDefinition; workspace: EnterpriseWorkspace; model: ScheduledTasksModel; inHistory: boolean; onDelete(definition: ScheduledDefinition): void }) {
+export function ScheduledTaskDetail({ definition, workspace, model, onDelete }: { definition: ScheduledDefinition; workspace: EnterpriseWorkspace; model: ScheduledTasksModel; onDelete(definition: ScheduledDefinition): void }) {
   const route = workspace.route.name === 'scheduled' ? workspace.route : { name: 'scheduled' as const }
   const tab = route.view === 'configuration' ? 'configuration' : 'history'
   const [confirming, setConfirming] = useState<'review' | 'cancel' | null>(null)
@@ -32,6 +34,7 @@ export function ScheduledTaskDetail({ definition, workspace, model, inHistory, o
   const filename = definition.input.emptyText?.naming === 'fixed' ? definition.input.emptyText.filename
     : definition.input.emptyText?.naming === 'started' ? 'yyyyMMdd-HHmm.txt（启动时间）' : 'yyyyMMdd-HHmm.txt（计划时间）'
   const runs = model.data?.occurrences.filter(run => run.definitionId === definition.id).sort((a, b) => b.scheduledAt - a.scheduledAt) ?? []
+  const status = scheduledTaskState(definition, runs)
   const active = runs.some(run => !TERMINAL_RUNS.has(run.status))
   const selected = runs.find(run => run.id === route.runId) ?? runs[0]
   const seenTime = runs.some(run => run.scheduledAt === definition.input.scheduledAt)
@@ -44,10 +47,14 @@ export function ScheduledTaskDetail({ definition, workspace, model, inHistory, o
   }
 
   return <div className="ent-sch-detail">
-    <header className="ent-sch-detail-head"><div className="ent-sch-person">{!local && !general && <EmployeeFace employee={employee} size="md" round />}<div><h2>{definition.input.name}</h2><p>{executor} · {recurrenceLabel(definition)}</p></div></div><span className={`ent-sch-state ${definition.enabled && !inHistory ? 'enabled' : ''}`}>{definitionLabel(definition, inHistory)}</span></header>
-    <div className="ent-sch-overview"><div><small>下次执行</small><strong>{scheduleTime(definition.nextRunAt, definition.input.timezone)}</strong></div><div><small>时区</small><strong>{definition.input.timezone}</strong></div><div><small>最近执行结果</small><strong>{runs[0] ? RUN_LABELS[runs[0].status] : '尚未执行'}</strong></div><div><small>执行记录</small><strong>{runs.length} 次</strong></div></div>
+    <header className="ent-sch-detail-head"><div className="ent-sch-person">{!local && !general && <EmployeeFace employee={employee} size="md" round />}<div><h2>{definition.input.name}</h2><p>{executor} · {recurrenceLabel(definition)}</p></div></div><span className={`ent-sch-state ${status.group === 'enabled' ? 'enabled' : ''}`}>{definitionLabel(status)}</span></header>
+    <div className="ent-sch-overview"><div><small>{status.group === 'disabled' ? '配置时间' : '下次执行'}</small><strong>{scheduleTime(status.group === 'disabled' ? definition.input.scheduledAt : definition.nextRunAt, definition.input.timezone)}</strong></div><div><small>时区</small><strong>{definition.input.timezone}</strong></div><div><small>最近执行结果</small><strong>{runs[0] ? RUN_LABELS[runs[0].status] : '尚未执行'}</strong></div><div><small>执行记录</small><strong>{runs.length} 次</strong></div></div>
     <div className="ent-sch-tabs" role="tablist" aria-label="定时任务详情"><button type="button" role="tab" aria-selected={tab === 'history'} onClick={() => goTab('history')}>执行记录</button><button type="button" role="tab" aria-selected={tab === 'configuration'} onClick={() => goTab('configuration')}>任务配置</button></div>
     {tab === 'configuration' ? <div className="ent-sch-config" role="tabpanel" aria-label="任务配置">
+      {status.group === 'disabled' && canResumeSchedule(definition, seenTime) ? <div className="ent-sch-actions">
+        <button type="button" className="ent-btn primary" disabled={model.busy || active} onClick={() => void model.confirm(definition)}>{status.state === 'paused' ? '恢复调度' : '确认计划并启用'}</button>
+        {status.state === 'pending' && <p className="ent-sch-help">配置已保存，确认启用前不会执行。</p>}
+      </div> : null}
       <section className="ent-sch-card"><h3>任务配置</h3><dl className="ent-sch-facts"><div><dt>工作目标</dt><dd>{definition.input.goal}</dd></div><div><dt>执行时间</dt><dd>{scheduleTime(definition.input.scheduledAt, definition.input.timezone)} · {definition.input.timezone}</dd></div>{local ? <div><dt>文件名</dt><dd>{filename}</dd></div> : <div><dt>模型</dt><dd>{definition.input.modelId}</dd></div>}<div><dt>工作目录</dt><dd className="ent-sch-path" title={definition.input.workDir}>{definition.input.workDir}</dd></div>{definition.input.outputDirectory && <div><dt>产出目录（仅交付）</dt><dd className="ent-sch-path" title={definition.input.outputDirectory.path}>{definition.input.outputDirectory.path}</dd></div>}<div><dt>权限</dt><dd>{definition.input.permissions.preset === 'full-local' ? '旧版权限已停用，请重新保存任务' : local ? '仅创建新文件，不覆盖' : '在工作目录内创建文件，不修改已有文件'}</dd></div>{!local && <div><dt>技能</dt><dd>{general ? '不加载员工技能' : '执行时使用员工当前选择且有权使用的版本'}</dd></div>}<div><dt>配置版本</dt><dd>第 {definition.revision} 版 · 历史执行保留当时的快照</dd></div></dl></section>
       {definition.input.outputDirectory && !local && definition.input.permissions.preset !== 'full-local' && <p className="ent-sch-help">产出目录：同名文件先备份再覆盖，原件副本保存在同一目录。</p>}
       {local && !definition.deleted && <p className="ent-sch-help">{retiredScheduledExecutionMessage}</p>}
@@ -56,11 +63,11 @@ export function ScheduledTaskDetail({ definition, workspace, model, inHistory, o
       </li>)}</ol></section> : null}
       {definition.plan ? <Plan plan={definition.plan} /> : !local && <section className="ent-sch-card"><h3>工作计划尚未生成</h3><p>{general ? '根据工作目标生成执行指令和文件交付要求。此步骤只做规划。' : '将根据员工职责和工作目标生成执行指令及文件交付要求。此步骤只做规划。'}</p>{!definition.deleted ? <button type="button" className="ent-btn primary" disabled={model.busy || active} onClick={() => void model.plan(definition)}>{model.busy ? '正在生成…' : '生成工作计划'}</button> : null}</section>}
       {!definition.deleted ? <footer className="ent-sch-actions">
-        {definition.enabled ? <button type="button" className="ent-btn" disabled={model.busy} onClick={() => void model.pause(definition)}>暂停后续调度</button> : canResumeSchedule(definition, seenTime) ? <button type="button" className="ent-btn primary" disabled={model.busy || active} onClick={() => void model.confirm(definition)}>{recurring && seenTime ? '恢复周期调度' : '确认计划并启用'}</button> : null}
+        {definition.enabled && <button type="button" className="ent-btn" disabled={model.busy} onClick={() => void model.pause(definition)}>暂停后续调度</button>}
         <button type="button" className="ent-btn" disabled={model.busy || active} onClick={() => workspace.replaceRoute({ name: 'scheduled', taskId: definition.id, view: 'edit' })}><Pencil size={14} />编辑任务配置</button>
         <button type="button" className="ent-btn danger ghost" disabled={model.busy || active} onClick={() => onDelete(definition)}><Trash2 size={14} />删除任务</button>
       </footer> : <p className="ent-sch-help">该任务已删除，配置和执行记录仅供查阅。</p>}
-      {active ? <p className="ent-sch-help">请先处理或停止当前执行，再修改或删除配置。暂停后续调度不会停止已经生成的执行。</p> : seenTime ? <p className="ent-sch-help">这个时间点已经执行过。再次安排请编辑原任务，选择未来时间并重新启用。</p> : definition.input.scheduledAt <= Date.now() && !definition.enabled ? <p className="ent-sch-help">原执行时间已过，请编辑为未来时间后启用。</p> : null}
+      {active ? <p className="ent-sch-help">请先处理或停止当前执行，再修改或删除配置。暂停后续调度不会停止已经生成的执行。</p> : !recurring && seenTime ? <p className="ent-sch-help">这个时间点已经执行过。再次安排请编辑原任务，选择未来时间并重新启用。</p> : !recurring && definition.input.scheduledAt <= Date.now() && !definition.enabled ? <p className="ent-sch-help">原执行时间已过，请编辑为未来时间后启用。</p> : null}
     </div> : <div role="tabpanel" aria-label="执行记录">
       {!runs.length ? <div className="ent-sch-empty"><h3>还没有执行记录</h3>{!definition.deleted && <p>{definition.enabled ? '到达执行时间后会自动生成记录。' : '先在任务配置中生成工作计划并确认启用。'}</p>}<button type="button" className="ent-btn" onClick={() => goTab('configuration')}>查看任务配置</button></div> : <div className="ent-sch-history">
         <div className="ent-sch-timepoints" aria-label="执行时间点">{runs.map(run => <button type="button" key={run.id} className={selected?.id === run.id ? 'selected' : ''} aria-pressed={selected?.id === run.id} onClick={() => { setConfirming(null); workspace.replaceRoute({ name: 'scheduled', taskId: definition.id, view: 'history', runId: run.id }) }}><strong>{scheduleTime(run.scheduledAt, run.input.timezone)}</strong><span className={`ent-sch-status ${run.status}`}>{RUN_LABELS[run.status]}</span><small>{run.attempts.length} 次启动尝试</small></button>)}</div>
@@ -73,6 +80,7 @@ export function ScheduledTaskDetail({ definition, workspace, model, inHistory, o
             {runActions(selected.status).includes('acknowledge') ? <button type="button" className="ent-btn" disabled={model.busy} onClick={() => { setConfirmedRun(selected.id); setConfirming('review') }}>核查后关闭本次执行</button> : null}
             {runActions(selected.status).includes('cancel') ? <button type="button" className="ent-btn danger ghost" disabled={model.busy} onClick={() => { setConfirmedRun(selected.id); setConfirming('cancel') }}>停止本次执行</button> : null}
           </div>
+          <ScheduledAssessment run={selected} execution={workspace.works.find(work => work.id === selected.taskId)?.arrangementExecution} scopeKey={workspace.attachmentScopeKey} />
           <ScheduledOperationResults key={selected.id} run={selected} />
           <h4>启动尝试</h4>{!selected.attempts.length ? <p className="ent-sch-help">尚未开始启动检查。</p> : <ol className="ent-sch-attempts">{selected.attempts.map(attempt => <li key={attempt.id}><strong>第 {attempt.number} 次 · {({ preparing: '准备中', admitted: '已进入运行时', failed: selected.startedAt !== null && attempt.id === selected.attempts.at(-1)?.id ? '执行失败' : '启动失败', completed: '已完成', interrupted: '已中断' })[attempt.status]}</strong><small>{scheduleTime(attempt.startedAt, selected.input.timezone)} → {scheduleTime(attempt.finishedAt, selected.input.timezone)}</small>{attempt.error ? <p>{attempt.error.message}</p> : null}</li>)}</ol>}
           <details><summary>本次执行的配置快照</summary><p className="ent-sch-instruction">{selected.input.goal}</p><p className="ent-sch-path">{selected.input.workDir}</p><p className="ent-sch-help">{selected.input.mode === 'empty-text' ? '本地动作' : selected.input.mode === 'general' ? `通用助手 · ${selected.input.modelId}` : selected.input.modelId} · {selected.input.timezone}</p><Plan plan={selected.plan} /></details>

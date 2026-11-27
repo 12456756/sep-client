@@ -7,6 +7,7 @@ import type { ScheduledServiceOptions } from './scheduled-task-service'
 import { BeforeScheduledAdmissionError, type ScheduledRunnerPort } from './scheduled-dispatcher'
 import { setLogSink, type LogRecord } from '../common/logger'
 import { toEnvelope } from '../errors/error-mapper'
+import { AppError } from '../errors/app-error'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -154,6 +155,37 @@ function harness(overrides: Partial<ScheduledRunnerPort> = {}, serviceOverrides:
   return { service, get data() { return data }, get starts() { return starts }, get plans() { return plans }, advance(value: number) { now = value } }
 }
 
+test('optional assessment items are planned once, carried to the run and never gate completion', async t => {
+  const goal = 'Produce report and send it to a@example.com'
+  const candidates: EmployeeWorkPlan['assessmentItems'] = [
+    { kind: 'file', title: 'Report', source: 'Produce report', deliverableId: 'file' },
+    { kind: 'file', title: 'Invalid file', source: 'Produce report', deliverableId: 'missing' },
+    { kind: 'external', title: 'Send', source: 'send it to a@example.com', target: 'a@example.com', includesFile: true },
+    { kind: 'external', title: 'Invented scope', source: 'send it to a@example.com', target: 'b@example.com' },
+  ]
+  let planningCalls = 0
+  const h = harness({ async inspect() { return { state: 'completed' } } }, {
+    planner: async () => ({ ...plan, assessmentItems: ++planningCalls === 1 ? candidates : [] }),
+  })
+  t.after(() => h.service.stop())
+  const created = await h.service.create('advisory-assessment', { ...input, goal })
+  const planned = await h.service.plan(created.id, created.revision)
+  assert.deepEqual(planned.plan?.assessmentItems, [candidates[0], candidates[2]])
+  await h.service.confirm(planned.id, planned.revision)
+  const other = await h.service.create('invalid-assessment', { ...input, scheduledAt: 3000 })
+  const fallback = await h.service.plan(other.id, other.revision)
+  assert.deepEqual(fallback.plan, plan)
+  h.advance(2000)
+  await h.service.scan()
+  await h.service.scan()
+  const run = h.data.occurrences[0]
+  assert.deepEqual(run.plan.assessmentItems, planned.plan?.assessmentItems)
+  assert.equal(run.status, 'completed')
+  assert.equal(run.error, null)
+  assert.equal(h.starts, 1)
+  assert.equal(planningCalls, 2)
+})
+
 test('conversation can query, change time, enable, and pause the same definition', async t => {
   const h = harness()
   t.after(() => h.service.stop())
@@ -223,6 +255,48 @@ test('schedule query paginates safe data and read-only sessions cannot write', a
   assert.equal(detail.status, 'ok')
   assert.doesNotMatch(JSON.stringify(detail), /sensitive-fixture|D:\/reports|permissions|planInputKey/)
   assert.equal((await manage({ tool: DELETE_SCHEDULED_TASK_TOOL, input: { target: { id: task.id } } })).status, 'failed')
+})
+
+test('schedule query uses sidebar groups across rescheduling, retry and deletion', async t => {
+  const h = harness()
+  t.after(() => h.service.stop())
+  const original = await h.service.create('original', input)
+  const planned = await h.service.plan(original.id, original.revision)
+  const enabled = await h.service.confirm(planned.id, planned.revision)
+  await h.service.create('draft', { ...input, name: 'Draft' })
+  const removed = await h.service.create('deleted', { ...input, name: 'Deleted' })
+  await h.service.pause(removed.id, removed.revision, true)
+  h.advance(input.scheduledAt)
+  await h.service.scan()
+  const run = h.data.occurrences[0]!
+  h.data.occurrences[0] = { ...run, status: 'waiting_retry' }
+
+  const manage = bindConversationScheduleManagement({ service: h.service, signal: new AbortController().signal, readOnly: true,
+    isCurrent: () => true, conversationIds: async () => new Set(), approve: async () => assert.fail('no write approvals') })
+  const query = async (group: 'disabled' | 'enabled' | 'history', includeDeleted?: boolean) => {
+    const result = await manage({ tool: 'query_scheduled_tasks', input: { view: 'tasks', group, includeDeleted } })
+    assert.equal(result.status, 'ok')
+    return result.data as { total: number; items: { id: string; state: string; runStatus?: string }[] }
+  }
+  const running = await query('enabled')
+  assert.equal(running.total, 1)
+  assert.equal(running.items[0]?.state, 'executing')
+  assert.equal(running.items[0]?.runStatus, 'waiting_retry')
+  assert.equal((await query('disabled')).total, 1)
+
+  h.data.occurrences[0] = { ...run, status: 'completed' }
+  assert.equal((await query('history')).total, 2)
+  assert.equal((await query('history', false)).total, 1)
+  const edited = await h.service.edit(enabled.id, enabled.revision, { ...input, scheduledAt: 3000 })
+  assert.equal(edited.id, original.id)
+  const disabled = await query('disabled')
+  assert.equal(disabled.total, 2)
+  assert.equal(disabled.items[0]?.id, edited.id)
+  assert.equal(disabled.items[0]?.state, 'pending')
+  assert.equal((await query('history')).total, 1)
+  const detail = await manage({ tool: 'query_scheduled_tasks', input: { view: 'task', target: { id: edited.id } } })
+  assert.match(JSON.stringify(detail), /"group":"disabled","state":"pending"/)
+  assert.equal(h.data.occurrences[0]?.id, run.id)
 })
 
 test('a structured schedule stays disabled when saved and when its plan is generated', async t => {
@@ -351,7 +425,8 @@ test('a content edit re-plans only after consent and the next occurrence uses th
     if (value.goal === input.goal) return plan
     assert.equal(value.goal, goal)
     assert.equal(value.workDir, input.workDir)
-    return blocked ? { status: 'blocked', reasons: ['Model cannot plan this edit'] } : replacement
+    if (blocked) throw new AppError('PLANNING_FAILED')
+    return replacement
   } })
   t.after(() => h.service.stop())
   const draft = await h.service.create('edit-content', input)
